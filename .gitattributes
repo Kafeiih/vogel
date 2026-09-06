@@ -1,0 +1,16 @@
+# Normalize line endings: store text files with LF in the repo.
+# Prevents CRLF noise on Windows checkouts and gofmt false positives.
+* text=auto eol=lf
+
+# Go sources must always be LF.
+*.go text eol=lf
+
+# Common text formats.
+*.md text eol=lf
+*.mod text eol=lf
+*.sum text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+*.sql text eol=lf
+*.sh text eol=lf

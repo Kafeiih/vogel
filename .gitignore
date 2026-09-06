@@ -1,0 +1,24 @@
+# Go
+vendor/
+coverage.out
+coverage.html
+*.test
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env & secrets
+.env
+*.pem
+*.key
+
+# Claude Code
+.claude
