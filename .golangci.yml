@@ -59,6 +59,9 @@ linters:
           - errcheck
           - gosec
           - unparam
+          # rangeValCopy en un fake de repositorio marca copias que el propio
+          # append necesita; indexar ahi no ahorra nada y se lee peor.
+          - gocritic
 
 issues:
   max-issues-per-linter: 0
