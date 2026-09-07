@@ -1,0 +1,22 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: vogel_example
+      POSTGRES_PASSWORD: vogel_example
+      POSTGRES_DB: vogel_example
+    ports:
+      # 55432 on the host so this example never collides with a PostgreSQL
+      # already listening on the default 5432. Inside the container it is
+      # still the usual 5432.
+      - "55432:5432"
+    volumes:
+      - vogel_example_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vogel_example -d vogel_example"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  vogel_example_postgres_data:
