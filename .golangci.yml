@@ -1,0 +1,70 @@
+version: "2"
+
+run:
+  # El lint con --build-tags=integration recorre todo el modulo. 5m da headroom
+  # sobre el peor caso observado en runners frios de CI.
+  timeout: 5m
+
+linters:
+  default: none
+  enable:
+    - bodyclose
+    - copyloopvar
+    - durationcheck
+    - errcheck
+    - errorlint
+    - exhaustive
+    - gocritic
+    - gosec
+    - govet
+    - ineffassign
+    - misspell
+    - nilerr
+    - prealloc
+    - staticcheck
+    - unconvert
+    - unparam
+    - unused
+    - wastedassign
+
+  settings:
+    errcheck:
+      check-type-assertions: true
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - performance
+      settings:
+        hugeParam:
+          # Los structs de configuracion y filtros (postgres.Config, audit.Filters,
+          # migrate.Options) se pasan por valor a proposito: son inmutables y de
+          # alcance acotado, y pasarlos por puntero los volveria mutables a traves
+          # del puntero. El umbral los cubre y sigue marcando copias grandes
+          # accidentales. gocritic dispara con size >= threshold, asi que el numero
+          # debe quedar por encima del maximo real, no sobre el.
+          sizeThreshold: 256
+    gosec:
+      excludes:
+        - G104
+    exhaustive:
+      default-signifies-exhaustive: true
+    # Sin ignore-rules de misspell: a diferencia de go-crucible y go-licencias,
+    # el codigo y los comentarios de vogel estan en ingles. Si algun dia entra
+    # prosa en espanol, las excepciones se agregan aca.
+
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gosec
+          - unparam
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+formatters:
+  enable:
+    - gofmt
+    - goimports

@@ -1,0 +1,106 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+    paths-ignore: ["**.md", "docs/**", ".atl/**"]
+  pull_request:
+    branches: [main, master]
+    # 'labeled' permite disparar la integracion al agregar el label justo antes de mergear.
+    types: [opened, synchronize, reopened, labeled]
+    paths-ignore: ["**.md", "docs/**", ".atl/**"]
+
+# Cancela corridas viejas del mismo PR/rama cuando se pushea de nuevo:
+# no se paga por builds que ya quedaron obsoletos.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Feedback barato en CADA push/PR: lint + unit + build en un solo job
+  # (un unico checkout + setup-go, sin pagar 3x el arranque).
+  fast:
+    name: Lint + Unit + Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.13.2
+          # Sin --build-tags=integration el linter NO mira ningun archivo con
+          # //go:build integration. Los tags son aditivos, asi que esta corrida
+          # cubre tambien los archivos sin tag.
+          args: --build-tags=integration
+
+      - name: Unit tests
+        run: go test ./... -race -cover -coverprofile=coverage-unit.out
+
+      # vogel es una libreria: no hay ./cmd/api que compilar. 'go build ./...'
+      # igual es necesario porque 'go test' no compila los paquetes sin tests
+      # (storage, authz, httpx/response, audit/migrations, audit/postgres).
+      - name: Build
+        run: go build ./...
+
+      # Un puerto que arrastra su adaptador rompe la premisa del modulo: importar
+      # 'auth' no debe traer net/http, y 'audit' no debe traer chi ni httpx.
+      # El compilador no lo detecta; esto si.
+      - name: Verificar aislamiento de los puertos
+        run: |
+          set -euo pipefail
+          check() {
+            local pkg="$1" forbidden="$2"
+            if go list -deps "$pkg" | grep -qxF "$forbidden"; then
+              echo "::error::$pkg depende de $forbidden"
+              exit 1
+            fi
+          }
+          check ./auth net/http
+          check ./audit net/http
+          check ./audit github.com/go-chi/chi/v5
+          check ./audit github.com/kafeiih/vogel/httpx/middleware
+          check ./storage github.com/aws/aws-sdk-go-v2/service/s3
+          check ./notification github.com/wneessen/go-mail
+          check ./authz github.com/cerbos/cerbos-sdk-go/cerbos
+          echo "Puertos aislados: OK"
+
+      - name: Upload unit coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-unit
+          path: coverage-unit.out
+          retention-days: 30
+
+  # Tests de integracion (testcontainers + postgres): lo mas caro del set.
+  # Corren SOLO en un PR con el label 'run-integration', que se agrega al ir
+  # a mergear. Asi no se pagan en cada push intermedio.
+  integration:
+    name: Integration
+    if: github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'run-integration')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Integration tests
+        run: go test -tags=integration ./... -race -cover -coverprofile=coverage-integration.out
+
+      - name: Upload integration coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-integration
+          path: coverage-integration.out
+          retention-days: 30
