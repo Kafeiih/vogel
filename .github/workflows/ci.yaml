@@ -97,6 +97,27 @@ jobs:
           path: coverage-unit.out
           retention-days: 30
 
+  # examples/boilerplate tiene su propio go.mod (con un 'replace' hacia la
+  # raiz de este repo), asi que es un modulo Go aparte: 'go build ./...' y
+  # 'go test ./...' corridos desde la raiz NO lo alcanzan. Este job compila y
+  # testea ese modulo anidado por separado, y de paso funciona como test de
+  # regresion de la API publica de vogel contra un consumidor real.
+  boilerplate:
+    name: Boilerplate example
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: examples/boilerplate/go.mod
+
+      - name: Build
+        run: cd examples/boilerplate && go build ./...
+
+      - name: Test
+        run: cd examples/boilerplate && go test ./... -race -cover
+
   # Tests de integracion (testcontainers + postgres): lo mas caro del set.
   # Corren SOLO en un PR con el label 'run-integration', que se agrega al ir
   # a mergear. Asi no se pagan en cada push intermedio.

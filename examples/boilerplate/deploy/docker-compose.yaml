@@ -1,0 +1,48 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: boilerplate_db
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  api:
+    image: ghcr.io/kafeiih/vogel-boilerplate:latest
+    build:
+      context: ..
+      target: api
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    environment:
+      DB_URL: "postgres://postgres:postgres@postgres:5432/boilerplate_db?sslmode=disable"
+
+  worker:
+    image: ghcr.io/kafeiih/vogel-boilerplate-worker:latest
+    build:
+      context: ..
+      target: worker
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      DB_URL: "postgres://postgres:postgres@postgres:5432/boilerplate_db?sslmode=disable"
+    restart: unless-stopped
+
+volumes:
+  pgdata:
