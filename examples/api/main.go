@@ -15,6 +15,7 @@ import (
 	"embed"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"os"
 	"os/signal"
@@ -40,6 +41,23 @@ import (
 
 //go:embed migrations/*.sql
 var appMigrations embed.FS
+
+// appMigrationsFS returns this application's own migrations rooted at the
+// directory that holds them.
+//
+// The fs.Sub is not optional. //go:embed migrations/*.sql produces an FS
+// whose root contains a "migrations" DIRECTORY, not the .sql files, and
+// goose scans only the root of the fs.FS it is handed -- so passing
+// appMigrations straight to migrate.Up fails with "no migrations found"
+// even though the files are unquestionably embedded in the binary.
+//
+// vogel's own migration packages (audit/migrations, workflow/migrations) do
+// not need this because they embed *.sql from their own package directory,
+// which puts the files at the root already. An application that keeps its
+// migrations in a subdirectory does need it.
+func appMigrationsFS() (fs.FS, error) {
+	return fs.Sub(appMigrations, "migrations")
+}
 
 func main() {
 	if err := run(); err != nil {
@@ -103,7 +121,11 @@ func run() error {
 	// Running all three against one shared table would make goose believe
 	// one library's "001" was the same migration as another's, silently
 	// skipping one set entirely.
-	if err := migrate.Up(ctx, cfg.DatabaseURL, appMigrations, migrate.Options{Logger: log.Logger}); err != nil {
+	appFS, err := appMigrationsFS()
+	if err != nil {
+		return fmt.Errorf("app migrations fs: %w", err)
+	}
+	if err := migrate.Up(ctx, cfg.DatabaseURL, appFS, migrate.Options{Logger: log.Logger}); err != nil {
 		return fmt.Errorf("run app migrations: %w", err)
 	}
 	if err := migrate.Up(ctx, cfg.DatabaseURL, auditmigrations.FS(), migrate.Options{
@@ -202,7 +224,7 @@ func run() error {
 		return fmt.Errorf("start river queue: %w", err)
 	}
 
-	docs := NewDocumentHandler(documentStore, engine, recorder, queue, fileStorage, txManager, pool, log.Logger)
+	docs := NewDocumentHandler(documentStore, engine, wfRepo, recorder, queue, fileStorage, txManager, pool, log.Logger)
 
 	// 9. Every timeout below is set explicitly (gosec G112): a slow or
 	// hanging client must never be able to hold a connection, and the
