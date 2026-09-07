@@ -372,6 +372,37 @@ no una `Option`.
   `go-licencias/internal/interfaces/http/handler/audit_handler.go:39`, para
   mantener consistencia entre ambas apps.)
 
+### 9. `migrate.Up` y sus hermanas exigen un `fs.FS` explícito
+
+Los tres repos de origen (`go-bluprint`, `go-crucible`, `go-licencias`)
+comparten el mismo `runner.go`, en el que `Up`, `Down`, `UpTo`, `UpByOne` y
+`Status` leían un `embed.FS` a nivel de paquete, con una variante `UpFS`
+aparte para el caso en que hubiera que pasar otro. `vogel/migrate` no embebe
+migración alguna — no posee ninguna — así que el `fs.FS` es un argumento
+posicional obligatorio en todas, y `UpFS` desaparece:
+
+```go
+// Antes
+err := migrate.Up(ctx, dbURL)
+err := migrate.UpFS(ctx, dbURL, otroFS)
+err := migrate.Status(ctx, dbURL, os.Stdout)
+
+// Ahora
+err := migrate.Up(ctx, dbURL, appMigrationsFS)
+err := migrate.Up(ctx, dbURL, otroFS)
+err := migrate.Status(ctx, dbURL, appMigrationsFS, os.Stdout)
+```
+
+Es un cambio que el compilador marca en cada llamada, así que no se puede
+pasar por alto: la lista de errores es la lista de sitios a corregir.
+
+**Caso borde**: si el directorio de migraciones propias de la aplicación
+contenía ÚNICAMENTE la migración de `audit_log` (la que `audit/migrations`
+reemplaza), borrarla lo deja vacío y el `//go:embed *.sql` deja de compilar
+por no encontrar archivos. No afecta a `go-crucible` (25 migraciones propias)
+ni a `go-licencias` (12), pero sí afectó a `go-bluprint`, que tenía una sola.
+La salida es dejar una migración propia real, no un archivo vacío.
+
 ## Secciones por paquete
 
 Cada sección: qué se borra, el import nuevo, y el diff de llamada cuando la
@@ -641,7 +672,8 @@ no haber funcionado nunca (punto 11 del README de vogel).
 
 Reemplaza `internal/domain/authz/authz.go` +
 `internal/infrastructure/authz/cerbos.go` en ambas apps (mismas rutas en
-ambas). Firma idéntica:
+ambas). `Checker.IsAllowed` conserva su firma exacta; el CONSTRUCTOR cambia
+de nombre y pasa a recibir un struct de configuración:
 
 ```go
 import (
@@ -650,7 +682,12 @@ import (
     "github.com/kafeiih/vogel/httpx/middleware"
 )
 
-checker, err := cerbos.New(cerbosHost, useTLS)
+// Antes: NewCerbosChecker(host string, useTLS bool) (*CerbosChecker, error)
+checker, err := NewCerbosChecker(cerbosHost, useTLS)
+
+// Ahora: New(cfg Config) (*Checker, error), con Config{Host, UseTLS}
+checker, err := cerbos.New(cerbos.Config{Host: cerbosHost, UseTLS: useTLS})
+
 router.With(middleware.RequirePermission(checker, "invoices:invoice", "read", logger.Logger, authMessages))
 ```
 
@@ -837,12 +874,17 @@ Ver «Cambios de firma que rompen», punto 6, para `NewPoolMetricsCollector`.
 ### `migrate`
 
 Reemplaza `internal/infrastructure/database/migrate/{runner.go,logger.go}`
-en ambas apps. Firma idéntica (`Up`, `Down`, `UpTo`, `UpByOne`, `Status`,
-todas con `opts ...Options`):
+en ambas apps. **La firma cambia y rompe la compilación** — ver el punto 9 de
+«Cambios de firma que rompen»:
 
 ```go
 import "github.com/kafeiih/vogel/migrate"
 
+// Antes: el fs.FS era implícito (un embed a nivel de paquete) y existía una
+// variante UpFS aparte para pasarlo.
+err := migrate.Up(ctx, dbURL)
+
+// Ahora: el fs.FS es un argumento obligatorio y UpFS no existe.
 err := migrate.Up(ctx, dbURL, appMigrationsFS)
 ```
 
