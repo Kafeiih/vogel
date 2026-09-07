@@ -28,6 +28,7 @@ import (
 type DocumentHandler struct {
 	store    *DocumentStore
 	engine   *workflow.Engine
+	wfRepo   workflow.Repository
 	recorder *audit.Recorder
 	queue    worker.Queue
 	storage  storage.Storage
@@ -40,6 +41,7 @@ type DocumentHandler struct {
 func NewDocumentHandler(
 	store *DocumentStore,
 	engine *workflow.Engine,
+	wfRepo workflow.Repository,
 	recorder *audit.Recorder,
 	queue worker.Queue,
 	fileStorage storage.Storage,
@@ -50,6 +52,7 @@ func NewDocumentHandler(
 	return &DocumentHandler{
 		store:    store,
 		engine:   engine,
+		wfRepo:   wfRepo,
 		recorder: recorder,
 		queue:    queue,
 		storage:  fileStorage,
@@ -246,6 +249,23 @@ type transitionRequest struct {
 
 var transitionActions = []string{"submit", "approve", "reject", "return"}
 
+// caseFor resolves the workflow case that tracks a document.
+//
+// It exists because a workflow.Case ID and a Document ID are different
+// things, and every Engine method -- Move, Claim, Release, History -- is
+// keyed by the CASE ID. The Engine deliberately exposes no lookup by domain
+// reference, so an API whose routes are keyed by the domain object (which
+// is the normal shape: a client holds /documents/{id}, not a case ID) must
+// go through the workflow.Repository port to translate one into the other.
+// That is why this handler holds both the engine and the repository.
+//
+// The alternative -- storing the case ID on the documents row -- would
+// duplicate a link the workflow tables already own, and would have to be
+// kept in sync by hand.
+func (h *DocumentHandler) caseFor(ctx context.Context, db pgxtx.DBTX, documentID uuid.UUID) (*workflow.Case, error) {
+	return h.wfRepo.GetByExternalID(ctx, db, DocumentDomain, documentID.String())
+}
+
 // Transition applies a workflow action to a document's case.
 func (h *DocumentHandler) Transition(w http.ResponseWriter, r *http.Request) {
 	v := request.NewValidator()
@@ -264,8 +284,13 @@ func (h *DocumentHandler) Transition(w http.ResponseWriter, r *http.Request) {
 	err := h.tx.WithTx(r.Context(), func(txCtx context.Context) error {
 		db := pgxtx.DBFromContext(txCtx, h.pool)
 
+		wfCase, err := h.caseFor(txCtx, db, id)
+		if err != nil {
+			return err
+		}
+
 		if _, err := h.engine.Move(txCtx, db, workflow.MoveInput{
-			CaseID:  id,
+			CaseID:  wfCase.ID,
 			Action:  body.Action,
 			ActorID: actorID(txCtx),
 		}); err != nil {
@@ -281,6 +306,12 @@ func (h *DocumentHandler) Transition(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, workflow.ErrCaseNotFound):
 			response.Error(w, r, http.StatusNotFound, response.CodeNotFound, "document case not found")
+		case errors.Is(err, workflow.ErrCaseClosed):
+			// A closed case is a client error, not a server one: the caller
+			// asked for something the case's state no longer permits. Letting
+			// it fall through to the default arm would report a 500 and log a
+			// scary error for a perfectly ordinary race between two reviewers.
+			response.Error(w, r, http.StatusConflict, response.CodeConflict, "document case is already closed")
 		case errors.Is(err, workflow.ErrInvalidTransition), errors.Is(err, workflow.ErrGuardRejected):
 			response.Error(w, r, http.StatusConflict, response.CodeConflict, "transition not allowed")
 		default:
@@ -306,16 +337,29 @@ func (h *DocumentHandler) Claim(w http.ResponseWriter, r *http.Request) {
 
 	err := h.tx.WithTx(r.Context(), func(txCtx context.Context) error {
 		db := pgxtx.DBFromContext(txCtx, h.pool)
-		_, err := h.engine.Claim(txCtx, db, id, actor)
+
+		wfCase, err := h.caseFor(txCtx, db, id)
+		if err != nil {
+			return err
+		}
+
+		_, err = h.engine.Claim(txCtx, db, wfCase.ID, actor)
 		return err
 	})
 	if err != nil {
-		if errors.Is(err, workflow.ErrCaseNotFound) {
+		switch {
+		case errors.Is(err, workflow.ErrCaseNotFound):
 			response.Error(w, r, http.StatusNotFound, response.CodeNotFound, "document case not found")
-			return
+		case errors.Is(err, workflow.ErrCaseClosed):
+			response.Error(w, r, http.StatusConflict, response.CodeConflict, "document case is already closed")
+		case errors.Is(err, workflow.ErrAlreadyAssigned):
+			// Two reviewers racing for the same case is expected traffic, not
+			// a fault: the loser gets a 409, not a 500.
+			response.Error(w, r, http.StatusConflict, response.CodeConflict, "document case is already claimed")
+		default:
+			h.logger.ErrorContext(r.Context(), "claim document", "error", err)
+			response.Error(w, r, http.StatusInternalServerError, response.CodeInternalError, "failed to claim document")
 		}
-		h.logger.ErrorContext(r.Context(), "claim document", "error", err)
-		response.Error(w, r, http.StatusInternalServerError, response.CodeInternalError, "failed to claim document")
 		return
 	}
 
@@ -332,7 +376,19 @@ func (h *DocumentHandler) History(w http.ResponseWriter, r *http.Request) {
 	}
 
 	db := pgxtx.DBFromContext(r.Context(), h.pool)
-	events, err := h.engine.History(r.Context(), db, id)
+
+	wfCase, err := h.caseFor(r.Context(), db, id)
+	if err != nil {
+		if errors.Is(err, workflow.ErrCaseNotFound) {
+			response.Error(w, r, http.StatusNotFound, response.CodeNotFound, "document case not found")
+			return
+		}
+		h.logger.ErrorContext(r.Context(), "document history: resolve case", "error", err)
+		response.Error(w, r, http.StatusInternalServerError, response.CodeInternalError, "failed to get document history")
+		return
+	}
+
+	events, err := h.engine.History(r.Context(), db, wfCase.ID)
 	if err != nil {
 		h.logger.ErrorContext(r.Context(), "document history", "error", err)
 		response.Error(w, r, http.StatusInternalServerError, response.CodeInternalError, "failed to get document history")

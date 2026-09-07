@@ -150,6 +150,29 @@ en correr se vería como "ya aplicado" y se saltearía en silencio. Por eso
 `migrate.Options.TableName` es un parámetro del llamador y no una constante
 escondida en la librería.
 
+## Dos trampas que este ejemplo ya pisó por usted
+
+Ninguna de las dos rompe el compilador. Las dos rompen el arranque o la primera
+request, y las dos cuestan una tarde si no las vio antes.
+
+**1. Migraciones embebidas en un subdirectorio necesitan `fs.Sub`.**
+`//go:embed migrations/*.sql` produce un `fs.FS` cuya raíz contiene un
+*directorio* `migrations`, no los `.sql`. goose escanea sólo la raíz del `fs.FS`
+que recibe, así que pasarlo directo falla con `no migrations found` aunque los
+archivos estén indiscutiblemente adentro del binario. La solución es
+`fs.Sub(appMigrations, "migrations")` — ver `appMigrationsFS` en `main.go`.
+`audit/migrations` y `workflow/migrations` no lo necesitan porque embeben
+`*.sql` desde su propio directorio de paquete.
+
+**2. El ID del caso no es el ID del documento.**
+Todos los métodos de `workflow.Engine` —`Move`, `Claim`, `Release`, `History`—
+van por el ID del **caso**. Pero las rutas HTTP están indexadas por el objeto de
+dominio (`/documents/{id}`), que es la forma normal: lo que el cliente tiene en
+la mano es el ID del documento. El `Engine` no expone ninguna búsqueda por
+referencia de dominio, así que hay que bajar al puerto `workflow.Repository` y
+usar `GetByExternalID(domain, externalID)` para traducir uno en otro. Por eso el
+handler tiene el engine **y** el repositorio — ver `caseFor` en `handler.go`.
+
 ## Lo que este ejemplo deliberadamente NO hace
 
 Saber qué se dejó afuera vale tanto como lo que está adentro.
