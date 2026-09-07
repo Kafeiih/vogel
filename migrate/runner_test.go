@@ -37,6 +37,15 @@ func TestLockDisabled(t *testing.T) {
 	assert.True(t, lockDisabled([]Options{{DisableLock: true}}))
 }
 
+func TestResolveTableName_DefaultsToEmpty(t *testing.T) {
+	assert.Equal(t, "", resolveTableName(nil))
+	assert.Equal(t, "", resolveTableName([]Options{{}}))
+}
+
+func TestResolveTableName_ReturnsConfiguredValue(t *testing.T) {
+	assert.Equal(t, "vogel_db_version", resolveTableName([]Options{{TableName: "vogel_db_version"}}))
+}
+
 // TestNewProvider_EmptyFS_ReturnsErrNoMigrations verifies that a filesystem
 // with no migration files is rejected before any database round-trip is
 // attempted (sql.Open with the pgx stdlib driver does not dial eagerly, and

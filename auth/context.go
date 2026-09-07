@@ -4,7 +4,7 @@ import "context"
 
 // principalKey is the context key this package owns for storing the
 // authenticated Principal. It is unexported so only WithPrincipal may set it,
-// following the same pattern as logger.WithRequestID.
+// following the same pattern as reqctx.WithRequestID.
 type principalKey struct{}
 
 // WithPrincipal returns a copy of ctx carrying p as the authenticated principal.

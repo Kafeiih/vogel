@@ -67,6 +67,22 @@ type Options struct {
 	// (e.g. a connection pooler in transaction-pooling mode that does not
 	// preserve session state); leave it false in every normal deployment.
 	DisableLock bool
+
+	// TableName overrides the name of the goose version table used to track
+	// which migrations have been applied. Empty uses goose's own default,
+	// "goose_db_version".
+	//
+	// Set this whenever more than one independently-numbered migration set
+	// runs against the same database — most notably, a library-owned
+	// migration set (see vogel/audit/migrations) alongside an application's
+	// own migrations. Both sets start numbering at 001; without separate
+	// version tables, goose would see the library's "001" as already applied
+	// once the application's own "001" ran (or vice versa), silently
+	// skipping one set. This is deliberately a caller-supplied option, not a
+	// constant hardcoded in this package, since this package owns no
+	// migrations of its own and has no opinion on what any consumer should
+	// name their table(s).
+	TableName string
 }
 
 // resolveLogger returns the first non-nil Logger from opts, or slog.Default().
@@ -100,6 +116,17 @@ func lockDisabled(opts []Options) bool {
 	return false
 }
 
+// resolveTableName returns the first non-empty TableName from opts, or ""
+// (meaning: let goose use its own default, "goose_db_version").
+func resolveTableName(opts []Options) string {
+	for _, o := range opts {
+		if o.TableName != "" {
+			return o.TableName
+		}
+	}
+	return ""
+}
+
 // openDB opens a *sql.DB using the pgx stdlib driver.
 func openDB(dbURL string) (*sql.DB, error) {
 	return sql.Open("pgx", dbURL)
@@ -118,6 +145,10 @@ func newProvider(dbURL string, fsys fs.FS, opts []Options) (*goose.Provider, err
 
 	logger := resolveLogger(opts)
 	providerOpts := []goose.ProviderOption{goose.WithLogger(newSlogAdapter(logger))}
+
+	if tableName := resolveTableName(opts); tableName != "" {
+		providerOpts = append(providerOpts, goose.WithTableName(tableName))
+	}
 
 	if !lockDisabled(opts) {
 		var lockerOpts []lock.SessionLockerOption

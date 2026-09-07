@@ -1,11 +1,15 @@
 // Package logger provides a thin, dependency-free wrapper around log/slog.
 //
 // It does not import an HTTP router or any web framework: a request/correlation
-// ID is passed in as a plain string (via WithRequestID/RequestIDFromContext),
-// which the logger stores and reads using a context key it owns. Bridging a
-// specific router's request ID (e.g. chi's) into that context key is the
-// responsibility of the HTTP middleware layer, which legitimately knows about
-// the router — see httpx/middleware.
+// ID is read from vogel/reqctx, a small dependency-free package that owns the
+// context key for it. Bridging a specific router's request ID (e.g. chi's)
+// into that context key is the responsibility of the HTTP middleware layer,
+// which legitimately knows about the router — see httpx/middleware.
+//
+// reqctx (rather than this package) owns the key so that the request ID
+// reaching a log line and the one reaching an audit_log row (see
+// vogel/audit) are provably the same value: both read it from the same
+// unexported key in the same package.
 package logger
 
 import (
@@ -13,6 +17,8 @@ import (
 	"io"
 	"log/slog"
 	"os"
+
+	"github.com/kafeiih/vogel/reqctx"
 )
 
 // Logger wraps *slog.Logger.
@@ -54,11 +60,11 @@ func (l *Logger) With(args ...any) *Logger {
 }
 
 // WithContext returns a Logger annotated with the request ID stored in ctx
-// via WithRequestID, if any. If no request ID is present, the empty string
-// is used, matching the behavior of an absent ID.
+// via reqctx.WithRequestID, if any. If no request ID is present, the empty
+// string is used, matching the behavior of an absent ID.
 func (l *Logger) WithContext(ctx context.Context) *Logger {
 	return &Logger{
-		Logger: l.Logger.With("request_id", RequestIDFromContext(ctx)),
+		Logger: l.Logger.With("request_id", reqctx.RequestIDFromContext(ctx)),
 	}
 }
 
@@ -71,24 +77,4 @@ func getLogLevel(env string) slog.Level {
 	default:
 		return slog.LevelDebug
 	}
-}
-
-// requestIDKey is the context key this package owns for storing a
-// request/correlation ID. It is unexported so only WithRequestID may set it.
-type requestIDKey struct{}
-
-// WithRequestID returns a copy of ctx carrying id as the request/correlation ID.
-// Callers that bridge a specific transport's request ID (e.g. an HTTP
-// middleware reading chi's request ID) should call this to make the ID
-// available to Logger.WithContext without this package depending on that
-// transport.
-func WithRequestID(ctx context.Context, id string) context.Context {
-	return context.WithValue(ctx, requestIDKey{}, id)
-}
-
-// RequestIDFromContext returns the request/correlation ID previously stored
-// via WithRequestID, or "" if none is present.
-func RequestIDFromContext(ctx context.Context) string {
-	id, _ := ctx.Value(requestIDKey{}).(string)
-	return id
 }

@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/kafeiih/vogel/reqctx"
 )
 
 func TestNew_DevelopmentUsesTextHandler(t *testing.T) {
@@ -65,7 +67,7 @@ func TestWithContext_RequestIDPresent_IsLogged(t *testing.T) {
 	var buf bytes.Buffer
 	l := New("production", &buf)
 
-	ctx := WithRequestID(context.Background(), "req-123")
+	ctx := reqctx.WithRequestID(context.Background(), "req-123")
 	l.WithContext(ctx).Info("hello")
 
 	var decoded map[string]any
@@ -77,16 +79,23 @@ func TestWithContext_RequestIDPresent_IsLogged(t *testing.T) {
 	}
 }
 
-func TestRequestIDFromContext_NoID_ReturnsEmpty(t *testing.T) {
-	if got := RequestIDFromContext(context.Background()); got != "" {
-		t.Errorf("RequestIDFromContext = %q, want empty string", got)
-	}
-}
+func TestWithContext_UsesReqctxAsTheOwningPackage(t *testing.T) {
+	// Regression test for the logger/reqctx consolidation: the request ID
+	// Logger.WithContext logs must come from reqctx's context key, the same
+	// one audit.Recorder.Record reads, so a log line and an audit_log row for
+	// the same request are provably linked by the same value.
+	var buf bytes.Buffer
+	l := New("production", &buf)
 
-func TestRequestIDFromContext_RoundTrips(t *testing.T) {
-	ctx := WithRequestID(context.Background(), "abc")
-	if got := RequestIDFromContext(ctx); got != "abc" {
-		t.Errorf("RequestIDFromContext = %q, want %q", got, "abc")
+	ctx := reqctx.WithRequestID(context.Background(), "abc")
+	l.WithContext(ctx).Info("hello")
+
+	var decoded map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &decoded); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if decoded["request_id"] != "abc" {
+		t.Errorf("request_id = %v, want %q", decoded["request_id"], "abc")
 	}
 }
 

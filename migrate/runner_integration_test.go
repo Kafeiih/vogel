@@ -5,6 +5,7 @@ package migrate_test
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"io"
 	"log/slog"
 	"sync"
@@ -18,6 +19,10 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 	"github.com/testcontainers/testcontainers-go/wait"
+
+	// registers the pgx stdlib driver under the "pgx" name, used here only to
+	// open a plain *sql.DB for asserting on the resulting schema directly.
+	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/kafeiih/vogel/migrate"
 )
@@ -187,4 +192,71 @@ func TestUp_ConcurrentInvocations_SerializeInsteadOfRacing(t *testing.T) {
 	// Both migrations must show as applied exactly once each; goose enforces
 	// this via its version table's unique constraint, so a race that slipped
 	// through the lock would have already failed one of the goroutines above.
+}
+
+// TestUp_IndependentTableNames_DoNotCollide is the regression test for FIX 4:
+// a library-owned migration set (e.g. vogel/audit/migrations) and an
+// application's own migration set both start numbering at 001. Without
+// separate goose version tables, the second set to run would see version 1
+// already marked applied and silently skip its own first migration. Using
+// Options.TableName to give the library set its own version table ("
+// vogel_db_version") must let both sets apply fully and independently
+// against the very same database.
+func TestUp_IndependentTableNames_DoNotCollide(t *testing.T) {
+	connStr := startTestPostgres(t)
+	ctx := context.Background()
+
+	appFS := twoMigrationsFS() // 00001_create_widgets.sql, 00002_create_gadgets.sql
+
+	// A stand-in "library" migration set that deliberately reuses version 1,
+	// exactly as vogel/audit/migrations' 001_create_audit_log.sql does
+	// relative to any consuming application's own 001.
+	libFS := fstest.MapFS{
+		"00001_create_lib_widgets.sql": &fstest.MapFile{Data: []byte(`
+-- +goose Up
+CREATE TABLE lib_widgets (id serial PRIMARY KEY, name text NOT NULL);
+
+-- +goose Down
+DROP TABLE lib_widgets;
+`)},
+	}
+
+	// Application migrations track in goose's default table.
+	require.NoError(t, migrate.Up(ctx, connStr, appFS, silentOptions()), "application migrate.Up")
+
+	// Library migrations track in their own table, despite reusing version "1".
+	libOpts := silentOptions()
+	libOpts.TableName = "vogel_db_version"
+	require.NoError(t, migrate.Up(ctx, connStr, libFS, libOpts), "library migrate.Up")
+
+	// Both sets must report as fully applied, independently.
+	var appBuf, libBuf bytes.Buffer
+	require.NoError(t, migrate.Status(ctx, connStr, appFS, &appBuf, silentOptions()))
+	require.NoError(t, migrate.Status(ctx, connStr, libFS, &libBuf, libOpts))
+	assert.Contains(t, appBuf.String(), "00001_create_widgets.sql")
+	assert.Contains(t, appBuf.String(), "00002_create_gadgets.sql")
+	assert.Contains(t, libBuf.String(), "00001_create_lib_widgets.sql")
+
+	// Prove it's not just goose's in-memory bookkeeping: both version tables
+	// and both sets of application tables must actually exist side by side.
+	db, err := sql.Open("pgx", connStr)
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	for _, table := range []string{"goose_db_version", "vogel_db_version", "widgets", "gadgets", "lib_widgets"} {
+		var exists bool
+		err := db.QueryRowContext(ctx,
+			`SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = $1)`, table,
+		).Scan(&exists)
+		require.NoError(t, err, "checking existence of table %q", table)
+		assert.True(t, exists, "expected table %q to exist", table)
+	}
+
+	// The two version tables must have tracked their migrations independently:
+	// each has exactly its own single version 1 row, not a shared/duplicated one.
+	var appVersionCount, libVersionCount int
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM goose_db_version WHERE version_id = 1`).Scan(&appVersionCount))
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM vogel_db_version WHERE version_id = 1`).Scan(&libVersionCount))
+	assert.Equal(t, 1, appVersionCount, "goose_db_version should record exactly one version-1 row")
+	assert.Equal(t, 1, libVersionCount, "vogel_db_version should record exactly one version-1 row")
 }
