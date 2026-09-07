@@ -75,7 +75,13 @@ jobs:
           # worker es el unico paquete que puede depender de River. Si River
           # aparece en otro, un consumidor que solo queria encolar -o ni eso-
           # se lleva la cola de trabajos entera.
-          for pkg in $(go list ./... | grep -v '/worker$'); do
+          #
+          # examples/ tambien queda fuera del barrido: un ejemplo ejecutable
+          # es un CONSUMIDOR, no un puerto -- se espera que importe worker (y
+          # por lo tanto River) para mostrar como se encola trabajo desde una
+          # API real. Excluirlo mantiene la guarda con sentido para los
+          # paquetes de la biblioteca, que es lo que este chequeo protege.
+          for pkg in $(go list ./... | grep -v '/worker$' | grep -v '/examples/'); do
             if go list -deps "$pkg" 2>/dev/null | grep -qxF "github.com/riverqueue/river"; then
               echo "::error::$pkg depende de River, y solo ./worker deberia"
               exit 1
