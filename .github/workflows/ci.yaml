@@ -70,6 +70,16 @@ jobs:
           check ./storage github.com/aws/aws-sdk-go-v2/service/s3
           check ./notification github.com/wneessen/go-mail
           check ./authz github.com/cerbos/cerbos-sdk-go/cerbos
+
+          # worker es el unico paquete que puede depender de River. Si River
+          # aparece en otro, un consumidor que solo queria encolar -o ni eso-
+          # se lleva la cola de trabajos entera.
+          for pkg in $(go list ./... | grep -v '/worker$'); do
+            if go list -deps "$pkg" 2>/dev/null | grep -qxF "github.com/riverqueue/river"; then
+              echo "::error::$pkg depende de River, y solo ./worker deberia"
+              exit 1
+            fi
+          done
           echo "Puertos aislados: OK"
 
       - name: Upload unit coverage

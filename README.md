@@ -36,6 +36,7 @@ AWS SDK, SendGrid o go-mail.
 | `config` | Primitivas para leer y validar variables de entorno: lectores tipados con valores por defecto (`String`, `Bool`, `Int`, `Int32`, `Duration`, `StringSlice`), un lector de variable obligatoria (`Require`), un acumulador `Errors` para que una falla de arranque reporte todos los problemas de una sola vez, y validadores semánticos (`ValidURL`, `IntRange`, `OneOf`, `MinMax`). Deliberadamente **no** define structs de configuración de la aplicación — esos permanecen en la app consumidora. |
 | `postgres` | `NewPool(ctx, Config, *slog.Logger) (*pgxpool.Pool, error)`: un constructor de pgxpool con tracing de queries lentas (`SlowQueryTracer`), métricas de pool para Prometheus (`PoolMetricsCollector`), `statement_timeout` / `lock_timeout` / `idle_in_transaction_session_timeout` del lado del servidor (configurables, con valores por defecto razonables), y un error duro de arranque cuando `RequireTLS` está activado pero el DSN deshabilita TLS. |
 | `migrate` | Acceso programático a migraciones de goose v3 propiedad de la *aplicación consumidora* (este paquete no embebe ninguna propia): `Up`, `Down`, `UpTo`, `UpByOne`, `Status`, todas recibiendo un `fs.FS` explícito. Cada corrida adquiere un advisory lock de PostgreSQL a nivel de sesión vía `goose.WithSessionLocker`, de modo que las invocaciones concurrentes de `migrate up` se serializan en lugar de competir por la carrera (race). `Options.TableName` selecciona una tabla de versión de goose distinta de la predeterminada, de modo que un conjunto de migraciones numerado de forma independiente (por ejemplo, `audit/migrations`) puede correr contra la misma base de datos que las propias migraciones de una aplicación sin colisionar — ver «Ejecutar las migraciones de la librería junto a las de la aplicación» más abajo. |
+| `worker` | Procesamiento de trabajos en segundo plano sobre River (`github.com/riverqueue/river`) respaldado por PostgreSQL: la interfaz `Queue` (`Enqueue`, `EnqueueTx`, `Start`, `Stop`), la implementación `RiverQueue`, `Migrate` y `EnsureSchema`. A diferencia del resto del módulo, la interfaz y su implementación viven en el MISMO paquete y River se importa abiertamente: un consumidor que define jobs ya importa River de todos modos (`river.WorkerDefaults[T]`, `river.Job[T]`), así que esconderlo detrás de un puerto aparte sería ceremonia sin beneficio. `Config` es propio de `vogel` (`Schema`, `DefaultMaxWorkers`, `Queues`) porque el paquete no lee variables de entorno. Los trabajos periódicos se registran con la opción funcional `WithPeriodicJobs` — ver el punto 21 más abajo. |
 
 ## Ejecutar las migraciones de la librería junto a las de la aplicación
 
@@ -81,7 +82,9 @@ conjunto de la librería por separado del de la aplicación.
 ## Correcciones aplicadas durante la extracción
 
 Los paquetes de origen tenían veinte problemas conocidos; todos se corrigieron
-como parte de este port, en lugar de arrastrarse:
+como parte de este port, en lugar de arrastrarse. El punto 21 no es un problema
+de origen sino una divergencia entre los dos consumidores que hubo que resolver
+al unificarlos:
 
 1. **`logger` ya no importa chi.** El `pkg/logger` original leía el ID de request
    directamente desde `github.com/go-chi/chi/v5/middleware`, acoplando un paquete
@@ -289,6 +292,21 @@ como parte de este port, en lugar de arrastrarse:
     de request a menos que su contexto haya sido a su vez derivado de la
     request que generó el job — ver `TestRecord_SourceHTTP_And_SourceWorker` y
     `TestRecord_WorkerOrigin_RequestIDStillPropagatedWhenPresent`.
+21. **Los trabajos periódicos del worker pasaron de parámetro posicional a
+    opción funcional.** Los dos consumidores tenían la misma cola sobre River,
+    con una única diferencia de firma: go-crucible había extendido
+    `NewRiverQueue(pool, workers, periodicJobs []*river.PeriodicJob, cfg,
+    logger)` para su sweep nocturno, mientras go-licencias seguía con
+    `NewRiverQueue(pool, workers, cfg, logger)`. Portar cualquiera de las dos
+    tal cual rompía al otro consumidor. La firma unificada deja los parámetros
+    obligatorios como estaban y mueve los trabajos periódicos a
+    `WithPeriodicJobs`, de modo que go-licencias no cambia ninguna llamada y
+    go-crucible sólo agrega la opción. `TestBuildRiverConfig_WorkerMode_NoPeriodicJobsOption_MatchesLicenciasShape`
+    fija esa equivalencia: si algún día omitir la opción dejara de significar
+    «sin trabajos periódicos», el test falla. Los trabajos periódicos siguen
+    registrándose únicamente en modo binario worker — un cliente de sólo
+    inserción no procesa nada, así que pasarlos junto a un `*river.Workers`
+    nulo no los registra.
 
 `WithAffectedResources` es la forma prevista de auditar una operación
 masiva/por lotes (bulk/batch): una única entrada sobre el recurso primario que
@@ -306,16 +324,14 @@ Esta es una cuarta tanda. Excluidos deliberadamente, decisiones pendientes:
 
 - **El prefijo de URL `/v1` / `router.go`** — bloqueado por decisiones de
   convergencia entre los dos sistemas sobre convenciones de ruteo.
-- **`worker`, `cmd/`, migraciones (los archivos SQL en sí, más allá de las
-  propias de `audit`), Dockerfile, docker-compose, swagger** — fuera del
-  alcance de una tanda de librería compartida; son asuntos propios de cada
-  aplicación, no puertos/adaptadores compartibles. `migrate/create.go` (un
-  scaffolder de archivos de migración) se dejó afuera de igual manera, por
-  ser un asunto de CLI/plantilla y no de API de librería. `worker` en
-  particular está pendiente: `audit.Source.SourceWorker` y la API de origen
-  explícito de `Recorder.Record` existen para que el rastro de auditoría de
-  un worker sea correcto una vez que se diseñe un paquete `worker`, pero
-  todavía no se publica ninguna abstracción de worker.
+- **`cmd/`, migraciones (los archivos SQL en sí, más allá de las propias de
+  `audit`), Dockerfile, docker-compose, swagger** — fuera del alcance de una
+  tanda de librería compartida; son asuntos propios de cada aplicación, no
+  puertos/adaptadores compartibles. `migrate/create.go` (un scaffolder de
+  archivos de migración) se dejó afuera de igual manera, por ser un asunto de
+  CLI/plantilla y no de API de librería. Los jobs concretos de cada dominio
+  (`application/jobs/*`) tampoco se portan: el andamiaje es compartible, el
+  negocio que corre adentro no.
 - **La capa de Queries/DTO/HTTP handler de `audit`** — los
   `application/audit/{dto,queries}.go` e
   `interfaces/http/handler/audit_handler.go` de los repositorios de origen se
