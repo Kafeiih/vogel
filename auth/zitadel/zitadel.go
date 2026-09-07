@@ -97,7 +97,7 @@ func mapError(err error) error {
 	if errors.As(err, &unavailable) {
 		// The identity provider is unreachable or failing (5xx) — this must
 		// never collapse into ErrUnauthenticated. See FIX 2 in the vogel README.
-		return fmt.Errorf("auth/zitadel: %w: %v", auth.ErrServiceUnavailable, err)
+		return fmt.Errorf("auth/zitadel: %w: %w", auth.ErrServiceUnavailable, err)
 	}
 
 	var forbidden *authorization.PermissionDeniedErr
@@ -106,12 +106,12 @@ func mapError(err error) error {
 		// check, but mapped for completeness: CheckAuthorization's documented
 		// contract can return this when a CheckOption (e.g. a required role)
 		// is configured.
-		return fmt.Errorf("auth/zitadel: %w: %v", auth.ErrForbidden, err)
+		return fmt.Errorf("auth/zitadel: %w: %w", auth.ErrForbidden, err)
 	}
 
 	// authorization.UnauthorizedErr, and any other verifier failure not
 	// covered above, mean the token itself is missing, malformed, or invalid.
-	return fmt.Errorf("auth/zitadel: %w: %v", auth.ErrUnauthenticated, err)
+	return fmt.Errorf("auth/zitadel: %w: %w", auth.ErrUnauthenticated, err)
 }
 
 // pickUsername prefers the OIDC-standard preferred_username claim over the

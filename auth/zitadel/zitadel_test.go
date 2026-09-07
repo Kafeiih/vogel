@@ -190,3 +190,49 @@ func TestMapError_PermissionDenied_ReturnsErrForbidden(t *testing.T) {
 		t.Errorf("error = %v, want wrapping auth.ErrForbidden", err)
 	}
 }
+
+// mapError wraps both the port's sentinel and the underlying SDK error, so a
+// caller keeps errors.Is on the sentinel it maps a status code from AND can
+// still reach the provider's own error for diagnostics. The original code
+// formatted the cause with %v, which flattened it to text: nothing above this
+// package could ever recover it. Consumers are not required to import the
+// Zitadel SDK to make a decision (mapError exists precisely so they need not);
+// this only stops the cause from being destroyed on the way out.
+func TestMapError_WrapsSentinelAndUnderlyingCause(t *testing.T) {
+	cause := errors.New("upstream connection refused")
+
+	tests := []struct {
+		name     string
+		in       error
+		sentinel error
+	}{
+		{
+			name:     "service unavailable",
+			in:       authorization.NewErrorServiceUnavailable(cause),
+			sentinel: auth.ErrServiceUnavailable,
+		},
+		{
+			name:     "permission denied",
+			in:       authorization.NewErrorPermissionDenied(cause),
+			sentinel: auth.ErrForbidden,
+		},
+		{
+			name:     "unauthorized",
+			in:       authorization.NewErrorUnauthorized(cause),
+			sentinel: auth.ErrUnauthenticated,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := mapError(tt.in)
+
+			if !errors.Is(got, tt.sentinel) {
+				t.Errorf("errors.Is(err, %v) = false, want true", tt.sentinel)
+			}
+			if !errors.Is(got, cause) {
+				t.Errorf("underlying cause %q is not reachable through the mapped error %q", cause, got)
+			}
+		})
+	}
+}
