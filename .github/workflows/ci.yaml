@@ -66,6 +66,7 @@ jobs:
           check ./auth net/http
           check ./audit net/http
           check ./audit github.com/go-chi/chi/v5
+          check ./workflow net/http
           check ./audit github.com/kafeiih/vogel/httpx/middleware
           check ./storage github.com/aws/aws-sdk-go-v2/service/s3
           check ./notification github.com/wneessen/go-mail
