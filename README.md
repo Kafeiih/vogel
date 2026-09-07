@@ -331,6 +331,22 @@ al unificarlos:
     `status` se derivan de `audit.Actions()`/`audit.Statuses()` en vez de
     repetirse como literales, con un test que falla si se agrega una `Action`
     sin decidir si además es filtrable.
+23. **`StructuredLogger` leía el request ID de chi, no de `reqctx`.** El punto
+    18 movió la propiedad de los metadatos de request a `reqctx` y el doc
+    comment de `RequestContext` promete que una línea de log y una fila de
+    `audit_log` de la misma request quedan enlazadas de forma demostrable,
+    porque ambas leen la misma clave. La línea de acceso de
+    `httpx/middleware.StructuredLogger` quedó afuera de ese movimiento: seguía
+    llamando a `chimw.GetReqID`. Coincidía con lo que veían `logger` y `audit`
+    sólo porque hoy los tres valores derivan del mismo ID upstream de chi —
+    un request ID que llegara al contexto por otra vía (un worker que lo
+    deriva de la request que lo generó, un test que lo inyecta) terminaba en
+    la fila de auditoría mientras el log de acceso imprimía vacío. Ahora las
+    tres lecturas van a `reqctx`, y el enlace es una propiedad del diseño en
+    vez de una coincidencia. El paquete no tenía ni un test; los dos que
+    ahora existen (`TestStructuredLogger_ReadsRequestIDFromReqctx`,
+    `TestStructuredLogger_NoRequestID_LogsEmpty`) son la razón por la que esto
+    apareció.
 
 `WithAffectedResources` es la forma prevista de auditar una operación
 masiva/por lotes (bulk/batch): una única entrada sobre el recurso primario que
