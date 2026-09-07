@@ -96,3 +96,58 @@ func TestResolveTimeoutMillis(t *testing.T) {
 		assert.Equal(t, int64(0), resolveTimeoutMillis(-1, 30*time.Second))
 	})
 }
+
+// TestApplyPoolSettings_ZeroValuesKeepPgxDefaults is the regression test for
+// the bug where a zero MaxConnLifetime was written straight through to
+// pgxpool, turning "unset" into "every connection is already expired the
+// instant it is created". pgxpool then destroyed each new connection on
+// acquire, retried, and eventually failed the very first Ping with the
+// opaque "too many failed attempts acquiring connection; likely bug in
+// PrepareConn, BeforeAcquire, or ShouldPing hook" -- an error that names
+// three hooks, none of which was actually at fault.
+//
+// The zero value of every field here means "keep what pgxpool.ParseConfig
+// decided", matching how ConnectTimeout and the three server-side timeouts
+// already behaved.
+func TestApplyPoolSettings_ZeroValuesKeepPgxDefaults(t *testing.T) {
+	poolConfig, err := pgxpool.ParseConfig("postgres://u:p@localhost:5432/db?sslmode=disable")
+	require.NoError(t, err)
+
+	defaultMaxConns := poolConfig.MaxConns
+	defaultMinConns := poolConfig.MinConns
+	defaultLifetime := poolConfig.MaxConnLifetime
+	defaultIdleTime := poolConfig.MaxConnIdleTime
+	defaultConnectTimeout := poolConfig.ConnConfig.ConnectTimeout
+
+	applyPoolSettings(poolConfig, Config{})
+
+	assert.Equal(t, defaultMaxConns, poolConfig.MaxConns)
+	assert.Equal(t, defaultMinConns, poolConfig.MinConns)
+	assert.Equal(t, defaultLifetime, poolConfig.MaxConnLifetime,
+		"a zero MaxConnLifetime must not expire connections immediately")
+	assert.Equal(t, defaultIdleTime, poolConfig.MaxConnIdleTime,
+		"a zero MaxConnIdleTime must not expire idle connections immediately")
+	assert.Equal(t, defaultConnectTimeout, poolConfig.ConnConfig.ConnectTimeout)
+
+	assert.Positive(t, poolConfig.MaxConnLifetime,
+		"pgxpool's own default must remain a usable, positive lifetime")
+}
+
+func TestApplyPoolSettings_NonZeroValuesOverrideDefaults(t *testing.T) {
+	poolConfig, err := pgxpool.ParseConfig("postgres://u:p@localhost:5432/db?sslmode=disable")
+	require.NoError(t, err)
+
+	applyPoolSettings(poolConfig, Config{
+		MaxConns:        25,
+		MinConns:        5,
+		MaxConnLifetime: 90 * time.Minute,
+		MaxConnIdleTime: 10 * time.Minute,
+		ConnectTimeout:  3 * time.Second,
+	})
+
+	assert.Equal(t, int32(25), poolConfig.MaxConns)
+	assert.Equal(t, int32(5), poolConfig.MinConns)
+	assert.Equal(t, 90*time.Minute, poolConfig.MaxConnLifetime)
+	assert.Equal(t, 10*time.Minute, poolConfig.MaxConnIdleTime)
+	assert.Equal(t, 3*time.Second, poolConfig.ConnConfig.ConnectTimeout)
+}

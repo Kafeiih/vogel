@@ -41,6 +41,11 @@ type Config struct {
 	MaxConnLifetime time.Duration
 	MaxConnIdleTime time.Duration
 	ConnectTimeout  time.Duration
+	// ^ Pool sizing and connection lifetimes. Every one of these fields is
+	// optional: zero means "keep whatever pgxpool.ParseConfig derived from
+	// the DSN and its own defaults", never "zero connections" or "expire
+	// immediately". See applyPoolSettings for why that distinction is not
+	// cosmetic.
 
 	// RequireTLS enforces a minimum TLS 1.2 connection. If true and the parsed
 	// DSN does not enable TLS (e.g. sslmode=disable), NewPool fails fast with
@@ -99,14 +104,8 @@ func NewPool(ctx context.Context, cfg Config, logger *slog.Logger) (*pgxpool.Poo
 		return nil, fmt.Errorf("parsing database config: %w", err)
 	}
 
-	poolConfig.MaxConns = cfg.MaxConns
-	poolConfig.MinConns = cfg.MinConns
-	poolConfig.MaxConnLifetime = cfg.MaxConnLifetime
-	poolConfig.MaxConnIdleTime = cfg.MaxConnIdleTime
+	applyPoolSettings(poolConfig, cfg)
 	poolConfig.HealthCheckPeriod = 1 * time.Minute
-	if cfg.ConnectTimeout > 0 {
-		poolConfig.ConnConfig.ConnectTimeout = cfg.ConnectTimeout
-	}
 
 	if err := applyTLSConfig(poolConfig, cfg.RequireTLS); err != nil {
 		return nil, err
@@ -146,6 +145,40 @@ func NewPool(ctx context.Context, cfg Config, logger *slog.Logger) (*pgxpool.Poo
 	}
 
 	return pool, nil
+}
+
+// applyPoolSettings copies cfg's pool sizing and connection lifetime fields
+// onto poolConfig, skipping every field left at its zero value.
+//
+// Skipping is the whole point. pgxpool.ParseConfig has already filled these
+// in with usable defaults (a one hour MaxConnLifetime, a thirty minute
+// MaxConnIdleTime, MaxConns of at least 4), and pgxpool reads a zero
+// MaxConnLifetime as "this connection expired the moment it was created" —
+// not as "no limit". Writing an unset field straight through therefore
+// produced a pool that destroyed every connection on acquire and failed its
+// very first Ping with pgxpool's opaque "too many failed attempts acquiring
+// connection; likely bug in PrepareConn, BeforeAcquire, or ShouldPing hook",
+// which names three hooks that had nothing to do with it.
+//
+// So the zero value of every field here means "keep pgxpool's default",
+// which is the convention ConnectTimeout and the three server-side timeouts
+// already followed.
+func applyPoolSettings(poolConfig *pgxpool.Config, cfg Config) {
+	if cfg.MaxConns > 0 {
+		poolConfig.MaxConns = cfg.MaxConns
+	}
+	if cfg.MinConns > 0 {
+		poolConfig.MinConns = cfg.MinConns
+	}
+	if cfg.MaxConnLifetime > 0 {
+		poolConfig.MaxConnLifetime = cfg.MaxConnLifetime
+	}
+	if cfg.MaxConnIdleTime > 0 {
+		poolConfig.MaxConnIdleTime = cfg.MaxConnIdleTime
+	}
+	if cfg.ConnectTimeout > 0 {
+		poolConfig.ConnConfig.ConnectTimeout = cfg.ConnectTimeout
+	}
 }
 
 // resolveTimeoutMillis applies the zero-means-default / negative-means-disabled
