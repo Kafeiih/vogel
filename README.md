@@ -37,6 +37,9 @@ AWS SDK, SendGrid o go-mail.
 | `postgres` | `NewPool(ctx, Config, *slog.Logger) (*pgxpool.Pool, error)`: un constructor de pgxpool con tracing de queries lentas (`SlowQueryTracer`), métricas de pool para Prometheus (`PoolMetricsCollector`), `statement_timeout` / `lock_timeout` / `idle_in_transaction_session_timeout` del lado del servidor (configurables, con valores por defecto razonables), y un error duro de arranque cuando `RequireTLS` está activado pero el DSN deshabilita TLS. |
 | `migrate` | Acceso programático a migraciones de goose v3 propiedad de la *aplicación consumidora* (este paquete no embebe ninguna propia): `Up`, `Down`, `UpTo`, `UpByOne`, `Status`, todas recibiendo un `fs.FS` explícito. Cada corrida adquiere un advisory lock de PostgreSQL a nivel de sesión vía `goose.WithSessionLocker`, de modo que las invocaciones concurrentes de `migrate up` se serializan en lugar de competir por la carrera (race). `Options.TableName` selecciona una tabla de versión de goose distinta de la predeterminada, de modo que un conjunto de migraciones numerado de forma independiente (por ejemplo, `audit/migrations`) puede correr contra la misma base de datos que las propias migraciones de una aplicación sin colisionar — ver «Ejecutar las migraciones de la librería junto a las de la aplicación» más abajo. |
 | `worker` | Procesamiento de trabajos en segundo plano sobre River (`github.com/riverqueue/river`) respaldado por PostgreSQL: la interfaz `Queue` (`Enqueue`, `EnqueueTx`, `Start`, `Stop`), la implementación `RiverQueue`, `Migrate` y `EnsureSchema`. A diferencia del resto del módulo, la interfaz y su implementación viven en el MISMO paquete y River se importa abiertamente: un consumidor que define jobs ya importa River de todos modos (`river.WorkerDefaults[T]`, `river.Job[T]`), así que esconderlo detrás de un puerto aparte sería ceremonia sin beneficio. `Config` es propio de `vogel` (`Schema`, `DefaultMaxWorkers`, `Queues`) porque el paquete no lee variables de entorno. Los trabajos periódicos se registran con la opción funcional `WithPeriodicJobs` — ver el punto 21 más abajo. |
+| `workflow` | Motor genérico de workflow/BPM: `Definition` (nodos, transiciones, guardas), `Case`, `Event`, el motor de transiciones y el puerto `Repository`. La restricción que lo define es que el motor **no guarda dato de dominio alguno**: un `Case` lleva sólo una referencia (`Domain`, `ExternalID`), nunca el objeto de negocio — sin form builder, sin tabla de datos clave/valor, sin blob JSON de campos. La asignación es por posición y unidad organizacional (`Eligibility`), nunca por ID de persona incrustado en la `Definition`; resolver quién ocupa hoy esa posición (incluida la subrogación) queda para un servicio de contexto organizacional del consumidor. Depende sólo de `uuid` y `pgxtx`. |
+| `workflow/postgres` | `Repository` respaldado por PostgreSQL para `workflow`: `Create`, `GetByID`, `GetByExternalID`, `Update`, `AppendEvent`, `ListEvents`, `ListByEligibility`. Todas las operaciones reciben un `pgxtx.DBTX`, de modo que el consumidor decide si corren dentro de su transacción. |
+| `workflow/migrations` | La migración embebida `001_create_workflow.sql` expuesta como `fs.FS` vía `migrations.FS()`, con su propia tabla de versión (`workflow_db_version`) independiente de la de `audit`. |
 
 ## Ejecutar las migraciones de la librería junto a las de la aplicación
 
@@ -274,8 +277,13 @@ al unificarlos:
     `migrate`, dado que ese paquete no posee migraciones propias y no tiene
     opinión sobre el esquema de nombres de ningún consumidor en particular),
     de modo que las migraciones de la librería se registran en su propia
-    tabla (`vogel_db_version` por convención — ver
-    `audit/migrations.DefaultTableName`). Verificado contra una base de datos
+    tabla. El nombre lo elige cada conjunto, no la librería: `audit` usa
+    `vogel_db_version` (`audit/migrations.DefaultTableName`) por ser el
+    primero que existió, y `workflow` usa `workflow_db_version`. Cada
+    conjunto de migraciones de `vogel` numera desde `001`, así que dos
+    conjuntos que compartan tabla colisionan igual que la librería y la
+    aplicación: un tercer conjunto necesita su propio nombre, no reusar el de
+    `audit`. Verificado contra una base de datos
     real, con ambos conjuntos reutilizando la versión `1` y aplicándose ambos
     por completo, en `TestUp_IndependentTableNames_DoNotCollide`
     (`migrate/runner_integration_test.go`).
