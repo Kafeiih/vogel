@@ -3,8 +3,6 @@ package zitadel
 import (
 	"context"
 	"errors"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"github.com/zitadel/oidc/v3/pkg/oidc"
@@ -26,6 +24,19 @@ type fakeVerifier struct {
 
 func (f *fakeVerifier) CheckAuthorization(_ context.Context, _ string) (*oauth.IntrospectionContext, error) {
 	return f.ctx, f.err
+}
+
+// recordingVerifier wraps a *fakeVerifier and records the exact token string
+// it receives from Authorizer.CheckAuthorization, so a test can assert on
+// the precise form (e.g. the "Bearer " prefix) that reaches the SDK.
+type recordingVerifier struct {
+	*fakeVerifier
+	got *string
+}
+
+func (r recordingVerifier) CheckAuthorization(ctx context.Context, token string) (*oauth.IntrospectionContext, error) {
+	*r.got = token
+	return r.fakeVerifier.CheckAuthorization(ctx, token)
 }
 
 // newTestAuthenticator builds an Authenticator around v without ever
@@ -63,10 +74,7 @@ func TestAuthenticate_ValidToken_ReturnsPrincipal(t *testing.T) {
 
 	a := newTestAuthenticator(t, &fakeVerifier{ctx: authCtx})
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Header.Set(authorization.HeaderName, "Bearer sometoken")
-
-	p, err := a.Authenticate(context.Background(), req)
+	p, err := a.Authenticate(context.Background(), "sometoken")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -92,10 +100,7 @@ func TestAuthenticate_UsernameFallback_WhenNoPreferredUsername(t *testing.T) {
 
 	a := newTestAuthenticator(t, &fakeVerifier{ctx: authCtx})
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Header.Set(authorization.HeaderName, "Bearer sometoken")
-
-	p, err := a.Authenticate(context.Background(), req)
+	p, err := a.Authenticate(context.Background(), "sometoken")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -107,10 +112,7 @@ func TestAuthenticate_UsernameFallback_WhenNoPreferredUsername(t *testing.T) {
 func TestAuthenticate_InvalidToken_ReturnsErrUnauthenticated(t *testing.T) {
 	a := newTestAuthenticator(t, &fakeVerifier{err: errors.New("signature verification failed")})
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Header.Set(authorization.HeaderName, "Bearer badtoken")
-
-	_, err := a.Authenticate(context.Background(), req)
+	_, err := a.Authenticate(context.Background(), "badtoken")
 	if !errors.Is(err, auth.ErrUnauthenticated) {
 		t.Errorf("error = %v, want wrapping auth.ErrUnauthenticated", err)
 	}
@@ -119,15 +121,51 @@ func TestAuthenticate_InvalidToken_ReturnsErrUnauthenticated(t *testing.T) {
 	}
 }
 
-func TestAuthenticate_MissingHeader_ReturnsErrUnauthenticated(t *testing.T) {
+func TestAuthenticate_EmptyToken_ReturnsErrUnauthenticated(t *testing.T) {
+	// The token parameter is the bare credential; httpx/middleware is
+	// responsible for rejecting a missing/malformed Authorization header
+	// before ever calling Authenticate (see httpx/middleware/auth_test.go).
+	// What remains testable here is that an empty token string is itself
+	// rejected by the SDK's own malformed-token check rather than silently
+	// treated as a request with no credential at all.
 	a := newTestAuthenticator(t, &fakeVerifier{})
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	// No Authorization header set at all.
-
-	_, err := a.Authenticate(context.Background(), req)
+	_, err := a.Authenticate(context.Background(), "")
 	if !errors.Is(err, auth.ErrUnauthenticated) {
 		t.Errorf("error = %v, want wrapping auth.ErrUnauthenticated", err)
+	}
+}
+
+func TestAuthenticate_PassesBearerPrefixedTokenToSDK(t *testing.T) {
+	// The zitadel-go SDK's Authorizer.CheckAuthorization requires its token
+	// argument to carry the "Bearer " scheme prefix (see
+	// authorization/check.go's checkForEmptyorMalformedToken, which does
+	// strings.CutPrefix(token, oidc.BearerToken+" ") and treats a missing
+	// prefix as malformed), even though auth.Authenticator.Authenticate now
+	// takes the bare token. This verifies Authenticate reconstructs that
+	// prefix before calling the SDK.
+	authCtx := &oauth.IntrospectionContext{
+		IntrospectionResponse: oidc.IntrospectionResponse{Active: true, Subject: "user-1"},
+	}
+	var gotToken string
+	v := &fakeVerifier{ctx: authCtx}
+	az, err := authorization.New(
+		context.Background(),
+		zitadel.New("https://example.zitadel.cloud"),
+		func(context.Context, *zitadel.Zitadel) (authorization.Verifier[*oauth.IntrospectionContext], error) {
+			return recordingVerifier{fakeVerifier: v, got: &gotToken}, nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("authorization.New: %v", err)
+	}
+	a := newFromAuthorizer(az)
+
+	if _, err := a.Authenticate(context.Background(), "sometoken"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if want := "Bearer sometoken"; gotToken != want {
+		t.Errorf("token passed to the SDK verifier = %q, want %q", gotToken, want)
 	}
 }
 
@@ -137,10 +175,7 @@ func TestAuthenticate_ProviderOutage_ReturnsErrServiceUnavailable(t *testing.T) 
 	// code, and wraps it as *authorization.ServiceUnavailableErr accordingly.
 	a := newTestAuthenticator(t, &fakeVerifier{err: errors.New("introspection request failed: received 503 from server")})
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Header.Set(authorization.HeaderName, "Bearer sometoken")
-
-	_, err := a.Authenticate(context.Background(), req)
+	_, err := a.Authenticate(context.Background(), "sometoken")
 	if !errors.Is(err, auth.ErrServiceUnavailable) {
 		t.Errorf("error = %v, want wrapping auth.ErrServiceUnavailable", err)
 	}

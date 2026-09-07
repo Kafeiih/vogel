@@ -6,8 +6,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 
+	"github.com/zitadel/oidc/v3/pkg/oidc"
 	"github.com/zitadel/zitadel-go/v3/pkg/authorization"
 	"github.com/zitadel/zitadel-go/v3/pkg/authorization/oauth"
 	"github.com/zitadel/zitadel-go/v3/pkg/zitadel"
@@ -64,8 +64,20 @@ func newFromAuthorizer(a *authorization.Authorizer[*oauth.IntrospectionContext])
 }
 
 // Authenticate implements auth.Authenticator.
-func (a *Authenticator) Authenticate(ctx context.Context, r *http.Request) (*auth.Principal, error) {
-	authCtx, err := a.authorizer.CheckAuthorization(ctx, r.Header.Get(authorization.HeaderName))
+//
+// token is the bare bearer token, with any "Bearer " scheme prefix already
+// stripped by the caller (httpx/middleware.Authenticate). The Zitadel SDK's
+// Authorizer.CheckAuthorization, however, expects the credential in the same
+// form it would have arrived in the "Authorization" header, scheme prefix
+// included: its internal checkForEmptyorMalformedToken (see
+// github.com/zitadel/zitadel-go/v3/pkg/authorization.CheckAuthorization,
+// authorization/check.go) does
+// `strings.CutPrefix(strings.TrimSpace(tokenHeader), oidc.BearerToken+" ")`
+// and treats a missing prefix as a malformed token. So the prefix is added
+// back here before the SDK call; this is the one place in the module that
+// needs to know that detail of the SDK's contract.
+func (a *Authenticator) Authenticate(ctx context.Context, token string) (*auth.Principal, error) {
+	authCtx, err := a.authorizer.CheckAuthorization(ctx, oidc.PrefixBearer+token)
 	if err != nil {
 		return nil, mapError(err)
 	}

@@ -18,9 +18,17 @@ import (
 type fakeAuthenticator struct {
 	principal *auth.Principal
 	err       error
+
+	// gotToken records the token passed to Authenticate, so tests can assert
+	// the middleware strips the "Bearer " scheme and surrounding whitespace
+	// before calling the Authenticator.
+	gotToken string
+	called   bool
 }
 
-func (f *fakeAuthenticator) Authenticate(context.Context, *http.Request) (*auth.Principal, error) {
+func (f *fakeAuthenticator) Authenticate(_ context.Context, token string) (*auth.Principal, error) {
+	f.called = true
+	f.gotToken = token
 	return f.principal, f.err
 }
 
@@ -35,6 +43,7 @@ func TestAuthenticate_Success_SetsPrincipalAndCallsNext(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer sometoken")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -43,6 +52,9 @@ func TestAuthenticate_Success_SetsPrincipalAndCallsNext(t *testing.T) {
 	}
 	if got == nil || got.UserID != "u1" {
 		t.Fatalf("principal not propagated into context: %+v", got)
+	}
+	if fa.gotToken != "sometoken" {
+		t.Errorf("token passed to Authenticate = %q, want %q (Bearer scheme must be stripped)", fa.gotToken, "sometoken")
 	}
 }
 
@@ -54,6 +66,7 @@ func TestAuthenticate_Unauthenticated_Returns401AndDoesNotCallNext(t *testing.T)
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer sometoken")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -75,6 +88,7 @@ func TestAuthenticate_UnrecognizedError_Returns401(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer sometoken")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -94,6 +108,7 @@ func TestAuthenticate_Forbidden_Returns403AndDoesNotCallNext(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer sometoken")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -113,6 +128,7 @@ func TestAuthenticate_ServiceUnavailable_Returns503AndDoesNotCallNext(t *testing
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer sometoken")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -141,6 +157,7 @@ func TestAuthenticate_CustomMessages_OverrideDefaults(t *testing.T) {
 	)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer sometoken")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -150,5 +167,88 @@ func TestAuthenticate_CustomMessages_OverrideDefaults(t *testing.T) {
 	}
 	if body["message"] != custom {
 		t.Errorf("message = %v, want overridden message %q", body["message"], custom)
+	}
+}
+
+// TestAuthenticate_CredentialExtraction covers every malformed-credential
+// shape that must be rejected as 401 by the middleware itself, without ever
+// reaching the Authenticator — these failure modes moved here from the
+// Authenticator's responsibility when Authenticate started taking a bare
+// token string instead of *http.Request.
+func TestAuthenticate_CredentialExtraction(t *testing.T) {
+	tests := []struct {
+		name   string
+		header string // "" means: do not set the header at all
+	}{
+		{name: "no Authorization header at all"},
+		{name: "empty header value", header: ""},
+		{name: "wrong scheme (Basic)", header: "Basic dXNlcjpwYXNz"},
+		{name: "Bearer with no token", header: "Bearer"},
+		{name: "Bearer with no token but trailing space", header: "Bearer "},
+		{name: "Bearer with only whitespace as token", header: "Bearer    "},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fa := &fakeAuthenticator{principal: &auth.Principal{UserID: "u1"}}
+			handler := Authenticate(fa, slog.Default())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				t.Error("next.ServeHTTP was called despite a malformed credential (fail-open)")
+			}))
+
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			if tt.name != "no Authorization header at all" {
+				req.Header.Set("Authorization", tt.header)
+			}
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if fa.called {
+				t.Error("the Authenticator was called despite a malformed credential; extraction must reject it first")
+			}
+			if rec.Code != http.StatusUnauthorized {
+				t.Errorf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+			}
+		})
+	}
+}
+
+// TestAuthenticate_CredentialExtraction_ToleratesCaseAndWhitespace verifies
+// the extraction accepts a lowercase "bearer" scheme (case-insensitive per
+// RFC 6750/RFC 7235) and irregular whitespace around the scheme and the
+// token, passing through only the trimmed token.
+func TestAuthenticate_CredentialExtraction_ToleratesCaseAndWhitespace(t *testing.T) {
+	tests := []struct {
+		name      string
+		header    string
+		wantToken string
+	}{
+		{name: "lowercase bearer", header: "bearer sometoken", wantToken: "sometoken"},
+		{name: "mixed-case BeArEr", header: "BeArEr sometoken", wantToken: "sometoken"},
+		{name: "extra whitespace around scheme and token", header: "  Bearer   sometoken  ", wantToken: "sometoken"},
+		{name: "tab between scheme and token", header: "Bearer\tsometoken", wantToken: "sometoken"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fa := &fakeAuthenticator{principal: &auth.Principal{UserID: "u1"}}
+			handler := Authenticate(fa, slog.Default())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			}))
+
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			req.Header.Set("Authorization", tt.header)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if !fa.called {
+				t.Fatal("the Authenticator was not called for a well-formed credential")
+			}
+			if fa.gotToken != tt.wantToken {
+				t.Errorf("token passed to Authenticate = %q, want %q", fa.gotToken, tt.wantToken)
+			}
+			if rec.Code != http.StatusOK {
+				t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
+			}
+		})
 	}
 }

@@ -22,7 +22,7 @@ importing a port never pulls in the AWS SDK, SendGrid, or go-mail transitively.
 | `notification/sendgrid` | SendGrid adapter (`SendGridNotifier`) via the SendGrid HTTP API. |
 | `httpx/response` | Standard JSON success/error/list response envelopes (`response.JSON`, `response.Error`, `response.ValidationError`, `response.JSONList`, ...). |
 | `httpx/middleware` | HTTP middleware: `Recovery`, `RateLimitJSON`, `RequestContext` (the single writer that populates the request ID, client IP, and User-Agent into `reqctx` for every inbound request — replaces the old `RequestInfoMiddleware` + `LoggerRequestID` pair), `SecurityHeaders`, `StructuredLogger`, `Metrics` (Prometheus), `Authenticate` (runs an `auth.Authenticator` and stores the resulting principal in the request context), and `RequirePermission` (runs an `authz.Checker` against the authenticated principal). |
-| `auth` | The `Authenticator` port: `Authenticate(ctx, *http.Request) (*Principal, error)`. Context helpers (`WithPrincipal`/`FromContext`) and typed sentinel errors (`ErrUnauthenticated`, `ErrForbidden`, `ErrServiceUnavailable`) distinguishing 401/403/503. No dependency beyond the standard library. |
+| `auth` | The `Authenticator` port: `Authenticate(ctx, token string) (*Principal, error)`. Context helpers (`WithPrincipal`/`FromContext`) and typed sentinel errors (`ErrUnauthenticated`, `ErrForbidden`, `ErrServiceUnavailable`) distinguishing 401/403/503. Takes a bare token rather than a request: where a credential lives on the wire is a transport decision, so it belongs to `httpx/middleware`, and a caller with no request in hand — a worker running under a service identity, a CLI — can still resolve a principal. Imports only `context` and `errors`. |
 | `auth/zitadel` | Zitadel adapter (`Authenticator`) wrapping `zitadel-go/v3`'s `authorization.Authorizer[*oauth.IntrospectionContext]` — that generic type never appears outside this package. Prefers the OIDC-standard `preferred_username` claim over the legacy `Username` field. |
 | `authz` | The `Checker` port: `IsAllowed(ctx, Principal, Resource, action) (bool, error)`. A non-nil error means the decision could not be made (map it to 503); `false` means a genuine denial (map it to 403). No dependency beyond the standard library. |
 | `authz/cerbos` | Cerbos adapter (`Checker`) via `cerbos-sdk-go`'s gRPC client. `Close()` is a documented no-op — `cerbos.GRPCClient` in v0.3.17 exposes no `Close` method, so there is nothing to release. |
@@ -208,13 +208,14 @@ than carried forward:
     wrong direction, and the reason this package could not ship in slice 3.
     `audit.Recorder` now reads the actor via `vogel/auth.FromContext` and
     request metadata via `vogel/reqctx`, both dependency-light
-    application-facing packages. `go list -deps ./audit` carries no `chi`
-    and no `httpx`. (It does still carry `net/http`, transitively via
-    `vogel/auth`'s `Authenticator` interface, which is declared in the same
-    file/package as `Principal` — see the "Contradicts this brief" note in
-    this slice's report for why that one part of the "no net/http"
-    requirement cannot be satisfied without splitting `auth` itself, which
-    was out of this slice's authorized scope.)
+    application-facing packages. `go list -deps ./audit` carries no `chi`,
+    no `httpx`, and no `net/http`.
+
+    The last of those took a second step. `Authenticator` originally took an
+    `*http.Request`, and because Go resolves dependencies per package rather
+    than per file, every consumer importing `auth` just to read a `Principal`
+    inherited `net/http` — `audit` among them. Narrowing the port to a bare
+    token removed it at the source.
 18. **Request-scoped metadata has one owner: `reqctx`.** `logger` used to own
     its own request-ID context key; `httpx/middleware.RequestInfoMiddleware`
     separately owned an unexported key for IP/User-Agent, with an exported
