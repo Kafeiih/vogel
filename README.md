@@ -20,7 +20,11 @@ importing a port never pulls in the AWS SDK, SendGrid, or go-mail transitively.
 | `notification/smtp` | SMTP adapter (`SMTPNotifier`) via `go-mail`. Dials a fresh connection per `Send` — see the doc comment on `SMTPNotifier` for why. |
 | `notification/sendgrid` | SendGrid adapter (`SendGridNotifier`) via the SendGrid HTTP API. |
 | `httpx/response` | Standard JSON success/error/list response envelopes (`response.JSON`, `response.Error`, `response.ValidationError`, `response.JSONList`, ...). |
-| `httpx/middleware` | HTTP middleware: `Recovery`, `RateLimitJSON`, `RequestInfoMiddleware`, `SecurityHeaders`, `StructuredLogger`, `Metrics` (Prometheus), and `LoggerRequestID` (bridges a router's request ID into the `logger` package's context key). |
+| `httpx/middleware` | HTTP middleware: `Recovery`, `RateLimitJSON`, `RequestInfoMiddleware`, `SecurityHeaders`, `StructuredLogger`, `Metrics` (Prometheus), `LoggerRequestID` (bridges a router's request ID into the `logger` package's context key), `Authenticate` (runs an `auth.Authenticator` and stores the resulting principal in the request context), and `RequirePermission` (runs an `authz.Checker` against the authenticated principal). |
+| `auth` | The `Authenticator` port: `Authenticate(ctx, *http.Request) (*Principal, error)`. Context helpers (`WithPrincipal`/`FromContext`) and typed sentinel errors (`ErrUnauthenticated`, `ErrForbidden`, `ErrServiceUnavailable`) distinguishing 401/403/503. No dependency beyond the standard library. |
+| `auth/zitadel` | Zitadel adapter (`Authenticator`) wrapping `zitadel-go/v3`'s `authorization.Authorizer[*oauth.IntrospectionContext]` — that generic type never appears outside this package. Prefers the OIDC-standard `preferred_username` claim over the legacy `Username` field. |
+| `authz` | The `Checker` port: `IsAllowed(ctx, Principal, Resource, action) (bool, error)`. A non-nil error means the decision could not be made (map it to 503); `false` means a genuine denial (map it to 403). No dependency beyond the standard library. |
+| `authz/cerbos` | Cerbos adapter (`Checker`) via `cerbos-sdk-go`'s gRPC client. `Close()` is a documented no-op — `cerbos.GRPCClient` in v0.3.17 exposes no `Close` method, so there is nothing to release. |
 | `pgxtx` | pgx transaction plumbing: `PgxTxManager.WithTx`, `DBFromContext`, `TxFromContext`, the `DBTX` interface. Named `pgxtx` (not `repository`) because it holds transaction plumbing, not repositories. Lives at the module root, as a sibling of `postgres`, because `WithTx` works against any `*pgxpool.Pool` the consumer built themselves. |
 | `request` | HTTP request helpers: `JSON` / `JSONWithLimit` (size-limited, unknown-field-rejecting JSON decoding with mapped 400/413 responses) and `Validator` (accumulates per-field validation errors for query params and chi URL params: `UUIDParam`, `IntQuery`, `TimeQuery`, `DateQuery`, `Enum`, `PublicIDParam`, ...). |
 | `config` | Primitives for reading and validating environment variables: typed readers with defaults (`String`, `Bool`, `Int`, `Int32`, `Duration`, `StringSlice`), a required-variable reader (`Require`), an `Errors` accumulator so a boot failure reports every problem at once, and semantic validators (`ValidURL`, `IntRange`, `OneOf`, `MinMax`). Deliberately does **not** define application config structs — those stay in the consuming app. |
@@ -96,12 +100,53 @@ than carried forward:
     A migration needing `CREATE INDEX CONCURRENTLY` still must use goose's
     `-- +goose NO TRANSACTION` annotation, since PostgreSQL rejects that statement
     inside a transaction — see the doc comment on `migrate/runner.go`.
+11. **`auth`/`authz` drop org_id-based multi-tenancy entirely — it never worked.**
+    Both source systems mirrored a `UserContext.OrgID` onto every Cerbos resource
+    so derived roles could compare `principal.attr.org_id == resource.attr.org_id`,
+    but `ResourceForUser` copied that org_id straight off the same principal, so
+    the comparison was always `X == X` — always true. Even with that bug fixed,
+    the owner's Zitadel instance has exactly one organization ("intranet"), with
+    per-system separation done at the project/application level instead, so
+    `urn:zitadel:iam:user:resourceowner:id` returns the same value for every user
+    in every system: there was never a second value to compare against. `org_id`
+    also appears in zero repository queries and zero migrations in either system.
+    `Principal.OrgID`, `extractOrgID`, and the org_id mirroring in
+    `ResourceForUser`/`principalAttr` are gone, along with the fail-loud "treat as
+    unauthenticated if org_id is missing" branch that existed only to protect that
+    dead mechanism. The real separation between systems is OIDC audience
+    validation, which the Zitadel SDK already performs.
+12. **`auth/zitadel` prefers `preferred_username` over the legacy `Username` field.**
+    go-crucible read `authCtx.Username` directly, which is empty for tokens from a
+    standards-conformant flow; go-licencias already carried this fix. Ported here
+    so the one adapter in this module gets it right.
+13. **A PDP/IdP outage now maps to HTTP 503, never 401/403/500.** go-crucible
+    returned 500 when the Cerbos check errored; go-licencias deliberately returned
+    403 (its DEC-08, "to avoid an oracle"); the base collapsed Zitadel's
+    `ServiceUnavailableErr` into 403 too. All three make monitoring blind to the
+    difference between "the client did something wrong" and "our infrastructure is
+    down", and none of 401/403/500 are meaningfully retryable the way 503 is. Both
+    `httpx/middleware.Authenticate` (identity provider) and
+    `httpx/middleware.RequirePermission` (policy decision point) now map a
+    provider-side error to 503, a genuine denial to 403, and missing/invalid
+    credentials to 401 — see the doc comments on both for the full rationale. This
+    deliberately supersedes go-licencias' DEC-08.
+14. **User-facing auth/authz messages are no longer hardcoded Spanish.** The
+    sources returned literals like `"No tenés permisos para realizar esta acción"`
+    baked into a library — not something a shared package should own in any one
+    language. `httpx/middleware.AuthMessages` (with `DefaultAuthMessages` for
+    neutral English defaults and `WithAuthMessages` to override) makes the 401/403/503
+    copy configurable; each consuming system sets its own localized copy.
+15. **`ZitadelAuthWithRole`, `IsGrantedRole`, and `PrincipalFromUser` were not
+    ported.** All three were exported in every source repository with zero
+    non-test call sites. `RequirePermission`'s `wildcardResourceID = "*"` behavior
+    *was* kept — it is load-bearing, not cosmetic: Cerbos rejects any resource with
+    an empty ID before evaluating a policy, which otherwise surfaces as a 500 on
+    every collection-level (list/create) route.
 
 ## Not here yet
 
-This is a second slice. Deliberately excluded, pending decisions:
+This is a third slice. Deliberately excluded, pending decisions:
 
-- **`auth`, `authz`** — blocked on a pending tenancy decision.
 - **`audit`** — blocked on a dependency-inversion fix in the source
   (`application/audit/recorder.go` imports `interfaces/http/middleware`, the wrong
   direction for a port) and a decision on whether the library or the consuming

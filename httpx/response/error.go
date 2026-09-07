@@ -12,17 +12,18 @@ import (
 // Modules do NOT define their own codes — business errors are distinguished
 // by the message field, not the code.
 const (
-	CodeNotFound        = "NOT_FOUND"
-	CodeInternalError   = "INTERNAL_ERROR"
-	CodeInvalidJSON     = "INVALID_JSON"
-	CodeUnknownField    = "UNKNOWN_FIELD"
-	CodeBodyTooLarge    = "BODY_TOO_LARGE"
-	CodeValidationError = "VALIDATION_ERROR"
-	CodeConflict        = "CONFLICT"
-	CodeUnauthorized    = "UNAUTHORIZED"
-	CodeForbidden       = "FORBIDDEN"
-	CodeRateLimited     = "RATE_LIMITED"
-	CodeAuthzError      = "AUTHZ_ERROR"
+	CodeNotFound           = "NOT_FOUND"
+	CodeInternalError      = "INTERNAL_ERROR"
+	CodeInvalidJSON        = "INVALID_JSON"
+	CodeUnknownField       = "UNKNOWN_FIELD"
+	CodeBodyTooLarge       = "BODY_TOO_LARGE"
+	CodeValidationError    = "VALIDATION_ERROR"
+	CodeConflict           = "CONFLICT"
+	CodeUnauthorized       = "UNAUTHORIZED"
+	CodeForbidden          = "FORBIDDEN"
+	CodeRateLimited        = "RATE_LIMITED"
+	CodeAuthzError         = "AUTHZ_ERROR"
+	CodeServiceUnavailable = "SERVICE_UNAVAILABLE"
 )
 
 // ErrorResponse is the standard error envelope for API responses.
