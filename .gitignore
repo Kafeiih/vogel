@@ -22,3 +22,6 @@ Thumbs.db
 
 # Claude Code
 .claude
+
+# CodeGraph (indice local, por checkout)
+.codegraph/
