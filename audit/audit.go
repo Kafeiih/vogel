@@ -33,6 +33,16 @@ const (
 	ActionExecute Action = "execute"
 )
 
+// Actions returns every valid Action, in declaration order.
+//
+// Code validating user input against the allowed set should call this rather
+// than repeating the literals: an Action added to the block above is added
+// here, right next to it, instead of silently missing from a list kept in
+// another package.
+func Actions() []Action {
+	return []Action{ActionCreate, ActionUpdate, ActionDelete, ActionExecute}
+}
+
 // Status represents the outcome of an audited operation.
 type Status string
 
@@ -42,6 +52,12 @@ const (
 	StatusPartial Status = "partial"
 	StatusNoop    Status = "noop"
 )
+
+// Statuses returns every valid Status, in declaration order. See Actions for
+// why this lives next to the constants.
+func Statuses() []Status {
+	return []Status{StatusSuccess, StatusFailed, StatusPartial, StatusNoop}
+}
 
 // Source identifies what kind of process produced an audit entry.
 //

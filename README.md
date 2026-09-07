@@ -32,6 +32,7 @@ AWS SDK, SendGrid o go-mail.
 | `audit` | El puerto de rastro de auditoría: `Entry`, la interfaz `Auditable` (`AuditRepr`/`AuditSnapshot`), el `Recorder` (`Record`, más `Option`s funcionales: `WithSubject`, `WithChange`, `WithAggregate`, `WithAffectedResources`, `WithError`, ...), y el puerto `Repository` (`Create`/`GetByID`/`List`). Lee al actor desde `auth.FromContext` y los metadatos de la request desde `reqctx` — nunca importa `httpx` ni un router (`go list -deps ./audit` no arrastra `chi` ni `httpx`; ver el punto 17). `Recorder.Record` recibe un `Source` (`SourceHTTP`/`SourceWorker`) como argumento obligatorio, no como una opción con valor por defecto — ver el punto 20. |
 | `audit/postgres` | `Repository` respaldado por PostgreSQL (`NewRepository(pool)`), portado desde go-licencias: una única consulta `List` que usa `count(*) OVER()` para la paginación (un solo round trip, no dos) y un `Filters.ResourceID` tipado como `*uuid.UUID` (no como `string`). |
 | `audit/migrations` | La migración embebida `001_create_audit_log.sql` (idéntica byte a byte entre go-bluprint, go-crucible y go-licencias) expuesta como un `fs.FS` vía `migrations.FS()`, lista para pasarse a `migrate.Up`. Ver «Ejecutar las migraciones de la librería junto a las de la aplicación» más abajo. |
+| `audit/httpx` | La capa de consulta HTTP de `audit`: el DTO `Response` con `ToResponse`/`ToResponseList`, `FiltersFromRequest` (parsea `audit.Filters` desde los query params, `resource_id` incluido), `Messages`/`DefaultMessages`/`WithMessages` para la copia visible al usuario, y un `Handler` con `List` y `GetByID` listo para montar. Las piezas se exportan por separado a propósito: una aplicación que necesita sus propias anotaciones de Swagger escribe su handler reusando el parseo y el mapeo, en lugar de duplicarlos. Vive en un subpaquete y no en `audit` para que `audit` nunca alcance `net/http` — el CI lo verifica. |
 | `request` | Helpers de request HTTP: `JSON` / `JSONWithLimit` (decodificación JSON con límite de tamaño y rechazo de campos desconocidos, con respuestas mapeadas a 400/413) y `Validator` (acumula errores de validación por campo para query params y parámetros de URL de chi: `UUIDParam`, `IntQuery`, `TimeQuery`, `DateQuery`, `Enum`, `PublicIDParam`, ...). |
 | `config` | Primitivas para leer y validar variables de entorno: lectores tipados con valores por defecto (`String`, `Bool`, `Int`, `Int32`, `Duration`, `StringSlice`), un lector de variable obligatoria (`Require`), un acumulador `Errors` para que una falla de arranque reporte todos los problemas de una sola vez, y validadores semánticos (`ValidURL`, `IntRange`, `OneOf`, `MinMax`). Deliberadamente **no** define structs de configuración de la aplicación — esos permanecen en la app consumidora. |
 | `postgres` | `NewPool(ctx, Config, *slog.Logger) (*pgxpool.Pool, error)`: un constructor de pgxpool con tracing de queries lentas (`SlowQueryTracer`), métricas de pool para Prometheus (`PoolMetricsCollector`), `statement_timeout` / `lock_timeout` / `idle_in_transaction_session_timeout` del lado del servidor (configurables, con valores por defecto razonables), y un error duro de arranque cuando `RequireTLS` está activado pero el DSN deshabilita TLS. |
@@ -315,6 +316,21 @@ al unificarlos:
     registrándose únicamente en modo binario worker — un cliente de sólo
     inserción no procesa nada, así que pasarlos junto a un `*river.Workers`
     nulo no los registra.
+22. **La capa de consulta de `audit` dejó de duplicarse a mano, y eso cerró
+    un agujero.** El DTO, su mapeo y el parseo de filtros eran el mismo código
+    en los dos consumidores — mismos campos, mismos json tags, misma
+    paginación — salvo en un punto: go-licencias filtra por `resource_id`
+    (`*uuid.UUID`) y go-crucible directamente no tiene ese campo en su
+    `Filters`. No es una diferencia de diseño: es lo que pasa cuando dos copias
+    del mismo código evolucionan por separado. `audit/httpx` lo unifica con el
+    filtro incluido. `Queries` no se portó: era `repo.GetByID` seguido de
+    `toResponse`, y `vogel` ya expone `Repository`. Los mensajes visibles al
+    usuario, que en el origen estaban incrustados en español dentro de la
+    librería, salieron a `Messages`/`WithMessages` por la misma razón que el
+    punto 14. Y las listas de valores aceptados para `operation_category` y
+    `status` se derivan de `audit.Actions()`/`audit.Statuses()` en vez de
+    repetirse como literales, con un test que falla si se agrega una `Action`
+    sin decidir si además es filtrable.
 
 `WithAffectedResources` es la forma prevista de auditar una operación
 masiva/por lotes (bulk/batch): una única entrada sobre el recurso primario que
@@ -340,16 +356,12 @@ Esta es una cuarta tanda. Excluidos deliberadamente, decisiones pendientes:
   CLI/plantilla y no de API de librería. Los jobs concretos de cada dominio
   (`application/jobs/*`) tampoco se portan: el andamiaje es compartible, el
   negocio que corre adentro no.
-- **La capa de Queries/DTO/HTTP handler de `audit`** — los
-  `application/audit/{dto,queries}.go` e
-  `interfaces/http/handler/audit_handler.go` de los repositorios de origen se
-  leyeron como contexto pero no se portaron: son asuntos de la capa de
-  presentación (formateo de respuestas, parseo de query-string, anotaciones
-  de Swagger) específicos de la propia capa HTTP de cada aplicación
-  consumidora, la misma razón por la que `vogel` tampoco portó nunca un
-  handler para `auth` ni para `storage`. `audit.Repository.List`/`GetByID` y
-  `audit.Filters` son el puerto sobre el cual se construye la propia capa de
-  consultas de una aplicación consumidora.
+- **Las anotaciones de Swagger y el registro de rutas de `audit`** — lo único
+  que quedó afuera de `audit/httpx` (ver el punto 22). Las anotaciones de
+  swaggo se leen de los comentarios sobre las funciones handler de cada
+  aplicación, así que una app que quiera documentar estos endpoints escribe su
+  propio handler con las piezas exportadas en lugar de montar el `Handler` de
+  `vogel`; las rutas y su prefijo siguen siendo decisión de cada app.
 - **`null_helpers.go`** (`nullInt`/`nullInt64`) — dejado atrás
   deliberadamente. Devuelve `nil` cuando `n == 0`, confundiendo "sin
   establecer" con un cero legítimo. Además no se usaba en ninguno de los tres
