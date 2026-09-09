@@ -25,7 +25,7 @@ module github.com/kafeiih/vogel/examples/boilerplate
 
 go 1.25.7
 
-require github.com/kafeiih/vogel v0.1.0
+require github.com/kafeiih/vogel v0.2.0
 
 replace github.com/kafeiih/vogel => ../..
 ```
@@ -48,7 +48,7 @@ de paso, en un test de regresión de la API pública de `vogel` (ver el job
 ```bash
 cd tu-servicio-nuevo/
 go mod edit -dropreplace github.com/kafeiih/vogel
-go get github.com/kafeiih/vogel@v0.1.0
+go get github.com/kafeiih/vogel@v0.2.0
 go mod tidy
 ```
 

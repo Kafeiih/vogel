@@ -1,7 +1,7 @@
 # Guía de migración a vogel
 
 Esta guía documenta cómo migrar `go-crucible` y `go-licencias` de su código
-duplicado local a `github.com/kafeiih/vogel` (hoy en `v0.1.0`). Es un manual de
+duplicado local a `github.com/kafeiih/vogel` (hoy en `v0.2.0`). Es un manual de
 ejecución: cada sección indica qué archivo local se borra, qué import lo
 reemplaza, y el diff exacto de las llamadas cuya firma cambió.
 
@@ -30,7 +30,7 @@ tienen visibilidad de un repo privado.
 Desde la raíz de `go-crucible` o `go-licencias`:
 
 ```bash
-go get github.com/kafeiih/vogel@v0.1.0
+go get github.com/kafeiih/vogel@v0.2.0
 ```
 
 Esto agrega la entrada a `go.mod` y `go.sum`. `vogel` no publica todos sus
