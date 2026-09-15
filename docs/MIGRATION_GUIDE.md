@@ -56,7 +56,7 @@ adoptar `vogel`.
 
 Dos columnas: qué archivo local se borra (o dónde vive hoy la lógica
 duplicada) a la izquierda, qué paquete de `vogel` lo reemplaza a la derecha.
-Se cubren los 27 paquetes de `vogel`. Los marcados **"sin equivalente
+Se cubren los 28 paquetes de `vogel`. Los marcados **"sin equivalente
 local"** son capacidad nueva, no reemplazan nada existente.
 
 | Paquete de `vogel` | Archivo local en `go-crucible` | Archivo local en `go-licencias` |
@@ -72,6 +72,7 @@ local"** son capacidad nueva, no reemplazan nada existente.
 | `auth/zitadel` | Lógica de adaptador embebida dentro de `internal/interfaces/http/middleware/auth.go` (no hay archivo de infraestructura separado) | `internal/infrastructure/auth/zitadel.go` (`NewZitadelAuthorizer`) |
 | `authz` | `internal/domain/authz/authz.go` | `internal/domain/authz/authz.go` |
 | `authz/cerbos` | `internal/infrastructure/authz/cerbos.go` | `internal/infrastructure/authz/cerbos.go` |
+| `access` | **sin equivalente local** — el chequeo por instancia se hacía a mano en cada handler que lo necesitaba, sin puerto propio | **sin equivalente local** — mismo patrón |
 | `pgxtx` | `internal/infrastructure/repository/tx.go` (además expone `AuditDB(ctx)`/`DB(ctx)`, wrappers específicos que quedan locales) | `internal/infrastructure/repository/tx.go` |
 | `audit` | `internal/domain/audit/audit.go` + `internal/application/audit/recorder.go` | `internal/domain/audit/audit.go` + `internal/application/audit/recorder.go` |
 | `audit/postgres` | `internal/infrastructure/repository/audit_postgres.go` | `internal/infrastructure/repository/audit_postgres.go` (origen del port — ver README de vogel) |
@@ -696,6 +697,42 @@ checker a HTTP — ver el punto siguiente y «Cambios de firma que rompen»,
 punto 3: go-crucible mapeaba un error del checker a 500
 (`"Error en la verificación de permisos"`), go-licencias a 403 (DEC-08,
 `"No tenés permisos para realizar esta acción"`); ambos pasan a 503.
+
+### `access` (nuevo — sin equivalente en go-crucible ni go-licencias)
+
+Ninguno de los dos sistemas de origen tenía un chequeo de autorización por
+instancia: si un handler necesitaba comparar el dueño o el estado de la
+entidad contra el principal, lo hacía a mano, llamando directamente al
+`checker.IsAllowed` de turno con lo que tuviera a mano, sin el mapeo de
+errores 401/403/503 que `RequirePermission` ya le daba a cualquier otra
+ruta. `access.Guard` es ese chequeo hecho puerto, para llamarse desde el
+handler después de cargar la entidad — ver `docs/WIRING.md` §2, sección "El
+chequeo por instancia". No es obligatorio adoptarlo: una ruta que ya le
+alcanza con el chequeo grueso de `RequirePermission` no gana nada
+cambiándolo. Adóptelo sólo en las rutas donde hoy exista ese chequeo manual
+post-carga, reemplazándolo por:
+
+```go
+import "github.com/kafeiih/vogel/access"
+
+guard := access.New(checker) // o access.New(checker, access.WithPrincipalAttributes(fn))
+
+// en el handler, después de cargar la entidad:
+if err := guard.Check(r.Context(), authz.Resource{
+    Kind: "invoices:invoice",
+    ID:   invoice.ID.String(),
+    Attr: map[string]any{"status": invoice.Status},
+}, "approve"); err != nil {
+    if middleware.WriteAccessError(w, r, err, logger.Logger) {
+        return
+    }
+}
+```
+
+Si la ruta monta el chequeo grueso con el mismo `Guard`, cambie
+`RequirePermission(checker, ...)` por `RequireAccess(guard, ...)` en el
+router — `RequirePermission` sigue existiendo sin cambios de firma para
+las rutas que no necesitan un `Guard` compartido.
 
 ### `audit`
 

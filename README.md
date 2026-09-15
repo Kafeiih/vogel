@@ -35,11 +35,12 @@ junto.
 | `notification/smtp` | Adaptador SMTP (`SMTPNotifier`) vía `go-mail`. Abre una conexión nueva por cada `Send` — ver el comentario de documentación de `SMTPNotifier` para el porqué. |
 | `notification/sendgrid` | Adaptador de SendGrid (`SendGridNotifier`) vía la API HTTP de SendGrid. |
 | `httpx/response` | Envoltorios estándar de respuesta JSON de éxito/error/lista (`response.JSON`, `response.Error`, `response.ValidationError`, `response.JSONList`, ...). |
-| `httpx/middleware` | Middleware HTTP: `Recovery`, `RateLimitJSON`, `RequestContext` (el único escritor que completa el ID de request, la IP del cliente y el User-Agent en `reqctx` para cada request entrante — reemplaza al viejo par `RequestInfoMiddleware` + `LoggerRequestID`), `SecurityHeaders`, `StructuredLogger`, `Metrics` (Prometheus), `Authenticate` (ejecuta un `auth.Authenticator` y guarda el principal resultante en el contexto de la request), y `RequirePermission` (ejecuta un `authz.Checker` contra el principal autenticado). |
+| `httpx/middleware` | Middleware HTTP: `Recovery`, `RateLimitJSON`, `RequestContext` (el único escritor que completa el ID de request, la IP del cliente y el User-Agent en `reqctx` para cada request entrante — reemplaza al viejo par `RequestInfoMiddleware` + `LoggerRequestID`), `SecurityHeaders`, `StructuredLogger`, `Metrics` (Prometheus), `Authenticate` (ejecuta un `auth.Authenticator` y guarda el principal resultante en el contexto de la request), `RequirePermission` (ejecuta un `authz.Checker` contra el principal autenticado y el `resourceKind`, sin atributos de instancia) y `RequireAccess` + `WriteAccessError` (la misma familia de chequeo, pero contra un `access.Guard`, para cuando la ruta también necesita un chequeo por instancia luego de cargar la entidad — ver el paquete `access` y `docs/WIRING.md` §2). |
 | `auth` | El puerto `Authenticator`: `Authenticate(ctx, token string) (*Principal, error)`. Helpers de contexto (`WithPrincipal`/`FromContext`) y errores centinela tipados (`ErrUnauthenticated`, `ErrForbidden`, `ErrServiceUnavailable`) que distinguen 401/403/503. Recibe un token desnudo en lugar de una request: dónde vive la credencial en el cable de transmisión es una decisión de transporte, así que le corresponde a `httpx/middleware`, y un llamador que no tiene una request a mano — un worker que corre bajo una identidad de servicio, una CLI — igual puede resolver un principal. Solo importa `context` y `errors`. |
 | `auth/zitadel` | Adaptador de Zitadel (`Authenticator`) que envuelve el `authorization.Authorizer[*oauth.IntrospectionContext]` de `zitadel-go/v3` — ese tipo genérico nunca aparece fuera de este paquete. Prefiere el claim estándar de OIDC `preferred_username` por sobre el campo legado `Username`. |
 | `authz` | El puerto `Checker`: `IsAllowed(ctx, Principal, Resource, action) (bool, error)`. Un error no nulo significa que la decisión no pudo tomarse (mapearlo a 503); `false` significa una denegación genuina (mapearlo a 403). Sin más dependencia que la biblioteca estándar. |
 | `authz/cerbos` | Adaptador de Cerbos (`Checker`) vía el cliente gRPC de `cerbos-sdk-go`. `Close()` es un no-op documentado — `cerbos.GRPCClient` en la v0.3.17 no expone ningún método `Close`, así que no hay nada que liberar. |
+| `access` | El chequeo de autorización por instancia, para usarse desde la capa de aplicación (los casos de uso hexagonales) después de cargar la entidad: `Guard` (`New(checker, opts...)`, `Guard.Principal`, `Guard.Check`), el resolutor opcional `PrincipalAttributes` (`WithPrincipalAttributes`) para atributos del principal resueltos en otro sistema (p. ej. sus asignaciones vigentes), memoizado por request vía `WithRequestScope`, y los centinelas propios `ErrUnauthenticated`/`ErrForbidden`/`ErrUnavailable`. Depende sólo de `auth` y `authz` — nunca de `httpx`, chi ni `net/http` (`go list -deps ./access` lo verifica, igual que el punto 17 para `audit`). Existe separado de `authz` (que se mantiene sin dependencias) y de `httpx/middleware` (que sólo puede chequear antes de cargar la entidad, con lo poco que trae la URL) precisamente para no forzar una segunda lectura de la misma fila que el handler ya va a cargar. |
 | `pgxtx` | Infraestructura de transacciones de pgx: `PgxTxManager.WithTx`, `DBFromContext`, `TxFromContext`, la interfaz `DBTX`. Se llama `pgxtx` (y no `repository`) porque contiene infraestructura de transacciones, no repositorios. Vive en la raíz del módulo, como hermano de `postgres`, porque `WithTx` funciona contra cualquier `*pgxpool.Pool` que el consumidor haya construido por su cuenta. |
 | `audit` | El puerto de rastro de auditoría: `Entry`, la interfaz `Auditable` (`AuditRepr`/`AuditSnapshot`), el `Recorder` (`Record`, más `Option`s funcionales: `WithSubject`, `WithChange`, `WithAggregate`, `WithAffectedResources`, `WithError`, ...), y el puerto `Repository` (`Create`/`GetByID`/`List`). Lee al actor desde `auth.FromContext` y los metadatos de la request desde `reqctx` — nunca importa `httpx` ni un router (`go list -deps ./audit` no arrastra `chi` ni `httpx`; ver el punto 17). `Recorder.Record` recibe un `Source` (`SourceHTTP`/`SourceWorker`) como argumento obligatorio, no como una opción con valor por defecto — ver el punto 20. |
 | `audit/postgres` | `Repository` respaldado por PostgreSQL (`NewRepository(pool)`), portado desde go-licencias: una única consulta `List` que usa `count(*) OVER()` para la paginación (un solo round trip, no dos) y un `Filters.ResourceID` tipado como `*uuid.UUID` (no como `string`). |
@@ -100,7 +101,8 @@ conjunto de la librería por separado del de la aplicación.
 Los paquetes de origen tenían veinte problemas conocidos; todos se corrigieron
 como parte de este port, en lugar de arrastrarse. El punto 21 no es un problema
 de origen sino una divergencia entre los dos consumidores que hubo que resolver
-al unificarlos:
+al unificarlos, y el punto 24 es una capacidad agregada después del port
+inicial, no una corrección:
 
 1. **`logger` ya no importa chi.** El `pkg/logger` original leía el ID de request
    directamente desde `github.com/go-chi/chi/v5/middleware`, acoplando un paquete
@@ -359,6 +361,26 @@ al unificarlos:
     ahora existen (`TestStructuredLogger_ReadsRequestIDFromReqctx`,
     `TestStructuredLogger_NoRequestID_LogsEmpty`) son la razón por la que esto
     apareció.
+
+24. **`access` y `RequireAccess` son una capacidad nueva, no una corrección
+    heredada de los repositorios de origen — igual que el punto 21.** Ninguno
+    de los tres tenía un chequeo por instancia: `RequirePermission` (y su
+    equivalente en cada sistema de origen) sólo podía comparar el principal
+    contra el `resourceKind` y, a lo sumo, un ID sacado de la URL, porque
+    corre antes de que el handler cargue nada. Un chequeo que dependa de un
+    dato de la entidad misma — su dueño, su estado, si ya fue enviada — no
+    era posible ahí, y la alternativa de que el propio middleware cargara la
+    entidad habría significado leer la misma fila dos veces en cada ruta
+    protegida (una para el chequeo, otra para el trabajo real del handler).
+    `access.Guard.Check`, llamado desde el handler después de su propia
+    carga, resuelve eso sin que `authz` deje de ser dependency-free ni que
+    `httpx/middleware` tenga que adivinar qué cargar. `RequirePermission`
+    ahora es un envoltorio delgado sobre `access.New` + `RequireAccess`, así
+    que el mapeo de estados vive una sola vez. `AuthOption` — el tipo función
+    que ya usaban `Authenticate` y `RequirePermission` — se dejó exactamente
+    igual a propósito: convertirlo en un struct de configuración habría roto
+    cualquier `AuthOption` escrito a mano como función literal en código
+    consumidor ya existente, a cambio de nada que `RequireAccess` necesitara.
 
 `WithAffectedResources` es la forma prevista de auditar una operación
 masiva/por lotes (bulk/batch): una única entrada sobre el recurso primario que

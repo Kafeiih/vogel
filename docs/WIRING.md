@@ -5,7 +5,7 @@ mapa: es sobre lo que deja afuera, el cableado entre paquetes — quién
 escribe en qué, en qué orden hay que montar las piezas, y qué se rompe
 (casi siempre en silencio) si el orden es el equivocado. Verificado contra
 el código de `reqctx`, `logger`, `httpx/middleware`, `auth`, `authz`,
-`audit`, `pgxtx`, `postgres`, `migrate`, `worker` y `workflow`, y contra el
+`access`, `audit`, `pgxtx`, `postgres`, `migrate`, `worker` y `workflow`, y contra el
 ejemplo funcional en `examples/api/`, que monta el módulo completo en un
 solo proceso y es la referencia más confiable que tiene este repositorio
 sobre cómo se supone que encajan las piezas.
@@ -150,11 +150,18 @@ del README es la que la fija así de manera explícita — reemplazando el
 DEC-08 de go-licencias (que colapsaba una caída de Cerbos en 403 "para
 evitar un oráculo") y el 500 que devolvía go-crucible en el mismo caso:
 
-| Situación | `Authenticate` | `RequirePermission` |
-|---|---|---|
-| credencial ausente/inválida | `auth.ErrUnauthenticated` (o cualquier error no reconocido) → **401** | sin `Principal` en contexto → **401** |
-| denegación genuina | `auth.ErrForbidden` → **403** | `checker.IsAllowed` devuelve `(false, nil)` → **403** |
-| el proveedor falla | `auth.ErrServiceUnavailable` → **503** | `checker.IsAllowed` devuelve error no nulo → **503** |
+| Situación | `Authenticate` | `RequirePermission` | `access.Guard.Check` + `WriteAccessError` |
+|---|---|---|---|
+| credencial ausente/inválida | `auth.ErrUnauthenticated` (o cualquier error no reconocido) → **401** | sin `Principal` en contexto → **401** | sin `Principal` en contexto → `access.ErrUnauthenticated` → **401** |
+| denegación genuina | `auth.ErrForbidden` → **403** | `checker.IsAllowed` devuelve `(false, nil)` → **403** | `checker.IsAllowed` devuelve `(false, nil)` → `access.ErrForbidden` → **403** |
+| el proveedor falla | `auth.ErrServiceUnavailable` → **503** | `checker.IsAllowed` devuelve error no nulo → **503** | `checker.IsAllowed`, o el resolutor `PrincipalAttributes`, devuelve error → `access.ErrUnavailable` → **503** |
+
+La última columna es la de un chequeo por instancia, hecho a mano en el
+handler con `access.Guard.Check` + `httpx/middleware.WriteAccessError` — ver
+más abajo, "El chequeo por instancia: `access.Guard`" — no la de
+`RequireAccess`, que es la contraparte de `RequirePermission` montada en el
+router y comparte exactamente el mismo mapeo por estar construida sobre el
+mismo `Guard`.
 
 El porqué del 503 separado: un IdP o un PDP caídos no son "el cliente hizo
 algo mal" (401/403) ni "bug genérico del servidor" (500) — son un incidente
@@ -187,6 +194,88 @@ r.Route("/api/v1", func(r chi.Router) {
 request: si se monta sin `Authenticate` por delante, `auth.FromContext`
 siempre devuelve `nil` y toda ruta protegida responde 401 incondicionalmente
 — fail-closed, nunca deja pasar una request sin principal.
+
+### El chequeo por instancia: `access.Guard`
+
+`RequirePermission` (y su primo `RequireAccess`, ver abajo) sólo pueden hacer
+un chequeo **grueso**: corren antes de que el handler cargue nada, así que lo
+único que tienen para armar el `authz.Resource` es el `resourceKind` fijo del
+middleware y, a lo sumo, el `id` de la URL. Una decisión que dependa de un
+dato de la entidad misma — su dueño, su estado, si ya fue enviada — no es
+posible ahí. `access.Guard` es la pieza que hace ese segundo chequeo, **fino**,
+desde el handler, después de su propia carga:
+
+```go
+// access/access.go
+type Guard struct{ /* ... */ }
+
+func New(checker authz.Checker, opts ...Option) *Guard
+func WithPrincipalAttributes(fn PrincipalAttributes) Option
+
+func (g *Guard) Check(ctx context.Context, resource authz.Resource, action string) error
+```
+
+`PrincipalAttributes` es la pieza que resuelve atributos del **principal** —no
+del recurso— desde otro sistema (p. ej. qué documentos tiene asignados
+actualmente el usuario, según un servicio de asignaciones), y que
+`Guard.Check` (vía `Guard.Principal`) vuelca en `authz.Principal.Attr` antes
+de invocar `checker.IsAllowed`. Sin esa opción, `Guard` se comporta
+exactamente igual que antes de que existiera: `Attr` queda `nil`.
+
+Uso típico en un handler, después de cargar la entidad (adaptado de
+`examples/api/handler.go`, `DocumentHandler.Delete`):
+
+```go
+doc, err := h.store.GetByID(r.Context(), db, id)
+// ... manejo de error / 404 ...
+
+err = h.guard.Check(r.Context(), authz.Resource{
+	Kind: "documents:document",
+	ID:   doc.ID.String(),
+	Attr: map[string]any{"owner": doc.OwnerID, "kind": doc.Kind},
+}, "delete")
+if err != nil {
+	if vmw.WriteAccessError(w, r, err, h.logger) {
+		return
+	}
+	// error no reconocido por WriteAccessError: es del propio handler
+}
+```
+
+`httpx/middleware.WriteAccessError` es la contraparte, dentro del handler,
+del mapeo de estados que `RequirePermission`/`RequireAccess` ya hacen en el
+router: mapea `access.ErrUnauthenticated`/`ErrForbidden`/`ErrUnavailable` a
+401/403/503 (logueando en el caso de 503), y devuelve `false` sin escribir
+nada para cualquier otro error, de modo que el handler puede seguir con su
+propio mapeo de errores de dominio.
+
+`httpx/middleware.RequireAccess` es el reemplazo de `RequirePermission`
+cuando el mismo `Guard` también respalda un chequeo por instancia más
+adelante en el mismo handler:
+
+```go
+// httpx/middleware/access.go
+func RequireAccess(guard *access.Guard, resourceKind, action string, logger *slog.Logger, opts ...AuthOption) func(http.Handler) http.Handler
+```
+
+`RequirePermission` en sí mismo pasó a ser un envoltorio delgado sobre
+`access.New(checker)` + `RequireAccess` — el mapeo de estados vive una sola
+vez, no dos.
+
+**El memo por request.** Cuando `guard` tiene un `PrincipalAttributes`
+configurado, `RequireAccess` instala `access.WithRequestScope` en el
+contexto de la request ANTES de correr su propio chequeo. Eso significa que
+el chequeo grueso del middleware y el chequeo fino que el handler hace más
+tarde con el mismo `Guard` comparten un único resultado resuelto: el
+resolutor corre como máximo una vez por request, sin importar cuántas veces
+se llame a `Check` — no dos consultas al sistema de asignaciones por la
+misma request, una por cada capa de chequeo. Cuando `guard` no tiene
+resolutor configurado, `RequireAccess` no toca el contexto de la request en
+absoluto — el comportamiento es, literalmente, el mismo que tenía
+`RequirePermission` antes de que este mecanismo existiera. Fuera de una
+request HTTP —un worker, una CLI— `Guard.Check` sigue funcionando sin ese
+memo: simplemente resuelve los atributos de nuevo en cada llamada, que es lo
+correcto cuando no hay ningún "request" sobre el cual amortizar la consulta.
 
 ## 3. Transacciones y auditoría juntas
 
