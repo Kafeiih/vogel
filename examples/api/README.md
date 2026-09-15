@@ -63,6 +63,15 @@ curl -s "localhost:8080/api/v1/audit?resource_type=document" -H "Authorization: 
 El `authz.Checker` falso permite todo al rol `admin` y sólo acciones de lectura
 al resto. Pruebe con `u-2:ana:viewer` para ver un 403 real.
 
+`DELETE /documents/{id}` es la única ruta que demuestra el chequeo por
+instancia de `vogel/access` en lugar de conformarse con el chequeo grueso.
+Con `TOKEN='u-1:oscar:autor'` (sin rol `admin`), borrar un documento propio
+de kind `contract` funciona; el mismo intento sobre un documento de kind
+`report` — igual de propio — responde 403, porque `fakeChecker` sólo conoce
+esa distinción una vez que `DocumentHandler.Delete` cargó la fila y se lo
+pasó en `authz.Resource.Attr`. Ver la fila `DELETE` en la tabla de rutas más
+abajo y el comentario de documentación de `DocumentHandler.Delete`.
+
 ## Por dónde empezar a leer
 
 El orden importa: cada archivo asume el anterior.
@@ -129,6 +138,7 @@ Todo bajo `/api/v1` exige `Authorization: Bearer <token>`.
 | `GET` | `/documents/{id}/download-url` | read | `storage.PresignedGetURL` |
 | `POST` | `/documents/{id}/transitions` | write | `engine.Move`, con guarda y errores mapeados a 409 |
 | `POST` | `/documents/{id}/claim` | write | `engine.Claim` con el actor sacado de `auth.FromContext` |
+| `DELETE` | `/documents/{id}` | delete (`access.Guard`) | Chequeo por instancia: `RequireAccess` filtra por rol y por los IDs que el principal posee (resueltos vía `access.WithPrincipalAttributes`); `DocumentHandler.Delete` carga el documento y llama a `guard.Check` de nuevo, esta vez con `Attr: {"kind": ...}`, para negar el borrado de un `"report"` aunque el dueño coincida — un dato que sólo se conoce después de cargar la fila |
 | `GET` | `/documents/{id}/history` | read | `engine.History` |
 | `GET` | `/inbox` | read | `engine.Inbox` por elegibilidad |
 | `GET` | `/audit`, `/audit/{id}` | read | El handler de `audit/httpx` montado tal cual |

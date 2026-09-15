@@ -10,8 +10,11 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/kafeiih/vogel/access"
 	"github.com/kafeiih/vogel/audit"
 	"github.com/kafeiih/vogel/auth"
+	"github.com/kafeiih/vogel/authz"
+	vmw "github.com/kafeiih/vogel/httpx/middleware"
 	"github.com/kafeiih/vogel/httpx/response"
 	"github.com/kafeiih/vogel/pgxtx"
 	"github.com/kafeiih/vogel/request"
@@ -34,10 +37,16 @@ type DocumentHandler struct {
 	storage  storage.Storage
 	tx       *pgxtx.PgxTxManager
 	pool     *pgxpool.Pool
+	guard    *access.Guard
 	logger   *slog.Logger
 }
 
 // NewDocumentHandler builds a DocumentHandler from its dependencies.
+//
+// guard is used only by Delete, to demonstrate the per-instance
+// authorization path -- see that method's doc comment. Every other handler
+// here still relies solely on the coarse, router-level check that
+// RequirePermission (or RequireAccess) already performs.
 func NewDocumentHandler(
 	store *DocumentStore,
 	engine *workflow.Engine,
@@ -47,6 +56,7 @@ func NewDocumentHandler(
 	fileStorage storage.Storage,
 	tx *pgxtx.PgxTxManager,
 	pool *pgxpool.Pool,
+	guard *access.Guard,
 	logger *slog.Logger,
 ) *DocumentHandler {
 	return &DocumentHandler{
@@ -58,6 +68,7 @@ func NewDocumentHandler(
 		storage:  fileStorage,
 		tx:       tx,
 		pool:     pool,
+		guard:    guard,
 		logger:   logger,
 	}
 }
@@ -219,6 +230,73 @@ func (h *DocumentHandler) Get(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response.JSON(w, http.StatusOK, doc)
+}
+
+// Delete removes a document. It is the one route in this example that
+// demonstrates the per-instance authorization path from vogel/access,
+// instead of relying only on RequirePermission's coarse, router-level check.
+//
+// The router mounts this behind vmw.RequireAccess(h.guard, ...), which runs
+// BEFORE this method and can only check the principal against the resource
+// kind and the URL's {id} -- it has no idea yet whether that document is a
+// "report" (see fakeChecker.IsAllowed), because it has not loaded the row.
+// That is exactly the decision this method makes AFTER GetByID, by folding
+// the loaded document's Kind into authz.Resource.Attr and calling
+// h.guard.Check again: the same authz.Checker backs both calls, but only
+// this second one has the data to deny deleting a report even when the
+// caller owns it.
+//
+// The ownership half of the decision (fakeChecker.IsAllowed's
+// owned_document_ids branch) comes from access.WithPrincipalAttributes,
+// resolved from DocumentStore.OwnedIDs in main.go. Because
+// vmw.RequireAccess already installed access.WithRequestScope on this
+// request before its own check ran, h.guard.Check here reuses that same
+// resolved principal attribute instead of querying OwnedIDs a second time --
+// see access.WithRequestScope's doc comment.
+func (h *DocumentHandler) Delete(w http.ResponseWriter, r *http.Request) {
+	v := request.NewValidator()
+	id := v.UUIDParam(r, "id")
+	if v.HasErrors() {
+		v.WriteErrors(w, r)
+		return
+	}
+
+	db := pgxtx.DBFromContext(r.Context(), h.pool)
+
+	doc, err := h.store.GetByID(r.Context(), db, id)
+	if err != nil {
+		if errors.Is(err, ErrDocumentNotFound) {
+			response.Error(w, r, http.StatusNotFound, response.CodeNotFound, "document not found")
+			return
+		}
+		h.logger.ErrorContext(r.Context(), "delete document: get document", "error", err)
+		response.Error(w, r, http.StatusInternalServerError, response.CodeInternalError, "failed to get document")
+		return
+	}
+
+	checkErr := h.guard.Check(r.Context(), authz.Resource{
+		Kind: "documents:document",
+		ID:   doc.ID.String(),
+		Attr: map[string]any{"owner": doc.OwnerID, "kind": doc.Kind},
+	}, "delete")
+	if checkErr != nil {
+		if vmw.WriteAccessError(w, r, checkErr, h.logger) {
+			return
+		}
+		// WriteAccessError only recognizes the three access sentinels; any
+		// other error here is this handler's own to report.
+		h.logger.ErrorContext(r.Context(), "delete document: check access", "error", checkErr)
+		response.Error(w, r, http.StatusInternalServerError, response.CodeInternalError, "failed to authorize delete")
+		return
+	}
+
+	if err := h.store.Delete(r.Context(), db, doc.ID); err != nil {
+		h.logger.ErrorContext(r.Context(), "delete document", "error", err)
+		response.Error(w, r, http.StatusInternalServerError, response.CodeInternalError, "failed to delete document")
+		return
+	}
+
+	response.JSONWithMessage(w, http.StatusOK, "document deleted", nil)
 }
 
 // List returns a paginated page of documents.

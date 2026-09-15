@@ -10,6 +10,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/kafeiih/vogel/access"
 	audithttpx "github.com/kafeiih/vogel/audit/httpx"
 	"github.com/kafeiih/vogel/auth"
 	"github.com/kafeiih/vogel/authz"
@@ -24,6 +25,7 @@ func NewRouter(
 	auditHandler *audithttpx.Handler,
 	authenticator auth.Authenticator,
 	checker authz.Checker,
+	guard *access.Guard,
 	metrics *vmw.Metrics,
 	pool *pgxpool.Pool,
 	reg *prometheus.Registry,
@@ -71,6 +73,12 @@ func NewRouter(
 	requireWrite := vmw.RequirePermission(checker, "documents:document", "write", logger)
 	requireAuditRead := vmw.RequirePermission(checker, "audit:entry", "read", logger)
 
+	// requireDelete goes through the same guard DocumentHandler.Delete uses
+	// for its own, later, per-instance check -- see that method's doc
+	// comment for why the two-layer check exists at all instead of just one
+	// or the other.
+	requireDelete := vmw.RequireAccess(guard, "documents:document", "delete", logger)
+
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Use(vmw.Authenticate(authenticator, logger))
 
@@ -82,6 +90,7 @@ func NewRouter(
 		r.With(requireWrite).Put("/documents/{id}/file", docs.UploadFile)
 		r.With(requireWrite).Post("/documents/{id}/transitions", docs.Transition)
 		r.With(requireWrite).Post("/documents/{id}/claim", docs.Claim)
+		r.With(requireDelete).Delete("/documents/{id}", docs.Delete)
 		r.With(requireRead).Get("/inbox", docs.Inbox)
 
 		// RequirePermission reads chi.URLParam(r, "id") for the resource ID

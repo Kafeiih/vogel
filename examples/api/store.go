@@ -105,3 +105,45 @@ func (s *DocumentStore) UpdateStorageKey(ctx context.Context, db pgxtx.DBTX, id 
 	}
 	return nil
 }
+
+// Delete removes a document by ID. See DocumentHandler.Delete for why this
+// route exists: it is the one that demonstrates access.Guard's per-instance
+// check.
+func (s *DocumentStore) Delete(ctx context.Context, db pgxtx.DBTX, id uuid.UUID) error {
+	_, err := db.Exec(ctx, `DELETE FROM documents WHERE id = $1`, id)
+	if err != nil {
+		return fmt.Errorf("document store: delete %s: %w", id, err)
+	}
+	return nil
+}
+
+// OwnedIDs returns the string IDs of every document whose owner_id is
+// ownerID.
+//
+// This stands in for "the user's current assignments looked up in another
+// system" from the access package's PrincipalAttributes doc comment: in a
+// real deployment this would more plausibly be a call to an assignment
+// service or a different bounded context, not a query against the same
+// table the handler is about to load from -- but a second in-memory system
+// would just be this same query with extra ceremony, and the point this
+// example makes does not depend on where the lookup happens.
+func (s *DocumentStore) OwnedIDs(ctx context.Context, db pgxtx.DBTX, ownerID string) ([]string, error) {
+	rows, err := db.Query(ctx, `SELECT id FROM documents WHERE owner_id = $1`, ownerID)
+	if err != nil {
+		return nil, fmt.Errorf("document store: owned ids for %s: %w", ownerID, err)
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("document store: owned ids scan: %w", err)
+		}
+		ids = append(ids, id.String())
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("document store: owned ids iterate: %w", err)
+	}
+	return ids, nil
+}

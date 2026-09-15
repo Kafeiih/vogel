@@ -24,10 +24,12 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/kafeiih/vogel/access"
 	"github.com/kafeiih/vogel/audit"
 	audithttpx "github.com/kafeiih/vogel/audit/httpx"
 	auditmigrations "github.com/kafeiih/vogel/audit/migrations"
 	auditpg "github.com/kafeiih/vogel/audit/postgres"
+	"github.com/kafeiih/vogel/auth"
 	vmw "github.com/kafeiih/vogel/httpx/middleware"
 	"github.com/kafeiih/vogel/logger"
 	"github.com/kafeiih/vogel/migrate"
@@ -169,6 +171,23 @@ func run() error {
 
 	documentStore := NewDocumentStore()
 
+	// accessGuard wraps the same fakeChecker used for the coarse,
+	// router-level checks above, adding a PrincipalAttributes resolver: the
+	// set of document IDs the calling principal owns, looked up via
+	// DocumentStore.OwnedIDs. DocumentHandler.Delete is the one route that
+	// uses accessGuard.Check directly, after loading the entity, to
+	// demonstrate the per-instance authorization path -- see its doc
+	// comment for the full rationale.
+	accessGuard := access.New(checker, access.WithPrincipalAttributes(
+		func(ctx context.Context, p *auth.Principal) (map[string]any, error) {
+			ids, err := documentStore.OwnedIDs(ctx, pgxtx.DBFromContext(ctx, pool), p.UserID)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{"owned_document_ids": ids}, nil
+		},
+	))
+
 	auditRepo := auditpg.NewRepository(pool)
 	recorder := audit.NewRecorder(auditRepo)
 	auditHandler, err := audithttpx.NewHandler(auditRepo, log.Logger)
@@ -224,14 +243,14 @@ func run() error {
 		return fmt.Errorf("start river queue: %w", err)
 	}
 
-	docs := NewDocumentHandler(documentStore, engine, wfRepo, recorder, queue, fileStorage, txManager, pool, log.Logger)
+	docs := NewDocumentHandler(documentStore, engine, wfRepo, recorder, queue, fileStorage, txManager, pool, accessGuard, log.Logger)
 
 	// 9. Every timeout below is set explicitly (gosec G112): a slow or
 	// hanging client must never be able to hold a connection, and the
 	// goroutine serving it, open indefinitely.
 	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.Port),
-		Handler:           NewRouter(docs, auditHandler, authenticator, checker, metrics, pool, reg, log.Logger),
+		Handler:           NewRouter(docs, auditHandler, authenticator, checker, accessGuard, metrics, pool, reg, log.Logger),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -45,18 +46,38 @@ func (fakeAuthenticator) Authenticate(_ context.Context, token string) (*auth.Pr
 // stands in for authz/cerbos.Checker -- swapping it out for a real
 // Cerbos-backed one is a one-line change in main.go's composition root.
 //
-// Policy: a principal with the "admin" role is allowed everything; every
-// other principal is allowed "read" actions only.
+// Policy: a principal with the "admin" role is allowed everything. Every
+// other principal is allowed "read" actions unconditionally, and "delete"
+// only on a document it owns AND that is not a "report" -- see the "delete"
+// case below and DocumentHandler.Delete for why that second condition is
+// the one that actually needs access.Guard's per-instance check rather than
+// RequirePermission's coarse one.
 type fakeChecker struct{}
 
 var _ authz.Checker = (*fakeChecker)(nil)
 
-func (fakeChecker) IsAllowed(_ context.Context, p authz.Principal, _ authz.Resource, action string) (bool, error) {
+func (fakeChecker) IsAllowed(_ context.Context, p authz.Principal, res authz.Resource, action string) (bool, error) {
 	for _, role := range p.Roles {
 		if role == "admin" {
 			return true, nil
 		}
 	}
+
+	if action == "delete" {
+		// "report" documents may only be deleted by an admin (handled by the
+		// short-circuit above), regardless of ownership -- res.Attr["kind"]
+		// is only populated once DocumentHandler.Delete has actually loaded
+		// the row, which is exactly the information RequirePermission's
+		// coarse, pre-load check could never have supplied.
+		if kind, _ := res.Attr["kind"].(string); kind == "report" {
+			return false, nil
+		}
+		// owned_document_ids comes from access.PrincipalAttributes, resolved
+		// once per request from DocumentStore.OwnedIDs -- see main.go.
+		owned, _ := p.Attr["owned_document_ids"].([]string)
+		return slices.Contains(owned, res.ID), nil
+	}
+
 	return action == "read", nil
 }
 
