@@ -4,11 +4,8 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/go-chi/chi/v5"
-
-	"github.com/kafeiih/vogel/auth"
+	"github.com/kafeiih/vogel/access"
 	"github.com/kafeiih/vogel/authz"
-	"github.com/kafeiih/vogel/httpx/response"
 )
 
 // wildcardResourceID is the placeholder sent when the check does not target a
@@ -31,8 +28,11 @@ const wildcardResourceID = "*"
 // resource ID is taken from the URL parameter "id" if present, and falls back
 // to the wildcard otherwise.
 //
-// For attribute-based checks (e.g. status == "DRAFT"), call
-// authz.Checker.IsAllowed directly in the handler after loading the entity.
+// For attribute-based checks (e.g. status == "DRAFT"), or when the same
+// Checker needs principal attributes resolved from another system (e.g. the
+// user's current assignments), build an access.Guard and use RequireAccess
+// here instead, then call access.Guard.Check + WriteAccessError in the
+// handler after loading the entity.
 //
 // Fail-closed: on any error, this middleware writes an error response and
 // returns without calling next.ServeHTTP.
@@ -50,52 +50,15 @@ const wildcardResourceID = "*"
 //
 // The underlying error is always logged server-side at error level; its
 // detail is never included in the response body.
+//
+// This is now a thin wrapper around RequireAccess, backed by an access.Guard
+// with no PrincipalAttributes resolver configured — the status mapping and
+// wildcard-ID logic live there once, instead of twice. One consequence of
+// that: access.New panics on a nil checker, so a nil checker now surfaces
+// immediately when RequirePermission is called (at router-construction time)
+// rather than on the first request that hits the route it guards. That is a
+// strictly earlier failure for what was already a wiring mistake, not a new
+// way for this function to fail.
 func RequirePermission(checker authz.Checker, resourceKind, action string, logger *slog.Logger, opts ...AuthOption) func(http.Handler) http.Handler {
-	msgs := DefaultAuthMessages()
-	for _, opt := range opts {
-		opt(&msgs)
-	}
-
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			principal := auth.FromContext(r.Context())
-			if principal == nil {
-				response.Error(w, r, http.StatusUnauthorized, response.CodeUnauthorized, msgs.Unauthorized)
-				return
-			}
-
-			p := authz.Principal{
-				ID:    principal.UserID,
-				Roles: principal.Roles,
-			}
-
-			resourceID := chi.URLParam(r, "id")
-			if resourceID == "" {
-				resourceID = wildcardResourceID
-			}
-			resource := authz.Resource{
-				Kind: resourceKind,
-				ID:   resourceID,
-			}
-
-			allowed, err := checker.IsAllowed(r.Context(), p, resource, action)
-			if err != nil {
-				logger.ErrorContext(r.Context(), "authorization check failed",
-					"error", err,
-					"user_id", principal.UserID,
-					"resource_kind", resourceKind,
-					"action", action,
-				)
-				response.Error(w, r, http.StatusServiceUnavailable, response.CodeServiceUnavailable, msgs.ServiceUnavailable)
-				return
-			}
-
-			if !allowed {
-				response.Error(w, r, http.StatusForbidden, response.CodeForbidden, msgs.Forbidden)
-				return
-			}
-
-			next.ServeHTTP(w, r)
-		})
-	}
+	return RequireAccess(access.New(checker), resourceKind, action, logger, opts...)
 }
