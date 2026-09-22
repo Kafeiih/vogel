@@ -4,7 +4,7 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el versionado,
 [SemVer](https://semver.org/lang/es/).
 
-## [Sin publicar]
+## [0.6.0] — 2026-09-22
 
 ### Agregado
 
