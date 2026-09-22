@@ -1190,6 +1190,353 @@ func TestRegister_DecisionStartNode_ReturnsErrInvalidDefinition(t *testing.T) {
 	assert.True(t, errors.Is(err, ErrDefinitionNotRegistered), "a decision-start Definition must never register, so Open can never resolve it")
 }
 
+// returnEngineDefinition mirrors workflow_test.go's returnDefinition, adding
+// Deadlines on "review", "sep", and "budget" so a test can prove a return
+// recomputes the destination node's deadline exactly like any other move,
+// and a "count-calls" guard on return-to-budget so a test can prove the
+// check ordering documented on Engine.Move: CommentPolicy, then whether the
+// case occupied the return's target, then Guard.
+func returnEngineDefinition() Definition {
+	return Definition{
+		Name:    "purchase",
+		Version: 1,
+		Nodes: []Node{
+			{ID: "draft", Start: true, Eligible: ByPosition("buyer")},
+			{ID: "review", Eligible: ByPositionInUnit("approver", "finance"), Deadline: 48 * time.Hour},
+			{ID: "route", Kind: NodeDecision},
+			{ID: "sep", Eligible: ByPosition("sep-coordinator"), Deadline: 24 * time.Hour},
+			{ID: "budget", Eligible: ByPosition("budget-analyst"), Deadline: 12 * time.Hour},
+			{ID: "signoff", Eligible: ByPosition("director")},
+			{ID: "approved", Terminal: true},
+		},
+		Transitions: []Transition{
+			{From: "draft", To: "review", Action: "submit"},
+			{From: "review", To: "route", Action: "approve"},
+			{From: "route", To: "sep", Action: "to-sep", Guard: "has-subsidy-sep"},
+			{From: "route", To: "budget", Action: "to-budget"},
+			{From: "sep", To: "signoff", Action: "clear"},
+			{From: "budget", To: "signoff", Action: "clear"},
+			{From: "signoff", To: "approved", Action: "approve-final"},
+			{From: "signoff", To: "review", Action: "return-to-review", Return: true, Comment: CommentRequired},
+			{From: "signoff", To: "sep", Action: "return-to-sep", Return: true, Comment: CommentRequired},
+			{From: "signoff", To: "budget", Action: "return-to-budget", Return: true, Comment: CommentRequired, Guard: "count-calls"},
+		},
+	}
+}
+
+// moveToSignoffViaBudget drives a fresh case through draft -> review ->
+// route -> budget -> signoff, never visiting "sep" — has-subsidy-sep must be
+// registered as alwaysFalseGuard for this path to be taken.
+func moveToSignoffViaBudget(t *testing.T, e *Engine, c *Case) {
+	t.Helper()
+	_, err := e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "submit", ActorID: "u1"})
+	require.NoError(t, err)
+	_, err = e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "approve", ActorID: "u2"})
+	require.NoError(t, err)
+	_, err = e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "clear", ActorID: "u3"})
+	require.NoError(t, err)
+}
+
+func TestMove_Return_ToVisitedNode_Succeeds(t *testing.T) {
+	repo := newFakeRepository()
+	now := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	e := New(repo, Config{Now: func() time.Time { return now }}, testLogger(), WithDefinitions(returnEngineDefinition()))
+	require.NoError(t, e.RegisterGuard("has-subsidy-sep", alwaysFalseGuard))
+	guard := &callCountingGuard{}
+	require.NoError(t, e.RegisterGuard("count-calls", guard.fn))
+
+	c := openTestCase(t, e)
+	moveToSignoffViaBudget(t, e, c)
+	_, err := e.Claim(context.Background(), nil, c.ID, "director-1")
+	require.NoError(t, err)
+
+	moved, err := e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "return-to-budget", ActorID: "director-1", Comment: "wrong amount"})
+	require.NoError(t, err)
+	assert.Equal(t, "budget", moved.State)
+	assert.Equal(t, "", moved.AssignedTo, "a return clears assignment exactly like any other move")
+	require.NotNil(t, moved.DeadlineAt, "a return recomputes the destination node's deadline exactly like any other move")
+	assert.Equal(t, now.Add(12*time.Hour), *moved.DeadlineAt)
+	assert.Equal(t, 1, guard.count(), "the return's own guard must run once both the comment and visited checks passed")
+
+	events, err := e.History(context.Background(), nil, c.ID)
+	require.NoError(t, err)
+	last := events[len(events)-1]
+	assert.Equal(t, EventMoved, last.Kind)
+	assert.Equal(t, "return-to-budget", last.Action)
+	assert.Equal(t, "signoff", last.FromState)
+	assert.Equal(t, "budget", last.ToState)
+	assert.Equal(t, "wrong amount", last.Comment)
+}
+
+func TestMove_Return_ToUnvisitedNode_ReturnsErrReturnNotVisited(t *testing.T) {
+	repo := newFakeRepository()
+	e := New(repo, Config{}, testLogger(), WithDefinitions(returnEngineDefinition()))
+	require.NoError(t, e.RegisterGuard("has-subsidy-sep", alwaysFalseGuard)) // case never visits "sep"
+
+	c := openTestCase(t, e)
+	moveToSignoffViaBudget(t, e, c)
+
+	before, err := repo.GetByID(context.Background(), nil, c.ID)
+	require.NoError(t, err)
+	eventsBefore, err := e.History(context.Background(), nil, c.ID)
+	require.NoError(t, err)
+
+	_, err = e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "return-to-sep", ActorID: "director-1", Comment: "send to SEP after all"})
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrReturnNotVisited))
+
+	after, err := repo.GetByID(context.Background(), nil, c.ID)
+	require.NoError(t, err)
+	assert.Equal(t, *before, *after, "a rejected return must leave the case completely untouched")
+
+	eventsAfter, err := e.History(context.Background(), nil, c.ID)
+	require.NoError(t, err)
+	assert.Equal(t, eventsBefore, eventsAfter, "a rejected return must append no events")
+}
+
+// TestMove_Return_CheckOrdering pins the exact order documented on
+// Engine.Move for a return transition: CommentPolicy, then whether the case
+// occupied the return's target, then Guard. return-to-budget carries
+// CommentRequired and a "count-calls" guard, so each sub-test isolates one
+// step of the ordering by construction.
+func TestMove_Return_CheckOrdering(t *testing.T) {
+	newEngineAtSignoffViaSep := func(t *testing.T) (*Engine, *Case, *callCountingGuard) {
+		t.Helper()
+		repo := newFakeRepository()
+		e := New(repo, Config{}, testLogger(), WithDefinitions(returnEngineDefinition()))
+		require.NoError(t, e.RegisterGuard("has-subsidy-sep", alwaysTrueGuard)) // case visits "sep", never "budget"
+		guard := &callCountingGuard{}
+		require.NoError(t, e.RegisterGuard("count-calls", guard.fn))
+
+		c := openTestCase(t, e)
+		_, err := e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "submit", ActorID: "u1"})
+		require.NoError(t, err)
+		_, err = e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "approve", ActorID: "u2"})
+		require.NoError(t, err)
+		_, err = e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "clear", ActorID: "sep-coordinator-1"})
+		require.NoError(t, err)
+		return e, c, guard
+	}
+
+	t.Run("missing comment fails before the visited check and the guard", func(t *testing.T) {
+		e, c, guard := newEngineAtSignoffViaSep(t)
+
+		// "budget" was never visited on this path, so if the visited check
+		// ran first this would fail with ErrReturnNotVisited instead.
+		_, err := e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "return-to-budget", ActorID: "director-1"})
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, ErrCommentRequired))
+		assert.Equal(t, 0, guard.count(), "the guard must not run when the comment check rejects Move first")
+	})
+
+	t.Run("unvisited target fails before the guard, even with a valid comment", func(t *testing.T) {
+		e, c, guard := newEngineAtSignoffViaSep(t)
+
+		_, err := e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "return-to-budget", ActorID: "director-1", Comment: "wrong amount"})
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, ErrReturnNotVisited))
+		assert.Equal(t, 0, guard.count(), "the guard must not run when the visited check rejects Move first")
+	})
+
+	t.Run("visited target with a valid comment reaches the guard", func(t *testing.T) {
+		repo := newFakeRepository()
+		e := New(repo, Config{}, testLogger(), WithDefinitions(returnEngineDefinition()))
+		require.NoError(t, e.RegisterGuard("has-subsidy-sep", alwaysFalseGuard)) // case visits "budget", never "sep"
+		guard := &callCountingGuard{}
+		require.NoError(t, e.RegisterGuard("count-calls", guard.fn))
+
+		c := openTestCase(t, e)
+		moveToSignoffViaBudget(t, e, c)
+
+		_, err := e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "return-to-budget", ActorID: "director-1", Comment: "wrong amount"})
+		require.NoError(t, err)
+		assert.Equal(t, 1, guard.count(), "once the comment and visited checks both pass, the guard must run")
+	})
+}
+
+func TestAvailable_Return_HidesUnvisitedShowsVisited(t *testing.T) {
+	repo := newFakeRepository()
+	e := New(repo, Config{}, testLogger(), WithDefinitions(returnEngineDefinition()))
+	require.NoError(t, e.RegisterGuard("has-subsidy-sep", alwaysFalseGuard)) // case never visits "sep"
+	require.NoError(t, e.RegisterGuard("count-calls", alwaysTrueGuard))
+
+	c := openTestCase(t, e)
+	moveToSignoffViaBudget(t, e, c)
+
+	available, err := e.Available(context.Background(), nil, c.ID)
+	require.NoError(t, err)
+
+	actions := make([]string, len(available))
+	for i, tr := range available {
+		actions[i] = tr.Action
+	}
+	assert.ElementsMatch(t, []string{"approve-final", "return-to-review", "return-to-budget"}, actions,
+		"return-to-sep must be hidden: the case never occupied \"sep\"")
+}
+
+func TestAvailable_Return_StillFiltersByGuardWhenVisited(t *testing.T) {
+	repo := newFakeRepository()
+	e := New(repo, Config{}, testLogger(), WithDefinitions(returnEngineDefinition()))
+	require.NoError(t, e.RegisterGuard("has-subsidy-sep", alwaysFalseGuard))
+	require.NoError(t, e.RegisterGuard("count-calls", alwaysFalseGuard)) // return-to-budget's guard rejects
+
+	c := openTestCase(t, e)
+	moveToSignoffViaBudget(t, e, c)
+
+	available, err := e.Available(context.Background(), nil, c.ID)
+	require.NoError(t, err)
+
+	actions := make([]string, len(available))
+	for i, tr := range available {
+		actions[i] = tr.Action
+	}
+	assert.NotContains(t, actions, "return-to-budget", "a return combines with Guard: visited but guard-rejected must still be filtered")
+	assert.Contains(t, actions, "return-to-review", "return-to-review has no guard and must remain available")
+}
+
+func TestMove_Return_GuardRejected_ReturnsErrGuardRejected_EvenWhenVisited(t *testing.T) {
+	repo := newFakeRepository()
+	e := New(repo, Config{}, testLogger(), WithDefinitions(returnEngineDefinition()))
+	require.NoError(t, e.RegisterGuard("has-subsidy-sep", alwaysFalseGuard))
+	require.NoError(t, e.RegisterGuard("count-calls", alwaysFalseGuard))
+
+	c := openTestCase(t, e)
+	moveToSignoffViaBudget(t, e, c)
+
+	_, err := e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "return-to-budget", ActorID: "director-1", Comment: "wrong amount"})
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrGuardRejected))
+}
+
+// listEventsCountingRepository wraps fakeRepository to count ListEvents
+// calls, so a test can prove Available and Move read the case's history at
+// most once per call for the return-visited check, and only when the
+// candidate transitions actually include a return.
+type listEventsCountingRepository struct {
+	*fakeRepository
+	listEventsCalls int
+}
+
+func (r *listEventsCountingRepository) ListEvents(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID) ([]Event, error) {
+	r.listEventsCalls++
+	return r.fakeRepository.ListEvents(ctx, db, caseID)
+}
+
+func TestAvailable_NoReturnCandidates_NeverReadsHistory(t *testing.T) {
+	repo := &listEventsCountingRepository{fakeRepository: newFakeRepository()}
+	e := New(repo, Config{}, testLogger(), WithDefinitions(testDefinition()))
+	require.NoError(t, e.RegisterGuard("under-budget", alwaysTrueGuard))
+
+	c := openTestCase(t, e)
+	_, err := e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "submit", ActorID: "u1"})
+	require.NoError(t, err)
+
+	repo.listEventsCalls = 0
+	_, err = e.Available(context.Background(), nil, c.ID)
+	require.NoError(t, err)
+	assert.Equal(t, 0, repo.listEventsCalls, "Available must never read history when no candidate transition is a return")
+}
+
+func TestAvailable_WithReturnCandidate_ReadsHistoryExactlyOnce(t *testing.T) {
+	repo := &listEventsCountingRepository{fakeRepository: newFakeRepository()}
+	e := New(repo, Config{}, testLogger(), WithDefinitions(returnEngineDefinition()))
+	require.NoError(t, e.RegisterGuard("has-subsidy-sep", alwaysFalseGuard))
+	require.NoError(t, e.RegisterGuard("count-calls", alwaysTrueGuard))
+
+	c := openTestCase(t, e)
+	moveToSignoffViaBudget(t, e, c)
+
+	repo.listEventsCalls = 0
+	_, err := e.Available(context.Background(), nil, c.ID)
+	require.NoError(t, err)
+	assert.Equal(t, 1, repo.listEventsCalls, "Available must read history exactly once, however many return candidates there are")
+}
+
+func TestMove_NonReturnTransition_HistoryReadCount(t *testing.T) {
+	repo := &listEventsCountingRepository{fakeRepository: newFakeRepository()}
+	e := New(repo, Config{}, testLogger(), WithDefinitions(testDefinition()))
+
+	c := openTestCase(t, e)
+	repo.listEventsCalls = 0
+	_, err := e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "submit", ActorID: "u1"})
+	require.NoError(t, err)
+	assert.Equal(t, 1, repo.listEventsCalls, "a non-return move only reads history once, for appendEvent's own nextSeq computation")
+}
+
+func TestMove_ReturnTransition_HistoryReadCount(t *testing.T) {
+	repo := &listEventsCountingRepository{fakeRepository: newFakeRepository()}
+	e := New(repo, Config{}, testLogger(), WithDefinitions(returnEngineDefinition()))
+	require.NoError(t, e.RegisterGuard("has-subsidy-sep", alwaysFalseGuard))
+	require.NoError(t, e.RegisterGuard("count-calls", alwaysTrueGuard))
+
+	c := openTestCase(t, e)
+	moveToSignoffViaBudget(t, e, c)
+
+	repo.listEventsCalls = 0
+	_, err := e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "return-to-budget", ActorID: "director-1", Comment: "wrong amount"})
+	require.NoError(t, err)
+	assert.Equal(t, 2, repo.listEventsCalls, "a return move reads history exactly one extra time (the return-visited check) on top of appendEvent's own nextSeq read")
+}
+
+// TestMove_DecisionHopIntoTerminal_EventClosedActionIsLastRouteHop pins the
+// R2 advisory from T3's review: when a decision hop lands on a terminal
+// node, the automatic EventClosed takes its Action from the LAST hop in the
+// chain (the winning route's own label), never from the human
+// MoveInput.Action that started the move.
+func TestMove_DecisionHopIntoTerminal_EventClosedActionIsLastRouteHop(t *testing.T) {
+	repo := newFakeRepository()
+	e := New(repo, Config{}, testLogger(), WithDefinitions(decisionToTerminalDefinition()))
+	require.NoError(t, e.RegisterGuard("has-subsidy-sep", alwaysFalseGuard))
+
+	c := openTestCase(t, e)
+	_, err := e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "submit", ActorID: "u1"})
+	require.NoError(t, err)
+
+	_, err = e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "approve", ActorID: "u2"})
+	require.NoError(t, err)
+
+	events, err := e.History(context.Background(), nil, c.ID)
+	require.NoError(t, err)
+	last := events[len(events)-1]
+	require.Equal(t, EventClosed, last.Kind)
+	assert.Equal(t, "to-approved", last.Action, "EventClosed.Action must be the last route hop's label")
+	assert.NotEqual(t, "approve", last.Action, "EventClosed.Action must never be the human MoveInput.Action when a route hop followed it")
+}
+
+// TestMove_MultiHopIntoTerminal_SeqStrictlyIncreasing pins the R3 advisory
+// from T3's review: every event one Move call appends shares one OccurredAt
+// timestamp, but Seq still orders them strictly — the human hop, then the
+// automatic route hop, then the automatic close.
+func TestMove_MultiHopIntoTerminal_SeqStrictlyIncreasing(t *testing.T) {
+	repo := newFakeRepository()
+	e := New(repo, Config{}, testLogger(), WithDefinitions(decisionToTerminalDefinition()))
+	require.NoError(t, e.RegisterGuard("has-subsidy-sep", alwaysFalseGuard))
+
+	c := openTestCase(t, e)
+	_, err := e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "submit", ActorID: "u1"})
+	require.NoError(t, err)
+	_, err = e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "approve", ActorID: "u2"})
+	require.NoError(t, err)
+
+	events, err := e.History(context.Background(), nil, c.ID)
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, len(events), 3)
+	for i := 1; i < len(events); i++ {
+		assert.Equal(t, events[i-1].Seq+1, events[i].Seq, "Seq must increase by exactly one per event, in append order (event %d)", i)
+	}
+
+	last3 := events[len(events)-3:]
+	assert.Equal(t, EventMoved, last3[0].Kind)
+	assert.Equal(t, "approve", last3[0].Action)
+	assert.Equal(t, EventMoved, last3[1].Kind)
+	assert.Equal(t, "to-approved", last3[1].Action)
+	assert.Equal(t, EventClosed, last3[2].Kind)
+	assert.Equal(t, last3[0].OccurredAt, last3[1].OccurredAt, "all hops of one Move share one timestamp")
+	assert.Equal(t, last3[1].OccurredAt, last3[2].OccurredAt, "the automatic close shares that same timestamp")
+	assert.Less(t, last3[0].Seq, last3[1].Seq, "Seq, not OccurredAt, orders same-timestamp events")
+	assert.Less(t, last3[1].Seq, last3[2].Seq)
+}
+
 func TestOpen_UsesLatestVersionWhenUnpinned(t *testing.T) {
 	repo := newFakeRepository()
 	e := New(repo, Config{}, testLogger())

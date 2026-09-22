@@ -247,6 +247,24 @@ type Transition struct {
 	// leaving a decision node — a route is domain-data routing, not a human
 	// action, so it has nothing to comment on.
 	Comment CommentPolicy
+	// Return marks this transition as a return to an earlier stage of the
+	// process (a bureaucratic sign-off sending a case back to a decision
+	// stage it already passed through, for example). Engine.Available
+	// offers it, and Engine.Move accepts it, ONLY if the case previously
+	// occupied To — determined from the case's own event history, never
+	// merely because To is reachable in the Definition's graph — so a
+	// return is never offered (and never accepted) for a node the case
+	// happened to skip. A return whose To the case never occupied fails
+	// Move with ErrReturnNotVisited, without mutating the case or
+	// appending any event. Return combines with Guard (both must pass) and
+	// with Comment (a return will typically be CommentRequired, so the
+	// rejection's reason is recorded) exactly like any ordinary
+	// transition; see Engine.Move's doc comment for the exact check
+	// ordering. Definition.Validate rejects a return transition that
+	// originates from a decision node (a route routes automatically on
+	// domain data; a return is a human action) or that targets a terminal
+	// node.
+	Return bool
 }
 
 // Definition describes one version of a workflow: its nodes, and the
@@ -416,6 +434,12 @@ func (d Definition) Validate() error {
 		if fromOK && fromNode.Kind == NodeDecision && tr.Comment.Canonical() != CommentNone {
 			addf("transition[%d]: route from decision node %q must not declare a comment policy", i, tr.From)
 		}
+		if fromOK && fromNode.Kind == NodeDecision && tr.Return {
+			addf("transition[%d]: route from decision node %q must not be a return transition", i, tr.From)
+		}
+		if toOK && toNode.Terminal && tr.Return {
+			addf("transition[%d]: return transition must not target terminal node %q", i, tr.To)
+		}
 		if fromOK && toOK && fromNode.Kind == NodeDecision && toNode.Kind == NodeDecision {
 			decisionAdjacency[tr.From] = append(decisionAdjacency[tr.From], tr.To)
 		}
@@ -577,8 +601,17 @@ type Case struct {
 
 // Event is a single append-only history record for a Case.
 type Event struct {
-	ID        uuid.UUID
-	CaseID    uuid.UUID
+	ID     uuid.UUID
+	CaseID uuid.UUID
+	// Seq is the case-scoped, gap-free, strictly increasing sequence number
+	// that orders a case's events — the sole ordering key. Every event
+	// appended by one Engine.Move call (the human-driven hop, each
+	// automatic decision-node hop after it, and any automatic EventClosed)
+	// shares the exact same OccurredAt timestamp (see Engine.appendEvent),
+	// so a caller must never sort by OccurredAt to recover hop order within
+	// one Move; Seq, assigned in append order (see Engine.nextSeq), is what
+	// makes that order recoverable. workflow/postgres.ListEvents orders its
+	// query by `seq ASC` for exactly this reason (see repository.go).
 	Seq       int64
 	Kind      EventKind
 	FromState string
@@ -611,6 +644,7 @@ var (
 	ErrCommentNotAllowed       = errors.New("workflow: comment is not allowed for this transition")
 	ErrNoRoute                 = errors.New("workflow: no route matched at decision node")
 	ErrTooManyDecisionHops     = errors.New("workflow: exceeded maximum decision node hops")
+	ErrReturnNotVisited        = errors.New("workflow: case never occupied the return transition's target node")
 )
 
 // GuardFunc evaluates whether a transition may be taken for the given case.

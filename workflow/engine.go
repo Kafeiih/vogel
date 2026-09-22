@@ -234,8 +234,12 @@ func (e *Engine) Open(ctx context.Context, db pgxtx.DBTX, in OpenInput) (*Case, 
 }
 
 // Available returns the transitions leaving the case's current state whose
-// guard (if any) currently evaluates true. A guard returning an error aborts
-// the whole call.
+// guard (if any) currently evaluates true. A return transition (Transition.
+// Return) is filtered out unless the case previously occupied its To node
+// (see occupiedStates) — checked before the guard, exactly like Engine.Move
+// orders the same two checks. A guard returning an error aborts the whole
+// call. The case's event history is read at most once, and only when at
+// least one candidate transition is a return.
 func (e *Engine) Available(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID) ([]Transition, error) {
 	c, err := e.repo.GetByID(ctx, db, caseID)
 	if err != nil {
@@ -248,8 +252,20 @@ func (e *Engine) Available(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID)
 	}
 
 	candidates := d.TransitionsFrom(c.State)
+
+	var occupied map[string]bool
+	if hasReturnTransition(candidates) {
+		occupied, err = e.occupiedStates(ctx, db, caseID)
+		if err != nil {
+			return nil, fmt.Errorf("workflow: available transitions: %w", err)
+		}
+	}
+
 	out := make([]Transition, 0, len(candidates))
 	for _, tr := range candidates {
+		if tr.Return && !occupied[tr.To] {
+			continue
+		}
 		if tr.Guard == "" {
 			out = append(out, tr)
 			continue
@@ -268,6 +284,54 @@ func (e *Engine) Available(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID)
 		}
 	}
 	return out, nil
+}
+
+// hasReturnTransition reports whether any transition in candidates is a
+// return transition. Available and Move both call this before reading the
+// case's event history, so that read only ever happens when it can actually
+// affect the result.
+func hasReturnTransition(candidates []Transition) bool {
+	for _, tr := range candidates {
+		if tr.Return {
+			return true
+		}
+	}
+	return false
+}
+
+// occupiedStates returns the set of node IDs the case identified by caseID
+// has ever occupied, derived entirely from its own event history: the node
+// it was opened at (EventOpened.ToState), plus every EventMoved record's
+// FromState and ToState. It is the single source of truth Transition.Return
+// checks against — never the Definition's graph reachability — so a return
+// is only ever offered or accepted for a node this specific case actually
+// passed through.
+func (e *Engine) occupiedStates(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID) (map[string]bool, error) {
+	events, err := e.repo.ListEvents(ctx, db, caseID)
+	if err != nil {
+		return nil, fmt.Errorf("workflow: resolve occupied states: %w", err)
+	}
+
+	occupied := make(map[string]bool, len(events))
+	// Indexed rather than ranged by value, like nextSeqFromEvents: Event is
+	// 144 bytes and only Kind/FromState/ToState are read here, over a case
+	// history that grows without bound.
+	for i := range events {
+		switch events[i].Kind {
+		case EventOpened:
+			occupied[events[i].ToState] = true
+		case EventMoved:
+			occupied[events[i].FromState] = true
+			occupied[events[i].ToState] = true
+		default:
+			// EventAssigned, EventUnassigned, and EventClosed never
+			// represent the case resting on a new node: EventClosed shares
+			// its FromState/ToState with the terminal node's own EventMoved
+			// (already counted), and Assigned/Unassigned carry the current
+			// state unchanged.
+		}
+	}
+	return occupied, nil
 }
 
 // maxDecisionHops bounds how many decision-node routing hops Move will
@@ -316,6 +380,20 @@ type MoveInput struct {
 // Assignment is always cleared on a move, since a new node means a new
 // claim.
 //
+// The human-driven transition is checked in a fixed order before anything
+// is mutated: first its CommentPolicy (see checkComment), then — only if it
+// is a return transition (Transition.Return) — whether the case previously
+// occupied its To node (see occupiedStates), then its Guard, if any. A
+// return whose target the case never occupied fails with
+// ErrReturnNotVisited before the guard ever runs, exactly like a rejected
+// comment fails before the guard runs; either failure leaves the case and
+// its history completely untouched. A return transition that passes all
+// three checks is applied exactly like any other move: Deadline and
+// eligibility are recomputed for the node the case comes to rest on, and
+// assignment is cleared, same as always — Move has no separate "undo"
+// semantics for a return, it is just an ordinary transition whose
+// destination happens to be an earlier node in the case's own history.
+//
 // Each hop along the way — the initial human-driven move and every
 // automatic decision-node hop after it — appends its own EventMoved, with
 // Action set to that hop's transition (or route) label and ActorID set to
@@ -331,6 +409,15 @@ type MoveInput struct {
 // guard's own error, or ErrNoRoute) and leaves the case and its history
 // completely untouched: the whole hop chain is planned in memory, in
 // planMove, before anything is written.
+//
+// When the hop chain ends on a terminal node, the automatic EventClosed
+// Move appends takes its Action from the LAST hop in the chain: the final
+// automatic decision-node route's label when the human-driven transition
+// landed on a decision node and routing continued from there, or the
+// human-driven transition's own Action (in.Action) when it landed on the
+// terminal node directly with no further hops. EventClosed.Action never
+// repeats in.Action once a route hop followed it — it describes how the
+// case actually reached the terminal node, not what the human asked for.
 func (e *Engine) Move(ctx context.Context, db pgxtx.DBTX, in MoveInput) (*Case, error) {
 	c, err := e.repo.GetByID(ctx, db, in.CaseID)
 	if err != nil {
@@ -356,6 +443,18 @@ func (e *Engine) Move(ctx context.Context, db pgxtx.DBTX, in MoveInput) (*Case, 
 	comment := strings.TrimSpace(in.Comment)
 	if err := checkComment(transition.Comment, comment); err != nil {
 		return nil, fmt.Errorf("workflow: move case %s: %w", c.ID, err)
+	}
+
+	// A return transition is checked next, before the guard: the case's
+	// event history is read only for a transition that actually needs it.
+	if transition.Return {
+		occupied, err := e.occupiedStates(ctx, db, in.CaseID)
+		if err != nil {
+			return nil, fmt.Errorf("workflow: move case %s: %w", c.ID, err)
+		}
+		if !occupied[transition.To] {
+			return nil, fmt.Errorf("workflow: move case %s: %w", c.ID, ErrReturnNotVisited)
+		}
 	}
 
 	if transition.Guard != "" {
@@ -555,7 +654,8 @@ func (e *Engine) Release(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID, a
 	return c, nil
 }
 
-// History returns every event recorded for caseID, ordered by Seq ascending.
+// History returns every event recorded for caseID, ordered by Seq ascending
+// — see Event.Seq for why Seq, rather than OccurredAt, is the ordering key.
 func (e *Engine) History(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID) ([]Event, error) {
 	events, err := e.repo.ListEvents(ctx, db, caseID)
 	if err != nil {

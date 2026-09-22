@@ -485,6 +485,83 @@ func TestDefinition_Validate_RejectsDecisionNodeViolations(t *testing.T) {
 	}
 }
 
+// returnDefinition returns a Definition exercising a D4 return transition:
+// after the decision node "route" sends the case to "sep" or "budget", both
+// lead to the bureaucratic task node "signoff", which can approve straight
+// to "approved" or return the case to any earlier decision stage it
+// actually visited — "review", "sep", or "budget" — via a Return
+// transition. Each return requires an observation (CommentRequired),
+// mirroring the real consumer's bureaucratic-rejection intent.
+func returnDefinition() Definition {
+	return Definition{
+		Name:    "purchase",
+		Version: 1,
+		Nodes: []Node{
+			{ID: "draft", Start: true, Eligible: ByPosition("buyer")},
+			{ID: "review", Eligible: ByPositionInUnit("approver", "finance")},
+			{ID: "route", Kind: NodeDecision},
+			{ID: "sep", Eligible: ByPosition("sep-coordinator")},
+			{ID: "budget", Eligible: ByPosition("budget-analyst")},
+			{ID: "signoff", Eligible: ByPosition("director")},
+			{ID: "approved", Terminal: true},
+		},
+		Transitions: []Transition{
+			{From: "draft", To: "review", Action: "submit"},
+			{From: "review", To: "route", Action: "approve"},
+			{From: "route", To: "sep", Action: "to-sep", Guard: "has-subsidy-sep"},
+			{From: "route", To: "budget", Action: "to-budget"},
+			{From: "sep", To: "signoff", Action: "clear"},
+			{From: "budget", To: "signoff", Action: "clear"},
+			{From: "signoff", To: "approved", Action: "approve-final"},
+			{From: "signoff", To: "review", Action: "return-to-review", Return: true, Comment: CommentRequired},
+			{From: "signoff", To: "sep", Action: "return-to-sep", Return: true, Comment: CommentRequired},
+			{From: "signoff", To: "budget", Action: "return-to-budget", Return: true, Comment: CommentRequired},
+		},
+	}
+}
+
+func TestDefinition_Validate_ReturnDefinition_ReturnsNil(t *testing.T) {
+	assert.NoError(t, returnDefinition().Validate())
+}
+
+func TestDefinition_Validate_RejectsReturnViolations(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(Definition) Definition
+		wantSub string
+	}{
+		{
+			name: "return transition from a decision node's route",
+			mutate: func(d Definition) Definition {
+				// route -> budget (the decision node's default route) is
+				// marked as a return: a route routes automatically on
+				// domain data, so it cannot also be a human return action.
+				d.Transitions[3].Return = true
+				return d
+			},
+			wantSub: `route from decision node "route" must not be a return transition`,
+		},
+		{
+			name: "return transition targeting a terminal node",
+			mutate: func(d Definition) Definition {
+				d.Transitions[7].To = "approved"
+				return d
+			},
+			wantSub: `return transition must not target terminal node "approved"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := tt.mutate(returnDefinition())
+			err := d.Validate()
+			require.Error(t, err)
+			assert.True(t, errors.Is(err, ErrInvalidDefinition), "error must wrap ErrInvalidDefinition")
+			assert.Contains(t, err.Error(), tt.wantSub)
+		})
+	}
+}
+
 func TestDefinition_StartNode(t *testing.T) {
 	d := validDefinition()
 
