@@ -22,9 +22,17 @@ var forbiddenConstructorCall = regexp.MustCompile(`decimal\s*\.\s*(NewFromString
 // AssertNoDirectNewFromString fails t if any of decimal.NewFromString,
 // decimal.RequireFromString, or decimal.NewFromFormattedString — the three
 // shopspring/decimal string constructors — is called anywhere in a .go file
-// (excluding _test.go files) under root/dir, for every dir in dirs, with one
-// exception: the decimalx package's own directory (root/decimalx) is never
-// scanned, since it is the only package allowed to call them directly.
+// (excluding _test.go files) under root/dir, for every dir in dirs, with
+// these exceptions:
+//
+//   - the decimalx package's own directory (root/decimalx) is never scanned,
+//     since it is the only package allowed to call them directly;
+//   - hidden directories (.git, .codegraph, ...) are never scanned;
+//   - a directory named "vendor" is never scanned, since it holds vendored
+//     dependency source, not this repository's own code;
+//   - a directory named "testdata" is never scanned, since Go itself treats
+//     it as fixture data rather than compiled package source, and it may
+//     deliberately contain sample files that use these constructors.
 //
 // A dir that does not exist under root is silently skipped, so a caller can
 // pass a fixed list of top-level directories (or "." for the whole module)
@@ -40,7 +48,7 @@ var forbiddenConstructorCall = regexp.MustCompile(`decimal\s*\.\s*(NewFromString
 // # What this guard CANNOT detect
 //
 // This is a source-text regex over unmodified .go files, not a type-aware
-// analysis, so it has two known blind spots:
+// analysis, so it has known blind spots:
 //
 //   - An aliased import of shopspring/decimal (e.g. `d
 //     "github.com/shopspring/decimal"`) changes the call site's spelling to
@@ -54,6 +62,16 @@ var forbiddenConstructorCall = regexp.MustCompile(`decimal\s*\.\s*(NewFromString
 //     decimalx.ValidateAmount) on the decoded value; this guard cannot
 //     enforce that requirement structurally, only convention and code review
 //     can.
+//
+// In the opposite direction, this guard is also OVER-inclusive: because it
+// matches raw source text rather than parsed Go syntax, it flags a
+// forbidden constructor's name even when it appears inside a comment or a
+// string literal in a scanned, non-test .go file — not just in an actual
+// call expression. A file that legitimately needs to mention
+// "decimal.NewFromString" in prose (a comment explaining what NOT to do, for
+// example) will fail this guard exactly as if it called it; the fix is to
+// reword the mention (or move it into a _test.go file, which is never
+// scanned) rather than to treat the failure as a false positive.
 func AssertNoDirectNewFromString(t testing.TB, root string, dirs ...string) {
 	t.Helper()
 	selfDir := filepath.Join(root, "decimalx")
@@ -72,9 +90,14 @@ func AssertNoDirectNewFromString(t testing.TB, root string, dirs ...string) {
 				if path == selfDir {
 					return filepath.SkipDir
 				}
-				// Skip hidden directories (.git, .codegraph, ...) so a
-				// caller can safely pass "." to scan an entire module.
-				if path != base && strings.HasPrefix(info.Name(), ".") {
+				// Skip hidden directories (.git, .codegraph, ...), vendor/
+				// (vendored dependency source, not this repository's code)
+				// and testdata/ (fixture data, not compiled package
+				// source), so a caller can safely pass "." to scan an
+				// entire module. A dir passed explicitly as one of dirs is
+				// still scanned even if it happens to be named this way,
+				// exactly like the hidden-directory rule below.
+				if path != base && (strings.HasPrefix(info.Name(), ".") || info.Name() == "vendor" || info.Name() == "testdata") {
 					return filepath.SkipDir
 				}
 				return nil

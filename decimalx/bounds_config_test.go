@@ -173,28 +173,59 @@ func TestNewBounds_ExponentCeiling(t *testing.T) {
 
 // TestNewBounds_CeilingStaysCheapToRound verifies the ceiling's own promise:
 // a Bounds built at the maximum exponent range NewBounds allows still lets
-// 10^1000 be parsed, bounds-checked and rounded well under the timing
-// budget, so widening the range all the way to the ceiling never reopens the
-// hang this package exists to prevent.
+// 10^1000 (and 10^-1000, the symmetric negative-exponent edge) be parsed,
+// bounds-checked and rounded well under the timing budget, so widening the
+// range all the way to the ceiling never reopens the hang this package
+// exists to prevent.
+//
+// The worker goroutine below only sends its outcomes over a channel; it
+// never calls t.Errorf/t.Fatal itself. Every assertion runs in the test
+// goroutine after receiving, so a timeout (the failure this test exists to
+// catch) can never race a call to t.Errorf from a goroutine that outlives
+// the test, which would otherwise panic with "log after test has
+// completed".
 func TestNewBounds_CeilingStaysCheapToRound(t *testing.T) {
 	b, err := decimalx.NewBounds(32, -decimalx.MaxExponentLimit, decimalx.MaxExponentLimit)
 	if err != nil {
 		t.Fatalf("NewBounds at the ceiling: err = %v, want nil", err)
 	}
 
-	done := make(chan struct{})
+	type outcome struct {
+		name string
+		err  error
+	}
+
+	done := make(chan []outcome, 1)
 	go func() {
-		if _, err := b.ParseAmount("1e1000", 2); err != nil {
-			t.Errorf("ParseAmount(1e1000, 2) at the ceiling err = %v, want nil", err)
-		}
-		if err := b.ValidateAmount(decimal.New(1, 1000), 2); err != nil {
-			t.Errorf("ValidateAmount(1e1000, 2) at the ceiling err = %v, want nil", err)
-		}
-		close(done)
+		outcomes := make([]outcome, 0, 4)
+
+		_, parseErr := b.ParseAmount("1e1000", 2)
+		outcomes = append(outcomes, outcome{"ParseAmount(1e1000, 2) at the positive exponent ceiling", parseErr})
+
+		outcomes = append(outcomes, outcome{
+			"ValidateAmount(decimal.New(1, 1000), 2) at the positive exponent ceiling",
+			b.ValidateAmount(decimal.New(1, 1000), 2),
+		})
+
+		_, parseNegErr := b.Parse("1e-1000")
+		outcomes = append(outcomes, outcome{"Parse(1e-1000) at the negative exponent ceiling", parseNegErr})
+
+		outcomes = append(outcomes, outcome{
+			"ValidateBounds(decimal.New(1, -1000)) at the negative exponent ceiling",
+			b.ValidateBounds(decimal.New(1, -1000)),
+		})
+
+		done <- outcomes
 	}()
+
 	select {
-	case <-done:
+	case outcomes := <-done:
+		for _, o := range outcomes {
+			if o.err != nil {
+				t.Errorf("%s: err = %v, want nil", o.name, o.err)
+			}
+		}
 	case <-time.After(timingBudget):
-		t.Fatal("ParseAmount/ValidateAmount at the exponent ceiling did not return within the timing budget")
+		t.Fatal("ParseAmount/ValidateAmount/Parse/ValidateBounds at the exponent ceiling did not return within the timing budget")
 	}
 }
