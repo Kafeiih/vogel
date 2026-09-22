@@ -73,7 +73,9 @@ func JSONWithLimit(w http.ResponseWriter, r *http.Request, data any, maxBytes in
 
 // JSONOptional decodes the request body into data like JSON, but treats an
 // empty body as success instead of an error: it writes nothing to w, returns
-// nil, and leaves data untouched (at its zero value). This is for endpoints
+// nil, and leaves data exactly as the caller passed it — it is not reset, so
+// a destination reused across requests keeps its previous values. Pass a
+// fresh (zero) value to get defaults for an absent body. This is for endpoints
 // where the body itself is optional — a PATCH with no fields to update, for
 // example — as opposed to a required body that happens to be malformed,
 // which is still a 400 exactly like JSON.

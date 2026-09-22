@@ -25,7 +25,7 @@ type errorEnvelope struct {
 
 // TestJSONOptional_EmptyBody verifies the defining behavior of JSONOptional:
 // an empty body is not an error. Nothing is written to the response and the
-// destination is left at its zero value, so a handler can tell "the client
+// destination is left exactly as passed, so a handler can tell "the client
 // sent nothing" apart from "the client sent something invalid".
 func TestJSONOptional_EmptyBody(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(nil))

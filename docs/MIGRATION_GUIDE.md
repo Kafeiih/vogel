@@ -515,7 +515,8 @@ dec := request.New(request.WithMessages(request.Messages{
     Required:  func(field string) string { return field + " es obligatorio" },
 }))
 
-// En el handler: cuerpo vacío => nil, sin escribir nada, input queda en cero.
+// En el handler: cuerpo vacío => nil, sin escribir nada, input queda tal como
+// se pasó (no se resetea): declararlo en cero dentro del handler.
 if err := dec.JSONOptional(w, r, &input); err != nil {
     return
 }
