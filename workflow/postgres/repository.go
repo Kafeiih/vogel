@@ -18,7 +18,7 @@ import (
 const caseColumns = `id, definition, version, domain, external_id, unit, state, status,
     assigned_to, opened_at, closed_at, deadline_at`
 
-const eventColumns = `id, case_id, seq, kind, from_state, to_state, action, actor_id, occurred_at`
+const eventColumns = `id, case_id, seq, kind, from_state, to_state, action, actor_id, occurred_at, comment`
 
 // uniqueViolationCode is the PostgreSQL error code for a unique constraint
 // violation (23505).
@@ -112,12 +112,12 @@ func (r *Repository) Update(ctx context.Context, db pgxtx.DBTX, c *workflow.Case
 // e.Seq is overwritten with the value actually persisted.
 func (r *Repository) AppendEvent(ctx context.Context, db pgxtx.DBTX, e *workflow.Event) error {
 	row := db.QueryRow(ctx, `
-        INSERT INTO workflow_event (id, case_id, seq, kind, from_state, to_state, action, actor_id, occurred_at)
+        INSERT INTO workflow_event (id, case_id, seq, kind, from_state, to_state, action, actor_id, occurred_at, comment)
         VALUES ($1, $2,
             COALESCE((SELECT MAX(seq) FROM workflow_event WHERE case_id = $2), 0) + 1,
-            $3, $4, $5, $6, $7, $8)
+            $3, $4, $5, $6, $7, $8, $9)
         RETURNING seq`,
-		e.ID, e.CaseID, string(e.Kind), e.FromState, e.ToState, e.Action, e.ActorID, e.OccurredAt,
+		e.ID, e.CaseID, string(e.Kind), e.FromState, e.ToState, e.Action, e.ActorID, e.OccurredAt, e.Comment,
 	)
 
 	var seq int64
@@ -217,7 +217,7 @@ func scanEvent(row rowScanner) (*workflow.Event, error) {
 	var e workflow.Event
 	var kind string
 	if err := row.Scan(
-		&e.ID, &e.CaseID, &e.Seq, &kind, &e.FromState, &e.ToState, &e.Action, &e.ActorID, &e.OccurredAt,
+		&e.ID, &e.CaseID, &e.Seq, &kind, &e.FromState, &e.ToState, &e.Action, &e.ActorID, &e.OccurredAt, &e.Comment,
 	); err != nil {
 		return nil, err
 	}

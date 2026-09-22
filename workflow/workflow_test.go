@@ -184,6 +184,14 @@ func TestDefinition_Validate_RejectsViolations(t *testing.T) {
 			},
 			wantSub: "deadline must not be negative",
 		},
+		{
+			name: "invalid comment policy",
+			mutate: func(d Definition) Definition {
+				d.Transitions[1].Comment = CommentPolicy("bogus")
+				return d
+			},
+			wantSub: "invalid comment policy",
+		},
 	}
 
 	for _, tt := range tests {
@@ -256,6 +264,14 @@ func TestEventKind_Valid(t *testing.T) {
 	assert.True(t, EventUnassigned.Valid())
 	assert.True(t, EventClosed.Valid())
 	assert.False(t, EventKind("bogus").Valid())
+}
+
+func TestCommentPolicy_Valid(t *testing.T) {
+	assert.True(t, CommentNone.Valid())
+	assert.True(t, CommentPolicy("none").Valid())
+	assert.True(t, CommentOptional.Valid())
+	assert.True(t, CommentRequired.Valid())
+	assert.False(t, CommentPolicy("bogus").Valid())
 }
 
 func TestDefinition_TransitionsFrom(t *testing.T) {
