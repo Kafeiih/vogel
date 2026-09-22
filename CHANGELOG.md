@@ -4,7 +4,7 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el versionado,
 [SemVer](https://semver.org/lang/es/).
 
-## [Unreleased] — v0.4.0
+## [0.4.0] — 2026-09-22
 
 Cierra las brechas que impedían a go-crucible borrar sus forks locales de
 `request` y `httpx/response`. Compatible hacia atrás: con opciones por defecto,
