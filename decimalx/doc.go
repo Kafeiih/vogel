@@ -44,15 +44,28 @@
 // not persisted as money: a query filter, a third-party feed with its own
 // contract.
 //
+// The bounds check runs BEFORE the money rule, which has a consequence worth
+// stating plainly: padding a literal with zeros beyond the configured
+// exponent bound is rejected by the bounds check, even when the padded value
+// is exact at the target scale. "100.500" (exponent -3) is within the
+// default [-8, 8] range and accepted; "100.000000000" (exponent -9) is
+// rejected with ErrOutOfRange despite being equally exact at scale 2,
+// because the exponent bound applies to the literal, not to the value's
+// worth once rounded.
+//
 // # Bounds cannot be switched off
 //
 // The default bounds (DefaultBounds) allow a 32-character coefficient and an
 // exponent in [-8, 8] — generous for any legitimate amount, and both O(1) to
 // check. A caller may override them through NewBounds, but NewBounds rejects
-// an unbounded or inverted configuration (a zero or negative length, or
-// minExp > maxExp): a library must never let a caller disable its own
-// anti-DoS guard. Bounds' fields are unexported, and every method treats a
-// zero-value Bounds (however a caller ends up with one — a bare var, or a
-// discarded NewBounds error) as DefaultBounds, so there is no way to reach
-// an unbounded parser through this package's exported API.
+// an unbounded or inverted configuration (a zero or negative length, minExp >
+// maxExp, or either bound crossing MaxExponentLimit — a hard ceiling of
+// ±1000, since even 10^1000 stays microseconds-cheap to round and print): a
+// library must never let a caller disable its own anti-DoS guard. Bounds'
+// fields are unexported, and every method treats a zero-value Bounds
+// (however a caller ends up with one — a bare var, or a discarded NewBounds
+// error) as DefaultBounds. Between the zero-value fallback and the
+// MaxExponentLimit ceiling, there is no way to reach an unbounded parser
+// through this package's exported API: every Bounds value, constructed or
+// not, keeps Parse, ValidateBounds, ValidateAmount and ParseAmount cheap.
 package decimalx

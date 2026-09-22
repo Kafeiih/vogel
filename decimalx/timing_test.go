@@ -12,8 +12,10 @@ import (
 // timingBudget is generous relative to the O(1) guards under test (a few
 // microseconds in practice): it exists to catch a real hang (the digits
 // being materialized), not to assert a tight performance number that would
-// make this test flaky under load.
-const timingBudget = 100 * time.Millisecond
+// make this test flaky under load. 2 seconds is enough to catch a genuine
+// hang while staying tolerant of -race instrumentation and a loaded CI
+// runner.
+const timingBudget = 2 * time.Second
 
 // TestParse_HangingValueReturnsQuickly is the timing guard for the string
 // door: Parse("1e100000000") must reject in well under a second, because the

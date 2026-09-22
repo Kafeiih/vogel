@@ -42,6 +42,15 @@ const (
 	defaultMaxExp = 8
 )
 
+// MaxExponentLimit is the hard ceiling NewBounds enforces on minExp and
+// maxExp: NewBounds rejects any configuration with minExp < -MaxExponentLimit
+// or maxExp > MaxExponentLimit with ErrInvalidBounds, regardless of what a
+// caller requests. 10^1000 still materializes in microseconds, so any Bounds
+// reachable through this package's exported API stays cheap to round and
+// print — the ceiling is what keeps NewBounds from being usable to reopen the
+// exact DoS this package exists to close (see the package doc).
+const MaxExponentLimit int32 = 1000
+
 // Bounds configures the limits Parse, ValidateBounds, ValidateAmount and
 // ParseAmount enforce: the maximum coefficient length (MaxLen, as returned
 // by decimal.Decimal.NumDigits) and the exponent range [MinExp, MaxExp].
@@ -66,16 +75,22 @@ func DefaultBounds() Bounds {
 }
 
 // NewBounds builds a custom Bounds. It rejects any configuration that would
-// disable the anti-DoS guard: maxLen must be positive, and minExp must not
-// exceed maxExp. On error it returns the zero-value Bounds, which — per this
-// package's safety guarantee — still behaves like DefaultBounds if a caller
-// discards the error and uses it anyway.
+// disable the anti-DoS guard: maxLen must be positive, minExp must not exceed
+// maxExp, and neither minExp nor maxExp may cross MaxExponentLimit (a hard
+// ceiling of ±1000 — see MaxExponentLimit's doc for why). On error it returns
+// the zero-value Bounds, which — per this package's safety guarantee — still
+// behaves like DefaultBounds if a caller discards the error and uses it
+// anyway.
 func NewBounds(maxLen int, minExp, maxExp int32) (Bounds, error) {
 	if maxLen <= 0 {
 		return Bounds{}, fmt.Errorf("%w: maxLen must be positive, got %d", ErrInvalidBounds, maxLen)
 	}
 	if minExp > maxExp {
 		return Bounds{}, fmt.Errorf("%w: minExp (%d) must not exceed maxExp (%d)", ErrInvalidBounds, minExp, maxExp)
+	}
+	if minExp < -MaxExponentLimit || maxExp > MaxExponentLimit {
+		return Bounds{}, fmt.Errorf("%w: exponent range [%d, %d] exceeds the hard ceiling of ±%d",
+			ErrInvalidBounds, minExp, maxExp, MaxExponentLimit)
 	}
 	return Bounds{maxLen: maxLen, minExp: minExp, maxExp: maxExp}, nil
 }
@@ -178,6 +193,13 @@ func (b Bounds) ValidateBounds(d decimal.Decimal) error {
 // That is not a DoS concern: ValidateBounds already ran, so Round always
 // operates on a coefficient of at most MaxLen digits, regardless of scale's
 // sign.
+//
+// Because ValidateBounds runs FIRST, padding a literal with zeros beyond the
+// configured exponent bound is rejected by the bounds check, not by this
+// rule, even when the padded value is exact at scale: "100.500" (exponent
+// -3) is within the default [-8, 8] range and accepted, but
+// "100.000000000" (exponent -9) is rejected with ErrOutOfRange before this
+// method's own criterion ever runs, despite being equally exact at scale 2.
 func (b Bounds) ValidateAmount(d decimal.Decimal, scale int32) error {
 	b = b.effective()
 	if err := b.ValidateBounds(d); err != nil {
@@ -198,6 +220,12 @@ func (b Bounds) ValidateAmount(d decimal.Decimal, scale int32) error {
 // performed; that is intentional (see the package doc) and cheap: it is
 // O(1) and cannot change the result, since Parse already guaranteed d
 // satisfies b's bounds.
+//
+// As with ValidateAmount, a literal padded with zeros beyond the configured
+// exponent bound is rejected by that same bounds check, before the money
+// rule gets a chance to accept it: "100.000000000" is exact at scale 2 but
+// its exponent (-9) exceeds the default minExp of -8, so it is rejected with
+// ErrOutOfRange.
 func (b Bounds) ParseAmount(s string, scale int32) (decimal.Decimal, error) {
 	b = b.effective()
 	d, err := b.Parse(s)

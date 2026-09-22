@@ -307,3 +307,31 @@ func TestValidateAmount_NegativeScale(t *testing.T) {
 		t.Errorf("ValidateAmount(1234, -2) err = %v, want ErrTooManyDecimals", err)
 	}
 }
+
+// TestPaddingBeyondTheExponentBoundIsRejectedByBoundsFirst pins the exact
+// edge where "pad with zeros" stops being harmless. The exponent bound
+// applies to the LITERAL's exponent, not to whether the value happens to be
+// exact at the target scale, and ValidateBounds runs BEFORE the money rule
+// (see ValidateAmount/ParseAmount's doc). "100.500" has exponent -3, well
+// within the default [-8, 8] range, and is exact at scale 2, so it is
+// accepted. "100.000000000" (9 fractional zeros) is ALSO exact at scale 2 —
+// 100 dollars, nothing lost by rounding — but its literal's exponent is -9,
+// one past the default minExp of -8, so it is rejected with ErrOutOfRange by
+// the bounds check, and the money rule never gets a chance to accept it.
+// This is ported as-is from go-crucible and is intentional: the bounds check
+// does not know or care that the value would survive rounding to scale.
+func TestPaddingBeyondTheExponentBoundIsRejectedByBoundsFirst(t *testing.T) {
+	if _, err := decimalx.ParseAmount("100.500", 2); err != nil {
+		t.Fatalf("ParseAmount(100.500, 2) err = %v, want nil: exponent -3 is within the default bounds", err)
+	}
+	if _, err := decimalx.ParseAmount("100.000000000", 2); !errors.Is(err, decimalx.ErrOutOfRange) {
+		t.Fatalf("ParseAmount(100.000000000, 2) err = %v, want ErrOutOfRange: exponent -9 exceeds the default minExp of -8", err)
+	}
+
+	if err := decimalx.ValidateAmount(decimal.RequireFromString("100.500"), 2); err != nil {
+		t.Fatalf("ValidateAmount(100.500, 2) err = %v, want nil", err)
+	}
+	if err := decimalx.ValidateAmount(decimal.RequireFromString("100.000000000"), 2); !errors.Is(err, decimalx.ErrOutOfRange) {
+		t.Fatalf("ValidateAmount(100.000000000, 2) err = %v, want ErrOutOfRange", err)
+	}
+}
