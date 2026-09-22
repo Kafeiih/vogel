@@ -258,7 +258,7 @@ func (e *Engine) Available(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID)
 		if err != nil {
 			return nil, err
 		}
-		ok, err := fn(ctx, *c)
+		ok, err := fn(ctx, db, *c)
 		if err != nil {
 			return nil, fmt.Errorf("workflow: available transitions: guard %q: %w", tr.Guard, err)
 		}
@@ -303,7 +303,7 @@ func (e *Engine) Move(ctx context.Context, db pgxtx.DBTX, in MoveInput) (*Case, 
 		if err != nil {
 			return nil, err
 		}
-		ok, err := fn(ctx, *c)
+		ok, err := fn(ctx, db, *c)
 		if err != nil {
 			return nil, fmt.Errorf("workflow: move case %s: guard %q: %w", c.ID, transition.Guard, err)
 		}

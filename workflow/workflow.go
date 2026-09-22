@@ -362,7 +362,15 @@ var (
 
 // GuardFunc evaluates whether a transition may be taken for the given case.
 // An error aborts the caller's operation rather than being treated as false.
-type GuardFunc func(ctx context.Context, c Case) (bool, error)
+//
+// db is the exact value the caller passed to Engine.Available or
+// Engine.Move — never a different connection, and never nil unless the
+// caller itself passed nil. A guard that reads domain data (e.g. "does this
+// purchase have an item with subsidy SEP?") must see writes made earlier in
+// the caller's own transaction — for example a row the caller inserted just
+// before calling Move — so the engine hands the guard the same db rather
+// than opening a separate connection or using its own pool.
+type GuardFunc func(ctx context.Context, db pgxtx.DBTX, c Case) (bool, error)
 
 // Repository defines persistence operations for cases and their event
 // history. See workflow/postgres for the PostgreSQL-backed implementation.

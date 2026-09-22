@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 
+	"github.com/kafeiih/vogel/pgxtx"
 	"github.com/kafeiih/vogel/workflow"
 )
 
@@ -47,9 +48,11 @@ func ApprovalDefinition() workflow.Definition {
 // the object the case concerns (see the doc comment on workflow.Case). A
 // guard that needs to read the Document itself -- for example, to reject an
 // invoice above some amount -- must look it up through the consumer's own
-// store using c.ExternalID, exactly the way DocumentHandler does; the
+// store using c.ExternalID and the db the engine hands it (the same db the
+// caller passed to Available/Move, so the lookup sees writes made earlier
+// in that same transaction), exactly the way DocumentHandler does; the
 // workflow engine never reaches into DocumentStore on a guard's behalf, and
 // this guard does not need to because AssignedTo already lives on Case.
-func AssignedGuard(_ context.Context, c workflow.Case) (bool, error) {
+func AssignedGuard(_ context.Context, _ pgxtx.DBTX, c workflow.Case) (bool, error) {
 	return c.AssignedTo != "", nil
 }
