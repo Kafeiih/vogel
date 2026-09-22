@@ -6,6 +6,38 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ## [Sin publicar]
 
+### Agregado
+
+- `workflow.CommentPolicy` (`""`/`"none"` por defecto, `"optional"`,
+  `"required"`, con su propio `Valid()`) declara si un `Transition` acepta,
+  exige o prohíbe un comentario en el `MoveInput` que lo toma: es historial
+  de proceso, nunca dato de dominio. `Transition.Comment` fija la política
+  por transición y `Definition.Validate` rechaza un valor no reconocido.
+  `MoveInput.Comment` se recorta con `strings.TrimSpace` antes de validarse
+  contra esa política y de guardarse (ya recortado) en el `Event.Comment`
+  del `EventMoved` correspondiente; el `EventClosed` automático que `Move`
+  agrega al entrar a un nodo terminal nunca repite ese comentario (queda
+  vacío a propósito). La verificación corre ANTES de mutar el caso o de
+  invocar la guarda de la transición, así que un `Move` rechazado por
+  comentario no deja al motor a medio camino. Dos centinelas nuevos:
+  `workflow.ErrCommentRequired` (política `required` con comentario vacío
+  tras recortarlo) y `workflow.ErrCommentNotAllowed` (política `none`/vacía
+  con un comentario no vacío, para que la política declarada no mienta).
+  Nueva migración `workflow/migrations/002_workflow_event_comment.sql`:
+  agrega `workflow_event.comment TEXT NOT NULL DEFAULT ''`. **Todo
+  consumidor debe correr esta migración ANTES de desplegar esta versión de
+  `vogel`, use o no `Event.Comment`** — no es opcional para quien no le
+  interesa el comentario. `workflow/postgres/repository.go` arma
+  `eventColumns` incluyendo `comment` de forma incondicional, así que contra
+  una base de datos que sólo corrió `001_create_workflow.sql` CUALQUIER
+  `AppendEvent`/`ListEvents` falla, y con ellos `Engine.Move`, `Claim`,
+  `Release` e `History` — todos, no sólo los que tocan comentarios. El
+  sentido seguro es el inverso: código viejo (que nunca lee ni escribe
+  `Event.Comment`) sigue funcionando sin cambios contra el esquema ya
+  migrado, porque la columna nueva es `NOT NULL DEFAULT ''`. Correrla vía
+  `migrate.Up` con `workflow/migrations.FS()`, igual que ya corren
+  `001_create_workflow.sql`.
+
 ### Cambiado
 
 - **Cambio incompatible (breaking):** `workflow.GuardFunc` gana un segundo

@@ -180,6 +180,40 @@ func TestRepository_AppendEvent_And_ListEvents_Ordering(t *testing.T) {
 	assert.Equal(t, workflow.EventAssigned, events[2].Kind)
 }
 
+func TestRepository_AppendEvent_And_ListEvents_PersistsComment(t *testing.T) {
+	pool := startTestPool(t)
+	repo := postgres.NewRepository()
+	ctx := context.Background()
+
+	c := newCase("compras", "solicitud-comment")
+	require.NoError(t, repo.Create(ctx, pool, c))
+
+	withComment := &workflow.Event{
+		ID:         uuid.New(),
+		CaseID:     c.ID,
+		Kind:       workflow.EventMoved,
+		Action:     "approve",
+		Comment:    "budget looks fine",
+		OccurredAt: time.Now().UTC(),
+	}
+	require.NoError(t, repo.AppendEvent(ctx, pool, withComment))
+
+	withoutComment := &workflow.Event{
+		ID:         uuid.New(),
+		CaseID:     c.ID,
+		Kind:       workflow.EventClosed,
+		Action:     "approve",
+		OccurredAt: time.Now().UTC(),
+	}
+	require.NoError(t, repo.AppendEvent(ctx, pool, withoutComment))
+
+	events, err := repo.ListEvents(ctx, pool, c.ID)
+	require.NoError(t, err)
+	require.Len(t, events, 2)
+	assert.Equal(t, "budget looks fine", events[0].Comment, "comment must round-trip through AppendEvent/ListEvents")
+	assert.Equal(t, "", events[1].Comment, "an event appended with no comment must read back empty, not NULL")
+}
+
 func TestRepository_ListByEligibility_FiltersByUnassigned(t *testing.T) {
 	pool := startTestPool(t)
 	repo := postgres.NewRepository()

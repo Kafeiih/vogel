@@ -184,6 +184,14 @@ func TestDefinition_Validate_RejectsViolations(t *testing.T) {
 			},
 			wantSub: "deadline must not be negative",
 		},
+		{
+			name: "invalid comment policy",
+			mutate: func(d Definition) Definition {
+				d.Transitions[1].Comment = CommentPolicy("bogus")
+				return d
+			},
+			wantSub: "invalid comment policy",
+		},
 	}
 
 	for _, tt := range tests {
@@ -256,6 +264,29 @@ func TestEventKind_Valid(t *testing.T) {
 	assert.True(t, EventUnassigned.Valid())
 	assert.True(t, EventClosed.Valid())
 	assert.False(t, EventKind("bogus").Valid())
+}
+
+func TestCommentPolicy_Valid(t *testing.T) {
+	assert.True(t, CommentNone.Valid())
+	assert.True(t, CommentPolicy("none").Valid())
+	assert.True(t, CommentOptional.Valid())
+	assert.True(t, CommentRequired.Valid())
+	assert.False(t, CommentPolicy("bogus").Valid())
+}
+
+// TestCommentPolicy_Canonical proves the "none" alias collapses to the
+// CommentNone constant in exactly one place (Canonical), so any code
+// comparing a canonicalized policy against CommentNone with == agrees with
+// isNone-style logic instead of silently disagreeing for an alias-spelled
+// definition.
+func TestCommentPolicy_Canonical(t *testing.T) {
+	assert.Equal(t, CommentNone, CommentNone.Canonical())
+	assert.Equal(t, CommentNone, CommentPolicy("none").Canonical())
+	assert.Equal(t, CommentOptional, CommentOptional.Canonical())
+	assert.Equal(t, CommentRequired, CommentRequired.Canonical())
+
+	assert.True(t, CommentPolicy("none").Canonical() == CommentNone,
+		"an alias-spelled policy must compare equal to CommentNone once canonicalized")
 }
 
 func TestDefinition_TransitionsFrom(t *testing.T) {

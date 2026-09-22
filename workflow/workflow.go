@@ -72,6 +72,74 @@ func (k EventKind) Valid() bool {
 	}
 }
 
+// CommentPolicy controls whether a comment is required, optional, or
+// disallowed when a Transition is taken. It is process history, not domain
+// data: the engine stores the comment text on the Event it appends, but
+// never interprets it.
+type CommentPolicy string
+
+const (
+	// CommentNone is the default: MoveInput.Comment must be empty (after
+	// trimming) or Move fails with ErrCommentNotAllowed. Both the zero
+	// value "" and the explicit literal "none" mean CommentNone, so a
+	// Definition can spell out "no comment" without relying on the zero
+	// value — see CommentPolicy.Canonical for how the alias is collapsed
+	// back to this constant before any comparison.
+	CommentNone CommentPolicy = ""
+	// CommentOptional allows, but does not require, a comment.
+	CommentOptional CommentPolicy = "optional"
+	// CommentRequired fails Move with ErrCommentRequired when
+	// MoveInput.Comment is empty after trimming.
+	CommentRequired CommentPolicy = "required"
+)
+
+// commentPolicyNoneAlias is the sole spelling of the "none" alias literal.
+// Valid and Canonical both reference this constant instead of repeating the
+// literal, so the alias exists in exactly one place: a value comparing
+// != CommentNone but == commentPolicyNoneAlias is unmistakably the alias,
+// never a coincidentally similar typo.
+const commentPolicyNoneAlias CommentPolicy = "none"
+
+// Valid reports whether p is one of the known CommentPolicy values.
+func (p CommentPolicy) Valid() bool {
+	switch p {
+	case CommentNone, commentPolicyNoneAlias, CommentOptional, CommentRequired:
+		return true
+	default:
+		return false
+	}
+}
+
+// Canonical collapses the "none" alias into the CommentNone zero value, so
+// every comparison site sees the same value regardless of which spelling a
+// Definition used. Definition.Validate cannot normalize transitions in
+// place for the caller — it has a value receiver, so any mutation would be
+// discarded when it returns — so canonicalization happens here instead, at
+// every comparison point (currently just checkComment). Comparing a raw,
+// non-canonicalized CommentPolicy against the CommentNone constant with ==
+// silently disagrees for an alias-spelled value; call Canonical() first.
+func (p CommentPolicy) Canonical() CommentPolicy {
+	if p == commentPolicyNoneAlias {
+		return CommentNone
+	}
+	return p
+}
+
+// checkComment validates comment (already trimmed) against policy. It is
+// called from Engine.Move before any state change, so a rejected comment
+// never leaves the case or its history mutated.
+func checkComment(policy CommentPolicy, comment string) error {
+	policy = policy.Canonical()
+	switch {
+	case policy == CommentRequired && comment == "":
+		return ErrCommentRequired
+	case policy == CommentNone && comment != "":
+		return ErrCommentNotAllowed
+	default:
+		return nil
+	}
+}
+
 // Eligibility declares who may act on a node, by organizational position.
 // An empty Unit means "the unit the case belongs to" — see ResolveUnit.
 //
@@ -127,6 +195,11 @@ type Transition struct {
 	// Guard names a GuardFunc registered on the Engine. Empty means the
 	// transition is always permitted.
 	Guard string
+	// Comment declares this transition's CommentPolicy: whether MoveInput.
+	// Comment is required, optional, or disallowed when this transition is
+	// taken. The zero value is CommentNone. Definition.Validate rejects an
+	// unrecognized value.
+	Comment CommentPolicy
 }
 
 // Definition describes one version of a workflow: its nodes, and the
@@ -252,6 +325,9 @@ func (d Definition) Validate() error {
 		if tr.Action == "" {
 			addf("transition[%d]: empty action", i)
 		}
+		if !tr.Comment.Valid() {
+			addf("transition[%d]: invalid comment policy %q", i, tr.Comment)
+		}
 
 		fromNode, fromOK := nodeByID[tr.From]
 		_, toOK := nodeByID[tr.To]
@@ -335,14 +411,21 @@ type Case struct {
 
 // Event is a single append-only history record for a Case.
 type Event struct {
-	ID         uuid.UUID
-	CaseID     uuid.UUID
-	Seq        int64
-	Kind       EventKind
-	FromState  string
-	ToState    string
-	Action     string
-	ActorID    string
+	ID        uuid.UUID
+	CaseID    uuid.UUID
+	Seq       int64
+	Kind      EventKind
+	FromState string
+	ToState   string
+	Action    string
+	ActorID   string
+	// Comment is the (already trimmed) comment or observation recorded
+	// alongside this event, when the taken transition's CommentPolicy
+	// allowed one. It is always empty on the automatic EventClosed event
+	// Move appends when entering a terminal node — the comment belongs to
+	// the EventMoved record for that same transition, not to its close
+	// side effect, so it is never duplicated there.
+	Comment    string
 	OccurredAt time.Time
 }
 
@@ -358,6 +441,8 @@ var (
 	ErrNotAssigned             = errors.New("workflow: case is not assigned")
 	ErrAlreadyAssigned         = errors.New("workflow: case is already assigned")
 	ErrInvalidDefinition       = errors.New("workflow: invalid definition")
+	ErrCommentRequired         = errors.New("workflow: comment is required for this transition")
+	ErrCommentNotAllowed       = errors.New("workflow: comment is not allowed for this transition")
 )
 
 // GuardFunc evaluates whether a transition may be taken for the given case.
@@ -370,6 +455,15 @@ var (
 // the caller's own transaction — for example a row the caller inserted just
 // before calling Move — so the engine hands the guard the same db rather
 // than opening a separate connection or using its own pool.
+//
+// Because db is shared with the caller's own transaction, a guard MUST
+// return (never swallow) any database error it encounters, and MUST fully
+// close any pgx.Rows it opens — via Rows.Close, not merely draining Next to
+// false — before returning. A failed statement that is not reported leaves
+// the transaction poisoned (PostgreSQL SQLSTATE 25P02, "current transaction
+// is aborted"), and rows left open hold the underlying connection busy;
+// either failure then breaks the engine's own writes later in the same call
+// to Move.
 type GuardFunc func(ctx context.Context, db pgxtx.DBTX, c Case) (bool, error)
 
 // Repository defines persistence operations for cases and their event

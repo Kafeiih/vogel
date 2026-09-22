@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -274,6 +275,15 @@ type MoveInput struct {
 	CaseID  uuid.UUID
 	Action  string
 	ActorID string
+	// Comment is the step comment (on approval) or observation (on
+	// rejection) attached to this move. It is trimmed with strings.
+	// TrimSpace, then validated against the taken transition's
+	// CommentPolicy before any state change: empty after trimming on a
+	// CommentRequired transition fails with ErrCommentRequired, and
+	// non-empty on a CommentNone transition fails with
+	// ErrCommentNotAllowed. It is stored as-is (trimmed) on the resulting
+	// EventMoved record.
+	Comment string
 }
 
 // Move applies the transition matching (current state, Action) to the case.
@@ -296,6 +306,14 @@ func (e *Engine) Move(ctx context.Context, db pgxtx.DBTX, in MoveInput) (*Case, 
 	transition, found := findTransition(d.TransitionsFrom(c.State), in.Action)
 	if !found {
 		return nil, fmt.Errorf("workflow: move case %s: action %q from state %q: %w", c.ID, in.Action, c.State, ErrInvalidTransition)
+	}
+
+	// Enforce the transition's comment policy before any state change or
+	// guard call, so a rejected comment never mutates the case and never
+	// triggers a guard's own side effects.
+	comment := strings.TrimSpace(in.Comment)
+	if err := checkComment(transition.Comment, comment); err != nil {
+		return nil, fmt.Errorf("workflow: move case %s: %w", c.ID, err)
 	}
 
 	if transition.Guard != "" {
@@ -338,12 +356,16 @@ func (e *Engine) Move(ctx context.Context, db pgxtx.DBTX, in MoveInput) (*Case, 
 		return nil, fmt.Errorf("workflow: move case %s: %w", c.ID, err)
 	}
 
-	if err := e.appendEvent(ctx, db, c.ID, EventMoved, fromState, destNode.ID, in.Action, in.ActorID, now); err != nil {
+	if err := e.appendEvent(ctx, db, c.ID, EventMoved, fromState, destNode.ID, in.Action, in.ActorID, comment, now); err != nil {
 		return nil, fmt.Errorf("workflow: move case %s: append event: %w", c.ID, err)
 	}
 
 	if terminated {
-		if err := e.appendEvent(ctx, db, c.ID, EventClosed, destNode.ID, destNode.ID, in.Action, in.ActorID, now); err != nil {
+		// The automatic close event shares this transition's Action/ActorID
+		// but never repeats the comment: the comment belongs to the
+		// EventMoved record appended just above for this same transition,
+		// so Comment is passed as "" here rather than comment again.
+		if err := e.appendEvent(ctx, db, c.ID, EventClosed, destNode.ID, destNode.ID, in.Action, in.ActorID, "", now); err != nil {
 			return nil, fmt.Errorf("workflow: move case %s: append close event: %w", c.ID, err)
 		}
 	}
@@ -383,7 +405,7 @@ func (e *Engine) Claim(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID, act
 		return nil, fmt.Errorf("workflow: claim case %s: %w", c.ID, err)
 	}
 
-	if err := e.appendEvent(ctx, db, c.ID, EventAssigned, c.State, c.State, "", actorID, e.now()); err != nil {
+	if err := e.appendEvent(ctx, db, c.ID, EventAssigned, c.State, c.State, "", actorID, "", e.now()); err != nil {
 		return nil, fmt.Errorf("workflow: claim case %s: append event: %w", c.ID, err)
 	}
 
@@ -405,7 +427,7 @@ func (e *Engine) Release(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID, a
 		return nil, fmt.Errorf("workflow: release case %s: %w", c.ID, err)
 	}
 
-	if err := e.appendEvent(ctx, db, c.ID, EventUnassigned, c.State, c.State, "", actorID, e.now()); err != nil {
+	if err := e.appendEvent(ctx, db, c.ID, EventUnassigned, c.State, c.State, "", actorID, "", e.now()); err != nil {
 		return nil, fmt.Errorf("workflow: release case %s: append event: %w", c.ID, err)
 	}
 
@@ -462,7 +484,7 @@ func (e *Engine) EligibilityFor(ctx context.Context, db pgxtx.DBTX, caseID uuid.
 }
 
 // appendEvent computes the next Seq for caseID and appends an event.
-func (e *Engine) appendEvent(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID, kind EventKind, fromState, toState, action, actorID string, occurredAt time.Time) error {
+func (e *Engine) appendEvent(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID, kind EventKind, fromState, toState, action, actorID, comment string, occurredAt time.Time) error {
 	seq, err := e.nextSeq(ctx, db, caseID)
 	if err != nil {
 		return err
@@ -477,6 +499,7 @@ func (e *Engine) appendEvent(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUI
 		ToState:    toState,
 		Action:     action,
 		ActorID:    actorID,
+		Comment:    comment,
 		OccurredAt: occurredAt,
 	}
 	return e.repo.AppendEvent(ctx, db, evt)

@@ -179,6 +179,53 @@ func testDefinition() Definition {
 func alwaysTrueGuard(context.Context, pgxtx.DBTX, Case) (bool, error)  { return true, nil }
 func alwaysFalseGuard(context.Context, pgxtx.DBTX, Case) (bool, error) { return false, nil }
 
+// commentTestDefinition mirrors testDefinition's shape but declares comment
+// policies matching the real consumer's intent: approving is an optional
+// comment, rejecting requires an observation, and submitting carries no
+// comment policy at all (the zero value, CommentNone).
+func commentTestDefinition() Definition {
+	d := testDefinition()
+	d.Transitions[1].Comment = CommentOptional // review -> approved
+	d.Transitions[2].Comment = CommentRequired // review -> rejected
+	return d
+}
+
+// commentGuardTestDefinition extends commentTestDefinition by attaching a
+// guard to each comment-policed transition that isn't already guarded: the
+// CommentNone submit transition and the CommentRequired reject transition.
+// It exists to prove the ordering documented on Engine.Move — the comment
+// policy is enforced before the guard runs — since commentTestDefinition
+// alone can't: its only guarded transition (approve) uses CommentOptional,
+// which never rejects a comment, so the guard would run regardless of
+// ordering.
+func commentGuardTestDefinition() Definition {
+	d := commentTestDefinition()
+	d.Transitions[0].Guard = "count-calls" // draft -> review, CommentNone
+	d.Transitions[2].Guard = "count-calls" // review -> rejected, CommentRequired
+	return d
+}
+
+// callCountingGuard is a GuardFunc that always allows the transition, and
+// records how many times it was invoked, so a test can assert a guard never
+// ran when the comment policy should have rejected the Move first.
+type callCountingGuard struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (g *callCountingGuard) fn(context.Context, pgxtx.DBTX, Case) (bool, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.calls++
+	return true, nil
+}
+
+func (g *callCountingGuard) count() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.calls
+}
+
 func openTestCase(t *testing.T, e *Engine) *Case {
 	t.Helper()
 	c, err := e.Open(context.Background(), nil, OpenInput{
@@ -314,6 +361,178 @@ func TestMove_IntoTerminalNode_ClosesCaseAndClearsAssignment(t *testing.T) {
 	require.NoError(t, err)
 	last := events[len(events)-1]
 	assert.Equal(t, EventClosed, last.Kind)
+}
+
+func TestMove_CommentRequired_EmptyComment_ReturnsErrCommentRequired(t *testing.T) {
+	repo := newFakeRepository()
+	e := New(repo, Config{}, testLogger(), WithDefinitions(commentTestDefinition()))
+
+	c := openTestCase(t, e)
+	_, err := e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "submit", ActorID: "u1"})
+	require.NoError(t, err)
+
+	_, err = e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "reject", ActorID: "u2"})
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrCommentRequired))
+
+	// No state change: the case must still be resting in "review".
+	got, err := repo.GetByID(context.Background(), nil, c.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "review", got.State)
+	assert.Equal(t, StatusOpen, got.Status)
+}
+
+func TestMove_CommentRequired_WhitespaceOnlyComment_ReturnsErrCommentRequired(t *testing.T) {
+	repo := newFakeRepository()
+	e := New(repo, Config{}, testLogger(), WithDefinitions(commentTestDefinition()))
+
+	c := openTestCase(t, e)
+	_, err := e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "submit", ActorID: "u1"})
+	require.NoError(t, err)
+
+	_, err = e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "reject", ActorID: "u2", Comment: "   \t  "})
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrCommentRequired))
+
+	got, err := repo.GetByID(context.Background(), nil, c.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "review", got.State)
+}
+
+func TestMove_CommentNone_WithComment_ReturnsErrCommentNotAllowed(t *testing.T) {
+	repo := newFakeRepository()
+	e := New(repo, Config{}, testLogger(), WithDefinitions(commentTestDefinition()))
+
+	c := openTestCase(t, e)
+	_, err := e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "submit", ActorID: "u1", Comment: "not allowed on submit"})
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrCommentNotAllowed))
+
+	// No state change: the case must still be resting at the start node.
+	got, err := repo.GetByID(context.Background(), nil, c.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "draft", got.State)
+
+	events, err := e.History(context.Background(), nil, c.ID)
+	require.NoError(t, err)
+	assert.Len(t, events, 1, "only the opening event: the rejected Move must append nothing")
+}
+
+// TestMove_CommentRejected_GuardNeverCalled_CommentRequired proves the
+// comment policy is enforced BEFORE the transition's guard runs: a
+// CommentRequired transition rejected for a missing comment must never
+// invoke its guard, and the case must not move.
+func TestMove_CommentRejected_GuardNeverCalled_CommentRequired(t *testing.T) {
+	repo := newFakeRepository()
+	e := New(repo, Config{}, testLogger(), WithDefinitions(commentGuardTestDefinition()))
+	guard := &callCountingGuard{}
+	require.NoError(t, e.RegisterGuard("count-calls", guard.fn))
+
+	c := openTestCase(t, e)
+	_, err := e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "submit", ActorID: "u1"})
+	require.NoError(t, err)
+	assert.Equal(t, 1, guard.count(), "the submit transition's own guard call is expected")
+
+	_, err = e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "reject", ActorID: "u2"})
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrCommentRequired))
+	assert.Equal(t, 1, guard.count(), "the reject transition's guard must not run when the comment check rejects Move")
+
+	got, err := repo.GetByID(context.Background(), nil, c.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "review", got.State, "the case must not have moved")
+}
+
+// TestMove_CommentRejected_GuardNeverCalled_CommentNone proves the same
+// ordering for a CommentNone transition rejected for carrying a comment it
+// disallows.
+func TestMove_CommentRejected_GuardNeverCalled_CommentNone(t *testing.T) {
+	repo := newFakeRepository()
+	e := New(repo, Config{}, testLogger(), WithDefinitions(commentGuardTestDefinition()))
+	guard := &callCountingGuard{}
+	require.NoError(t, e.RegisterGuard("count-calls", guard.fn))
+
+	c := openTestCase(t, e)
+	_, err := e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "submit", ActorID: "u1", Comment: "not allowed here"})
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrCommentNotAllowed))
+	assert.Equal(t, 0, guard.count(), "the submit transition's guard must not run when the comment check rejects Move")
+
+	got, err := repo.GetByID(context.Background(), nil, c.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "draft", got.State, "the case must not have moved")
+}
+
+func TestMove_CommentOptional_AcceptsWithComment(t *testing.T) {
+	repo := newFakeRepository()
+	e := New(repo, Config{}, testLogger(), WithDefinitions(commentTestDefinition()))
+	require.NoError(t, e.RegisterGuard("under-budget", alwaysTrueGuard))
+
+	c := openTestCase(t, e)
+	_, err := e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "submit", ActorID: "u1"})
+	require.NoError(t, err)
+
+	moved, err := e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "approve", ActorID: "u2", Comment: "looks fine"})
+	require.NoError(t, err)
+	assert.Equal(t, StatusClosed, moved.Status)
+}
+
+func TestMove_CommentOptional_AcceptsWithoutComment(t *testing.T) {
+	repo := newFakeRepository()
+	e := New(repo, Config{}, testLogger(), WithDefinitions(commentTestDefinition()))
+	require.NoError(t, e.RegisterGuard("under-budget", alwaysTrueGuard))
+
+	c := openTestCase(t, e)
+	_, err := e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "submit", ActorID: "u1"})
+	require.NoError(t, err)
+
+	moved, err := e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "approve", ActorID: "u2"})
+	require.NoError(t, err)
+	assert.Equal(t, StatusClosed, moved.Status)
+}
+
+func TestMove_CommentStored_VisibleThroughHistory(t *testing.T) {
+	repo := newFakeRepository()
+	e := New(repo, Config{}, testLogger(), WithDefinitions(commentTestDefinition()))
+	require.NoError(t, e.RegisterGuard("under-budget", alwaysTrueGuard))
+
+	c := openTestCase(t, e)
+	_, err := e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "submit", ActorID: "u1"})
+	require.NoError(t, err)
+
+	_, err = e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "approve", ActorID: "u2", Comment: "  budget looks fine  "})
+	require.NoError(t, err)
+
+	events, err := e.History(context.Background(), nil, c.ID)
+	require.NoError(t, err)
+
+	var moved *Event
+	for i := range events {
+		if events[i].Kind == EventMoved && events[i].Action == "approve" {
+			moved = &events[i]
+		}
+	}
+	require.NotNil(t, moved, "expected a moved(approve) event in history")
+	assert.Equal(t, "budget looks fine", moved.Comment, "the comment must be trimmed before storage")
+}
+
+func TestMove_TerminalClose_EventCarriesNoComment(t *testing.T) {
+	repo := newFakeRepository()
+	e := New(repo, Config{}, testLogger(), WithDefinitions(commentTestDefinition()))
+	require.NoError(t, e.RegisterGuard("under-budget", alwaysTrueGuard))
+
+	c := openTestCase(t, e)
+	_, err := e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "submit", ActorID: "u1"})
+	require.NoError(t, err)
+
+	_, err = e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "approve", ActorID: "u2", Comment: "approved!"})
+	require.NoError(t, err)
+
+	events, err := e.History(context.Background(), nil, c.ID)
+	require.NoError(t, err)
+	last := events[len(events)-1]
+	require.Equal(t, EventClosed, last.Kind)
+	assert.Empty(t, last.Comment, "the automatic close event must never duplicate the moved event's comment")
 }
 
 func TestClaim_ThenDoubleClaim_ThenRelease(t *testing.T) {
