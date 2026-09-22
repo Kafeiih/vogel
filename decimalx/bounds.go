@@ -63,6 +63,14 @@ const (
 // exact DoS this package exists to close (see the package doc).
 const MaxExponentLimit int32 = 1000
 
+// MaxLengthLimit is the hard ceiling NewBounds enforces on maxLen: NewBounds
+// rejects any maxLen above it with ErrInvalidBounds. maxLen is what Parse's
+// length pre-check compares against before calling decimal.NewFromString,
+// whose decimal-to-big.Int conversion grows faster than linearly with the
+// input, so an unbounded maxLen would let an arbitrarily long string through
+// to that conversion. A 1000-digit literal still parses in microseconds.
+const MaxLengthLimit = 1000
+
 // Bounds configures the limits Parse, ValidateBounds, ValidateAmount and
 // ParseAmount enforce: the maximum coefficient length (MaxLen, as returned
 // by decimal.Decimal.NumDigits) and the exponent range [MinExp, MaxExp].
@@ -87,15 +95,19 @@ func DefaultBounds() Bounds {
 }
 
 // NewBounds builds a custom Bounds. It rejects any configuration that would
-// disable the anti-DoS guard: maxLen must be positive, minExp must not exceed
-// maxExp, and neither minExp nor maxExp may cross MaxExponentLimit (a hard
-// ceiling of ±1000 — see MaxExponentLimit's doc for why). On error it returns
+// disable the anti-DoS guard: maxLen must be positive and at most
+// MaxLengthLimit, minExp must not exceed maxExp, and neither minExp nor maxExp
+// may cross MaxExponentLimit (hard ceilings of 1000 and ±1000 — see their docs
+// for why). On error it returns
 // the zero-value Bounds, which — per this package's safety guarantee — still
 // behaves like DefaultBounds if a caller discards the error and uses it
 // anyway.
 func NewBounds(maxLen int, minExp, maxExp int32) (Bounds, error) {
 	if maxLen <= 0 {
 		return Bounds{}, fmt.Errorf("%w: maxLen must be positive, got %d", ErrInvalidBounds, maxLen)
+	}
+	if maxLen > MaxLengthLimit {
+		return Bounds{}, fmt.Errorf("%w: maxLen %d exceeds the hard ceiling of %d", ErrInvalidBounds, maxLen, MaxLengthLimit)
 	}
 	if minExp > maxExp {
 		return Bounds{}, fmt.Errorf("%w: minExp (%d) must not exceed maxExp (%d)", ErrInvalidBounds, minExp, maxExp)
