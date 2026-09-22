@@ -12,11 +12,15 @@ import (
 // Modules do NOT define their own codes — business errors are distinguished
 // by the message field, not the code.
 const (
-	CodeNotFound           = "NOT_FOUND"
-	CodeInternalError      = "INTERNAL_ERROR"
-	CodeInvalidJSON        = "INVALID_JSON"
-	CodeUnknownField       = "UNKNOWN_FIELD"
-	CodeBodyTooLarge       = "BODY_TOO_LARGE"
+	CodeNotFound      = "NOT_FOUND"
+	CodeInternalError = "INTERNAL_ERROR"
+	CodeInvalidJSON   = "INVALID_JSON"
+	CodeUnknownField  = "UNKNOWN_FIELD"
+	CodeBodyTooLarge  = "BODY_TOO_LARGE"
+	// CodeExportTooLarge is used with HTTP 413 when a requested export exceeds
+	// the server's row cap. Distinct from CodeBodyTooLarge, which is about the
+	// request body.
+	CodeExportTooLarge     = "EXPORT_TOO_LARGE"
 	CodeValidationError    = "VALIDATION_ERROR"
 	CodeConflict           = "CONFLICT"
 	CodeUnauthorized       = "UNAUTHORIZED"
