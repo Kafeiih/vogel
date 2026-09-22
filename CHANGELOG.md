@@ -6,6 +6,29 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ## [Sin publicar]
 
+### Agregado
+
+- `workflow.CommentPolicy` (`""`/`"none"` por defecto, `"optional"`,
+  `"required"`, con su propio `Valid()`) declara si un `Transition` acepta,
+  exige o prohíbe un comentario en el `MoveInput` que lo toma: es historial
+  de proceso, nunca dato de dominio. `Transition.Comment` fija la política
+  por transición y `Definition.Validate` rechaza un valor no reconocido.
+  `MoveInput.Comment` se recorta con `strings.TrimSpace` antes de validarse
+  contra esa política y de guardarse (ya recortado) en el `Event.Comment`
+  del `EventMoved` correspondiente; el `EventClosed` automático que `Move`
+  agrega al entrar a un nodo terminal nunca repite ese comentario (queda
+  vacío a propósito). La verificación corre ANTES de mutar el caso o de
+  invocar la guarda de la transición, así que un `Move` rechazado por
+  comentario no deja al motor a medio camino. Dos centinelas nuevos:
+  `workflow.ErrCommentRequired` (política `required` con comentario vacío
+  tras recortarlo) y `workflow.ErrCommentNotAllowed` (política `none`/vacía
+  con un comentario no vacío, para que la política declarada no mienta).
+  Nueva migración `workflow/migrations/002_workflow_event_comment.sql`:
+  agrega `workflow_event.comment TEXT NOT NULL DEFAULT ''`. Los consumidores
+  existentes deben correrla (vía `migrate.Up` con `workflow/migrations.FS()`,
+  como ya corren `001_create_workflow.sql`) antes de desplegar código que
+  dependa de `Event.Comment`.
+
 ### Cambiado
 
 - **Cambio incompatible (breaking):** `workflow.GuardFunc` gana un segundo
