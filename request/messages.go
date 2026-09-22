@@ -88,6 +88,17 @@ type Messages struct {
 	// InvalidIntegerList is used by Validator.Int64sQuery when any
 	// comma-separated entry fails strconv.ParseInt.
 	InvalidIntegerList func(field string) string
+
+	// InvalidBoolean is used by Validator.BoolQuery when the value fails
+	// strconv.ParseBool.
+	InvalidBoolean func(field string) string
+
+	// InvalidDecimal is not read by anything in this package directly. It
+	// exists so a decimal-parsing helper package outside request (for
+	// example, decimalx) can report a validation failure with wording that
+	// stays consistent with the rest of a Validator's messages, via
+	// Validator.Messages().InvalidDecimal.
+	InvalidDecimal func(field string) string
 }
 
 // DefaultMessages returns the neutral English defaults used when a Decoder
@@ -121,6 +132,8 @@ func DefaultMessages() Messages {
 		NotAllowed:         func(field string) string { return field + " must be one of the allowed values" },
 		InvalidPublicID:    func(field string) string { return field + " must be a valid UUID or ULID" },
 		InvalidIntegerList: func(field string) string { return field + " must contain valid integers" },
+		InvalidBoolean:     func(field string) string { return field + " must be a boolean" },
+		InvalidDecimal:     func(field string) string { return field + " must be a valid decimal" },
 	}
 }
 
@@ -180,6 +193,12 @@ func WithMessages(m Messages) Option {
 		}
 		if m.InvalidIntegerList != nil {
 			d.messages.InvalidIntegerList = m.InvalidIntegerList
+		}
+		if m.InvalidBoolean != nil {
+			d.messages.InvalidBoolean = m.InvalidBoolean
+		}
+		if m.InvalidDecimal != nil {
+			d.messages.InvalidDecimal = m.InvalidDecimal
 		}
 	}
 }

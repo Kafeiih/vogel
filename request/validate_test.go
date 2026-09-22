@@ -261,6 +261,158 @@ func TestValidator_Int64sQuery(t *testing.T) {
 	})
 }
 
+func TestValidator_Int64Query(t *testing.T) {
+	t.Run("absent returns nil", func(t *testing.T) {
+		r := httptest.NewRequest("GET", "/", nil)
+		v := request.NewValidator()
+		assert.Nil(t, v.Int64Query(r, "n"))
+		assert.False(t, v.HasErrors())
+	})
+
+	t.Run("empty returns nil", func(t *testing.T) {
+		r := httptest.NewRequest("GET", "/?n=", nil)
+		v := request.NewValidator()
+		assert.Nil(t, v.Int64Query(r, "n"))
+		assert.False(t, v.HasErrors())
+	})
+
+	t.Run("valid negative value", func(t *testing.T) {
+		r := httptest.NewRequest("GET", "/?n=-42", nil)
+		v := request.NewValidator()
+		got := v.Int64Query(r, "n")
+		require.NotNil(t, got)
+		assert.Equal(t, int64(-42), *got)
+		assert.False(t, v.HasErrors())
+	})
+
+	t.Run("valid max int64", func(t *testing.T) {
+		r := httptest.NewRequest("GET", "/?n=9223372036854775807", nil)
+		v := request.NewValidator()
+		got := v.Int64Query(r, "n")
+		require.NotNil(t, got)
+		assert.Equal(t, int64(9223372036854775807), *got)
+		assert.False(t, v.HasErrors())
+	})
+
+	t.Run("invalid non-numeric value", func(t *testing.T) {
+		r := httptest.NewRequest("GET", "/?n=abc", nil)
+		v := request.NewValidator()
+		assert.Nil(t, v.Int64Query(r, "n"))
+		assert.True(t, v.HasErrors())
+		assert.Equal(t, "n must be a valid integer", v.Errors()["n"])
+	})
+
+	t.Run("invalid decimal value", func(t *testing.T) {
+		r := httptest.NewRequest("GET", "/?n=1.5", nil)
+		v := request.NewValidator()
+		assert.Nil(t, v.Int64Query(r, "n"))
+		assert.True(t, v.HasErrors())
+	})
+
+	t.Run("invalid overflow value", func(t *testing.T) {
+		r := httptest.NewRequest("GET", "/?n=9223372036854775808", nil)
+		v := request.NewValidator()
+		assert.Nil(t, v.Int64Query(r, "n"))
+		assert.True(t, v.HasErrors())
+	})
+
+	t.Run("custom InvalidInteger message via WithMessages", func(t *testing.T) {
+		d := request.New(request.WithMessages(request.Messages{
+			InvalidInteger: func(field string) string { return "custom: " + field },
+		}))
+		r := httptest.NewRequest("GET", "/?n=abc", nil)
+		v := d.NewValidator()
+		v.Int64Query(r, "n")
+		assert.Equal(t, "custom: n", v.Errors()["n"])
+	})
+}
+
+func TestValidator_BoolQuery(t *testing.T) {
+	t.Run("absent returns nil", func(t *testing.T) {
+		r := httptest.NewRequest("GET", "/", nil)
+		v := request.NewValidator()
+		assert.Nil(t, v.BoolQuery(r, "flag"))
+		assert.False(t, v.HasErrors())
+	})
+
+	t.Run("empty returns nil", func(t *testing.T) {
+		r := httptest.NewRequest("GET", "/?flag=", nil)
+		v := request.NewValidator()
+		assert.Nil(t, v.BoolQuery(r, "flag"))
+		assert.False(t, v.HasErrors())
+	})
+
+	validSpellings := map[string]bool{
+		"1":     true,
+		"t":     true,
+		"T":     true,
+		"TRUE":  true,
+		"true":  true,
+		"True":  true,
+		"0":     false,
+		"f":     false,
+		"F":     false,
+		"FALSE": false,
+		"false": false,
+		"False": false,
+	}
+	for raw, want := range validSpellings {
+		t.Run("valid spelling "+raw, func(t *testing.T) {
+			r := httptest.NewRequest("GET", "/?flag="+raw, nil)
+			v := request.NewValidator()
+			got := v.BoolQuery(r, "flag")
+			require.NotNil(t, got)
+			assert.Equal(t, want, *got)
+			assert.False(t, v.HasErrors())
+		})
+	}
+
+	t.Run("invalid value", func(t *testing.T) {
+		r := httptest.NewRequest("GET", "/?flag=yes", nil)
+		v := request.NewValidator()
+		assert.Nil(t, v.BoolQuery(r, "flag"))
+		assert.True(t, v.HasErrors())
+		assert.Equal(t, "flag must be a boolean", v.Errors()["flag"])
+	})
+
+	t.Run("invalid non-boolean text", func(t *testing.T) {
+		r := httptest.NewRequest("GET", "/?flag=abc", nil)
+		v := request.NewValidator()
+		assert.Nil(t, v.BoolQuery(r, "flag"))
+		assert.True(t, v.HasErrors())
+	})
+
+	t.Run("custom InvalidBoolean message via WithMessages", func(t *testing.T) {
+		d := request.New(request.WithMessages(request.Messages{
+			InvalidBoolean: func(field string) string { return "custom: " + field },
+		}))
+		r := httptest.NewRequest("GET", "/?flag=yes", nil)
+		v := d.NewValidator()
+		v.BoolQuery(r, "flag")
+		assert.Equal(t, "custom: flag", v.Errors()["flag"])
+	})
+}
+
+func TestValidator_Messages(t *testing.T) {
+	t.Run("defaults for a Validator built with no WithMessages options", func(t *testing.T) {
+		v := request.NewValidator()
+		m := v.Messages()
+		assert.Equal(t, "amount must be a valid decimal", m.InvalidDecimal("amount"))
+		assert.Equal(t, "flag must be a boolean", m.InvalidBoolean("flag"))
+	})
+
+	t.Run("overrides when the Validator's Decoder was configured with WithMessages", func(t *testing.T) {
+		d := request.New(request.WithMessages(request.Messages{
+			InvalidDecimal: func(field string) string { return "custom decimal: " + field },
+		}))
+		v := d.NewValidator()
+		m := v.Messages()
+		assert.Equal(t, "custom decimal: amount", m.InvalidDecimal("amount"))
+		// A field not overridden keeps the default.
+		assert.Equal(t, "flag must be a boolean", m.InvalidBoolean("flag"))
+	})
+}
+
 func TestValidator_WriteErrors(t *testing.T) {
 	r := httptest.NewRequest("GET", "/", nil)
 	w := httptest.NewRecorder()

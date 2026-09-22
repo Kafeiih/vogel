@@ -169,6 +169,57 @@ func (v *Validator) Int64Param(r *http.Request, param string) int64 {
 	return n
 }
 
+// Int64Query extracts and validates an int64 query parameter. Returns nil if
+// the parameter is absent or empty, with no error recorded — the caller
+// decides what an absent value means (unlike IntQuery, which takes a
+// default). A value present but not a base-10 int64
+// (strconv.ParseInt(raw, 10, 64)) records an InvalidInteger error and
+// returns nil.
+func (v *Validator) Int64Query(r *http.Request, param string) *int64 {
+	raw := r.URL.Query().Get(param)
+	if raw == "" {
+		return nil
+	}
+	n, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		v.AddError(param, v.messages.InvalidInteger(param))
+		return nil
+	}
+	return &n
+}
+
+// BoolQuery extracts and validates a boolean query parameter. Returns nil if
+// the parameter is absent or empty, with no error recorded. It accepts
+// exactly what strconv.ParseBool accepts (1, t, T, TRUE, true, True, 0, f, F,
+// FALSE, false, False); anything else records an InvalidBoolean error and
+// returns nil.
+func (v *Validator) BoolQuery(r *http.Request, param string) *bool {
+	raw := r.URL.Query().Get(param)
+	if raw == "" {
+		return nil
+	}
+	b, err := strconv.ParseBool(raw)
+	if err != nil {
+		v.AddError(param, v.messages.InvalidBoolean(param))
+		return nil
+	}
+	return &b
+}
+
+// Messages returns the effective Messages this Validator records field
+// errors with: DefaultMessages merged with whatever WithMessages options
+// built the Decoder that created it (see Decoder.NewValidator).
+//
+// It exists so a helper package that stays outside request — for example,
+// decimalx, which must not be imported here because request must not depend
+// on shopspring/decimal — can still record an error using this Validator's
+// own configured wording instead of hardcoding English text:
+//
+//	v.AddError(param, v.Messages().InvalidDecimal(param))
+func (v *Validator) Messages() Messages {
+	return v.messages
+}
+
 // Enum validates that a string value is one of the allowed options.
 // Returns the value as-is if empty (optional field) or if it matches.
 func (v *Validator) Enum(param, value string, allowed []string) string {

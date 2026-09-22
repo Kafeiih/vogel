@@ -73,7 +73,7 @@ func TestDecoder_UninitializedFallsBackToDefaults(t *testing.T) {
 }
 
 // TestWithMessages_OverridesEveryField proves the merge in WithMessages copies
-// each of the 16 fields to its own slot: every message is overridden with a
+// each of the 18 fields to its own slot: every message is overridden with a
 // marker naming the field, and each branch must surface its own marker.
 func TestWithMessages_OverridesEveryField(t *testing.T) {
 	mark := func(name string) func(string) string {
@@ -96,6 +96,8 @@ func TestWithMessages_OverridesEveryField(t *testing.T) {
 		NotAllowed:         mark("NotAllowed"),
 		InvalidPublicID:    mark("InvalidPublicID"),
 		InvalidIntegerList: mark("InvalidIntegerList"),
+		InvalidBoolean:     mark("InvalidBoolean"),
+		InvalidDecimal:     mark("InvalidDecimal"),
 	}))
 
 	wantDecode := []string{"MalformedJSON", "WrongType", "BodyTooLarge", "EmptyBody", "UnknownField", "InvalidBody"}
@@ -129,6 +131,8 @@ func TestWithMessages_OverridesEveryField(t *testing.T) {
 		{"NotAllowed:f", func(v *request.Validator) { v.Enum("f", "x", []string{"y"}) }},
 		{"InvalidPublicID:f", func(v *request.Validator) { v.PublicIDParam(withParam("f", "x"), "f") }},
 		{"InvalidIntegerList:f", func(v *request.Validator) { v.Int64sQuery(query("f=1,x"), "f") }},
+		{"InvalidInteger:f", func(v *request.Validator) { v.Int64Query(query("f=x"), "f") }},
+		{"InvalidBoolean:f", func(v *request.Validator) { v.BoolQuery(query("f=x"), "f") }},
 	}
 	for _, c := range validatorCases {
 		t.Run("validator "+c.want, func(t *testing.T) {
@@ -137,4 +141,9 @@ func TestWithMessages_OverridesEveryField(t *testing.T) {
 			assert.Equal(t, c.want, v.Errors()["f"])
 		})
 	}
+
+	t.Run("Messages accessor surfaces InvalidDecimal", func(t *testing.T) {
+		v := d.NewValidator()
+		assert.Equal(t, "InvalidDecimal:amount", v.Messages().InvalidDecimal("amount"))
+	})
 }
