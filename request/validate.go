@@ -34,7 +34,7 @@ func NewValidator() *Validator {
 // NewValidator creates a ready-to-use Validator that records errors using d's
 // configured Messages.
 func (d *Decoder) NewValidator() *Validator {
-	return &Validator{errors: make(FieldErrors), messages: d.messages}
+	return &Validator{errors: make(FieldErrors), messages: *d.msgs()}
 }
 
 // HasErrors reports whether any validation errors have been recorded.

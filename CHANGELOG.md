@@ -22,7 +22,8 @@ las respuestas son byte a byte iguales a `v0.3.0`.
   del `Validator` son localizables, configurados una vez por aplicación. Los
   campos vacíos conservan el texto en inglés por defecto. Las funciones de
   paquete (`JSON`, `JSONWithLimit`, `JSONOptional`, `NewValidator`) usan una
-  instancia por defecto.
+  instancia por defecto. Un `Decoder` que no pasó por `New` (valor cero o
+  puntero nil) usa los mensajes por defecto en vez de entrar en pánico.
 - `Validator.AddError`: la forma soportada de registrar errores desde parsers
   propios de la app que envuelven al `Validator`.
 

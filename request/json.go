@@ -26,15 +26,22 @@ const defaultMaxBytes = 1_048_576 // 1 MiB
 // fixed set of Messages. It is immutable once returned by New — WithMessages
 // options only run during construction — so a single Decoder value is safe
 // to share and call concurrently from any number of handlers/goroutines.
+//
+// Build it with New. A Decoder that did not come from New — a zero value or a
+// nil pointer — is still safe to use: it falls back to DefaultMessages
+// instead of calling a nil message func.
 type Decoder struct {
 	messages Messages
+	// configured is set by New; it tells a real configuration apart from the
+	// zero value, whose Messages would hold nil funcs.
+	configured bool
 }
 
 // New creates a Decoder starting from DefaultMessages, applying opts in
 // order. With no options, the returned Decoder behaves identically to the
 // package-level JSON/JSONWithLimit/JSONOptional/NewValidator functions.
 func New(opts ...Option) *Decoder {
-	d := &Decoder{messages: DefaultMessages()}
+	d := &Decoder{messages: DefaultMessages(), configured: true}
 	for _, opt := range opts {
 		opt(d)
 	}
@@ -115,7 +122,17 @@ func (d *Decoder) decode(w http.ResponseWriter, r *http.Request, data any, maxBy
 	return nil
 }
 
+// msgs returns the Messages d was built with, or the package defaults when d
+// did not come from New.
+func (d *Decoder) msgs() *Messages {
+	if d == nil || !d.configured {
+		return &defaultDecoder.messages
+	}
+	return &d.messages
+}
+
 func (d *Decoder) writeDecodeError(w http.ResponseWriter, r *http.Request, err error, maxBytes int64) {
+	m := d.msgs()
 	var syntaxErr *json.SyntaxError
 	var unmarshalErr *json.UnmarshalTypeError
 	var maxBytesErr *http.MaxBytesError
@@ -123,28 +140,28 @@ func (d *Decoder) writeDecodeError(w http.ResponseWriter, r *http.Request, err e
 	switch {
 	case errors.As(err, &syntaxErr):
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidJSON,
-			d.messages.MalformedJSON(syntaxErr.Offset))
+			m.MalformedJSON(syntaxErr.Offset))
 
 	case errors.As(err, &unmarshalErr):
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidJSON,
-			d.messages.WrongType(unmarshalErr.Field, unmarshalErr.Type.String()))
+			m.WrongType(unmarshalErr.Field, unmarshalErr.Type.String()))
 
 	case errors.As(err, &maxBytesErr):
 		limitMB := float64(maxBytes) / (1024 * 1024)
 		response.Error(w, r, http.StatusRequestEntityTooLarge, response.CodeBodyTooLarge,
-			d.messages.BodyTooLarge(limitMB))
+			m.BodyTooLarge(limitMB))
 
 	case errors.Is(err, io.EOF):
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidJSON,
-			d.messages.EmptyBody)
+			m.EmptyBody)
 
 	case strings.HasPrefix(err.Error(), "json: unknown field"):
 		field := strings.TrimPrefix(err.Error(), "json: unknown field ")
 		response.Error(w, r, http.StatusBadRequest, response.CodeUnknownField,
-			d.messages.UnknownField(field))
+			m.UnknownField(field))
 
 	default:
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidJSON,
-			d.messages.InvalidBody)
+			m.InvalidBody)
 	}
 }
