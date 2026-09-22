@@ -4,7 +4,7 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el versionado,
 [SemVer](https://semver.org/lang/es/).
 
-## [0.5.0] — sin publicar
+## [0.5.0] — 2026-09-22
 
 Cierra las tres últimas brechas que le impedían a go-crucible borrar
 `pkg/decimalutil`, su wrapper local de `Int64Query`/`BoolQuery`/`DecimalQuery`
