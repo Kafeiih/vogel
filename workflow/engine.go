@@ -299,13 +299,17 @@ func hasReturnTransition(candidates []Transition) bool {
 	return false
 }
 
-// occupiedStates returns the set of node IDs the case identified by caseID
-// has ever occupied, derived entirely from its own event history: the node
-// it was opened at (EventOpened.ToState), plus every EventMoved record's
-// FromState and ToState. It is the single source of truth Transition.Return
-// checks against — never the Definition's graph reachability — so a return
-// is only ever offered or accepted for a node this specific case actually
-// passed through.
+// occupiedStates returns every node ID the case identified by caseID has
+// entered or left, derived entirely from its own event history: the node it
+// was opened at (EventOpened.ToState), plus every EventMoved record's
+// FromState and ToState — including decision nodes the case automatically
+// routed through, since each decision-node hop appends its own EventMoved
+// (see planMove). It is the single source of truth Transition.Return checks
+// against — never the Definition's graph reachability — so a return is only
+// ever offered or accepted for a node this specific case actually passed
+// through. A decision node can appear in this set, but that can never make a
+// return into one possible: Definition.Validate rejects any return
+// transition whose To is a decision node, regardless of occupancy.
 func (e *Engine) occupiedStates(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID) (map[string]bool, error) {
 	events, err := e.repo.ListEvents(ctx, db, caseID)
 	if err != nil {
@@ -324,9 +328,9 @@ func (e *Engine) occupiedStates(ctx context.Context, db pgxtx.DBTX, caseID uuid.
 			occupied[events[i].FromState] = true
 			occupied[events[i].ToState] = true
 		default:
-			// EventAssigned, EventUnassigned, and EventClosed never
-			// represent the case resting on a new node: EventClosed shares
-			// its FromState/ToState with the terminal node's own EventMoved
+			// EventAssigned, EventUnassigned, and EventClosed never add a
+			// node this set doesn't already have: EventClosed shares its
+			// FromState/ToState with the terminal node's own EventMoved
 			// (already counted), and Assigned/Unassigned carry the current
 			// state unchanged.
 		}

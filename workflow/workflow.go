@@ -247,9 +247,9 @@ type Transition struct {
 	// leaving a decision node — a route is domain-data routing, not a human
 	// action, so it has nothing to comment on.
 	Comment CommentPolicy
-	// Return marks this transition as a return to an earlier stage of the
-	// process (a bureaucratic sign-off sending a case back to a decision
-	// stage it already passed through, for example). Engine.Available
+	// Return marks this transition as a return to an earlier task node the
+	// case already occupied (a bureaucratic sign-off sending a case back to
+	// a stage it already passed through, for example). Engine.Available
 	// offers it, and Engine.Move accepts it, ONLY if the case previously
 	// occupied To — determined from the case's own event history, never
 	// merely because To is reachable in the Definition's graph — so a
@@ -262,8 +262,10 @@ type Transition struct {
 	// transition; see Engine.Move's doc comment for the exact check
 	// ordering. Definition.Validate rejects a return transition that
 	// originates from a decision node (a route routes automatically on
-	// domain data; a return is a human action) or that targets a terminal
-	// node.
+	// domain data; a return is a human action), that targets a terminal
+	// node, or that targets a decision node: a case never rests on a
+	// decision node, so a return into one would silently resume automatic
+	// routing and could push the case forward instead of back.
 	Return bool
 }
 
@@ -439,6 +441,9 @@ func (d Definition) Validate() error {
 		}
 		if toOK && toNode.Terminal && tr.Return {
 			addf("transition[%d]: return transition must not target terminal node %q", i, tr.To)
+		}
+		if toOK && toNode.Kind == NodeDecision && tr.Return {
+			addf("transition[%d]: return transition must target a task node, got decision node %q", i, tr.To)
 		}
 		if fromOK && toOK && fromNode.Kind == NodeDecision && toNode.Kind == NodeDecision {
 			decisionAdjacency[tr.From] = append(decisionAdjacency[tr.From], tr.To)

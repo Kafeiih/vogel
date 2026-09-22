@@ -488,10 +488,10 @@ func TestDefinition_Validate_RejectsDecisionNodeViolations(t *testing.T) {
 // returnDefinition returns a Definition exercising a D4 return transition:
 // after the decision node "route" sends the case to "sep" or "budget", both
 // lead to the bureaucratic task node "signoff", which can approve straight
-// to "approved" or return the case to any earlier decision stage it
-// actually visited — "review", "sep", or "budget" — via a Return
-// transition. Each return requires an observation (CommentRequired),
-// mirroring the real consumer's bureaucratic-rejection intent.
+// to "approved" or return the case to any earlier task node it actually
+// occupied — "review", "sep", or "budget" — via a Return transition. Each
+// return requires an observation (CommentRequired), mirroring the real
+// consumer's bureaucratic-rejection intent.
 func returnDefinition() Definition {
 	return Definition{
 		Name:    "purchase",
@@ -548,6 +548,18 @@ func TestDefinition_Validate_RejectsReturnViolations(t *testing.T) {
 				return d
 			},
 			wantSub: `return transition must not target terminal node "approved"`,
+		},
+		{
+			name: "return transition targeting a decision node",
+			mutate: func(d Definition) Definition {
+				// signoff -> route (the decision node) instead of signoff ->
+				// review: a case is never "at rest" on a decision node, so a
+				// return into one must be rejected the same as a return into
+				// a terminal node.
+				d.Transitions[7].To = "route"
+				return d
+			},
+			wantSub: `return transition must target a task node, got decision node "route"`,
 		},
 	}
 

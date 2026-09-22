@@ -77,8 +77,8 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   (`maxDecisionHops`) en vez de girar para siempre.
 
 - `workflow.Transition.Return` (D4): una transición de retorno, para que una
-  etapa burocrática (un visto bueno) pueda devolver un caso a CUALQUIER etapa
-  de decisión anterior que el caso haya recorrido de verdad — nunca a una que
+  etapa burocrática (un visto bueno) pueda devolver un caso a CUALQUIER nodo
+  de tarea anterior que el caso haya ocupado de verdad — nunca a uno que
   saltó. `Engine.Available` la ofrece, y `Engine.Move` la acepta, sólo si el
   caso ocupó su `To` alguna vez, determinado a partir del historial de
   eventos propio del caso (el nodo de apertura más el `FromState`/`ToState`
@@ -95,8 +95,11 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   elegibilidad para el nodo de destino y se limpia la asignación, sin
   semántica especial de "deshacer". `Definition.Validate` rechaza una ruta
   saliente de un nodo de decisión marcada como retorno (una ruta enruta
-  automáticamente sobre datos de dominio; un retorno es una acción humana) y
-  rechaza un retorno que apunte a un nodo terminal. `Engine.Available` y
+  automáticamente sobre datos de dominio; un retorno es una acción humana),
+  rechaza un retorno que apunte a un nodo terminal, y rechaza un retorno que
+  apunte a un nodo de decisión (un caso nunca descansa ahí; permitirlo
+  reactivaría el enrutamiento automático, y un "retorno" podría terminar
+  empujando el caso hacia adelante en vez de hacia atrás). `Engine.Available` y
   `Engine.Move` leen el historial del caso a lo sumo una vez por llamada, y
   sólo cuando alguna transición candidata es efectivamente un retorno — el
   costo extra es cero para cualquier `Definition` que no use D4.
