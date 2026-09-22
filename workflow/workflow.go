@@ -83,7 +83,8 @@ const (
 	// trimming) or Move fails with ErrCommentNotAllowed. Both the zero
 	// value "" and the explicit literal "none" mean CommentNone, so a
 	// Definition can spell out "no comment" without relying on the zero
-	// value.
+	// value — see CommentPolicy.Canonical for how the alias is collapsed
+	// back to this constant before any comparison.
 	CommentNone CommentPolicy = ""
 	// CommentOptional allows, but does not require, a comment.
 	CommentOptional CommentPolicy = "optional"
@@ -92,30 +93,47 @@ const (
 	CommentRequired CommentPolicy = "required"
 )
 
+// commentPolicyNoneAlias is the sole spelling of the "none" alias literal.
+// Valid and Canonical both reference this constant instead of repeating the
+// literal, so the alias exists in exactly one place: a value comparing
+// != CommentNone but == commentPolicyNoneAlias is unmistakably the alias,
+// never a coincidentally similar typo.
+const commentPolicyNoneAlias CommentPolicy = "none"
+
 // Valid reports whether p is one of the known CommentPolicy values.
 func (p CommentPolicy) Valid() bool {
 	switch p {
-	case CommentNone, "none", CommentOptional, CommentRequired:
+	case CommentNone, commentPolicyNoneAlias, CommentOptional, CommentRequired:
 		return true
 	default:
 		return false
 	}
 }
 
-// isNone reports whether p means CommentNone, collapsing the "none" alias
-// into the zero value so callers only branch on the constants.
-func (p CommentPolicy) isNone() bool {
-	return p == CommentNone || p == "none"
+// Canonical collapses the "none" alias into the CommentNone zero value, so
+// every comparison site sees the same value regardless of which spelling a
+// Definition used. Definition.Validate cannot normalize transitions in
+// place for the caller — it has a value receiver, so any mutation would be
+// discarded when it returns — so canonicalization happens here instead, at
+// every comparison point (currently just checkComment). Comparing a raw,
+// non-canonicalized CommentPolicy against the CommentNone constant with ==
+// silently disagrees for an alias-spelled value; call Canonical() first.
+func (p CommentPolicy) Canonical() CommentPolicy {
+	if p == commentPolicyNoneAlias {
+		return CommentNone
+	}
+	return p
 }
 
 // checkComment validates comment (already trimmed) against policy. It is
 // called from Engine.Move before any state change, so a rejected comment
 // never leaves the case or its history mutated.
 func checkComment(policy CommentPolicy, comment string) error {
+	policy = policy.Canonical()
 	switch {
 	case policy == CommentRequired && comment == "":
 		return ErrCommentRequired
-	case policy.isNone() && comment != "":
+	case policy == CommentNone && comment != "":
 		return ErrCommentNotAllowed
 	default:
 		return nil

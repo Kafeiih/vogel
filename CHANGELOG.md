@@ -24,10 +24,19 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   tras recortarlo) y `workflow.ErrCommentNotAllowed` (política `none`/vacía
   con un comentario no vacío, para que la política declarada no mienta).
   Nueva migración `workflow/migrations/002_workflow_event_comment.sql`:
-  agrega `workflow_event.comment TEXT NOT NULL DEFAULT ''`. Los consumidores
-  existentes deben correrla (vía `migrate.Up` con `workflow/migrations.FS()`,
-  como ya corren `001_create_workflow.sql`) antes de desplegar código que
-  dependa de `Event.Comment`.
+  agrega `workflow_event.comment TEXT NOT NULL DEFAULT ''`. **Todo
+  consumidor debe correr esta migración ANTES de desplegar esta versión de
+  `vogel`, use o no `Event.Comment`** — no es opcional para quien no le
+  interesa el comentario. `workflow/postgres/repository.go` arma
+  `eventColumns` incluyendo `comment` de forma incondicional, así que contra
+  una base de datos que sólo corrió `001_create_workflow.sql` CUALQUIER
+  `AppendEvent`/`ListEvents` falla, y con ellos `Engine.Move`, `Claim`,
+  `Release` e `History` — todos, no sólo los que tocan comentarios. El
+  sentido seguro es el inverso: código viejo (que nunca lee ni escribe
+  `Event.Comment`) sigue funcionando sin cambios contra el esquema ya
+  migrado, porque la columna nueva es `NOT NULL DEFAULT ''`. Correrla vía
+  `migrate.Up` con `workflow/migrations.FS()`, igual que ya corren
+  `001_create_workflow.sql`.
 
 ### Cambiado
 

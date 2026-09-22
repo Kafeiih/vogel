@@ -274,6 +274,21 @@ func TestCommentPolicy_Valid(t *testing.T) {
 	assert.False(t, CommentPolicy("bogus").Valid())
 }
 
+// TestCommentPolicy_Canonical proves the "none" alias collapses to the
+// CommentNone constant in exactly one place (Canonical), so any code
+// comparing a canonicalized policy against CommentNone with == agrees with
+// isNone-style logic instead of silently disagreeing for an alias-spelled
+// definition.
+func TestCommentPolicy_Canonical(t *testing.T) {
+	assert.Equal(t, CommentNone, CommentNone.Canonical())
+	assert.Equal(t, CommentNone, CommentPolicy("none").Canonical())
+	assert.Equal(t, CommentOptional, CommentOptional.Canonical())
+	assert.Equal(t, CommentRequired, CommentRequired.Canonical())
+
+	assert.True(t, CommentPolicy("none").Canonical() == CommentNone,
+		"an alias-spelled policy must compare equal to CommentNone once canonicalized")
+}
+
 func TestDefinition_TransitionsFrom(t *testing.T) {
 	d := validDefinition()
 	got := d.TransitionsFrom("review")
