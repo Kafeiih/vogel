@@ -114,3 +114,27 @@ func TestPackageLevelJSON_MatchesNewDecoderDefaultBytes(t *testing.T) {
 	assert.Equal(t, w1.Code, w2.Code)
 	assert.Equal(t, w1.Body.Bytes(), w2.Body.Bytes())
 }
+
+// TestValidator_AddError_LastWriteWins pins the documented overwrite rule, for
+// both a repeated AddError and an AddError after one of the package's own
+// parsers already recorded an error for that field — the case a consumer
+// mixing its own parsers with Validator's hits.
+func TestValidator_AddError_LastWriteWins(t *testing.T) {
+	t.Run("repeated AddError", func(t *testing.T) {
+		v := request.NewValidator()
+		v.AddError("amount", "first")
+		v.AddError("amount", "second")
+
+		assert.Equal(t, request.FieldErrors{"amount": "second"}, v.Errors())
+	})
+
+	t.Run("AddError after a built-in parser", func(t *testing.T) {
+		v := request.NewValidator()
+		v.IntQuery(httptest.NewRequest(http.MethodGet, "/?limit=abc", nil), "limit", 10)
+		require.Equal(t, "limit must be an integer", v.Errors()["limit"])
+
+		v.AddError("limit", "limit must be at most 100")
+
+		assert.Equal(t, request.FieldErrors{"limit": "limit must be at most 100"}, v.Errors())
+	})
+}
