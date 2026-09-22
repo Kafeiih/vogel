@@ -20,12 +20,21 @@ type FieldErrors map[string]string
 // can validate every input before responding, instead of failing on the first
 // bad field and forcing the client into a fix-one-error-per-request loop.
 type Validator struct {
-	errors FieldErrors
+	errors   FieldErrors
+	messages Messages
 }
 
-// NewValidator creates a ready-to-use Validator.
+// NewValidator creates a ready-to-use Validator using DefaultMessages. Use
+// Decoder.NewValidator (built via New and WithMessages) to localize the
+// messages a Validator records.
 func NewValidator() *Validator {
-	return &Validator{errors: make(FieldErrors)}
+	return defaultDecoder.NewValidator()
+}
+
+// NewValidator creates a ready-to-use Validator that records errors using d's
+// configured Messages.
+func (d *Decoder) NewValidator() *Validator {
+	return &Validator{errors: make(FieldErrors), messages: d.messages}
 }
 
 // HasErrors reports whether any validation errors have been recorded.
@@ -33,9 +42,22 @@ func (v *Validator) HasErrors() bool {
 	return len(v.errors) > 0
 }
 
-// Errors returns the accumulated field errors.
+// Errors returns the accumulated field errors. It returns the live map, not
+// a copy, so mutating it mutates the Validator's state. AddError is the
+// supported way to add entries from outside this package — for example, a
+// consuming application wrapping Validator with its own query-parameter
+// parsers (an Int64Query, BoolQuery, or DecimalQuery that stays in that
+// application rather than this package).
 func (v *Validator) Errors() FieldErrors {
 	return v.errors
+}
+
+// AddError records message as the error for field, overwriting any previous
+// error recorded for that same field. It is the supported way for a consumer
+// embedding Validator in its own parsers to report a validation failure
+// through the same Validator instance, alongside this package's own checks.
+func (v *Validator) AddError(field, message string) {
+	v.errors[field] = message
 }
 
 // WriteErrors sends a 400 response with the accumulated field errors.
@@ -48,12 +70,12 @@ func (v *Validator) WriteErrors(w http.ResponseWriter, r *http.Request) {
 func (v *Validator) UUIDParam(r *http.Request, param string) uuid.UUID {
 	raw := chi.URLParam(r, param)
 	if raw == "" {
-		v.errors[param] = param + " is required"
+		v.AddError(param, v.messages.Required(param))
 		return uuid.Nil
 	}
 	id, err := uuid.Parse(raw)
 	if err != nil {
-		v.errors[param] = param + " must be a valid UUID"
+		v.AddError(param, v.messages.InvalidUUID(param))
 		return uuid.Nil
 	}
 	return id
@@ -68,11 +90,11 @@ func (v *Validator) IntQuery(r *http.Request, param string, defaultVal int) int 
 	}
 	n, err := strconv.Atoi(raw)
 	if err != nil {
-		v.errors[param] = param + " must be an integer"
+		v.AddError(param, v.messages.NotInteger(param))
 		return defaultVal
 	}
 	if n < 0 {
-		v.errors[param] = param + " must be non-negative"
+		v.AddError(param, v.messages.Negative(param))
 		return defaultVal
 	}
 	return n
@@ -95,7 +117,7 @@ func (v *Validator) TimeQuery(r *http.Request, param string) *time.Time {
 	}
 	t, err := time.Parse(time.RFC3339, raw)
 	if err != nil {
-		v.errors[param] = param + " must be in RFC3339 format"
+		v.AddError(param, v.messages.InvalidRFC3339(param))
 		return nil
 	}
 	return &t
@@ -110,7 +132,7 @@ func (v *Validator) DateQuery(r *http.Request, param string) *time.Time {
 	}
 	t, err := time.Parse("2006-01-02", raw)
 	if err != nil {
-		v.errors[param] = param + " must have ISO format (YYYY-MM-DD)"
+		v.AddError(param, v.messages.InvalidISODate(param))
 		return nil
 	}
 	return &t
@@ -125,7 +147,7 @@ func (v *Validator) UUIDQuery(r *http.Request, param string) *uuid.UUID {
 	}
 	id, err := uuid.Parse(raw)
 	if err != nil {
-		v.errors[param] = param + " must be a valid UUID"
+		v.AddError(param, v.messages.InvalidUUID(param))
 		return nil
 	}
 	return &id
@@ -136,12 +158,12 @@ func (v *Validator) UUIDQuery(r *http.Request, param string) *uuid.UUID {
 func (v *Validator) Int64Param(r *http.Request, param string) int64 {
 	raw := chi.URLParam(r, param)
 	if raw == "" {
-		v.errors[param] = param + " is required"
+		v.AddError(param, v.messages.Required(param))
 		return 0
 	}
 	n, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil {
-		v.errors[param] = param + " must be a valid integer"
+		v.AddError(param, v.messages.InvalidInteger(param))
 		return 0
 	}
 	return n
@@ -158,7 +180,7 @@ func (v *Validator) Enum(param, value string, allowed []string) string {
 			return value
 		}
 	}
-	v.errors[param] = param + " must be one of the allowed values"
+	v.AddError(param, v.messages.NotAllowed(param))
 	return value
 }
 
@@ -167,11 +189,11 @@ func (v *Validator) Enum(param, value string, allowed []string) string {
 func (v *Validator) PublicIDParam(r *http.Request, param string) string {
 	raw := chi.URLParam(r, param)
 	if raw == "" {
-		v.errors[param] = param + " is required"
+		v.AddError(param, v.messages.Required(param))
 		return ""
 	}
 	if !isValidPublicID(raw) {
-		v.errors[param] = param + " must be a valid UUID or ULID"
+		v.AddError(param, v.messages.InvalidPublicID(param))
 		return ""
 	}
 	return raw
@@ -193,7 +215,7 @@ func (v *Validator) Int64sQuery(r *http.Request, param string) []int64 {
 		}
 		n, err := strconv.ParseInt(p, 10, 64)
 		if err != nil {
-			v.errors[param] = param + " must contain valid integers"
+			v.AddError(param, v.messages.InvalidIntegerList(param))
 			return nil
 		}
 		result = append(result, n)
