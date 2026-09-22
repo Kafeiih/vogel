@@ -190,6 +190,42 @@ func commentTestDefinition() Definition {
 	return d
 }
 
+// commentGuardTestDefinition extends commentTestDefinition by attaching a
+// guard to each comment-policed transition that isn't already guarded: the
+// CommentNone submit transition and the CommentRequired reject transition.
+// It exists to prove the ordering documented on Engine.Move — the comment
+// policy is enforced before the guard runs — since commentTestDefinition
+// alone can't: its only guarded transition (approve) uses CommentOptional,
+// which never rejects a comment, so the guard would run regardless of
+// ordering.
+func commentGuardTestDefinition() Definition {
+	d := commentTestDefinition()
+	d.Transitions[0].Guard = "count-calls" // draft -> review, CommentNone
+	d.Transitions[2].Guard = "count-calls" // review -> rejected, CommentRequired
+	return d
+}
+
+// callCountingGuard is a GuardFunc that always allows the transition, and
+// records how many times it was invoked, so a test can assert a guard never
+// ran when the comment policy should have rejected the Move first.
+type callCountingGuard struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (g *callCountingGuard) fn(context.Context, pgxtx.DBTX, Case) (bool, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.calls++
+	return true, nil
+}
+
+func (g *callCountingGuard) count() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.calls
+}
+
 func openTestCase(t *testing.T, e *Engine) *Case {
 	t.Helper()
 	c, err := e.Open(context.Background(), nil, OpenInput{
@@ -380,6 +416,51 @@ func TestMove_CommentNone_WithComment_ReturnsErrCommentNotAllowed(t *testing.T) 
 	events, err := e.History(context.Background(), nil, c.ID)
 	require.NoError(t, err)
 	assert.Len(t, events, 1, "only the opening event: the rejected Move must append nothing")
+}
+
+// TestMove_CommentRejected_GuardNeverCalled_CommentRequired proves the
+// comment policy is enforced BEFORE the transition's guard runs: a
+// CommentRequired transition rejected for a missing comment must never
+// invoke its guard, and the case must not move.
+func TestMove_CommentRejected_GuardNeverCalled_CommentRequired(t *testing.T) {
+	repo := newFakeRepository()
+	e := New(repo, Config{}, testLogger(), WithDefinitions(commentGuardTestDefinition()))
+	guard := &callCountingGuard{}
+	require.NoError(t, e.RegisterGuard("count-calls", guard.fn))
+
+	c := openTestCase(t, e)
+	_, err := e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "submit", ActorID: "u1"})
+	require.NoError(t, err)
+	assert.Equal(t, 1, guard.count(), "the submit transition's own guard call is expected")
+
+	_, err = e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "reject", ActorID: "u2"})
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrCommentRequired))
+	assert.Equal(t, 1, guard.count(), "the reject transition's guard must not run when the comment check rejects Move")
+
+	got, err := repo.GetByID(context.Background(), nil, c.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "review", got.State, "the case must not have moved")
+}
+
+// TestMove_CommentRejected_GuardNeverCalled_CommentNone proves the same
+// ordering for a CommentNone transition rejected for carrying a comment it
+// disallows.
+func TestMove_CommentRejected_GuardNeverCalled_CommentNone(t *testing.T) {
+	repo := newFakeRepository()
+	e := New(repo, Config{}, testLogger(), WithDefinitions(commentGuardTestDefinition()))
+	guard := &callCountingGuard{}
+	require.NoError(t, e.RegisterGuard("count-calls", guard.fn))
+
+	c := openTestCase(t, e)
+	_, err := e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "submit", ActorID: "u1", Comment: "not allowed here"})
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrCommentNotAllowed))
+	assert.Equal(t, 0, guard.count(), "the submit transition's guard must not run when the comment check rejects Move")
+
+	got, err := repo.GetByID(context.Background(), nil, c.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "draft", got.State, "the case must not have moved")
 }
 
 func TestMove_CommentOptional_AcceptsWithComment(t *testing.T) {
