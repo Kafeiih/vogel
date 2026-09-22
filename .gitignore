@@ -25,3 +25,6 @@ Thumbs.db
 
 # CodeGraph (indice local, por checkout)
 .codegraph/
+
+# Registro de skills del agente (se regenera por maquina con rutas absolutas)
+.atl/
