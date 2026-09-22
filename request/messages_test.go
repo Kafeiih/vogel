@@ -21,6 +21,8 @@ func TestDefaultMessages_ExactTexts(t *testing.T) {
 
 	assert.Equal(t, "Malformed JSON at position 5", m.MalformedJSON(5))
 	assert.Equal(t, "Request body exceeds the 1MB limit", m.BodyTooLarge(1))
+	assert.Equal(t, "flag must be a boolean", m.InvalidBoolean("flag"))
+	assert.Equal(t, "amount must be a valid decimal", m.InvalidDecimal("amount"))
 }
 
 // TestWithMessages_OverridesDecodeMessage verifies a decode-path message
