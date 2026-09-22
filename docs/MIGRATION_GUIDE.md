@@ -66,7 +66,7 @@ local"** son capacidad nueva, no reemplazan nada existente.
 | `logger` | `pkg/logger/logger.go` | `pkg/logger/logger.go` |
 | `storage` + `storage/s3` | `internal/domain/storage/storage.go` + `internal/infrastructure/storage/s3.go` (además `internal/infrastructure/storage/registry.go` — `StorageRegistry` local, vogel lo cubre con `storage/s3.StorageRegistry`) | `internal/domain/storage/storage.go` + `internal/infrastructure/storage/s3.go` (+ `registry.go`) |
 | `notification` + `notification/smtp` + `notification/sendgrid` | `internal/domain/notification/notification.go` + `internal/infrastructure/notification/{smtp,sendgrid}.go` | `internal/domain/notification/notification.go` + `internal/infrastructure/notification/{smtp,sendgrid}.go` |
-| `httpx/response` | `internal/interfaces/http/response/{success.go,error.go}` (tiene funciones extra: `JSONWithMessage`, `JSONFail`, `JSONListWithMeta` — quedan locales, vogel no las expone) | `internal/interfaces/http/response/{success.go,error.go}` (mismas funciones extra locales) |
+| `httpx/response` | `internal/interfaces/http/response/{success.go,error.go}` (tiene funciones extra: `JSONWithMessage`, `JSONFail`, `JSONListWithMeta` — quedan locales, vogel no las expone). Desde `v0.4.0`, `CodeExportTooLarge` (`EXPORT_TOO_LARGE`) está upstream; el streaming CSV (`response/csv.go`) queda local | `internal/interfaces/http/response/{success.go,error.go}` (mismas funciones extra locales) |
 | `httpx/middleware` | `internal/interfaces/http/middleware/{recovery,ratelimit,security,logger,metrics,auth,authz}.go` | `internal/interfaces/http/middleware/{recovery,ratelimit,security,logger,metrics,auth,authz}.go` |
 | `auth` | **sin puerto local separado** — ver nota abajo | **sin puerto local separado** — ver nota abajo |
 | `auth/zitadel` | Lógica de adaptador embebida dentro de `internal/interfaces/http/middleware/auth.go` (no hay archivo de infraestructura separado) | `internal/infrastructure/auth/zitadel.go` (`NewZitadelAuthorizer`) |
@@ -78,7 +78,7 @@ local"** son capacidad nueva, no reemplazan nada existente.
 | `audit/postgres` | `internal/infrastructure/repository/audit_postgres.go` | `internal/infrastructure/repository/audit_postgres.go` (origen del port — ver README de vogel) |
 | `audit/migrations` | `internal/infrastructure/database/migrations/001_create_audit_log.sql` | `internal/infrastructure/database/migrations/001_create_audit_log.sql` |
 | `audit/httpx` | `internal/application/audit/{dto.go,queries.go}` + `internal/interfaces/http/handler/audit_handler.go` | `internal/application/audit/{dto.go,queries.go}` + `internal/interfaces/http/handler/audit_handler.go` |
-| `request` | `internal/interfaces/http/request/{json.go,validate.go}` (`Validator` local tiene funciones extra: `Int64Query`, `BoolQuery`, `DecimalQuery`, `IntQueryRange` — quedan locales) | `internal/interfaces/http/request/{json.go,validate.go}` |
+| `request` | `internal/interfaces/http/request/{json.go,validate.go}` — desde `v0.4.0`, `JSONOptional` y los mensajes localizables (`request.New(request.WithMessages(...))`) están upstream. Solo quedan locales `Int64Query`, `BoolQuery`, `DecimalQuery` (shopspring/decimal) y el `Validate` de go-playground, montados sobre `Validator.AddError` | `internal/interfaces/http/request/{json.go,validate.go}` |
 | `config` | **sin equivalente 1:1** — `internal/infrastructure/config/config.go` usa helpers privados (`getEnv`, `requireEnv`, `parseInt32`, ...), no funciones exportadas reusables como `vogel/config` | **sin equivalente 1:1** — mismo patrón, helpers privados en `internal/infrastructure/config/config.go` |
 | `postgres` | `internal/infrastructure/database/postgres.go` (`NewPostgresPool`) + `internal/infrastructure/database/{slow_query_tracer.go,metrics.go}` | `internal/infrastructure/database/postgres.go` (`NewPostgresPool`) + `internal/infrastructure/database/{slow_query_tracer.go,metrics.go}` |
 | `migrate` | `internal/infrastructure/database/migrate/{runner.go,logger.go}` | `internal/infrastructure/database/migrate/{runner.go,logger.go}` |
@@ -478,10 +478,17 @@ Sin cambio de firma en las funciones que sí están portadas.
 ### `request`
 
 - Ambas apps: borrar `internal/interfaces/http/request/{json.go,validate.go}`.
-  Las funciones extra del `Validator` local (`Int64Query`, `BoolQuery`,
-  `DecimalQuery`, `IntQueryRange` en go-crucible) no tienen equivalente en
-  vogel — si se usan, quedan en un `Validator` propio de la app que envuelve
-  o extiende al de vogel.
+- go-crucible (requiere `v0.4.0`): `JSONOptional` y los mensajes localizables
+  ya están upstream. Solo quedan locales `Int64Query`, `BoolQuery`,
+  `DecimalQuery` (depende de `shopspring/decimal`, que vogel no toma) y el
+  `Validate` de go-playground, en un wrapper propio de la app que registra sus
+  errores con `Validator.AddError` (no mutando el mapa de `Errors()`). El
+  streaming CSV (`response/csv.go`) también queda local.
+- Mensajes en otro idioma: construir un único `*request.Decoder` al arrancar la
+  app y usarlo en los handlers. Los campos de `Messages` que se dejan vacíos
+  conservan el texto en inglés por defecto. Las funciones de paquete
+  (`request.JSON`, `request.NewValidator`, ...) siguen usando los textos en
+  inglés, byte a byte iguales a `v0.3.0`.
 
 ```go
 import "github.com/kafeiih/vogel/request"
@@ -497,6 +504,24 @@ if v.HasErrors() {
     v.WriteErrors(w, r)
     return
 }
+```
+
+Con mensajes localizados y cuerpo opcional (`v0.4.0`):
+
+```go
+// Una vez, al arrancar la app.
+dec := request.New(request.WithMessages(request.Messages{
+    EmptyBody: "El cuerpo de la solicitud está vacío",
+    Required:  func(field string) string { return field + " es obligatorio" },
+}))
+
+// En el handler: cuerpo vacío => nil, sin escribir nada, input queda en cero.
+if err := dec.JSONOptional(w, r, &input); err != nil {
+    return
+}
+
+v := dec.NewValidator()
+v.AddError("amount", "amount debe ser un decimal válido") // parser propio de la app
 ```
 
 Sin cambio de firma. Nota aparte: go-licencias ya tiene el límite de bytes
