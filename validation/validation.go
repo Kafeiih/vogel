@@ -53,10 +53,12 @@ func jsonTagName(fld reflect.StructField) string {
 // Struct validates v and reports (nil, nil) when it is valid.
 //
 // On a validation failure (validator.ValidationErrors), it returns one
-// FieldErrors entry per failing field, keyed by v's Namespace() with the
-// root struct's own name stripped — the JSON path leading to the field
-// (nested structs and dive'd slices/maps included, e.g. "address.street" or
-// "items[0].monto") — and valued with a message drawn from v's Messages.
+// FieldErrors entry per failing field, keyed by the JSON path leading to the
+// field (nested structs and dive'd slices/maps included, e.g.
+// "address.street" or "items[0].monto") — see fieldKey for exactly how that
+// path is derived, including how an embedded (anonymous) struct field
+// flattens into its parent exactly as encoding/json would — and valued with
+// a message drawn from v's Messages.
 //
 // Any other error — chiefly *validator.InvalidValidationError, returned when
 // v is not a struct, is nil, or is a nil pointer — is a programming error,
@@ -73,9 +75,10 @@ func (v *Validator) Struct(val any) (request.FieldErrors, error) {
 		return nil, err
 	}
 
+	root := derefStruct(reflect.TypeOf(val))
 	fields := make(request.FieldErrors, len(verrs))
 	for _, fe := range verrs {
-		key := fieldKey(fe)
+		key := fieldKey(root, fe)
 		if _, exists := fields[key]; exists {
 			// go-playground/validator short-circuits a field's tag chain at
 			// its first failing tag, so it never reports two errors for the
@@ -86,31 +89,148 @@ func (v *Validator) Struct(val any) (request.FieldErrors, error) {
 			// it.
 			continue
 		}
-		fields[key] = v.messageFor(fe)
+		fields[key] = v.messageFor(key, fe)
 	}
 	return fields, nil
 }
 
-// fieldKey turns fe.Namespace() — which always starts with the root
-// struct's own name (e.g. "CreateInvoiceRequest.address.street") — into the
-// JSON path a client can act on ("address.street"), by stripping everything
-// up to and including the first '.'. A namespace with no '.' at all (a
-// non-nested field on a struct with no name segment, which validator does
-// not produce for Struct()) is returned unchanged rather than emptied.
-func fieldKey(fe validator.FieldError) string {
-	ns := fe.Namespace()
-	if i := strings.IndexByte(ns, '.'); i >= 0 {
-		return ns[i+1:]
+// fieldKey turns fe.Namespace() and fe.StructNamespace() into the JSON path
+// a client can act on ("address.street"), stripping the root struct's own
+// leading segment, and — unlike a plain Namespace() strip — flattening an
+// embedded (anonymous) struct field exactly the way encoding/json would:
+//
+//   - an anonymous field with NO json tag name contributes no segment of its
+//     own; its own fields are promoted one level up (e.g. Base.id -> id).
+//   - an anonymous field WITH an explicit json tag name is NOT flattened and
+//     keeps that name as an ordinary segment (e.g. Base json:"base" -> base.id).
+//
+// This cannot be recovered from fe.Namespace() alone: RegisterTagNameFunc
+// (see jsonTagName) already substituted every segment's JSON name, including
+// an anonymous field's own name when it has none of its own — falling back
+// to the Go field name exactly like it does for any other untagged field —
+// so an untagged embedded Base surfaces there indistinguishably from an
+// ordinary field named Base. fe.StructNamespace() gives the same path shape
+// using unsubstituted Go field names instead, which — walked one segment at
+// a time against root's reflect.Type — tells us exactly which segments are
+// anonymous-and-untagged and must be dropped. The two namespaces always
+// share the same segment count and the same "[i]"/"[key]" index suffixes,
+// since validator builds both from the same struct walk.
+//
+// root is the reflect.Type Struct validated (already deref'd through any
+// pointer). Any segment this can no longer type-walk (a field FieldByName
+// can't find, or a non-struct type such as a map value or interface) is
+// passed through unflattened rather than guessed at or panicking.
+func fieldKey(root reflect.Type, fe validator.FieldError) string {
+	jsonSegs := splitNamespace(fe.Namespace())
+	goSegs := splitNamespace(fe.StructNamespace())
+	if len(jsonSegs) > 0 {
+		jsonSegs = jsonSegs[1:]
 	}
-	return ns
+	if len(goSegs) > 0 {
+		goSegs = goSegs[1:]
+	}
+
+	t := root
+	out := make([]string, 0, len(jsonSegs))
+	for i, goSeg := range goSegs {
+		name, hasIndex := cutIndex(goSeg)
+
+		flatten := false
+		if t != nil && t.Kind() == reflect.Struct {
+			if fld, ok := t.FieldByName(name); ok {
+				flatten = fld.Anonymous && jsonNameOf(fld) == ""
+				next := fld.Type
+				if hasIndex {
+					next = elemOf(next)
+				}
+				t = derefStruct(next)
+			} else {
+				t = nil
+			}
+		} else {
+			t = nil
+		}
+
+		if flatten {
+			continue
+		}
+		if i < len(jsonSegs) {
+			out = append(out, jsonSegs[i])
+		}
+	}
+	return strings.Join(out, ".")
 }
 
-// messageFor renders fe using v's Messages, dispatching on the failing
-// tag. A tag with no dedicated Messages field falls back to Messages.Default.
-func (v *Validator) messageFor(fe validator.FieldError) string {
-	field := fieldKey(fe)
+// splitNamespace splits a validator namespace on '.'; the "[i]"/"[key]" dive
+// suffix validator attaches never itself contains a dot, so a plain split is
+// exact. An empty namespace splits to nil, not [""].
+func splitNamespace(ns string) []string {
+	if ns == "" {
+		return nil
+	}
+	return strings.Split(ns, ".")
+}
+
+// cutIndex splits a namespace segment such as "Items[0]" into its field name
+// ("Items") and whether a dive index was present. A segment with no index
+// (the common case) is returned unchanged.
+func cutIndex(seg string) (name string, hasIndex bool) {
+	if i := strings.IndexByte(seg, '['); i >= 0 {
+		return seg[:i], true
+	}
+	return seg, false
+}
+
+// derefStruct dereferences t through any number of pointers, returning
+// whatever type sits at the bottom (a struct, in the common case, but
+// possibly something else — the caller re-checks Kind()). A nil t stays nil.
+func derefStruct(t reflect.Type) reflect.Type {
+	for t != nil && t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	return t
+}
+
+// elemOf dereferences t and, if it names a slice, array or map (the three
+// kinds "dive" walks), returns its element type; any other kind is returned
+// unchanged, since the only caller (fieldKey) only calls this on a field
+// whose namespace segment carried a dive index.
+func elemOf(t reflect.Type) reflect.Type {
+	t = derefStruct(t)
+	if t == nil {
+		return nil
+	}
+	switch t.Kind() {
+	case reflect.Slice, reflect.Array, reflect.Map:
+		return t.Elem()
+	default:
+		return t
+	}
+}
+
+// jsonNameOf returns fld's explicit json tag name (the part before the
+// first comma), or "" when it has none of its own — no tag, an empty tag, or
+// json:"-" — mirroring encoding/json's own criterion for whether an
+// anonymous field is flattened into its parent (see fieldKey).
+func jsonNameOf(fld reflect.StructField) string {
+	tag := fld.Tag.Get("json")
+	name, _, _ := strings.Cut(tag, ",")
+	if name == "-" {
+		return ""
+	}
+	return name
+}
+
+// messageFor renders fe using v's Messages, dispatching on the failing tag.
+// field is fe's already-resolved client-facing key (see fieldKey) — passed
+// in rather than recomputed here so Struct only ever walks fe's namespace
+// once. A tag with no dedicated Messages field falls back to Messages.Default.
+func (v *Validator) messageFor(field string, fe validator.FieldError) string {
 	switch fe.Tag() {
-	case "required":
+	case "required",
+		"required_if", "required_unless",
+		"required_with", "required_with_all",
+		"required_without", "required_without_all":
 		return v.messages.Required(field)
 	case "min":
 		return v.messages.Min(field, fe.Param(), fe.Kind())

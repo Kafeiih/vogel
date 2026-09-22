@@ -77,6 +77,30 @@ func TestWrite_ProgrammingError(t *testing.T) {
 	assert.NotEmpty(t, got.Message)
 }
 
+// TestWrite_TypedNilPointer verifies a typed nil pointer answers 500 without
+// leaking the underlying Go error text into the response body, exactly like
+// TestWrite_ProgrammingError does for a non-struct input.
+func TestWrite_TypedNilPointer(t *testing.T) {
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/", nil)
+
+	var s *writeTestPayload
+	ok := validation.Write(w, r, s)
+
+	assert.False(t, ok)
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+
+	body := w.Body.String()
+	assert.NotContains(t, strings.ToLower(body), "invalidvalidationerror")
+	assert.NotContains(t, strings.ToLower(body), "writetestpayload")
+	assert.NotContains(t, strings.ToLower(body), "reflect")
+
+	var got response.ErrorResponse
+	require.NoError(t, json.NewDecoder(strings.NewReader(body)).Decode(&got))
+	assert.Equal(t, response.CodeInternalError, got.Code)
+	assert.NotEmpty(t, got.Message)
+}
+
 // TestPackageLevel_StructAndWrite verifies the package-level Struct and
 // Write helpers delegate to a default instance, exactly like request's
 // package-level functions delegate to defaultDecoder.
