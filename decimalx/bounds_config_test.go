@@ -2,6 +2,7 @@ package decimalx_test
 
 import (
 	"errors"
+	"math"
 	"testing"
 	"time"
 
@@ -23,6 +24,11 @@ func TestNewBounds_RejectsUnsafeConfigs(t *testing.T) {
 		{"zero maxLen", 0, -8, 8},
 		{"negative maxLen", -1, -8, 8},
 		{"inverted exponent range", 32, 8, -8},
+		{"minExp at math.MinInt32 exceeds the ceiling", 32, math.MinInt32, 8},
+		{"maxExp at math.MaxInt32 exceeds the ceiling", 32, -8, math.MaxInt32},
+		{"both extremes exceed the ceiling", 32, math.MinInt32, math.MaxInt32},
+		{"minExp one past the ceiling", 32, -(decimalx.MaxExponentLimit + 1), 8},
+		{"maxExp one past the ceiling", 32, -8, decimalx.MaxExponentLimit + 1},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -135,5 +141,60 @@ func TestDefaultBounds_MatchesPackageLevelDefaults(t *testing.T) {
 		if !errors.Is(wantErr, decimalx.ErrOutOfRange) || !errors.Is(gotErr, decimalx.ErrOutOfRange) {
 			t.Fatalf("Parse(%q): want = %v, got = %v: both should be ErrOutOfRange", s, wantErr, gotErr)
 		}
+	}
+}
+
+// TestNewBounds_ExponentCeiling pins MaxExponentLimit as a HARD ceiling that
+// NewBounds enforces regardless of what a caller requests: an exponent range
+// as wide as [math.MinInt32, math.MaxInt32] must be refused, exactly ±1000
+// must be accepted, and one past that (±1001) must be refused again. Without
+// this ceiling, NewBounds(32, math.MinInt32, math.MaxInt32) used to succeed
+// and Bounds.Parse("1e999999999") would hang materializing the digits —
+// reopening the exact DoS this package exists to close.
+func TestNewBounds_ExponentCeiling(t *testing.T) {
+	if _, err := decimalx.NewBounds(32, math.MinInt32, math.MaxInt32); !errors.Is(err, decimalx.ErrInvalidBounds) {
+		t.Fatalf("NewBounds(32, MinInt32, MaxInt32) err = %v, want ErrInvalidBounds", err)
+	}
+
+	if _, err := decimalx.NewBounds(32, -decimalx.MaxExponentLimit, decimalx.MaxExponentLimit); err != nil {
+		t.Fatalf("NewBounds(32, -%d, %d) err = %v, want nil: exactly at the ceiling must be accepted",
+			decimalx.MaxExponentLimit, decimalx.MaxExponentLimit, err)
+	}
+
+	if _, err := decimalx.NewBounds(32, -(decimalx.MaxExponentLimit + 1), decimalx.MaxExponentLimit); !errors.Is(err, decimalx.ErrInvalidBounds) {
+		t.Fatalf("NewBounds(32, -%d, %d) err = %v, want ErrInvalidBounds: minExp is one past the ceiling",
+			decimalx.MaxExponentLimit+1, decimalx.MaxExponentLimit, err)
+	}
+	if _, err := decimalx.NewBounds(32, -decimalx.MaxExponentLimit, decimalx.MaxExponentLimit+1); !errors.Is(err, decimalx.ErrInvalidBounds) {
+		t.Fatalf("NewBounds(32, -%d, %d) err = %v, want ErrInvalidBounds: maxExp is one past the ceiling",
+			decimalx.MaxExponentLimit, decimalx.MaxExponentLimit+1, err)
+	}
+}
+
+// TestNewBounds_CeilingStaysCheapToRound verifies the ceiling's own promise:
+// a Bounds built at the maximum exponent range NewBounds allows still lets
+// 10^1000 be parsed, bounds-checked and rounded well under the timing
+// budget, so widening the range all the way to the ceiling never reopens the
+// hang this package exists to prevent.
+func TestNewBounds_CeilingStaysCheapToRound(t *testing.T) {
+	b, err := decimalx.NewBounds(32, -decimalx.MaxExponentLimit, decimalx.MaxExponentLimit)
+	if err != nil {
+		t.Fatalf("NewBounds at the ceiling: err = %v, want nil", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		if _, err := b.ParseAmount("1e1000", 2); err != nil {
+			t.Errorf("ParseAmount(1e1000, 2) at the ceiling err = %v, want nil", err)
+		}
+		if err := b.ValidateAmount(decimal.New(1, 1000), 2); err != nil {
+			t.Errorf("ValidateAmount(1e1000, 2) at the ceiling err = %v, want nil", err)
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(timingBudget):
+		t.Fatal("ParseAmount/ValidateAmount at the exponent ceiling did not return within the timing budget")
 	}
 }

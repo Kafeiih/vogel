@@ -71,6 +71,54 @@ func Parse(s string) (decimal.Decimal, error) {
 	}
 }
 
+// TestAssertNoDirectNewFromString_RequireFromStringFails verifies the guard
+// also catches decimal.RequireFromString, not just decimal.NewFromString:
+// both bypass decimalx.Parse's bounds equally.
+func TestAssertNoDirectNewFromString_RequireFromStringFails(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "app", "handler.go"), `package app
+
+import "github.com/shopspring/decimal"
+
+func Parse(s string) decimal.Decimal {
+	return decimal.RequireFromString(s)
+}
+`)
+
+	fake := &fakeTB{}
+	decimalxtest.AssertNoDirectNewFromString(fake, root, "app")
+
+	if !fake.failed {
+		t.Fatal("AssertNoDirectNewFromString did not fail on a file calling decimal.RequireFromString directly")
+	}
+}
+
+// TestAssertNoDirectNewFromString_NewFromFormattedStringFails verifies the
+// guard also catches decimal.NewFromFormattedString, the third
+// shopspring/decimal string constructor that bypasses decimalx.Parse.
+func TestAssertNoDirectNewFromString_NewFromFormattedStringFails(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "app", "handler.go"), `package app
+
+import (
+	"regexp"
+
+	"github.com/shopspring/decimal"
+)
+
+func Parse(s string) (decimal.Decimal, error) {
+	return decimal.NewFromFormattedString(s, regexp.MustCompile("[^0-9.]"))
+}
+`)
+
+	fake := &fakeTB{}
+	decimalxtest.AssertNoDirectNewFromString(fake, root, "app")
+
+	if !fake.failed {
+		t.Fatal("AssertNoDirectNewFromString did not fail on a file calling decimal.NewFromFormattedString directly")
+	}
+}
+
 // TestAssertNoDirectNewFromString_ToleratesSpacing verifies the regex
 // catches the call even with unusual (non-gofmt) spacing around the dot, as
 // an editor might introduce before gofmt runs.
