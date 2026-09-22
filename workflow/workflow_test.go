@@ -330,6 +330,161 @@ func TestDefinition_Node(t *testing.T) {
 	assert.False(t, ok)
 }
 
+func TestNodeKind_Valid(t *testing.T) {
+	assert.True(t, NodeTask.Valid())
+	assert.True(t, NodeKind("task").Valid())
+	assert.True(t, NodeDecision.Valid())
+	assert.False(t, NodeKind("bogus").Valid())
+}
+
+// decisionDefinition returns a Definition exercising a D3 decision node:
+// after "review", the decision node "route" picks "sep" when its guard
+// matches, otherwise falls through to the default route "budget" — declared
+// last, as Validate requires.
+func decisionDefinition() Definition {
+	return Definition{
+		Name:    "purchase",
+		Version: 1,
+		Nodes: []Node{
+			{ID: "draft", Start: true, Eligible: ByPosition("buyer")},
+			{ID: "review", Eligible: ByPositionInUnit("approver", "finance")},
+			{ID: "route", Kind: NodeDecision},
+			{ID: "sep", Eligible: ByPosition("sep-coordinator")},
+			{ID: "budget", Eligible: ByPosition("budget-analyst")},
+			{ID: "approved", Terminal: true},
+		},
+		Transitions: []Transition{
+			{From: "draft", To: "review", Action: "submit"},
+			{From: "review", To: "route", Action: "approve"},
+			{From: "route", To: "sep", Action: "to-sep", Guard: "has-subsidy-sep"},
+			{From: "route", To: "budget", Action: "to-budget"},
+			{From: "sep", To: "approved", Action: "clear"},
+			{From: "budget", To: "approved", Action: "clear"},
+		},
+	}
+}
+
+func TestDefinition_Validate_DecisionDefinition_ReturnsNil(t *testing.T) {
+	assert.NoError(t, decisionDefinition().Validate())
+}
+
+func TestDefinition_Validate_RejectsDecisionNodeViolations(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(Definition) Definition
+		wantSub string
+	}{
+		{
+			name: "invalid node kind",
+			mutate: func(d Definition) Definition {
+				d.Nodes[2].Kind = NodeKind("bogus")
+				return d
+			},
+			wantSub: `node "route": invalid kind "bogus"`,
+		},
+		{
+			name: "decision node as start",
+			mutate: func(d Definition) Definition {
+				d.Nodes[0].Start = false
+				d.Nodes[2].Start = true
+				return d
+			},
+			wantSub: `decision node "route": must not be a start node`,
+		},
+		{
+			name: "decision node as terminal",
+			mutate: func(d Definition) Definition {
+				d.Nodes[2].Terminal = true
+				return d
+			},
+			wantSub: `decision node "route": must not be a terminal node`,
+		},
+		{
+			name: "decision node with eligibility",
+			mutate: func(d Definition) Definition {
+				d.Nodes[2].Eligible = ByPosition("someone")
+				return d
+			},
+			wantSub: `decision node "route": must not declare an eligibility`,
+		},
+		{
+			name: "decision node with deadline",
+			mutate: func(d Definition) Definition {
+				d.Nodes[2].Deadline = time.Hour
+				return d
+			},
+			wantSub: `decision node "route": must not declare a deadline`,
+		},
+		{
+			name: "fewer than two outgoing routes",
+			mutate: func(d Definition) Definition {
+				d.Transitions = d.Transitions[:3] // drop "route" -> "budget"
+				// "budget" would otherwise be an unreachable dead end.
+				d.Transitions = append(d.Transitions, Transition{From: "sep", To: "budget", Action: "reroute"})
+				return d
+			},
+			wantSub: `decision node "route": requires at least two outgoing routes, found 1`,
+		},
+		{
+			name: "no unguarded default route",
+			mutate: func(d Definition) Definition {
+				d.Transitions[3].Guard = "under-budget"
+				return d
+			},
+			wantSub: `decision node "route": requires exactly one unguarded default route, found none`,
+		},
+		{
+			name: "more than one unguarded route",
+			mutate: func(d Definition) Definition {
+				d.Transitions[2].Guard = ""
+				return d
+			},
+			wantSub: `decision node "route": requires exactly one unguarded default route, found 2`,
+		},
+		{
+			name: "unguarded default route not declared last",
+			mutate: func(d Definition) Definition {
+				d.Transitions[2], d.Transitions[3] = d.Transitions[3], d.Transitions[2]
+				return d
+			},
+			wantSub: `decision node "route": the unguarded default route (action "to-budget") must be declared last`,
+		},
+		{
+			name: "route declares a comment policy",
+			mutate: func(d Definition) Definition {
+				d.Transitions[3].Comment = CommentOptional
+				return d
+			},
+			wantSub: `route from decision node "route" must not declare a comment policy`,
+		},
+		{
+			name: "decision-only cycle",
+			mutate: func(d Definition) Definition {
+				d.Nodes = append(d.Nodes, Node{ID: "route2", Kind: NodeDecision})
+				// route -> route2 replaces route -> sep (kept guarded), and
+				// route2 routes back to route, forming a decision-only cycle.
+				d.Transitions[2] = Transition{From: "route", To: "route2", Action: "to-route2", Guard: "has-subsidy-sep"}
+				d.Transitions = append(d.Transitions,
+					Transition{From: "route2", To: "route", Action: "loop-guarded", Guard: "has-subsidy-sep"},
+					Transition{From: "route2", To: "budget", Action: "to-budget-2"},
+				)
+				return d
+			},
+			wantSub: "decision-only cycle detected",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := tt.mutate(decisionDefinition())
+			err := d.Validate()
+			require.Error(t, err)
+			assert.True(t, errors.Is(err, ErrInvalidDefinition), "error must wrap ErrInvalidDefinition")
+			assert.Contains(t, err.Error(), tt.wantSub)
+		})
+	}
+}
+
 func TestDefinition_StartNode(t *testing.T) {
 	d := validDefinition()
 

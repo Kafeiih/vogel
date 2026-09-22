@@ -198,11 +198,54 @@ func commentTestDefinition() Definition {
 // alone can't: its only guarded transition (approve) uses CommentOptional,
 // which never rejects a comment, so the guard would run regardless of
 // ordering.
+//
+// Transitions are looked up by Action rather than by slice index, and each
+// one's Comment policy is asserted before the guard is attached: indexing
+// into d.Transitions directly would silently stop proving the ordering if
+// the transitions were ever reordered, since a guard could then land on the
+// wrong (or a differently comment-policed) transition without any test
+// failing.
 func commentGuardTestDefinition() Definition {
 	d := commentTestDefinition()
-	d.Transitions[0].Guard = "count-calls" // draft -> review, CommentNone
-	d.Transitions[2].Guard = "count-calls" // review -> rejected, CommentRequired
+
+	submit, ok := findTransitionByAction(d, "draft", "submit")
+	if !ok {
+		panic("commentGuardTestDefinition: no draft->submit transition")
+	}
+	if submit.Comment.Canonical() != CommentNone {
+		panic("commentGuardTestDefinition: draft->submit must be CommentNone")
+	}
+	d.Transitions[submit.index].Guard = "count-calls"
+
+	reject, ok := findTransitionByAction(d, "review", "reject")
+	if !ok {
+		panic("commentGuardTestDefinition: no review->reject transition")
+	}
+	if reject.Comment != CommentRequired {
+		panic("commentGuardTestDefinition: review->reject must be CommentRequired")
+	}
+	d.Transitions[reject.index].Guard = "count-calls"
+
 	return d
+}
+
+// indexedTransition pairs a Transition with its position in Definition.
+// Transitions, so a caller that looked it up by (From, Action) can still
+// mutate the original slice in place.
+type indexedTransition struct {
+	Transition
+	index int
+}
+
+// findTransitionByAction returns the transition leaving from with the given
+// action, together with its index in d.Transitions.
+func findTransitionByAction(d Definition, from, action string) (indexedTransition, bool) {
+	for i, tr := range d.Transitions {
+		if tr.From == from && tr.Action == action {
+			return indexedTransition{Transition: tr, index: i}, true
+		}
+	}
+	return indexedTransition{}, false
 }
 
 // callCountingGuard is a GuardFunc that always allows the transition, and
@@ -762,6 +805,389 @@ func TestDefinitions_SortedByNameThenVersion(t *testing.T) {
 	assert.Equal(t, 1, defs[1].Version)
 	assert.Equal(t, "purchase", defs[2].Name)
 	assert.Equal(t, 2, defs[2].Version)
+}
+
+// decisionEngineDefinition mirrors workflow_test.go's decisionDefinition:
+// after "review", the decision node "route" sends the case to "sep" when
+// the "has-subsidy-sep" guard matches, otherwise falls through to the
+// unguarded default "budget" — both of which lead to the terminal
+// "approved".
+func decisionEngineDefinition() Definition {
+	return Definition{
+		Name:    "purchase",
+		Version: 1,
+		Nodes: []Node{
+			{ID: "draft", Start: true, Eligible: ByPosition("buyer")},
+			{ID: "review", Eligible: ByPositionInUnit("approver", "finance")},
+			{ID: "route", Kind: NodeDecision},
+			{ID: "sep", Eligible: ByPosition("sep-coordinator")},
+			{ID: "budget", Eligible: ByPosition("budget-analyst")},
+			{ID: "approved", Terminal: true},
+		},
+		Transitions: []Transition{
+			{From: "draft", To: "review", Action: "submit"},
+			{From: "review", To: "route", Action: "approve", Comment: CommentOptional},
+			{From: "route", To: "sep", Action: "to-sep", Guard: "has-subsidy-sep"},
+			{From: "route", To: "budget", Action: "to-budget"},
+			{From: "sep", To: "approved", Action: "clear"},
+			{From: "budget", To: "approved", Action: "clear"},
+		},
+	}
+}
+
+// decisionToTerminalDefinition sends a decision node's routes straight to
+// terminal nodes, so Move must close the case immediately after the
+// automatic hop — proving a decision hop can lead directly to StatusClosed
+// without resting anywhere in between.
+func decisionToTerminalDefinition() Definition {
+	return Definition{
+		Name:    "purchase",
+		Version: 1,
+		Nodes: []Node{
+			{ID: "draft", Start: true, Eligible: ByPosition("buyer")},
+			{ID: "review", Eligible: ByPositionInUnit("approver", "finance")},
+			{ID: "route", Kind: NodeDecision},
+			{ID: "approved", Terminal: true},
+			{ID: "rejected", Terminal: true},
+		},
+		Transitions: []Transition{
+			{From: "draft", To: "review", Action: "submit"},
+			{From: "review", To: "route", Action: "approve"},
+			{From: "route", To: "rejected", Action: "to-rejected", Guard: "has-subsidy-sep"},
+			{From: "route", To: "approved", Action: "to-approved"},
+		},
+	}
+}
+
+// chainedDecisionDefinition chains two decision nodes: "route" (once its own
+// guarded escape hatch fails) unconditionally forwards to "route2", which
+// then picks between "sep" and "budget". It proves Move keeps routing across
+// multiple decision hops within one call until it rests on a task node.
+func chainedDecisionDefinition() Definition {
+	return Definition{
+		Name:    "purchase",
+		Version: 1,
+		Nodes: []Node{
+			{ID: "draft", Start: true, Eligible: ByPosition("buyer")},
+			{ID: "review", Eligible: ByPositionInUnit("approver", "finance")},
+			{ID: "route", Kind: NodeDecision},
+			{ID: "route2", Kind: NodeDecision},
+			{ID: "sep", Eligible: ByPosition("sep-coordinator")},
+			{ID: "budget", Eligible: ByPosition("budget-analyst")},
+			{ID: "approved", Terminal: true},
+		},
+		Transitions: []Transition{
+			{From: "draft", To: "review", Action: "submit"},
+			{From: "review", To: "route", Action: "approve"},
+			{From: "route", To: "budget", Action: "skip-to-budget", Guard: "always-false"},
+			{From: "route", To: "route2", Action: "to-route2"},
+			{From: "route2", To: "sep", Action: "to-sep", Guard: "has-subsidy-sep"},
+			{From: "route2", To: "budget", Action: "to-budget"},
+			{From: "sep", To: "approved", Action: "clear"},
+			{From: "budget", To: "approved", Action: "clear"},
+		},
+	}
+}
+
+// noDefaultRouteDefinition intentionally violates Definition.Validate's
+// "exactly one unguarded default route" rule: every route out of "route" is
+// guarded. Register (and therefore WithDefinitions) always calls Validate
+// and would reject it, so tests using it inject it directly into the
+// Engine's internal registry — exercising Engine.Move's ErrNoRoute path
+// defensively, against a Definition that somehow reached the engine without
+// going through Validate.
+func noDefaultRouteDefinition() Definition {
+	d := decisionEngineDefinition()
+	for i := range d.Transitions {
+		if d.Transitions[i].From == "route" && d.Transitions[i].Action == "to-budget" {
+			d.Transitions[i].Guard = "always-false"
+		}
+	}
+	return d
+}
+
+// cyclicDecisionDefinition intentionally violates Definition.Validate's "no
+// cycle made only of decision nodes" rule: "route" and "route2" route back
+// and forth with no way out once their (never-taken, in these tests) escape
+// guards fail. Injected directly into the Engine's internal registry like
+// noDefaultRouteDefinition, it exercises Engine.Move's hop cap
+// (maxDecisionHops) defensively.
+func cyclicDecisionDefinition() Definition {
+	return Definition{
+		Name:    "purchase",
+		Version: 1,
+		Nodes: []Node{
+			{ID: "draft", Start: true, Eligible: ByPosition("buyer")},
+			{ID: "review", Eligible: ByPositionInUnit("approver", "finance")},
+			{ID: "route", Kind: NodeDecision},
+			{ID: "route2", Kind: NodeDecision},
+			{ID: "approved", Terminal: true},
+		},
+		Transitions: []Transition{
+			{From: "draft", To: "review", Action: "submit"},
+			{From: "review", To: "route", Action: "approve"},
+			{From: "route", To: "approved", Action: "escape", Guard: "always-false"},
+			{From: "route", To: "route2", Action: "to-route2"},
+			{From: "route2", To: "approved", Action: "escape2", Guard: "always-false"},
+			{From: "route2", To: "route", Action: "to-route"},
+		},
+	}
+}
+
+// stateRecordingRepository wraps fakeRepository to record every State value
+// passed to Update, so a test can prove Move writes the case exactly once
+// per call — however many decision hops it took internally — and that the
+// one persisted State is never a decision node.
+type stateRecordingRepository struct {
+	*fakeRepository
+	updatedStates []string
+}
+
+func (r *stateRecordingRepository) Update(ctx context.Context, db pgxtx.DBTX, c *Case) error {
+	r.updatedStates = append(r.updatedStates, c.State)
+	return r.fakeRepository.Update(ctx, db, c)
+}
+
+func TestMove_DecisionNode_RoutesOnFirstTrueGuard(t *testing.T) {
+	repo := newFakeRepository()
+	e := New(repo, Config{}, testLogger(), WithDefinitions(decisionEngineDefinition()))
+	require.NoError(t, e.RegisterGuard("has-subsidy-sep", alwaysTrueGuard))
+
+	c := openTestCase(t, e)
+	_, err := e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "submit", ActorID: "u1"})
+	require.NoError(t, err)
+
+	moved, err := e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "approve", ActorID: "u2"})
+	require.NoError(t, err)
+	assert.Equal(t, "sep", moved.State, "the guarded route must win when its guard matches")
+	assert.Equal(t, StatusOpen, moved.Status)
+}
+
+func TestMove_DecisionNode_FallsThroughToDefault(t *testing.T) {
+	repo := newFakeRepository()
+	e := New(repo, Config{}, testLogger(), WithDefinitions(decisionEngineDefinition()))
+	require.NoError(t, e.RegisterGuard("has-subsidy-sep", alwaysFalseGuard))
+
+	c := openTestCase(t, e)
+	_, err := e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "submit", ActorID: "u1"})
+	require.NoError(t, err)
+
+	moved, err := e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "approve", ActorID: "u2"})
+	require.NoError(t, err)
+	assert.Equal(t, "budget", moved.State, "the unguarded default route must win when no guarded route matches")
+}
+
+func TestMove_ChainedDecisionNodes_RestsOnTaskNode(t *testing.T) {
+	repo := newFakeRepository()
+	e := New(repo, Config{}, testLogger(), WithDefinitions(chainedDecisionDefinition()))
+	require.NoError(t, e.RegisterGuard("always-false", alwaysFalseGuard))
+	require.NoError(t, e.RegisterGuard("has-subsidy-sep", alwaysTrueGuard))
+
+	c := openTestCase(t, e)
+	_, err := e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "submit", ActorID: "u1"})
+	require.NoError(t, err)
+
+	moved, err := e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "approve", ActorID: "u2"})
+	require.NoError(t, err)
+	assert.Equal(t, "sep", moved.State, "must chain through both decision nodes before resting on a task node")
+	assert.Equal(t, StatusOpen, moved.Status)
+}
+
+func TestMove_DecisionNode_LandsOnTerminal_ClosesCaseOnce(t *testing.T) {
+	repo := newFakeRepository()
+	e := New(repo, Config{}, testLogger(), WithDefinitions(decisionToTerminalDefinition()))
+	require.NoError(t, e.RegisterGuard("has-subsidy-sep", alwaysFalseGuard))
+
+	c := openTestCase(t, e)
+	_, err := e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "submit", ActorID: "u1"})
+	require.NoError(t, err)
+
+	closed, err := e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "approve", ActorID: "u2"})
+	require.NoError(t, err)
+	assert.Equal(t, StatusClosed, closed.Status)
+	assert.Equal(t, "approved", closed.State)
+	require.NotNil(t, closed.ClosedAt)
+
+	events, err := e.History(context.Background(), nil, c.ID)
+	require.NoError(t, err)
+	closeCount := 0
+	for _, ev := range events {
+		if ev.Kind == EventClosed {
+			closeCount++
+		}
+	}
+	assert.Equal(t, 1, closeCount, "exactly one EventClosed even though the case reached the terminal node via an automatic decision hop")
+}
+
+func TestMove_DecisionNode_OneEventMovedPerHop_CommentOnlyOnFirst(t *testing.T) {
+	repo := newFakeRepository()
+	e := New(repo, Config{}, testLogger(), WithDefinitions(decisionEngineDefinition()))
+	require.NoError(t, e.RegisterGuard("has-subsidy-sep", alwaysTrueGuard))
+
+	c := openTestCase(t, e)
+	_, err := e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "submit", ActorID: "u1"})
+	require.NoError(t, err)
+
+	_, err = e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "approve", ActorID: "u2", Comment: "delegating to SEP"})
+	require.NoError(t, err)
+
+	events, err := e.History(context.Background(), nil, c.ID)
+	require.NoError(t, err)
+
+	var moved []Event
+	for _, ev := range events {
+		if ev.Kind == EventMoved {
+			moved = append(moved, ev)
+		}
+	}
+	require.Len(t, moved, 3, "moved(submit), plus one human hop and one automatic hop for the approve Move")
+
+	human := moved[len(moved)-2]
+	assert.Equal(t, "approve", human.Action)
+	assert.Equal(t, "u2", human.ActorID)
+	assert.Equal(t, "review", human.FromState)
+	assert.Equal(t, "route", human.ToState)
+	assert.Equal(t, "delegating to SEP", human.Comment)
+
+	automatic := moved[len(moved)-1]
+	assert.Equal(t, "to-sep", automatic.Action, "the automatic hop's Action is the winning route's label")
+	assert.Equal(t, "u2", automatic.ActorID, "the automatic hop keeps the original actor")
+	assert.Equal(t, "route", automatic.FromState)
+	assert.Equal(t, "sep", automatic.ToState)
+	assert.Empty(t, automatic.Comment, "the comment belongs only to the human-driven hop")
+}
+
+func TestMove_DecisionNode_NoMatchingRoute_ReturnsErrNoRoute_LeavesCaseUntouched(t *testing.T) {
+	repo := newFakeRepository()
+	e := New(repo, Config{}, testLogger())
+	d := noDefaultRouteDefinition()
+	e.definitions[d.Key()] = d
+	e.latest[d.Name] = d
+	require.NoError(t, e.RegisterGuard("has-subsidy-sep", alwaysFalseGuard))
+	require.NoError(t, e.RegisterGuard("always-false", alwaysFalseGuard))
+
+	c := openTestCase(t, e)
+	_, err := e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "submit", ActorID: "u1"})
+	require.NoError(t, err)
+
+	before, err := repo.GetByID(context.Background(), nil, c.ID)
+	require.NoError(t, err)
+	eventsBefore, err := e.History(context.Background(), nil, c.ID)
+	require.NoError(t, err)
+
+	_, err = e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "approve", ActorID: "u2"})
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrNoRoute))
+
+	after, err := repo.GetByID(context.Background(), nil, c.ID)
+	require.NoError(t, err)
+	assert.Equal(t, *before, *after, "a failed route resolution must leave the case completely untouched")
+
+	eventsAfter, err := e.History(context.Background(), nil, c.ID)
+	require.NoError(t, err)
+	assert.Equal(t, eventsBefore, eventsAfter, "a failed route resolution must append no events")
+}
+
+func TestMove_DecisionNode_RouteGuardError_Propagates(t *testing.T) {
+	repo := newFakeRepository()
+	e := New(repo, Config{}, testLogger(), WithDefinitions(decisionEngineDefinition()))
+	wantErr := errors.New("subsidy service unavailable")
+	require.NoError(t, e.RegisterGuard("has-subsidy-sep", func(context.Context, pgxtx.DBTX, Case) (bool, error) {
+		return false, wantErr
+	}))
+
+	c := openTestCase(t, e)
+	_, err := e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "submit", ActorID: "u1"})
+	require.NoError(t, err)
+
+	_, err = e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "approve", ActorID: "u2"})
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, wantErr), "a route's own guard error must propagate, not collapse into ErrNoRoute")
+
+	after, err := repo.GetByID(context.Background(), nil, c.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "review", after.State, "a route guard error must leave the case untouched")
+}
+
+func TestMove_DecisionNode_HopLimitExceeded_LeavesCaseUntouched(t *testing.T) {
+	repo := newFakeRepository()
+	e := New(repo, Config{}, testLogger())
+	d := cyclicDecisionDefinition()
+	e.definitions[d.Key()] = d
+	e.latest[d.Name] = d
+	require.NoError(t, e.RegisterGuard("always-false", alwaysFalseGuard))
+
+	c := openTestCase(t, e)
+	_, err := e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "submit", ActorID: "u1"})
+	require.NoError(t, err)
+
+	_, err = e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "approve", ActorID: "u2"})
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrTooManyDecisionHops))
+
+	after, err := repo.GetByID(context.Background(), nil, c.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "review", after.State, "a hop-limit failure must leave the case resting where it was")
+}
+
+func TestMove_DecisionNode_NeverPersistsDecisionState(t *testing.T) {
+	repo := &stateRecordingRepository{fakeRepository: newFakeRepository()}
+	e := New(repo, Config{}, testLogger(), WithDefinitions(chainedDecisionDefinition()))
+	require.NoError(t, e.RegisterGuard("always-false", alwaysFalseGuard))
+	require.NoError(t, e.RegisterGuard("has-subsidy-sep", alwaysTrueGuard))
+
+	c := openTestCase(t, e)
+	_, err := e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "submit", ActorID: "u1"})
+	require.NoError(t, err)
+	repo.updatedStates = nil // discard the submit move's own Update call
+
+	_, err = e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "approve", ActorID: "u2"})
+	require.NoError(t, err)
+
+	require.Len(t, repo.updatedStates, 1, "Move must write the case exactly once, however many decision hops it took")
+	assert.Equal(t, "sep", repo.updatedStates[0], "the only persisted state must be the final resting task node")
+
+	for _, n := range chainedDecisionDefinition().Nodes {
+		if n.Kind == NodeDecision {
+			assert.NotEqual(t, n.ID, repo.updatedStates[0], "a case must never be persisted resting on a decision node")
+		}
+	}
+}
+
+func TestAvailable_AfterDecisionRouting_OnlyOffersTaskNodeActions(t *testing.T) {
+	repo := newFakeRepository()
+	e := New(repo, Config{}, testLogger(), WithDefinitions(decisionEngineDefinition()))
+	require.NoError(t, e.RegisterGuard("has-subsidy-sep", alwaysTrueGuard))
+
+	c := openTestCase(t, e)
+	_, err := e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "submit", ActorID: "u1"})
+	require.NoError(t, err)
+	_, err = e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "approve", ActorID: "u2"})
+	require.NoError(t, err)
+
+	available, err := e.Available(context.Background(), nil, c.ID)
+	require.NoError(t, err)
+	require.Len(t, available, 1)
+	assert.Equal(t, "clear", available[0].Action, "Available must see the resting task node's own actions, never a decision node's routes")
+}
+
+func TestRegister_DecisionStartNode_ReturnsErrInvalidDefinition(t *testing.T) {
+	repo := newFakeRepository()
+	e := New(repo, Config{}, testLogger())
+
+	d := decisionEngineDefinition()
+	for i := range d.Nodes {
+		if d.Nodes[i].ID == "draft" {
+			d.Nodes[i].Kind = NodeDecision
+		}
+	}
+
+	err := e.Register(d)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrInvalidDefinition))
+
+	_, err = e.Open(context.Background(), nil, OpenInput{Definition: "purchase", Domain: "d", ExternalID: "1"})
+	assert.True(t, errors.Is(err, ErrDefinitionNotRegistered), "a decision-start Definition must never register, so Open can never resolve it")
 }
 
 func TestOpen_UsesLatestVersionWhenUnpinned(t *testing.T) {

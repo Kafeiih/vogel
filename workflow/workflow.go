@@ -140,6 +140,44 @@ func checkComment(policy CommentPolicy, comment string) error {
 	}
 }
 
+// NodeKind distinguishes a Node that rests on human action (NodeTask, the
+// default) from one that routes automatically on domain data evaluated by
+// its outgoing transitions' guards (NodeDecision) — a BPMN-style exclusive
+// gateway. A Case is never persisted resting on a NodeDecision: Engine.Move
+// keeps routing through it, within the same call, until it reaches a
+// NodeTask or terminal node.
+type NodeKind string
+
+const (
+	// NodeTask is the default: a node a Case can rest on between human
+	// actions, exactly like every Node before decision nodes existed. Both
+	// the zero value "" and the explicit literal "task" mean NodeTask, so a
+	// Definition can spell out "this is an ordinary node" without relying on
+	// the zero value.
+	NodeTask NodeKind = ""
+	// NodeDecision marks a decision node: see the NodeKind doc comment.
+	NodeDecision NodeKind = "decision"
+)
+
+// nodeTaskAlias is the sole spelling of the NodeTask "task" alias literal,
+// mirroring commentPolicyNoneAlias: it exists in exactly one place so a
+// value comparing != NodeTask but == nodeTaskAlias is unmistakably the
+// alias. Unlike CommentPolicy, NodeKind needs no Canonical(): the only
+// non-default spelling is NodeDecision, which has exactly one spelling, so
+// every "is this a decision node?" check (Kind == NodeDecision) already
+// agrees regardless of which NodeTask alias a Definition used.
+const nodeTaskAlias NodeKind = "task"
+
+// Valid reports whether k is one of the known NodeKind values.
+func (k NodeKind) Valid() bool {
+	switch k {
+	case NodeTask, nodeTaskAlias, NodeDecision:
+		return true
+	default:
+		return false
+	}
+}
+
 // Eligibility declares who may act on a node, by organizational position.
 // An empty Unit means "the unit the case belongs to" — see ResolveUnit.
 //
@@ -184,21 +222,30 @@ type Node struct {
 	// Deadline is the duration after entering this node before it is
 	// considered overdue. Zero means no deadline.
 	Deadline time.Duration
+	// Kind distinguishes an ordinary task node from a decision node. The
+	// zero value is NodeTask. See the NodeKind doc comment.
+	Kind NodeKind
 }
 
 // Transition is a named move from one node to another, optionally gated by
-// a registered guard.
+// a registered guard. When From is a decision node, a Transition is instead
+// called a route: routes are evaluated in declaration order by
+// Engine.Move, and Definition.Validate requires exactly one unguarded route
+// (the default), declared last.
 type Transition struct {
 	From   string
 	To     string
 	Action string
 	// Guard names a GuardFunc registered on the Engine. Empty means the
-	// transition is always permitted.
+	// transition (or, from a decision node, the route) is always permitted —
+	// for a decision node's routes, this is what marks the default.
 	Guard string
 	// Comment declares this transition's CommentPolicy: whether MoveInput.
 	// Comment is required, optional, or disallowed when this transition is
 	// taken. The zero value is CommentNone. Definition.Validate rejects an
-	// unrecognized value.
+	// unrecognized value, and rejects any non-CommentNone value on a route
+	// leaving a decision node — a route is domain-data routing, not a human
+	// action, so it has nothing to comment on.
 	Comment CommentPolicy
 }
 
@@ -296,6 +343,9 @@ func (d Definition) Validate() error {
 			seenNodeIDs[n.ID] = true
 			nodeByID[n.ID] = n
 		}
+		if !n.Kind.Valid() {
+			addf("node %q: invalid kind %q", n.ID, n.Kind)
+		}
 		if n.Start && n.Terminal {
 			addf("node %q: cannot be both start and terminal", n.ID)
 		}
@@ -307,6 +357,21 @@ func (d Definition) Validate() error {
 		}
 		if n.Deadline < 0 {
 			addf("node %q: deadline must not be negative", n.ID)
+		}
+
+		if n.Kind == NodeDecision {
+			if n.Start {
+				addf("decision node %q: must not be a start node", n.ID)
+			}
+			if n.Terminal {
+				addf("decision node %q: must not be a terminal node", n.ID)
+			}
+			if !n.Eligible.IsZero() {
+				addf("decision node %q: must not declare an eligibility", n.ID)
+			}
+			if n.Deadline != 0 {
+				addf("decision node %q: must not declare a deadline", n.ID)
+			}
 		}
 	}
 
@@ -320,6 +385,8 @@ func (d Definition) Validate() error {
 	seenTransitionKeys := make(map[string]bool, len(d.Transitions))
 	outgoing := make(map[string]int, len(d.Nodes))
 	adjacency := make(map[string][]string, len(d.Nodes))
+	outgoingByNode := make(map[string][]Transition, len(d.Nodes))
+	decisionAdjacency := make(map[string][]string, len(d.Nodes))
 
 	for i, tr := range d.Transitions {
 		if tr.Action == "" {
@@ -330,7 +397,7 @@ func (d Definition) Validate() error {
 		}
 
 		fromNode, fromOK := nodeByID[tr.From]
-		_, toOK := nodeByID[tr.To]
+		toNode, toOK := nodeByID[tr.To]
 		if !fromOK {
 			addf("transition[%d]: unknown from node %q", i, tr.From)
 		}
@@ -343,6 +410,14 @@ func (d Definition) Validate() error {
 		if fromOK {
 			outgoing[tr.From]++
 			adjacency[tr.From] = append(adjacency[tr.From], tr.To)
+			outgoingByNode[tr.From] = append(outgoingByNode[tr.From], tr)
+		}
+
+		if fromOK && fromNode.Kind == NodeDecision && tr.Comment.Canonical() != CommentNone {
+			addf("transition[%d]: route from decision node %q must not declare a comment policy", i, tr.From)
+		}
+		if fromOK && toOK && fromNode.Kind == NodeDecision && toNode.Kind == NodeDecision {
+			decisionAdjacency[tr.From] = append(decisionAdjacency[tr.From], tr.To)
 		}
 
 		key := tr.From + "\x00" + tr.Action
@@ -350,6 +425,45 @@ func (d Definition) Validate() error {
 			addf("ambiguous transition: duplicate (from=%q, action=%q)", tr.From, tr.Action)
 		}
 		seenTransitionKeys[key] = true
+	}
+
+	for _, n := range d.Nodes {
+		if n.ID == "" || n.Kind != NodeDecision {
+			continue
+		}
+		routes := outgoingByNode[n.ID]
+		if len(routes) < 2 {
+			addf("decision node %q: requires at least two outgoing routes, found %d", n.ID, len(routes))
+			continue
+		}
+
+		unguardedCount, unguardedIdx := 0, -1
+		for i, r := range routes {
+			if r.Guard == "" {
+				unguardedCount++
+				unguardedIdx = i
+			}
+		}
+		switch {
+		case unguardedCount == 0:
+			addf("decision node %q: requires exactly one unguarded default route, found none", n.ID)
+		case unguardedCount > 1:
+			addf("decision node %q: requires exactly one unguarded default route, found %d", n.ID, unguardedCount)
+		case unguardedIdx != len(routes)-1:
+			addf("decision node %q: the unguarded default route (action %q) must be declared last", n.ID, routes[unguardedIdx].Action)
+		}
+	}
+
+	if len(decisionAdjacency) > 0 {
+		decisionNodes := make([]string, 0, len(d.Nodes))
+		for _, n := range d.Nodes {
+			if n.ID != "" && n.Kind == NodeDecision {
+				decisionNodes = append(decisionNodes, n.ID)
+			}
+		}
+		if cycle := detectDecisionCycle(decisionNodes, decisionAdjacency); cycle != nil {
+			addf("decision-only cycle detected: %s", strings.Join(cycle, " -> "))
+		}
 	}
 
 	for _, n := range d.Nodes {
@@ -389,6 +503,58 @@ func (d Definition) Validate() error {
 		return nil
 	}
 	return fmt.Errorf("%w:\n  %s", ErrInvalidDefinition, strings.Join(errs, "\n  "))
+}
+
+// detectDecisionCycle returns the node IDs forming one cycle within adj — a
+// directed graph already restricted to decision-kind nodes and the edges
+// between them — or nil if adj is acyclic. nodes fixes DFS traversal order,
+// so the result (and therefore Validate's error message) is deterministic
+// across calls on the same Definition.
+func detectDecisionCycle(nodes []string, adj map[string][]string) []string {
+	const (
+		white = iota
+		gray
+		black
+	)
+	color := make(map[string]int, len(nodes))
+	var path []string
+	var cycle []string
+
+	var visit func(string) bool
+	visit = func(n string) bool {
+		color[n] = gray
+		path = append(path, n)
+		for _, next := range adj[n] {
+			switch color[next] {
+			case white:
+				if visit(next) {
+					return true
+				}
+			case gray:
+				start := 0
+				for i, p := range path {
+					if p == next {
+						start = i
+						break
+					}
+				}
+				cycle = append(append([]string{}, path[start:]...), next)
+				return true
+			}
+		}
+		path = path[:len(path)-1]
+		color[n] = black
+		return false
+	}
+
+	for _, n := range nodes {
+		if color[n] == white {
+			if visit(n) {
+				return cycle
+			}
+		}
+	}
+	return nil
 }
 
 // Case is a single running (or completed) instance of a Definition. It
@@ -443,6 +609,8 @@ var (
 	ErrInvalidDefinition       = errors.New("workflow: invalid definition")
 	ErrCommentRequired         = errors.New("workflow: comment is required for this transition")
 	ErrCommentNotAllowed       = errors.New("workflow: comment is not allowed for this transition")
+	ErrNoRoute                 = errors.New("workflow: no route matched at decision node")
+	ErrTooManyDecisionHops     = errors.New("workflow: exceeded maximum decision node hops")
 )
 
 // GuardFunc evaluates whether a transition may be taken for the given case.

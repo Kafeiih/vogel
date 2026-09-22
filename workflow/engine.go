@@ -270,6 +270,28 @@ func (e *Engine) Available(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID)
 	return out, nil
 }
 
+// maxDecisionHops bounds how many decision-node routing hops Move will
+// follow in a single call before giving up. Definition.Validate rejects any
+// cycle made up only of decision nodes, so a validated Definition can never
+// come close to needing this many hops; the cap exists purely as a defense
+// against a Definition that reached the engine without going through
+// Validate (or a future bug in it) spinning Move forever.
+const maxDecisionHops = 32
+
+// decisionHop records one EventMoved worth of routing. Move builds the full
+// chain of hops — the human-driven move and every automatic decision-node
+// hop it leads to — in planMove, entirely in memory, before writing
+// anything: only once the chain is known to end on a task or terminal node
+// does Move persist the case and append one event per hop.
+type decisionHop struct {
+	fromState string
+	toState   string
+	action    string
+	// comment is only ever non-empty on the first (human-driven) hop: an
+	// automatic decision-node hop has nothing a human said to record.
+	comment string
+}
+
 // MoveInput describes a transition to apply to a case.
 type MoveInput struct {
 	CaseID  uuid.UUID
@@ -286,9 +308,29 @@ type MoveInput struct {
 	Comment string
 }
 
-// Move applies the transition matching (current state, Action) to the case.
-// Moving into a terminal node closes the case. Assignment is always cleared
-// on a move, since a new node means a new claim.
+// Move applies the transition matching (current state, Action) to the case,
+// then — if that lands on a decision node — keeps routing automatically,
+// within this same call and the same db transaction, until the case comes
+// to rest on a task node or a terminal node. A case is never persisted
+// resting on a decision node. Moving into a terminal node closes the case.
+// Assignment is always cleared on a move, since a new node means a new
+// claim.
+//
+// Each hop along the way — the initial human-driven move and every
+// automatic decision-node hop after it — appends its own EventMoved, with
+// Action set to that hop's transition (or route) label and ActorID set to
+// the original MoveInput.ActorID throughout. Only the first hop ever
+// carries in.Comment; every automatic hop records an empty Comment, since
+// the comment belongs to the human action that started the move, not to
+// the domain-data routing that followed it. Deadline and eligibility only
+// ever apply to the node the case actually comes to rest on.
+//
+// If routing cannot find a matching route — a route's guard errors, or,
+// defensively, a Definition that reached the engine without going through
+// Validate somehow lacks an unguarded default — Move fails (with the
+// guard's own error, or ErrNoRoute) and leaves the case and its history
+// completely untouched: the whole hop chain is planned in memory, in
+// planMove, before anything is written.
 func (e *Engine) Move(ctx context.Context, db pgxtx.DBTX, in MoveInput) (*Case, error) {
 	c, err := e.repo.GetByID(ctx, db, in.CaseID)
 	if err != nil {
@@ -335,17 +377,21 @@ func (e *Engine) Move(ctx context.Context, db pgxtx.DBTX, in MoveInput) (*Case, 
 		return nil, fmt.Errorf("workflow: move case %s: destination node %q not found in definition %q", c.ID, transition.To, d.Key())
 	}
 
+	hops, restNode, err := e.planMove(ctx, db, d, *c, c.State, in.Action, comment, destNode)
+	if err != nil {
+		return nil, fmt.Errorf("workflow: move case %s: %w", c.ID, err)
+	}
+
 	now := e.now()
-	fromState := c.State
-	c.State = destNode.ID
+	c.State = restNode.ID
 	c.AssignedTo = ""
 	c.DeadlineAt = nil
-	if destNode.Deadline > 0 {
-		deadline := now.Add(destNode.Deadline)
+	if restNode.Deadline > 0 {
+		deadline := now.Add(restNode.Deadline)
 		c.DeadlineAt = &deadline
 	}
 
-	terminated := destNode.Terminal
+	terminated := restNode.Terminal
 	if terminated {
 		c.Status = StatusClosed
 		c.ClosedAt = &now
@@ -356,21 +402,96 @@ func (e *Engine) Move(ctx context.Context, db pgxtx.DBTX, in MoveInput) (*Case, 
 		return nil, fmt.Errorf("workflow: move case %s: %w", c.ID, err)
 	}
 
-	if err := e.appendEvent(ctx, db, c.ID, EventMoved, fromState, destNode.ID, in.Action, in.ActorID, comment, now); err != nil {
-		return nil, fmt.Errorf("workflow: move case %s: append event: %w", c.ID, err)
+	for _, h := range hops {
+		if err := e.appendEvent(ctx, db, c.ID, EventMoved, h.fromState, h.toState, h.action, in.ActorID, h.comment, now); err != nil {
+			return nil, fmt.Errorf("workflow: move case %s: append event: %w", c.ID, err)
+		}
 	}
 
 	if terminated {
-		// The automatic close event shares this transition's Action/ActorID
-		// but never repeats the comment: the comment belongs to the
-		// EventMoved record appended just above for this same transition,
-		// so Comment is passed as "" here rather than comment again.
-		if err := e.appendEvent(ctx, db, c.ID, EventClosed, destNode.ID, destNode.ID, in.Action, in.ActorID, "", now); err != nil {
+		// The automatic close event shares the last hop's Action and the
+		// original ActorID but never repeats any comment: the comment
+		// belongs to the human-driven hop's own EventMoved record, appended
+		// above, so Comment is passed as "" here rather than reused.
+		lastAction := hops[len(hops)-1].action
+		if err := e.appendEvent(ctx, db, c.ID, EventClosed, restNode.ID, restNode.ID, lastAction, in.ActorID, "", now); err != nil {
 			return nil, fmt.Errorf("workflow: move case %s: append close event: %w", c.ID, err)
 		}
 	}
 
 	return c, nil
+}
+
+// planMove computes the full chain of hops one Move produces, without
+// writing anything: the initial human-driven hop from fromState to dest via
+// action (carrying comment), followed by zero or more automatic
+// decision-node hops, each resolved by evaluating that decision node's
+// routes — via resolveRoute, in declaration order — against a snapshot of
+// base with State set to the decision node currently being routed from. It
+// returns once it reaches a task or terminal node — the node this Move must
+// come to rest on — together with the ordered hops that led there.
+//
+// A route's guard may itself write to the caller's db (that write is the
+// caller's responsibility to roll back on error, like any other guard); but
+// planMove itself never touches the case or its event history, so a
+// mid-chain routing failure leaves both exactly as they were.
+func (e *Engine) planMove(ctx context.Context, db pgxtx.DBTX, d Definition, base Case, fromState, action, comment string, dest Node) ([]decisionHop, Node, error) {
+	hops := []decisionHop{{fromState: fromState, toState: dest.ID, action: action, comment: comment}}
+	cur := dest
+
+	for cur.Kind == NodeDecision {
+		if len(hops) >= maxDecisionHops {
+			return nil, Node{}, ErrTooManyDecisionHops
+		}
+
+		snapshot := base
+		snapshot.State = cur.ID
+		route, err := e.resolveRoute(ctx, db, d.TransitionsFrom(cur.ID), snapshot)
+		if err != nil {
+			return nil, Node{}, err
+		}
+
+		next, ok := d.Node(route.To)
+		if !ok {
+			return nil, Node{}, fmt.Errorf("decision node %q: route %q: destination node %q not found in definition %q", cur.ID, route.Action, route.To, d.Key())
+		}
+
+		hops = append(hops, decisionHop{fromState: cur.ID, toState: next.ID, action: route.Action})
+		cur = next
+	}
+
+	return hops, cur, nil
+}
+
+// resolveRoute evaluates routes — a decision node's outgoing transitions —
+// in declaration order and returns the first whose guard (if any) evaluates
+// true. Definition.Validate guarantees exactly one unguarded default route,
+// declared last, so against a validated Definition this only fails when a
+// guarded route's own GuardFunc errors — which propagates here exactly like
+// a guard error does elsewhere in this package, never collapsed into
+// ErrNoRoute. It returns ErrNoRoute if every route is exhausted without a
+// match, which should be unreachable against a validated Definition but
+// guards against one that reached the engine without going through
+// Validate.
+func (e *Engine) resolveRoute(ctx context.Context, db pgxtx.DBTX, routes []Transition, c Case) (Transition, error) {
+	for _, route := range routes {
+		if route.Guard == "" {
+			return route, nil
+		}
+
+		fn, err := e.lookupGuard(route.Guard)
+		if err != nil {
+			return Transition{}, err
+		}
+		ok, err := fn(ctx, db, c)
+		if err != nil {
+			return Transition{}, fmt.Errorf("decision node %q: route %q: guard %q: %w", c.State, route.Action, route.Guard, err)
+		}
+		if ok {
+			return route, nil
+		}
+	}
+	return Transition{}, ErrNoRoute
 }
 
 // findTransition returns the transition in candidates matching action.

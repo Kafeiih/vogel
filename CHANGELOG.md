@@ -38,6 +38,41 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   `migrate.Up` con `workflow/migrations.FS()`, igual que ya corren
   `001_create_workflow.sql`.
 
+- `workflow.NodeKind` (`""`/`"task"` por defecto, `"decision"`, con su propio
+  `Valid()`) y el nuevo campo `Node.Kind` agregan al motor un nodo de
+  decisión al estilo compuerta exclusiva BPMN: un caso ya no tiene que fundir
+  la acción humana con su destino cuando ese destino depende de datos de
+  dominio (p. ej. "¿algún ítem tiene subsidio SEP?" → coordinador SEP;
+  si no, Presupuesto). Un `Transition` cuyo `From` es un nodo de decisión se
+  llama ruta; `Engine.Move` evalúa las rutas salientes en el orden en que
+  aparecen en `Definition.Transitions`, y toma la primera cuya `Guard`
+  evalúa verdadero. `Definition.Validate` exige que un nodo de decisión: no
+  sea `Start` ni `Terminal`; no declare `Eligible` ni `Deadline`; tenga al
+  menos dos rutas salientes; tenga exactamente una ruta sin `Guard` (la
+  ruta por defecto), declarada al final; y que ninguna de sus rutas declare
+  `CommentPolicy` (una ruta no es una acción humana, no tiene nada que
+  comentar). También rechaza cualquier ciclo formado sólo por nodos de
+  decisión, porque un caso así nunca llegaría a descansar en ningún lado.
+  Cuando `Engine.Move` aterriza en un nodo de decisión sigue enrutando,
+  dentro de la misma llamada y la misma transacción `db`, hasta que el caso
+  descansa en un nodo de tarea o terminal — un caso nunca se persiste
+  descansando en un nodo de decisión. Cada salto agrega su propio
+  `EventMoved` (con `Action` igual a la etiqueta de esa transición o ruta y
+  `ActorID` igual al actor original de `MoveInput`), pero sólo el primer
+  salto (el humano) lleva el comentario; los saltos automáticos siempre
+  quedan con `Event.Comment` vacío. Si el caso termina descansando en un
+  nodo terminal, el caso se cierra exactamente como hoy (un único
+  `EventClosed`). Centinela nuevo `workflow.ErrNoRoute`: si ninguna ruta
+  calza (una `Definition` que de algún modo llegó al motor sin pasar por
+  `Validate` y le falta la ruta por defecto), `Move` falla con este error y
+  no muta el caso ni su historial — toda la cadena de saltos se planea en
+  memoria antes de escribir nada. Un error real de una guarda de ruta se
+  propaga tal cual, como hoy. Centinela adicional
+  `workflow.ErrTooManyDecisionHops`: cinturón y tirantes contra una
+  `Definition` patológica que de algún modo evadió el rechazo de ciclos de
+  `Validate` — `Move` corta después de un número fijo de saltos
+  (`maxDecisionHops`) en vez de girar para siempre.
+
 ### Cambiado
 
 - **Cambio incompatible (breaking):** `workflow.GuardFunc` gana un segundo
