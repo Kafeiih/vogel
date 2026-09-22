@@ -152,8 +152,10 @@ desarrollo real y no depende de nada que se haya borrado.
 
 ### Tres conjuntos de migraciones, dos tablas de versión
 
-`cmd/api/main.go` llama a `migrate.Up` dos veces, cada una contra su propia
-tabla de versión de goose:
+`cmd/api/main.go` declara los conjuntos en `migrationSets()` y aplica cada uno
+contra su propia tabla de versión de goose. El arranque del servidor y
+`./api migrate up|status` leen esa misma lista, así que migrar como paso
+discreto del despliegue deja la base igual que arrancar el servidor:
 
 | Conjunto | Tabla de versión |
 |---|---|
@@ -168,6 +170,11 @@ motor de BPM/workflow. Los tres conjuntos numeran independientemente desde
 aplicado" y se saltearía en silencio — por eso `migrate.Options.TableName` es
 un parámetro obligatorio del llamador, no una constante escondida en la
 librería.
+
+`./api migrate down` revierte sólo la última migración de este servicio, nunca
+las de audit: `migrate.Down` deshace la última migración del conjunto que
+recibe, y la única migración de audit es la que crea `audit_log`, así que
+incluirla borraría el registro de auditoría en cada `migrate down`.
 
 `internal/infrastructure/database/migrations/` trae una única migración de
 ejemplo (`001_enable_pgcrypto.sql`, habilita la extensión `pgcrypto` para
