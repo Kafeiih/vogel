@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -128,6 +130,18 @@ func (f *fakeRepository) ListByEligibility(_ context.Context, _ pgxtx.DBTX, filt
 	return out, nil
 }
 
+// sentinelDBTX is a minimal pgxtx.DBTX whose only job is to be a distinct,
+// identifiable value: it exists so a test can prove the engine passed
+// through its own db argument to a guard, rather than a different value
+// (such as nil), by pointer identity.
+type sentinelDBTX struct{}
+
+func (*sentinelDBTX) Exec(context.Context, string, ...any) (pgconn.CommandTag, error) {
+	return pgconn.CommandTag{}, nil
+}
+func (*sentinelDBTX) Query(context.Context, string, ...any) (pgx.Rows, error) { return nil, nil }
+func (*sentinelDBTX) QueryRow(context.Context, string, ...any) pgx.Row        { return nil }
+
 func containsString(list []string, s string) bool {
 	for _, item := range list {
 		if item == s {
@@ -162,8 +176,8 @@ func testDefinition() Definition {
 	}
 }
 
-func alwaysTrueGuard(context.Context, Case) (bool, error)  { return true, nil }
-func alwaysFalseGuard(context.Context, Case) (bool, error) { return false, nil }
+func alwaysTrueGuard(context.Context, pgxtx.DBTX, Case) (bool, error)  { return true, nil }
+func alwaysFalseGuard(context.Context, pgxtx.DBTX, Case) (bool, error) { return false, nil }
 
 func openTestCase(t *testing.T, e *Engine) *Case {
 	t.Helper()
@@ -362,7 +376,7 @@ func TestAvailable_GuardError_Propagates(t *testing.T) {
 	repo := newFakeRepository()
 	e := New(repo, Config{}, testLogger(), WithDefinitions(testDefinition()))
 	wantErr := errors.New("budget service unavailable")
-	require.NoError(t, e.RegisterGuard("under-budget", func(context.Context, Case) (bool, error) {
+	require.NoError(t, e.RegisterGuard("under-budget", func(context.Context, pgxtx.DBTX, Case) (bool, error) {
 		return false, wantErr
 	}))
 
@@ -373,6 +387,51 @@ func TestAvailable_GuardError_Propagates(t *testing.T) {
 	_, err = e.Available(context.Background(), nil, c.ID)
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, wantErr))
+}
+
+func TestMove_GuardReceivesCallersDB(t *testing.T) {
+	repo := newFakeRepository()
+	e := New(repo, Config{}, testLogger(), WithDefinitions(testDefinition()))
+
+	var gotDB pgxtx.DBTX
+	require.NoError(t, e.RegisterGuard("under-budget", func(_ context.Context, db pgxtx.DBTX, _ Case) (bool, error) {
+		gotDB = db
+		return true, nil
+	}))
+
+	c := openTestCase(t, e)
+	_, err := e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "submit", ActorID: "u1"})
+	require.NoError(t, err)
+
+	// A guard reading domain data must see writes made earlier in the
+	// caller's own transaction, so Move must pass through the exact db it
+	// received rather than substituting a different one (or nil).
+	wantDB := &sentinelDBTX{}
+	_, err = e.Move(context.Background(), wantDB, MoveInput{CaseID: c.ID, Action: "approve", ActorID: "u2"})
+	require.NoError(t, err)
+
+	assert.Same(t, wantDB, gotDB, "Move must pass its own db argument through to the guard")
+}
+
+func TestAvailable_GuardReceivesCallersDB(t *testing.T) {
+	repo := newFakeRepository()
+	e := New(repo, Config{}, testLogger(), WithDefinitions(testDefinition()))
+
+	var gotDB pgxtx.DBTX
+	require.NoError(t, e.RegisterGuard("under-budget", func(_ context.Context, db pgxtx.DBTX, _ Case) (bool, error) {
+		gotDB = db
+		return true, nil
+	}))
+
+	c := openTestCase(t, e)
+	_, err := e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "submit", ActorID: "u1"})
+	require.NoError(t, err)
+
+	wantDB := &sentinelDBTX{}
+	_, err = e.Available(context.Background(), wantDB, c.ID)
+	require.NoError(t, err)
+
+	assert.Same(t, wantDB, gotDB, "Available must pass its own db argument through to the guard")
 }
 
 func TestHistory_OrdersBySeqAscending(t *testing.T) {

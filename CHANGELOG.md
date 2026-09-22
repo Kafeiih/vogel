@@ -4,6 +4,19 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el versionado,
 [SemVer](https://semver.org/lang/es/).
 
+## [Sin publicar]
+
+### Cambiado
+
+- **Cambio incompatible (breaking):** `workflow.GuardFunc` gana un segundo
+  parámetro, `db pgxtx.DBTX`: `func(ctx context.Context, db pgxtx.DBTX, c
+  Case) (bool, error)`. El motor pasa siempre el mismo `db` que recibió en
+  `Engine.Available`/`Engine.Move`, nunca uno distinto ni `nil` salvo que el
+  propio caller haya pasado `nil`, para que una guarda que lea datos de
+  dominio (p. ej. "¿algún ítem tiene subsidio SEP?") vea las escrituras que
+  el caller ya hizo antes en su misma transacción. Migración: agregar el
+  parámetro `db pgxtx.DBTX` a la firma de cada `GuardFunc` registrada.
+
 ## [0.5.0] — 2026-09-22
 
 Cierra las tres últimas brechas que le impedían a go-crucible borrar
