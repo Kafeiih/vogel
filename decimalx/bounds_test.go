@@ -119,6 +119,43 @@ func TestValidateBounds_ZeroDecimal(t *testing.T) {
 	}
 }
 
+// TestParse_StringDoorIsStricterThanValidateBoundsDigitDoor pins the one
+// documented, intentional divergence between Parse and ValidateBounds:
+// Parse's pre-check bounds the STRING's length (including a leading sign or
+// a decimal point), while ValidateBounds' digit bound looks only at the
+// COEFFICIENT's digit count (NumDigits, which never counts the sign). A
+// 32-digit value written with a leading "-" is 33 characters, one past
+// MaxLen, so Parse rejects it with ErrOutOfRange even though the exact same
+// VALUE, decoded without going through the string door (as encoding/json
+// would build it), has a 32-digit coefficient and is squarely within
+// ValidateBounds' bound. This makes the string door STRICTER than the digit
+// door, never looser: nothing ValidateBounds rejects is accepted by Parse.
+func TestParse_StringDoorIsStricterThanValidateBoundsDigitDoor(t *testing.T) {
+	digits := strings.Repeat("9", 32)
+	negative := "-" + digits // 33 characters: sign + 32 digits.
+
+	if len(negative) != 33 {
+		t.Fatalf("setup: len(%q) = %d, want 33", negative, len(negative))
+	}
+
+	if _, err := decimalx.Parse(negative); !errors.Is(err, decimalx.ErrOutOfRange) {
+		t.Fatalf("Parse(%q) err = %v, want ErrOutOfRange: 33 characters exceeds Parse's MaxLen of 32", negative, err)
+	}
+
+	// Build the identical value without going through Parse's string door:
+	// a 32-digit unsigned coefficient, negated. NumDigits ignores the sign,
+	// so this decimal's coefficient is still exactly 32 digits.
+	unsigned, err := decimalx.Parse(digits)
+	if err != nil {
+		t.Fatalf("Parse(%q) err = %v, want nil", digits, err)
+	}
+	d := unsigned.Neg()
+
+	if err := decimalx.ValidateBounds(d); err != nil {
+		t.Errorf("ValidateBounds(%s) err = %v, want nil: the string door is stricter than the digit door, never looser", d, err)
+	}
+}
+
 // TestParse_DelegatesToValidateBounds anchors the invariant that prevents
 // drift: Parse and ValidateBounds must agree on EVERY value Parse manages to
 // build. If either bound is relaxed on only one side, this test catches it.

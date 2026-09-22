@@ -201,6 +201,77 @@ func TestAssertNoDirectNewFromString_MissingDirIsSkipped(t *testing.T) {
 	}
 }
 
+// TestAssertNoDirectNewFromString_SkipsVendorDir verifies a vendored
+// dependency tree is never scanned: vendor/ commonly holds a copy of
+// shopspring/decimal itself (or another module that legitimately calls its
+// own constructors), and it is not code this repository's guard should
+// police.
+func TestAssertNoDirectNewFromString_SkipsVendorDir(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "app", "vendor", "example.com", "lib", "lib.go"), `package lib
+
+import "github.com/shopspring/decimal"
+
+func Parse(s string) (decimal.Decimal, error) {
+	return decimal.NewFromString(s)
+}
+`)
+
+	fake := &fakeTB{}
+	decimalxtest.AssertNoDirectNewFromString(fake, root, "app")
+
+	if fake.failed {
+		t.Fatalf("AssertNoDirectNewFromString scanned a vendor/ directory: %s", fake.message)
+	}
+}
+
+// TestAssertNoDirectNewFromString_SkipsTestdataDir verifies testdata/ is
+// never scanned: it commonly holds fixture source files that are not part
+// of the compiled program and may deliberately exercise the forbidden
+// constructors as sample input.
+func TestAssertNoDirectNewFromString_SkipsTestdataDir(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "app", "testdata", "fixture.go"), `package fixture
+
+import "github.com/shopspring/decimal"
+
+func Parse(s string) (decimal.Decimal, error) {
+	return decimal.NewFromString(s)
+}
+`)
+
+	fake := &fakeTB{}
+	decimalxtest.AssertNoDirectNewFromString(fake, root, "app")
+
+	if fake.failed {
+		t.Fatalf("AssertNoDirectNewFromString scanned a testdata/ directory: %s", fake.message)
+	}
+}
+
+// TestAssertNoDirectNewFromString_FlagsCommentMention pins the documented
+// blind spot in the other direction: the guard is a source-text regex, not a
+// type-aware analysis, so it flags the forbidden constructor names even
+// inside a comment (or a string literal) in a scanned, non-test .go file —
+// it does not parse Go syntax to tell code from prose. A caller who wants to
+// mention decimal.NewFromString in a comment outside decimalx must reword
+// it, or accept the failure.
+func TestAssertNoDirectNewFromString_FlagsCommentMention(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "app", "handler.go"), `package app
+
+// Parse used to call decimal.NewFromString directly; it now delegates to
+// decimalx.Parse instead.
+func Parse(s string) {}
+`)
+
+	fake := &fakeTB{}
+	decimalxtest.AssertNoDirectNewFromString(fake, root, "app")
+
+	if !fake.failed {
+		t.Fatal("AssertNoDirectNewFromString did not flag a comment mentioning decimal.NewFromString: the guard is documented as textual")
+	}
+}
+
 func mustWriteFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

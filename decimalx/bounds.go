@@ -30,6 +30,18 @@ var (
 	// configuration would disable the anti-DoS guard: a maxLen that is zero
 	// or negative, or an exponent range where minExp > maxExp.
 	ErrInvalidBounds = errors.New("invalid decimal bounds")
+
+	// ErrInvalidScale is returned by ValidateAmount/ParseAmount when the
+	// caller-supplied scale itself falls outside
+	// [-MaxExponentLimit, MaxExponentLimit]. scale is a second, independent
+	// axis of the same materialization attack ValidateBounds guards
+	// against: decimal.Decimal.Round(scale) rescales the coefficient by
+	// roughly 10^(exponent-scale) digits, so an unbounded scale (say,
+	// math.MaxInt32) hangs a worker on Round regardless of how small d
+	// already is, even though d itself already satisfied ValidateBounds.
+	// See ValidateAmount's doc for exactly where this check runs relative
+	// to ValidateBounds.
+	ErrInvalidScale = errors.New("scale exceeds the configured exponent ceiling")
 )
 
 // Default bounds. A 32-character coefficient and an exponent in [-8, 8] are
@@ -123,6 +135,18 @@ func (b Bounds) effective() Bounds {
 // path — a string within MaxLen characters cannot yield more than MaxLen
 // digits — so delegating does not change Parse's behavior; it only avoids
 // defining the bound twice.
+//
+// Guard 1 bounds the STRING's length, not the coefficient's digit count, and
+// those are not the same thing: a leading "-" or a "." consumes one of the
+// MaxLen characters without being a digit. ValidateBounds' own bound
+// (guard 3, via NumDigits) looks only at the coefficient, which never
+// includes the sign. The two are therefore intentionally NOT equivalent: a
+// 32-digit value written with a sign or a decimal point is 33+ characters
+// and is rejected here even though the identical decoded VALUE — arriving
+// through ValidateBounds instead, as encoding/json would build it — is
+// squarely within MaxLen digits and is accepted. This makes Parse's string
+// door STRICTER than ValidateBounds' digit door, never looser: nothing
+// ValidateBounds rejects is accepted by Parse.
 func (b Bounds) Parse(s string) (decimal.Decimal, error) {
 	b = b.effective()
 	if len(s) > b.maxLen {
@@ -155,11 +179,15 @@ func (b Bounds) Parse(s string) (decimal.Decimal, error) {
 //  1. Exponent() outside [MinExp, MaxExp] -> ErrOutOfRange. This is the
 //     anti-DoS guard and goes FIRST: a field read, O(1), that materializes
 //     nothing. It is what stops the ~20-byte payload with unbounded work.
-//  2. NumDigits() > MaxLen -> ErrOutOfRange. Mirrors Parse's length bound.
-//     NumDigits only looks at the COEFFICIENT (it never computes 10^exp),
-//     and that coefficient is already materialized by the deserializer and
-//     bounded by the request body's size limit, so its cost is proportional
-//     to bytes the client already paid for: it does not amplify.
+//  2. NumDigits() > MaxLen -> ErrOutOfRange. Mirrors Parse's length bound,
+//     but is NOT identical to it: NumDigits counts only the COEFFICIENT's
+//     digits (it never counts a sign, a decimal point, or 10^exp), while
+//     Parse's pre-check counts the STRING's characters, including any sign
+//     or point. That makes this bound looser than Parse's on a value with a
+//     sign: a 32-digit negative value is 33 characters (rejected by Parse)
+//     but still exactly 32 digits (accepted here). See Parse's doc for the
+//     full statement of this divergence — it is intentional, and it only
+//     ever makes the string door stricter, never looser.
 func (b Bounds) ValidateBounds(d decimal.Decimal) error {
 	b = b.effective()
 	if exp := d.Exponent(); exp > b.maxExp || exp < b.minExp {
@@ -176,32 +204,52 @@ func (b Bounds) ValidateBounds(d decimal.Decimal) error {
 // arrive through a string (see ParseAmount for the string door, and the
 // package doc for why the two doors share one definition).
 //
-// ValidateBounds runs FIRST because Round MATERIALIZES the digits: on an
-// unbounded value, "1e100000000" hangs the worker when rounded — the same
-// DoS Parse/ValidateBounds exist to stop. The cheap bound must run before
-// the expensive operation.
+// It applies three guards, in this order:
 //
-// The rejection criterion is d != d.Round(scale), NOT "the literal's
-// exponent is more precise than scale". "100.500" at scale 2 has exponent
-// -3 but is worth exactly 100.50, and is ACCEPTED: rejecting it would
-// punish a caller who pads with zeros. Only a value that actually CHANGES
-// when rounded to scale is rejected, because that is the only case where
-// value would silently evaporate.
+//  1. scale outside [-MaxExponentLimit, MaxExponentLimit] -> ErrInvalidScale.
+//     This runs FIRST, before ValidateBounds, even though it is unrelated to
+//     d: it is a check on the caller's own argument, not on the value, so
+//     there is no reason to spend even the O(1) cost of ValidateBounds
+//     before rejecting a malformed call. It also has to run before Round for
+//     the same materialization reason as guard 3 below — d.Round(scale)
+//     rescales the coefficient by roughly 10^(exponent-scale) digits, so an
+//     unbounded scale hangs the worker regardless of what d is. Reusing
+//     MaxExponentLimit here (the same ceiling NewBounds enforces on
+//     minExp/maxExp) keeps one documented ceiling instead of two: no
+//     legitimate scale needs to reach further than a legitimate exponent
+//     already can.
+//  2. ValidateBounds(d) -> whatever ValidateBounds returns. This runs BEFORE
+//     Round because Round MATERIALIZES the digits: on an unbounded value,
+//     "1e100000000" hangs the worker when rounded — the same DoS
+//     Parse/ValidateBounds exist to stop. The cheap bound must run before
+//     the expensive operation.
+//  3. d != d.Round(scale) -> ErrTooManyDecimals. The rejection criterion is
+//     exactly this equality, NOT "the literal's exponent is more precise
+//     than scale". "100.500" at scale 2 has exponent -3 but is worth
+//     exactly 100.50, and is ACCEPTED: rejecting it would punish a caller
+//     who pads with zeros. Only a value that actually CHANGES when rounded
+//     to scale is rejected, because that is the only case where value would
+//     silently evaporate.
 //
-// scale may be negative, in which case it is passed through to
-// decimal.Decimal.Round as-is (rounding to the left of the decimal point).
-// That is not a DoS concern: ValidateBounds already ran, so Round always
-// operates on a coefficient of at most MaxLen digits, regardless of scale's
-// sign.
+// Once past guard 1, scale may still be negative, in which case it is
+// passed through to decimal.Decimal.Round as-is (rounding to the left of
+// the decimal point). That is not a DoS concern: ValidateBounds already
+// ran, so Round always operates on a coefficient of at most MaxLen digits,
+// regardless of scale's sign, and guard 1 already bounds how far left or
+// right of the decimal point that rounding can reach.
 //
-// Because ValidateBounds runs FIRST, padding a literal with zeros beyond the
-// configured exponent bound is rejected by the bounds check, not by this
-// rule, even when the padded value is exact at scale: "100.500" (exponent
-// -3) is within the default [-8, 8] range and accepted, but
-// "100.000000000" (exponent -9) is rejected with ErrOutOfRange before this
-// method's own criterion ever runs, despite being equally exact at scale 2.
+// Because ValidateBounds runs before the money rule, padding a literal with
+// zeros beyond the configured exponent bound is rejected by the bounds
+// check, not by this rule, even when the padded value is exact at scale:
+// "100.500" (exponent -3) is within the default [-8, 8] range and accepted,
+// but "100.000000000" (exponent -9) is rejected with ErrOutOfRange before
+// this method's own criterion ever runs, despite being equally exact at
+// scale 2.
 func (b Bounds) ValidateAmount(d decimal.Decimal, scale int32) error {
 	b = b.effective()
+	if scale < -MaxExponentLimit || scale > MaxExponentLimit {
+		return fmt.Errorf("%w: scale %d exceeds the hard ceiling of ±%d", ErrInvalidScale, scale, MaxExponentLimit)
+	}
 	if err := b.ValidateBounds(d); err != nil {
 		return err
 	}
@@ -215,6 +263,10 @@ func (b Bounds) ValidateAmount(d decimal.Decimal, scale int32) error {
 // scale without losing precision. It is the door every money-carrying
 // string must pass through; Parse alone is for values that are not
 // persisted as money.
+//
+// scale is itself bounds-checked by ValidateAmount (ErrInvalidScale) before
+// Parse's result is ever rounded; see ValidateAmount's doc for exactly where
+// that guard runs.
 //
 // The bounds check inside ValidateAmount re-runs a check Parse already
 // performed; that is intentional (see the package doc) and cheap: it is
