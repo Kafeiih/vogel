@@ -78,7 +78,9 @@ local"** son capacidad nueva, no reemplazan nada existente.
 | `audit/postgres` | `internal/infrastructure/repository/audit_postgres.go` | `internal/infrastructure/repository/audit_postgres.go` (origen del port — ver README de vogel) |
 | `audit/migrations` | `internal/infrastructure/database/migrations/001_create_audit_log.sql` | `internal/infrastructure/database/migrations/001_create_audit_log.sql` |
 | `audit/httpx` | `internal/application/audit/{dto.go,queries.go}` + `internal/interfaces/http/handler/audit_handler.go` | `internal/application/audit/{dto.go,queries.go}` + `internal/interfaces/http/handler/audit_handler.go` |
-| `request` | `internal/interfaces/http/request/{json.go,validate.go}` — desde `v0.4.0`, `JSONOptional` y los mensajes localizables (`request.New(request.WithMessages(...))`) están upstream. Solo quedan locales `Int64Query`, `BoolQuery`, `DecimalQuery` (shopspring/decimal) y el `Validate` de go-playground, montados sobre `Validator.AddError` | `internal/interfaces/http/request/{json.go,validate.go}` |
+| `request` | `internal/interfaces/http/request/{json.go,validate.go}` — desde `v0.4.0`, `JSONOptional` y los mensajes localizables (`request.New(request.WithMessages(...))`) están upstream. Desde `v0.5.0`, `Int64Query` y `BoolQuery` también están upstream (`request.Validator`); solo queda local `DecimalQuery`, que se reemplaza por `decimalx.Query` (ver fila siguiente) | `internal/interfaces/http/request/{json.go,validate.go}` |
+| `decimalx` (nuevo en `v0.5.0`) | `pkg/decimalutil/decimalutil.go` (parser acotado de decimales) + el método `DecimalQuery` de `internal/interfaces/http/request/validate.go` | **sin equivalente local** |
+| `validation` (nuevo en `v0.5.0`) | El `Validate *validator.Validate` de paquete en `internal/interfaces/http/request/json.go` + `validationFieldErrors` en `internal/interfaces/http/handler/dimension_handler.go:52` (envía `err.Error()` crudo al cliente) | **sin equivalente local** |
 | `config` | **sin equivalente 1:1** — `internal/infrastructure/config/config.go` usa helpers privados (`getEnv`, `requireEnv`, `parseInt32`, ...), no funciones exportadas reusables como `vogel/config` | **sin equivalente 1:1** — mismo patrón, helpers privados en `internal/infrastructure/config/config.go` |
 | `postgres` | `internal/infrastructure/database/postgres.go` (`NewPostgresPool`) + `internal/infrastructure/database/{slow_query_tracer.go,metrics.go}` | `internal/infrastructure/database/postgres.go` (`NewPostgresPool`) + `internal/infrastructure/database/{slow_query_tracer.go,metrics.go}` |
 | `migrate` | `internal/infrastructure/database/migrate/{runner.go,logger.go}` | `internal/infrastructure/database/migrate/{runner.go,logger.go}` |
@@ -104,8 +106,12 @@ cambia de firma pero sigue sin tocar una base de datos en producción
 esquema/migraciones/tablas de versión (un error ahí es más caro de revertir).
 
 1. **Sin estado, sin cambio de firma** — `stringutil`, `config`,
-   `httpx/response`, `request`. Reemplazo mecánico de import; el compilador
-   marca cualquier desajuste.
+   `httpx/response`, `request`, `decimalx`, `validation`. Reemplazo mecánico
+   de import; el compilador marca cualquier desajuste. `decimalx` y
+   `validation` cambian el nombre de las funciones (`ParseMonto` →
+   `ParseAmount(s, 2)`, `request.Validate.Struct` → `validation.Write`), pero
+   no dependen de estado ni de una base de datos — el compilador y los tests
+   existentes de cada handler bastan para validar la migración.
 2. **Relocación de paquete, sin cambio de firma** — `reqctx`, `logger`,
    `pgxtx`. Cambia de dónde se importa la función, no cómo se llama.
 3. **Adaptadores externos con constructor estable** — `storage` +
@@ -479,11 +485,14 @@ Sin cambio de firma en las funciones que sí están portadas.
 
 - Ambas apps: borrar `internal/interfaces/http/request/{json.go,validate.go}`.
 - go-crucible (requiere `v0.4.0`): `JSONOptional` y los mensajes localizables
-  ya están upstream. Solo quedan locales `Int64Query`, `BoolQuery`,
-  `DecimalQuery` (depende de `shopspring/decimal`, que vogel no toma) y el
-  `Validate` de go-playground, en un wrapper propio de la app que registra sus
-  errores con `Validator.AddError` (no mutando el mapa de `Errors()`). El
-  streaming CSV (`response/csv.go`) también queda local.
+  ya están upstream. **Desde `v0.5.0`, `Int64Query` y `BoolQuery` también
+  están upstream** (`request.Validator`, mismos nombres y comportamiento que
+  el wrapper local) — borrar el wrapper propio
+  `internal/interfaces/http/request/validate.go` por completo: ya no queda
+  ningún método propio que justifique mantener un `Validator` que envuelve al
+  de vogel. `DecimalQuery` se reemplaza por `decimalx.Query` y el `Validate`
+  de go-playground por el paquete `validation` — ver las dos secciones
+  siguientes. El streaming CSV (`response/csv.go`) sigue quedando local.
 - Mensajes en otro idioma: construir un único `*request.Decoder` al arrancar la
   app y usarlo en los handlers. Los campos de `Messages` que se dejan vacíos
   conservan el texto en inglés por defecto. Las funciones de paquete
@@ -528,6 +537,175 @@ v.AddError("amount", "amount debe ser un decimal válido") // parser propio de l
 Sin cambio de firma. Nota aparte: go-licencias ya tiene el límite de bytes
 correcto (`1_048_576`, sin el typo `1_048_578` mencionado en el punto 5 del
 README de vogel) — no requiere ningún ajuste por ese lado.
+
+### `decimalx` (nuevo en `v0.5.0`)
+
+- go-crucible: borrar `pkg/decimalutil/` completo (incluido su
+  `guard_test.go`) y el método `DecimalQuery` de
+  `internal/interfaces/http/request/validate.go` (que ya debería estar
+  borrado por completo, ver la sección `request` de arriba).
+- Tabla de correspondencia de nombres — `decimalutil` usaba español,
+  `decimalx` usa inglés y separa la escala como parámetro en vez de fijarla
+  en 2:
+
+  | `pkg/decimalutil` (borrar) | `decimalx` (reemplazo) |
+  |---|---|
+  | `Parse(s)` | `Parse(s)` (misma firma y las mismas tres guardas, en el mismo orden) |
+  | `ValidarCotas(d)` | `ValidateBounds(d)` |
+  | `ValidarMonto(d)` | `ValidateAmount(d, 2)` — la escala 2 (NUMERIC(12,2)/NUMERIC(14,2) en el esquema de crucible) que antes estaba fija en el código pasa a ser el segundo argumento |
+  | `ParseMonto(s)` | `ParseAmount(s, 2)` |
+  | `ErrFueraDeRango` | `ErrOutOfRange` |
+  | `ErrNoParseable` | `ErrNotParseable` |
+  | `ErrDemasiadosDecimales` | `ErrTooManyDecimals` |
+  | (sin equivalente — cota fija en el código) | `ErrInvalidScale`, `Bounds`/`NewBounds`/`MaxExponentLimit`, para quien necesite una cota o una escala distinta de la de crucible |
+  | `Validator.DecimalQuery(r, param)` (wrapper local) | `decimalx.Query(v, r, param)` |
+
+  El comportamiento se conserva byte a byte para los valores por defecto de
+  crucible (32 caracteres, exponente `[-8, 8]`, escala 2): rellenar un
+  literal con ceros más allá del exponente configurado sigue rechazándose en
+  la cota aunque el valor sea exacto a la escala (`"100.500"` se acepta,
+  `"100.000000000"` se rechaza), y la cota de `Parse` sobre la longitud del
+  STRING sigue siendo más estricta que la de `ValidateBounds` sobre los
+  dígitos del COEFICIENTE para un valor con signo.
+
+```go
+import "github.com/kafeiih/vogel/decimalx"
+
+// Antes:
+d, err := decimalutil.ParseMonto(s)
+
+// Ahora:
+d, err := decimalx.ParseAmount(s, 2)
+```
+
+```go
+// DecimalQuery en el handler:
+// Antes (wrapper local sobre decimalutil.Parse):
+monto := v.DecimalQuery(r, "monto")
+
+// Ahora:
+monto := decimalx.Query(v, r, "monto")
+```
+
+- **Guardián estructural**: agregar un test en el paquete raíz (o donde ya
+  vivan los tests de arquitectura de la app) que llame a
+  `decimalxtest.AssertNoDirectNewFromString`, para que ningún call site nuevo
+  vuelva a llamar a `decimal.NewFromString`/`RequireFromString`/
+  `NewFromFormattedString` por fuera de `decimalx` — exactamente lo que hacía
+  `pkg/decimalutil/guard_test.go` antes de borrarlo:
+
+  ```go
+  func TestNoDirectDecimalParsing(t *testing.T) {
+      decimalxtest.AssertNoDirectNewFromString(t, ".", "internal", "pkg", "cmd")
+  }
+  ```
+
+  Recordatorio del propio guardián (ver su doc): no detecta un decimal que
+  llega ya construido vía `encoding/json` en un campo tipado
+  `decimal.Decimal` (un bulk load, por ejemplo) — ese camino sigue
+  necesitando una llamada explícita a `decimalx.ValidateBounds` o
+  `decimalx.ValidateAmount`, que el guardián no puede exigir por análisis
+  estático.
+
+### `validation` (nuevo en `v0.5.0`)
+
+- Ambas apps: borrar el `var Validate *validator.Validate` + su `init()` de
+  `internal/interfaces/http/request/json.go`, y `validationFieldErrors` de
+  `internal/interfaces/http/handler/dimension_handler.go:52` (usada en los 8
+  call sites de `request.Validate.Struct(in)` de ese archivo, y en cualquier
+  otro handler que siga el mismo patrón).
+
+```go
+import "github.com/kafeiih/vogel/validation"
+
+// Antes (8 call sites en dimension_handler.go, mismo patrón):
+if err := request.Validate.Struct(in); err != nil {
+    response.ValidationError(w, r, validationFieldErrors(err))
+    return
+}
+
+// Ahora:
+if !validation.Write(w, r, in) {
+    return
+}
+```
+
+  Para un handler que necesita el mapa de errores para algo más que
+  responder (poco común, pero soportado):
+
+  ```go
+  fields, err := validation.Struct(in)
+  if err != nil {
+      // error de programación (in no es un struct, o es nil) — nunca un
+      // error de validación del cliente. Logueá err acá si tu handler tiene
+      // un logger a mano; validation.Write no loguea nada porque no recibe
+      // uno.
+      response.Error(w, r, http.StatusInternalServerError, response.CodeInternalError, "no se pudo validar la solicitud")
+      return
+  }
+  if fields != nil {
+      response.ValidationError(w, r, fields)
+      return
+  }
+  ```
+
+- Mensajes en español: igual que `request.WithMessages`, construir un
+  `*validation.Validator` al arrancar la app y usarlo desde los handlers en
+  lugar de las funciones de paquete:
+
+  ```go
+  val := validation.New(validation.WithMessages(validation.Messages{
+      Required: func(field string) string { return field + " es obligatorio" },
+      Min: func(field, param string, kind reflect.Kind) string {
+          return field + " debe tener al menos " + param + " caracteres"
+      },
+  }))
+
+  // en el handler:
+  if !val.Write(w, r, in) {
+      return
+  }
+  ```
+
+  Los campos de `Messages` que se dejan en `nil` conservan el texto en
+  inglés por defecto, igual que `request.WithMessages`.
+
+#### ⚠️ CAMBIO VISIBLE PARA EL CLIENTE
+
+Hoy, un fallo de validación en cualquiera de los 8 call sites de
+`dimension_handler.go` (y cualquier otro handler con el mismo patrón)
+responde con una única clave `"validation"` que contiene el texto crudo del
+error de Go — nombres de struct y de campo de Go incluidos, en inglés, sin
+posibilidad de traducirlo:
+
+```json
+{
+  "validation": "Key: 'CrearProveedorRequest.Nombre' Error:Field validation for 'Nombre' failed on the 'required' tag"
+}
+```
+
+Con `validation.Write` (o `response.ValidationError` + `validation.Struct`),
+la misma falla responde con el sobre estándar de `httpx/response` y una
+clave por CAMPO JSON, en vez de un único string:
+
+```json
+{
+  "success": false,
+  "message": "Validation failed",
+  "code": "VALIDATION_ERROR",
+  "fields": {
+    "nombre": "nombre is required"
+  }
+}
+```
+
+(`"nombre is required"` es el texto en inglés de `DefaultMessages`; con
+`WithMessages` la app lo reemplaza por el texto en español que prefiera, por
+ejemplo `"nombre es obligatorio"`.) Cualquier cliente que hoy parsea el
+string `"validation"` con una expresión regular o lo muestra tal cual en una
+UI deja de funcionar apenas se despliega este cambio — coordinar con el
+frontend antes de migrar cualquier handler que use este patrón, no solo
+avisar después.
 
 ### `reqctx`
 
