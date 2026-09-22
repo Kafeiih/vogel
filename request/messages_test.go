@@ -92,9 +92,10 @@ func TestValidator_AddError(t *testing.T) {
 	assert.Equal(t, "custom message", body.Fields["custom_field"])
 }
 
-// TestPackageLevelJSON_MatchesNewDecoderDefaultBytes is the backward-compat
-// guard: the package-level JSON function and a fresh request.New() (both
-// using DefaultMessages) must produce byte-identical responses.
+// TestPackageLevelJSON_MatchesNewDecoderDefaultBytes verifies that a fresh
+// request.New() behaves exactly like the package-level functions. It does not
+// prove compatibility with v0.3.0 on its own — both sides share
+// DefaultMessages — that is what the golden tests in compat_test.go pin.
 func TestPackageLevelJSON_MatchesNewDecoderDefaultBytes(t *testing.T) {
 	body := `{this is not json}`
 

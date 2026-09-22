@@ -31,11 +31,12 @@ func TestJSONOptional_EmptyBody(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(nil))
 	w := httptest.NewRecorder()
 
-	var dst testPayload
+	// Pre-filled so a decoder that zeroed the destination would fail too.
+	dst := testPayload{Name: "preset"}
 	err := request.JSONOptional(w, r, &dst)
 
 	require.NoError(t, err)
-	assert.Equal(t, testPayload{}, dst, "destination must stay untouched on an empty body")
+	assert.Equal(t, testPayload{Name: "preset"}, dst, "destination must stay untouched on an empty body")
 	assert.Equal(t, 0, w.Body.Len(), "nothing should be written to the response for an empty optional body")
 	assert.Equal(t, http.StatusOK, w.Code, "no status was written, so the recorder keeps its 200 default")
 }
@@ -84,4 +85,67 @@ func TestJSONOptional_ValidBody(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, "hello", dst.Name)
+}
+
+// TestJSONOptional_WhitespaceOnlyBody documents that a body holding only
+// whitespace counts as empty: json.Decoder skips it and reports io.EOF.
+func TestJSONOptional_WhitespaceOnlyBody(t *testing.T) {
+	r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(" \n\t "))
+	w := httptest.NewRecorder()
+
+	dst := testPayload{Name: "preset"}
+	err := request.JSONOptional(w, r, &dst)
+
+	require.NoError(t, err)
+	assert.Equal(t, "preset", dst.Name)
+	assert.Equal(t, 0, w.Body.Len())
+}
+
+// TestJSONOptional_TruncatedBody guards the boundary of the empty-body case:
+// a body that starts a value and stops (io.ErrUnexpectedEOF, not io.EOF) is
+// a bad body, not an absent one, and must still be a 400.
+func TestJSONOptional_TruncatedBody(t *testing.T) {
+	r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{`))
+	w := httptest.NewRecorder()
+
+	var dst testPayload
+	err := request.JSONOptional(w, r, &dst)
+
+	require.Error(t, err)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+
+	var body errorEnvelope
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	assert.Equal(t, "INVALID_JSON", body.Code)
+}
+
+// TestDecoderJSONOptional_UsesInstanceMessages verifies the Decoder method
+// shares the empty-body rule and reports other errors with the instance's
+// localized messages.
+func TestDecoderJSONOptional_UsesInstanceMessages(t *testing.T) {
+	d := request.New(request.WithMessages(request.Messages{
+		UnknownField: func(field string) string { return "campo desconocido: " + field },
+	}))
+
+	t.Run("empty body is still a no-op", func(t *testing.T) {
+		r := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(nil))
+		w := httptest.NewRecorder()
+
+		var dst testPayload
+		require.NoError(t, d.JSONOptional(w, r, &dst))
+		assert.Equal(t, 0, w.Body.Len())
+	})
+
+	t.Run("errors use the localized message", func(t *testing.T) {
+		r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"bogus":1}`))
+		w := httptest.NewRecorder()
+
+		var dst testPayload
+		require.Error(t, d.JSONOptional(w, r, &dst))
+
+		var body errorEnvelope
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+		assert.Equal(t, "UNKNOWN_FIELD", body.Code)
+		assert.Equal(t, `campo desconocido: "bogus"`, body.Message)
+	})
 }
