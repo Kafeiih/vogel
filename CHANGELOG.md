@@ -38,6 +38,72 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   `migrate.Up` con `workflow/migrations.FS()`, igual que ya corren
   `001_create_workflow.sql`.
 
+- `workflow.NodeKind` (`""`/`"task"` por defecto, `"decision"`, con su propio
+  `Valid()`) y el nuevo campo `Node.Kind` agregan al motor un nodo de
+  decisión al estilo compuerta exclusiva BPMN: un caso ya no tiene que fundir
+  la acción humana con su destino cuando ese destino depende de datos de
+  dominio (p. ej. "¿algún ítem tiene subsidio SEP?" → coordinador SEP;
+  si no, Presupuesto). Un `Transition` cuyo `From` es un nodo de decisión se
+  llama ruta; `Engine.Move` evalúa las rutas salientes en el orden en que
+  aparecen en `Definition.Transitions`, y toma la primera cuya `Guard`
+  evalúa verdadero. `Definition.Validate` exige que un nodo de decisión: no
+  sea `Start` ni `Terminal`; no declare `Eligible` ni `Deadline`; tenga al
+  menos dos rutas salientes; tenga exactamente una ruta sin `Guard` (la
+  ruta por defecto), declarada al final; y que ninguna de sus rutas declare
+  `CommentPolicy` (una ruta no es una acción humana, no tiene nada que
+  comentar). También rechaza cualquier ciclo formado sólo por nodos de
+  decisión, porque un caso así nunca llegaría a descansar en ningún lado.
+  Cuando `Engine.Move` aterriza en un nodo de decisión sigue enrutando,
+  dentro de la misma llamada y la misma transacción `db`, hasta que el caso
+  descansa en un nodo de tarea o terminal — un caso nunca se persiste
+  descansando en un nodo de decisión. Cada salto agrega su propio
+  `EventMoved` (con `Action` igual a la etiqueta de esa transición o ruta y
+  `ActorID` igual al actor original de `MoveInput`), pero sólo el primer
+  salto (el humano) lleva el comentario; los saltos automáticos siempre
+  quedan con `Event.Comment` vacío. Si el caso termina descansando en un
+  nodo terminal, el caso se cierra con un único `EventClosed` — pero su
+  `Action` toma la etiqueta del ÚLTIMO salto de la cadena (la ruta automática
+  ganadora), nunca el `MoveInput.Action` humano original cuando hubo saltos
+  de por medio: describe cómo el caso llegó realmente al nodo terminal, no
+  lo que pidió el humano. Centinela nuevo `workflow.ErrNoRoute`: si ninguna ruta
+  calza (una `Definition` que de algún modo llegó al motor sin pasar por
+  `Validate` y le falta la ruta por defecto), `Move` falla con este error y
+  no muta el caso ni su historial — toda la cadena de saltos se planea en
+  memoria antes de escribir nada. Un error real de una guarda de ruta se
+  propaga tal cual, como hoy. Centinela adicional
+  `workflow.ErrTooManyDecisionHops`: cinturón y tirantes contra una
+  `Definition` patológica que de algún modo evadió el rechazo de ciclos de
+  `Validate` — `Move` corta después de un número fijo de saltos
+  (`maxDecisionHops`) en vez de girar para siempre.
+
+- `workflow.Transition.Return` (D4): una transición de retorno, para que una
+  etapa burocrática (un visto bueno) pueda devolver un caso a CUALQUIER nodo
+  de tarea anterior que el caso haya ocupado de verdad — nunca a uno que
+  saltó. `Engine.Available` la ofrece, y `Engine.Move` la acepta, sólo si el
+  caso ocupó su `To` alguna vez, determinado a partir del historial de
+  eventos propio del caso (el nodo de apertura más el `FromState`/`ToState`
+  de cada `EventMoved`), nunca por alcanzabilidad en el grafo de la
+  `Definition` — un caso que saltó al coordinador SEP nunca ve ofrecido
+  "volver al coordinador SEP". Centinela nuevo `workflow.ErrReturnNotVisited`
+  cuando `Move` recibe un retorno cuyo destino el caso nunca ocupó; falla sin
+  mutar el caso ni su historial, igual que una guarda rechazada. El chequeo
+  corre en un orden fijo, antes de mutar nada: primero la política de
+  comentario (heredada de D2), después si el caso ocupó el destino, y recién
+  al final la `Guard` de la transición, si tiene una — ambas condiciones
+  (visitado Y guarda) deben pasar. Un retorno que pasa las tres corre
+  exactamente como cualquier otro `Move`: se recalculan `Deadline` y
+  elegibilidad para el nodo de destino y se limpia la asignación, sin
+  semántica especial de "deshacer". `Definition.Validate` rechaza una ruta
+  saliente de un nodo de decisión marcada como retorno (una ruta enruta
+  automáticamente sobre datos de dominio; un retorno es una acción humana),
+  rechaza un retorno que apunte a un nodo terminal, y rechaza un retorno que
+  apunte a un nodo de decisión (un caso nunca descansa ahí; permitirlo
+  reactivaría el enrutamiento automático, y un "retorno" podría terminar
+  empujando el caso hacia adelante en vez de hacia atrás). `Engine.Available` y
+  `Engine.Move` leen el historial del caso a lo sumo una vez por llamada, y
+  sólo cuando alguna transición candidata es efectivamente un retorno — el
+  costo extra es cero para cualquier `Definition` que no use D4.
+
 ### Cambiado
 
 - **Cambio incompatible (breaking):** `workflow.GuardFunc` gana un segundo
