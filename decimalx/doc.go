@@ -76,20 +76,21 @@
 // The default bounds (DefaultBounds) allow a 32-character coefficient and an
 // exponent in [-8, 8] — generous for any legitimate amount, and both O(1) to
 // check. A caller may override them through NewBounds, but NewBounds rejects
-// an unbounded or inverted configuration (a zero or negative length, minExp >
+// an unbounded or inverted configuration (a zero or negative length, a length
+// above MaxLengthLimit — a hard ceiling of 1000 characters —, minExp >
 // maxExp, or either bound crossing MaxExponentLimit — a hard ceiling of
 // ±1000, since even 10^1000 stays microseconds-cheap to round and print): a
 // library must never let a caller disable its own anti-DoS guard. Bounds'
 // fields are unexported, and every method treats a zero-value Bounds
 // (however a caller ends up with one — a bare var, or a discarded NewBounds
 // error) as DefaultBounds. Between the zero-value fallback and the
-// MaxExponentLimit ceiling, there is no way to reach an unbounded parser
-// through this package's exported API.
+// MaxLengthLimit and MaxExponentLimit ceilings, there is no way to reach an
+// unbounded parser through this package's exported API.
 //
 // scale carries its own, separate ceiling on ValidateAmount and ParseAmount,
 // enforced the same way: any scale outside [-MaxExponentLimit,
 // MaxExponentLimit] is rejected with ErrInvalidScale before it ever reaches
-// decimal.Decimal.Round. Between the exponent ceiling on Bounds itself and
+// decimal.Decimal.Round. Between the length and exponent ceilings on Bounds and
 // the scale ceiling on the money rule, every Bounds value, constructed or
 // not, and every scale this package accepts, keeps Parse, ValidateBounds,
 // ValidateAmount and ParseAmount cheap.

@@ -3,6 +3,7 @@ package decimalx_test
 import (
 	"errors"
 	"math"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,6 +30,8 @@ func TestNewBounds_RejectsUnsafeConfigs(t *testing.T) {
 		{"both extremes exceed the ceiling", 32, math.MinInt32, math.MaxInt32},
 		{"minExp one past the ceiling", 32, -(decimalx.MaxExponentLimit + 1), 8},
 		{"maxExp one past the ceiling", 32, -8, decimalx.MaxExponentLimit + 1},
+		{"maxLen at math.MaxInt exceeds the ceiling", math.MaxInt, -8, 8},
+		{"maxLen one past the ceiling", decimalx.MaxLengthLimit + 1, -8, 8},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -168,6 +171,33 @@ func TestNewBounds_ExponentCeiling(t *testing.T) {
 	if _, err := decimalx.NewBounds(32, -decimalx.MaxExponentLimit, decimalx.MaxExponentLimit+1); !errors.Is(err, decimalx.ErrInvalidBounds) {
 		t.Fatalf("NewBounds(32, -%d, %d) err = %v, want ErrInvalidBounds: maxExp is one past the ceiling",
 			decimalx.MaxExponentLimit, decimalx.MaxExponentLimit+1, err)
+	}
+}
+
+// TestNewBounds_LengthCeiling pins the maxLen ceiling: exactly
+// MaxLengthLimit is accepted, and a Bounds at that ceiling still parses a
+// MaxLengthLimit-digit literal (the longest string its length pre-check lets
+// through) well under the timing budget.
+func TestNewBounds_LengthCeiling(t *testing.T) {
+	b, err := decimalx.NewBounds(decimalx.MaxLengthLimit, -8, 8)
+	if err != nil {
+		t.Fatalf("NewBounds(%d, -8, 8) err = %v, want nil: exactly at the ceiling must be accepted",
+			decimalx.MaxLengthLimit, err)
+	}
+
+	longest := strings.Repeat("9", decimalx.MaxLengthLimit)
+	done := make(chan error, 1)
+	go func() {
+		_, err := b.ParseAmount(longest, 2)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("ParseAmount(%d nines, 2) err = %v, want nil", decimalx.MaxLengthLimit, err)
+		}
+	case <-time.After(timingBudget):
+		t.Fatalf("ParseAmount(%d nines, 2) did not return within %v", decimalx.MaxLengthLimit, timingBudget)
 	}
 }
 
