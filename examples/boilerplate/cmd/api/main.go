@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"log"
 	"os"
 	"strings"
@@ -94,16 +95,53 @@ func runMigrate(args []string) error {
 
 	switch subcmd {
 	case "up":
-		return migrate.Up(ctx, dbURL, migrations.FS)
+		for _, set := range migrationSets() {
+			if err := migrate.Up(ctx, dbURL, set.fsys, set.opts); err != nil {
+				return fmt.Errorf("running %s migrations: %w", set.name, err)
+			}
+		}
+		return nil
 	case "down":
+		// Only this service's own set is rolled back. migrate.Down reverts the
+		// latest migration of the set it is given, and the audit set's only
+		// migration creates audit_log — including it would drop the audit
+		// trail on every "migrate down".
 		return migrate.Down(ctx, dbURL, migrations.FS)
 	case "status":
-		return migrate.Status(ctx, dbURL, migrations.FS, os.Stdout)
+		for i, set := range migrationSets() {
+			if i > 0 {
+				fmt.Println()
+			}
+			fmt.Printf("%s migrations:\n", set.name)
+			if err := migrate.Status(ctx, dbURL, set.fsys, os.Stdout, set.opts); err != nil {
+				return fmt.Errorf("reading %s migration status: %w", set.name, err)
+			}
+		}
+		return nil
 	default:
 		if subcmd == "" {
 			return fmt.Errorf("migrate subcommand required; valid: up, down, status, create")
 		}
 		return fmt.Errorf("unknown migrate subcommand %q; valid: up, down, status, create", subcmd)
+	}
+}
+
+// migrationSet is one embedded set of goose migrations and the options it
+// runs with.
+type migrationSet struct {
+	name string
+	fsys fs.FS
+	opts migrate.Options
+}
+
+// migrationSets lists every migration set this service applies, in order.
+// runServer and the migrate subcommand both read it, so a set added here is
+// applied at boot and by "migrate up" alike. Each set numbers from 001, so
+// each needs its own goose version table.
+func migrationSets() []migrationSet {
+	return []migrationSet{
+		{name: "app", fsys: migrations.FS},
+		{name: "audit", fsys: auditmigrations.FS(), opts: migrate.Options{TableName: auditmigrations.DefaultTableName}},
 	}
 }
 
@@ -140,14 +178,11 @@ func runServer() error {
 	// de migraciones" section of vogel's examples/api/README.md — this
 	// boilerplate only needs two of the three since it does not use
 	// vogel/workflow.
-	if err := migrate.Up(ctx, cfg.Database.URL, migrations.FS, migrate.Options{Logger: appLogger.Logger}); err != nil {
-		return fmt.Errorf("running app migrations: %w", err)
-	}
-	if err := migrate.Up(ctx, cfg.Database.URL, auditmigrations.FS(), migrate.Options{
-		Logger:    appLogger.Logger,
-		TableName: auditmigrations.DefaultTableName,
-	}); err != nil {
-		return fmt.Errorf("running audit migrations: %w", err)
+	for _, set := range migrationSets() {
+		set.opts.Logger = appLogger.Logger
+		if err := migrate.Up(ctx, cfg.Database.URL, set.fsys, set.opts); err != nil {
+			return fmt.Errorf("running %s migrations: %w", set.name, err)
+		}
 	}
 
 	// Database pool metrics for Prometheus, registered on the default
