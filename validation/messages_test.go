@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/kafeiih/vogel/validation"
 )
@@ -78,6 +79,69 @@ func TestDefaultMessages_OneOf(t *testing.T) {
 func TestDefaultMessages_Default(t *testing.T) {
 	msgs := validation.DefaultMessages()
 	assert.Equal(t, "email is invalid", msgs.Default("email", "email"))
+}
+
+// TestStruct_RequiredIf verifies "required_if" — a conditional variant of
+// "required" — renders through Messages.Required, exactly like plain
+// "required", instead of falling back to Messages.Default and leaking the
+// "required_if" tag name.
+func TestStruct_RequiredIf(t *testing.T) {
+	type S struct {
+		Kind   string  `json:"kind"`
+		Amount *string `json:"amount" validate:"required_if=Kind fixed"`
+	}
+
+	fields, err := validation.Struct(S{Kind: "fixed"})
+	require.NoError(t, err)
+	require.NotNil(t, fields)
+	assert.Equal(t, "amount is required", fields["amount"])
+}
+
+// TestStruct_RequiredWith verifies "required_with" also renders through
+// Messages.Required.
+func TestStruct_RequiredWith(t *testing.T) {
+	type S struct {
+		A string `json:"a"`
+		B string `json:"b" validate:"required_with=A"`
+	}
+
+	fields, err := validation.Struct(S{A: "x"})
+	require.NoError(t, err)
+	require.NotNil(t, fields)
+	assert.Equal(t, "b is required", fields["b"])
+}
+
+// TestStruct_RequiredWithout verifies "required_without" also renders through
+// Messages.Required.
+func TestStruct_RequiredWithout(t *testing.T) {
+	type S struct {
+		A string `json:"a"`
+		B string `json:"b" validate:"required_without=A"`
+	}
+
+	fields, err := validation.Struct(S{})
+	require.NoError(t, err)
+	require.NotNil(t, fields)
+	assert.Equal(t, "b is required", fields["b"])
+}
+
+// TestStruct_RequiredIf_HonorsMessagesOverride verifies a WithMessages
+// Required override applies to the conditional required_* tags exactly like
+// it applies to plain "required".
+func TestStruct_RequiredIf_HonorsMessagesOverride(t *testing.T) {
+	v := validation.New(validation.WithMessages(validation.Messages{
+		Required: func(field string) string { return field + " es obligatorio" },
+	}))
+
+	type S struct {
+		Kind   string  `json:"kind"`
+		Amount *string `json:"amount" validate:"required_if=Kind fixed"`
+	}
+
+	fields, err := v.Struct(S{Kind: "fixed"})
+	require.NoError(t, err)
+	require.NotNil(t, fields)
+	assert.Equal(t, "amount es obligatorio", fields["amount"])
 }
 
 // TestWithMessages_OverridesOnlyGivenFields verifies WithMessages follows the

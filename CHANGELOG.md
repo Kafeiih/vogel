@@ -31,8 +31,9 @@ API de `v0.4.0` cambia.
   primero, O(1); longitud del coeficiente vía `NumDigits` después) para un
   decimal que llegó ya construido (p. ej. por `encoding/json`, sin pasar por
   `Parse`). `Bounds`/`NewBounds` permiten cotas propias, pero `NewBounds`
-  rechaza toda configuración que desactive la guarda (longitud no positiva,
-  rango invertido, o un exponente que cruce `MaxExponentLimit`, un techo duro
+  rechaza toda configuración que desactive la guarda (longitud no positiva o
+  por encima de `MaxLengthLimit`, un techo duro de 1000 caracteres; rango
+  invertido; o un exponente que cruce `MaxExponentLimit`, un techo duro
   de ±1000). La regla de dinero, con la escala como PARÁMETRO (no fija en 2
   como en crucible): `ValidateAmount(d, scale)` corre `ValidateBounds`
   primero y rechaza — sin redondear nunca en silencio — lo que no sobrevive a
@@ -68,10 +69,18 @@ API de `v0.4.0` cambia.
   válido; ante `validator.ValidationErrors` retorna una entrada por campo,
   con clave igual a la ruta JSON (`fe.Namespace()` sin el segmento raíz:
   `"address.street"`, `"items[0].monto"`) y valor un mensaje de
-  `validation.Messages` (`Required`, `Min`/`Max` — conscientes del
-  `reflect.Kind` del campo, porque "al menos 3" significa algo distinto para
-  un string, una colección o un número —, `OneOf`, y `Default` como respaldo
-  para cualquier otro tag). Cualquier otro error —
+  `validation.Messages` (`Required` — usado también para las variantes
+  condicionales `required_if`, `required_unless`, `required_with`,
+  `required_with_all`, `required_without` y `required_without_all`, en vez de
+  caer en `Default` —, `Min`/`Max` — conscientes del `reflect.Kind` del
+  campo, porque "al menos 3" significa algo distinto para un string, una
+  colección o un número —, `OneOf`, y `Default` como respaldo para cualquier
+  otro tag). Un campo embebido (anónimo) se aplana igual que `encoding/json`:
+  sin tag `json` propio, no aporta segmento — `Base.id` nunca se filtra, la
+  clave es `id` — pero con un tag `json` explícito (`Base json:"base"`) se
+  conserva como segmento ordinario (`base.id`); aplica también embebido por
+  puntero, dentro de un struct anidado, y dentro de elementos de un `dive`.
+  Cualquier otro error —
   `*validator.InvalidValidationError` si `v` no es un struct o es `nil` — se
   retorna tal cual: nunca se envía `err.Error()` al cliente.
   `(*Validator).Write(w, r, v)` valida y escribe la respuesta:

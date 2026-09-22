@@ -557,7 +557,7 @@ README de vogel) — no requiere ningún ajuste por ese lado.
   | `ErrFueraDeRango` | `ErrOutOfRange` |
   | `ErrNoParseable` | `ErrNotParseable` |
   | `ErrDemasiadosDecimales` | `ErrTooManyDecimals` |
-  | (sin equivalente — cota fija en el código) | `ErrInvalidScale`, `Bounds`/`NewBounds`/`MaxExponentLimit`, para quien necesite una cota o una escala distinta de la de crucible |
+  | (sin equivalente — cota fija en el código) | `ErrInvalidScale`, `Bounds`/`NewBounds`/`MaxExponentLimit`/`MaxLengthLimit`, para quien necesite una cota o una escala distinta de la de crucible |
   | `Validator.DecimalQuery(r, param)` (wrapper local) | `decimalx.Query(v, r, param)` |
 
   El comportamiento se conserva byte a byte para los valores por defecto de
@@ -669,6 +669,23 @@ if !validation.Write(w, r, in) {
 
   Los campos de `Messages` que se dejan en `nil` conservan el texto en
   inglés por defecto, igual que `request.WithMessages`.
+
+- **Reglas de clave y de mensaje a tener en cuenta al migrar structs con
+  campos embebidos o `required_if`/`required_with`/etc.**:
+  - Un campo embebido (anónimo) SIN tag `json` propio se aplana igual que
+    `encoding/json`: `type CrearFacturaRequest struct { Base; Monto string
+    ... }` con `Base` sin tag reporta la clave `"id"` (no `"Base.id"` ni
+    `"base.id"`), aunque `fe.Namespace()` de go-playground/validator sí
+    incluya el segmento `Base` internamente. Con un tag `json` explícito en
+    el embebido (`Base json:"base"`) la clave SÍ conserva ese segmento
+    (`"base.id"`) — igual que haría `encoding/json` al serializar. Aplica
+    también a embebido por puntero, embebido dentro de un struct anidado, y
+    embebido dentro de elementos alcanzados con `dive`.
+  - Los tags condicionales `required_if`, `required_unless`, `required_with`,
+    `required_with_all`, `required_without` y `required_without_all` usan
+    `Messages.Required` (el mismo mensaje que `required`), no
+    `Messages.Default` — para el cliente, todos significan "este campo es
+    obligatorio", sin importar la condición que lo disparó.
 
 #### ⚠️ CAMBIO VISIBLE PARA EL CLIENTE
 

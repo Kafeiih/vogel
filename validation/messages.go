@@ -14,7 +14,14 @@ import (
 // returns neutral English defaults, and a consuming application configures
 // its own copy once, via New(WithMessages(...)).
 type Messages struct {
-	// Required is used when a field fails the "required" tag.
+	// Required is used when a field fails the "required" tag, and equally for
+	// every conditional variant go-playground/validator ships —
+	// "required_if", "required_unless", "required_with", "required_with_all",
+	// "required_without" and "required_without_all" — since all of them
+	// report the same thing to a client: this field must be present. The
+	// condition that made it required (another field's value, or another
+	// field's presence/absence) is deliberately not part of field or this
+	// signature; a client either did or did not send the field.
 	Required func(field string) string
 
 	// Min is used when a field fails the "min" tag. param is the tag's
