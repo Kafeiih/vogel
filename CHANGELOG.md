@@ -4,6 +4,20 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el versionado,
 [SemVer](https://semver.org/lang/es/).
 
+## [Sin publicar]
+
+### Agregado
+
+- `httpx/response`: el sobre de error admite un identificador estable por error
+  de dominio (`error`, SCREAMING_SNAKE_CASE, p. ej. `CORREO_EN_USO`) y el campo
+  ofensor (`field`), ambos `omitempty`. Nuevos `ErrorWith(w, r, status, code,
+  message, opts...)`, `ErrorOption`, `WithErrorID` y `WithField`; `Error` conserva
+  su firma y su JSON (aditivo, sin cambios incompatibles). `code` sigue siendo la
+  categoría genérica; los clientes deben decidir por `error`, nunca por `message`.
+- `httpx/response`: constante `CodeUnprocessableEntity` (`UNPROCESSABLE_ENTITY`).
+- `httpx/response`: `ValidationErrorResponse` incluye `trace_id` (`omitempty`),
+  igual que `ErrorResponse`.
+
 ## [0.7.0] — 2026-09-30
 
 ### Cambiado
