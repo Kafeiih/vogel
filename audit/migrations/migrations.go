@@ -1,5 +1,18 @@
 // Package migrations embeds the SQL migration(s) that create the audit_log
-// table this library owns.
+// table this library owns and declare it append-only.
+//
+// 001_create_audit_log.sql creates the table. 002_audit_log_append_only.sql
+// installs triggers that reject UPDATE, DELETE and TRUNCATE on it with
+// SQLSTATE 23001 (restrict_violation) and a message starting with
+// "audit_log is append-only", so a row, once written, cannot be rewritten by
+// application code or an ad-hoc statement. The guarantee has limits: the
+// table owner or a superuser can disable the triggers, and role separation,
+// hash chaining and external shipping are out of scope. Any retention or
+// purge must be an explicit owner-run procedure that disables the triggers,
+// deletes and re-enables them inside one transaction; the recipe is in the
+// header of 002_audit_log_append_only.sql. Integration tests that clean the
+// table between cases must not TRUNCATE or DELETE it: use a fresh database
+// per test or roll back a transaction instead.
 //
 // The schema was found byte-identical across go-bluprint, go-crucible, and
 // go-licencias after six months of independent evolution — same columns,

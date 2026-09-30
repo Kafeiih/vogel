@@ -44,7 +44,7 @@ junto.
 | `pgxtx` | Infraestructura de transacciones de pgx: `PgxTxManager.WithTx`, `DBFromContext`, `TxFromContext`, la interfaz `DBTX`. Se llama `pgxtx` (y no `repository`) porque contiene infraestructura de transacciones, no repositorios. Vive en la raíz del módulo, como hermano de `postgres`, porque `WithTx` funciona contra cualquier `*pgxpool.Pool` que el consumidor haya construido por su cuenta. |
 | `audit` | El puerto de rastro de auditoría: `Entry`, la interfaz `Auditable` (`AuditRepr`/`AuditSnapshot`), el `Recorder` (`Record`, más `Option`s funcionales: `WithSubject`, `WithChange`, `WithAggregate`, `WithAffectedResources`, `WithError`, ...), y el puerto `Repository` (`Create`/`GetByID`/`List`). Lee al actor desde `auth.FromContext` y los metadatos de la request desde `reqctx` — nunca importa `httpx` ni un router (`go list -deps ./audit` no arrastra `chi` ni `httpx`; ver el punto 17). `Recorder.Record` recibe un `Source` (`SourceHTTP`/`SourceWorker`) como argumento obligatorio, no como una opción con valor por defecto — ver el punto 20. |
 | `audit/postgres` | `Repository` respaldado por PostgreSQL (`NewRepository(pool)`), portado desde go-licencias: una única consulta `List` que usa `count(*) OVER()` para la paginación (un solo round trip, no dos) y un `Filters.ResourceID` tipado como `*uuid.UUID` (no como `string`). |
-| `audit/migrations` | La migración embebida `001_create_audit_log.sql` (idéntica byte a byte entre go-bluprint, go-crucible y go-licencias) expuesta como un `fs.FS` vía `migrations.FS()`, lista para pasarse a `migrate.Up`. Ver «Ejecutar las migraciones de la librería junto a las de la aplicación» más abajo. |
+| `audit/migrations` | Las migraciones embebidas `001_create_audit_log.sql` (idéntica byte a byte entre go-bluprint, go-crucible y go-licencias) y `002_audit_log_append_only.sql` (deja la tabla append-only; ver «Ejecutar las migraciones…» más abajo) expuestas como un `fs.FS` vía `migrations.FS()`, lista para pasarse a `migrate.Up`. Ver «Ejecutar las migraciones de la librería junto a las de la aplicación» más abajo. |
 | `audit/httpx` | La capa de consulta HTTP de `audit`: el DTO `Response` con `ToResponse`/`ToResponseList`, `FiltersFromRequest` (parsea `audit.Filters` desde los query params, `resource_id` incluido), `Messages`/`DefaultMessages`/`WithMessages` para la copia visible al usuario, y un `Handler` con `List` y `GetByID` listo para montar. Las piezas se exportan por separado a propósito: una aplicación que necesita sus propias anotaciones de Swagger escribe su handler reusando el parseo y el mapeo, en lugar de duplicarlos. Vive en un subpaquete y no en `audit` para que `audit` nunca alcance `net/http` — el CI lo verifica. |
 | `request` | Helpers de request HTTP: `JSON` / `JSONWithLimit` (decodificación JSON con límite de tamaño y rechazo de campos desconocidos, con respuestas mapeadas a 400/413) y `Validator` (acumula errores de validación por campo para query params y parámetros de URL de chi: `UUIDParam`, `IntQuery`, `Int64Query`, `BoolQuery`, `TimeQuery`, `DateQuery`, `Enum`, `PublicIDParam`, ...). |
 | `decimalx` | Parser acotado de decimales (`Parse`, `ValidateBounds`) anti-DoS para strings de dinero provenientes de una request: `shopspring/decimal` guarda un decimal como (coeficiente, exponente) de forma perezosa, así que cualquier operación que lo materialice (comparar, serializar, codificarlo para una columna NUMERIC) puede colgar un worker con una carga de pocos bytes si no se acota antes. La regla de dinero, con la escala como parámetro (`ValidateAmount(d, scale)`, `ParseAmount(s, scale)`): rechaza — nunca redondea en silencio — lo que no sobrevive a `d.Round(scale)`. `Bounds`/`NewBounds`/`MaxExponentLimit` permiten cotas propias sin poder desactivar la guarda. `Query(v, r, param)` vive acá (no en `request`, que no debe importar `shopspring/decimal`) y no rechaza negativos. |
@@ -98,6 +98,23 @@ ejecutarlas una tras otra en el arranque de la aplicación es seguro incluso con
 múltiples réplicas compitiendo por migrar al iniciar. `migrate.Status` y las demás
 funciones de `migrate` aceptan las mismas `Options` para consultar el estado del
 conjunto de la librería por separado del de la aplicación.
+
+### `audit_log` es append-only
+
+`002_audit_log_append_only.sql` instala triggers que rechazan `UPDATE`, `DELETE` y
+`TRUNCATE` sobre `audit_log` con SQLSTATE `23001` (`restrict_violation`) y un mensaje
+que empieza con `audit_log is append-only`. La tabla es evidencia (los consumidores
+reconstruyen «quién hizo qué y cómo estaba el registro en el instante T» desde sus
+filas y snapshots), así que una fila escrita no puede reescribirse.
+
+Límites de la garantía: el dueño de la tabla o un superusuario puede ejecutar
+`ALTER TABLE audit_log DISABLE TRIGGER ...` y reescribir la historia; la separación
+de roles, el encadenado por hash y el envío a almacenamiento externo quedan fuera de
+alcance. Toda retención o purga debe ser un procedimiento explícito, ejecutado por el
+dueño, que deshabilite los triggers, borre y los rehabilite dentro de UNA sola
+transacción (la receta está en el encabezado de la migración). Los tests de
+integración que limpiaban `audit_log` con `TRUNCATE` o `DELETE` deben pasar a una base
+nueva por test o a una transacción con rollback.
 
 ## Correcciones aplicadas durante la extracción
 

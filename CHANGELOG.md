@@ -4,6 +4,23 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el versionado,
 [SemVer](https://semver.org/lang/es/).
 
+## [Sin publicar]
+
+### Cambiado
+
+- `audit/migrations/002_audit_log_append_only.sql`: `audit_log` pasa a ser
+  append-only. Un trigger `BEFORE UPDATE OR DELETE ... FOR EACH ROW` y otro
+  `BEFORE TRUNCATE ... FOR EACH STATEMENT` rechazan la operación con SQLSTATE
+  `23001` (`restrict_violation`) y un mensaje que empieza con
+  `audit_log is append-only`. Cambio de comportamiento, no de API: `Recorder` y
+  el repositorio sólo hacen `INSERT` y `SELECT`. Quien mutaba `audit_log` (por
+  ejemplo, un helper de test con `TRUNCATE audit_log`) fallará tras correr esta
+  migración. Límites: el dueño de la tabla o un superusuario puede deshabilitar
+  los triggers; roles, hash chaining y envío externo quedan fuera de alcance.
+  Toda purga debe deshabilitar y rehabilitar los triggers en una misma
+  transacción (receta en el encabezado de la migración). Corre con
+  `migrate.Up` y `audit/migrations.FS()`, sobre tablas con filas existentes.
+
 ## [0.6.0] — 2026-09-22
 
 ### Agregado
