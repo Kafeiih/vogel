@@ -27,6 +27,10 @@ const (
 	CodeInvalidJSON   = "INVALID_JSON"
 	CodeUnknownField  = "UNKNOWN_FIELD"
 	CodeBodyTooLarge  = "BODY_TOO_LARGE"
+	// CodeUnsupportedMediaType is used with HTTP 415 when the request body's
+	// Content-Type is not a JSON media type (application/json or
+	// application/*+json), or is missing where a body is required.
+	CodeUnsupportedMediaType = "UNSUPPORTED_MEDIA_TYPE"
 	// CodeUnprocessableEntity is used with HTTP 422 when the request is well
 	// formed but violates a business rule.
 	CodeUnprocessableEntity = "UNPROCESSABLE_ENTITY"

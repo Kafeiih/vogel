@@ -1,13 +1,14 @@
 // Package request provides HTTP request decoding and validation helpers shared
-// across handlers: JSON body decoding with size limits and error mapping
-// (json.go), localizable user-facing messages (messages.go), and query/URL-
-// parameter validation (validate.go).
+// across handlers: JSON body decoding with a Content-Type check, size limits
+// and error mapping (json.go), localizable user-facing messages
+// (messages.go), and query/URL-parameter validation (validate.go).
 package request
 
 import (
 	"encoding/json"
 	"errors"
 	"io"
+	"mime"
 	"net/http"
 	"strings"
 
@@ -32,6 +33,9 @@ const defaultMaxBytes = 1_048_576 // 1 MiB
 // instead of calling a nil message func.
 type Decoder struct {
 	messages Messages
+	// allowAnyContentType disables the Content-Type gate; see
+	// AllowAnyContentType.
+	allowAnyContentType bool
 	// configured is set by New; it tells a real configuration apart from the
 	// zero value, whose Messages would hold nil funcs.
 	configured bool
@@ -48,13 +52,27 @@ func New(opts ...Option) *Decoder {
 	return d
 }
 
+// AllowAnyContentType disables the Content-Type check for a Decoder built
+// with New: every body is decoded whatever media type the client declares,
+// or declares none, exactly as this package behaved before the check
+// existed. It is an escape hatch for a consumer with legacy clients that
+// cannot be fixed to send application/json; every other rule — the byte
+// limit, unknown-field rejection, the single-value rule — still applies.
+func AllowAnyContentType() Option {
+	return func(d *Decoder) {
+		d.allowAnyContentType = true
+	}
+}
+
 // defaultDecoder is the Decoder backing every package-level function below.
 // It is built once from DefaultMessages and never mutated afterwards.
 var defaultDecoder = New()
 
 // JSON decodes the request body into data and returns nil on success.
-// The body is limited to defaultMaxBytes. On failure it writes a 400/413 JSON
-// response directly and returns the error, so the caller only needs:
+// The body is limited to defaultMaxBytes, must be declared as application/json
+// or application/*+json by the Content-Type header, and must hold exactly one
+// JSON value. On failure it writes a 400/413/415 JSON response directly and
+// returns the error, so the caller only needs:
 //
 //	if err := request.JSON(w, r, &req); err != nil {
 //	    return
@@ -66,7 +84,7 @@ func JSON(w http.ResponseWriter, r *http.Request, data any) error {
 // JSONWithLimit decodes the request body into data with a caller-supplied byte
 // limit. It behaves like JSON but lets callers override the default limit —
 // for example, a bulk-import endpoint that legitimately accepts larger bodies.
-// On failure it writes a 400/413 JSON response directly and returns the error.
+// On failure it writes a 400/413/415 JSON response directly and returns the error.
 func JSONWithLimit(w http.ResponseWriter, r *http.Request, data any, maxBytes int64) error {
 	return defaultDecoder.JSONWithLimit(w, r, data, maxBytes)
 }
@@ -78,7 +96,9 @@ func JSONWithLimit(w http.ResponseWriter, r *http.Request, data any, maxBytes in
 // fresh (zero) value to get defaults for an absent body. This is for endpoints
 // where the body itself is optional — a PATCH with no fields to update, for
 // example — as opposed to a required body that happens to be malformed,
-// which is still a 400 exactly like JSON.
+// which is still a 400 exactly like JSON. An empty body may also omit the
+// Content-Type header; a non-empty body must declare a JSON media type or
+// the request is a 415 exactly like JSON.
 func JSONOptional(w http.ResponseWriter, r *http.Request, data any) error {
 	return defaultDecoder.JSONOptional(w, r, data)
 }
@@ -104,14 +124,24 @@ func (d *Decoder) JSONOptional(w http.ResponseWriter, r *http.Request, data any)
 }
 
 // decode is the shared implementation behind JSON, JSONWithLimit, and
-// JSONOptional: it applies the byte limit, rejects unknown fields, and either
-// returns nil, swallows an empty body when allowEmpty is set, or writes a
-// decode error response and returns the error.
+// JSONOptional: it applies the byte limit, checks the Content-Type, rejects
+// unknown fields, requires the body to hold exactly one JSON value, and either
+// returns nil, swallows an empty body when allowEmpty is set, or writes an
+// error response and returns the error.
 func (d *Decoder) decode(w http.ResponseWriter, r *http.Request, data any, maxBytes int64, allowEmpty bool) error {
 	r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
 
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
+
+	if d.checksContentType() {
+		if err := d.checkContentType(w, r, decoder, allowEmpty); err != nil {
+			if errors.Is(err, errAbsentOptionalBody) {
+				return nil
+			}
+			return err
+		}
+	}
 
 	if err := decoder.Decode(data); err != nil {
 		if allowEmpty && errors.Is(err, io.EOF) {
@@ -121,7 +151,77 @@ func (d *Decoder) decode(w http.ResponseWriter, r *http.Request, data any, maxBy
 		return err
 	}
 
+	// Exactly one value: anything but EOF after it — a second value, stray
+	// bytes, or the byte limit tripping on the extra bytes — is an error.
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			d.writeDecodeError(w, r, err, maxBytes)
+			return err
+		}
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidJSON,
+			d.msgs().TrailingData)
+		return errTrailingData
+	}
+
 	return nil
+}
+
+var (
+	// errUnsupportedMediaType is returned by the decode entry points after a
+	// 415 was written.
+	errUnsupportedMediaType = errors.New("request: unsupported media type")
+	// errTrailingData is returned by the decode entry points after a 400 was
+	// written for data following the first JSON value.
+	errTrailingData = errors.New("request: data after the JSON value")
+	// errAbsentOptionalBody is internal to decode: checkContentType reports it
+	// when JSONOptional received neither a Content-Type nor a body, which is
+	// a success that must skip decoding.
+	errAbsentOptionalBody = errors.New("request: absent optional body")
+)
+
+// checksContentType reports whether d enforces a JSON Content-Type. A nil or
+// zero-value Decoder enforces it, like New() with no options.
+func (d *Decoder) checksContentType() bool {
+	return d == nil || !d.allowAnyContentType
+}
+
+// checkContentType enforces the media-type gate. It returns nil when the body
+// may be decoded, errAbsentOptionalBody when allowEmpty is set and the
+// request carries neither a Content-Type nor a body, and
+// errUnsupportedMediaType — after writing the 415 — otherwise.
+//
+// The header is only optional for an absent body: a client that sends
+// nothing has nothing to describe. decoder.Token is what decides whether the
+// body is absent, so whitespace-only bodies count as empty exactly as they do
+// for JSONOptional with a proper header, and the Content-Length header —
+// which a chunked request does not carry — is never consulted.
+func (d *Decoder) checkContentType(w http.ResponseWriter, r *http.Request, decoder *json.Decoder, allowEmpty bool) error {
+	contentType := r.Header.Get("Content-Type")
+	if contentType == "" && allowEmpty {
+		if _, err := decoder.Token(); errors.Is(err, io.EOF) {
+			return errAbsentOptionalBody
+		}
+	} else if isJSONMediaType(contentType) {
+		return nil
+	}
+
+	response.Error(w, r, http.StatusUnsupportedMediaType, response.CodeUnsupportedMediaType,
+		d.msgs().UnsupportedMediaType)
+	return errUnsupportedMediaType
+}
+
+// isJSONMediaType reports whether contentType names application/json or any
+// application/*+json structured-syntax type (application/vnd.api+json,
+// application/problem+json, ...). Parameters such as charset are ignored; an
+// unparseable header is not JSON.
+func isJSONMediaType(contentType string) bool {
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		return false
+	}
+	return mediaType == "application/json" ||
+		(strings.HasPrefix(mediaType, "application/") && strings.HasSuffix(mediaType, "+json"))
 }
 
 // msgs returns the Messages d was built with, or the package defaults when d

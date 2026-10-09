@@ -1,7 +1,6 @@
 package request_test
 
 import (
-	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -28,7 +27,7 @@ type errorEnvelope struct {
 // destination is left exactly as passed, so a handler can tell "the client
 // sent nothing" apart from "the client sent something invalid".
 func TestJSONOptional_EmptyBody(t *testing.T) {
-	r := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(nil))
+	r := jsonRequest("")
 	w := httptest.NewRecorder()
 
 	// Pre-filled so a decoder that zeroed the destination would fail too.
@@ -45,7 +44,7 @@ func TestJSONOptional_EmptyBody(t *testing.T) {
 // is still an error, same as JSON — JSONOptional only special-cases an empty
 // body, not a bad one.
 func TestJSONOptional_MalformedJSON(t *testing.T) {
-	r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{this is not json}`))
+	r := jsonRequest(`{this is not json}`)
 	w := httptest.NewRecorder()
 
 	var dst testPayload
@@ -61,7 +60,7 @@ func TestJSONOptional_MalformedJSON(t *testing.T) {
 
 // TestJSONOptional_UnknownField verifies DisallowUnknownFields still applies.
 func TestJSONOptional_UnknownField(t *testing.T) {
-	r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"name":"ok","bogus":1}`))
+	r := jsonRequest(`{"name":"ok","bogus":1}`)
 	w := httptest.NewRecorder()
 
 	var dst testPayload
@@ -77,7 +76,7 @@ func TestJSONOptional_UnknownField(t *testing.T) {
 
 // TestJSONOptional_ValidBody verifies a well-formed body decodes normally.
 func TestJSONOptional_ValidBody(t *testing.T) {
-	r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"name":"hello"}`))
+	r := jsonRequest(`{"name":"hello"}`)
 	w := httptest.NewRecorder()
 
 	var dst testPayload
@@ -90,7 +89,7 @@ func TestJSONOptional_ValidBody(t *testing.T) {
 // TestJSONOptional_WhitespaceOnlyBody documents that a body holding only
 // whitespace counts as empty: json.Decoder skips it and reports io.EOF.
 func TestJSONOptional_WhitespaceOnlyBody(t *testing.T) {
-	r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(" \n\t "))
+	r := jsonRequest(" \n\t ")
 	w := httptest.NewRecorder()
 
 	dst := testPayload{Name: "preset"}
@@ -105,7 +104,7 @@ func TestJSONOptional_WhitespaceOnlyBody(t *testing.T) {
 // a body that starts a value and stops (io.ErrUnexpectedEOF, not io.EOF) is
 // a bad body, not an absent one, and must still be a 400.
 func TestJSONOptional_TruncatedBody(t *testing.T) {
-	r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{`))
+	r := jsonRequest(`{`)
 	w := httptest.NewRecorder()
 
 	var dst testPayload
@@ -128,7 +127,7 @@ func TestDecoderJSONOptional_UsesInstanceMessages(t *testing.T) {
 	}))
 
 	t.Run("empty body is still a no-op", func(t *testing.T) {
-		r := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(nil))
+		r := jsonRequest("")
 		w := httptest.NewRecorder()
 
 		var dst testPayload
@@ -137,7 +136,7 @@ func TestDecoderJSONOptional_UsesInstanceMessages(t *testing.T) {
 	})
 
 	t.Run("errors use the localized message", func(t *testing.T) {
-		r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"bogus":1}`))
+		r := jsonRequest(`{"bogus":1}`)
 		w := httptest.NewRecorder()
 
 		var dst testPayload
@@ -148,4 +147,73 @@ func TestDecoderJSONOptional_UsesInstanceMessages(t *testing.T) {
 		assert.Equal(t, "UNKNOWN_FIELD", body.Code)
 		assert.Equal(t, `campo desconocido: "bogus"`, body.Message)
 	})
+}
+
+// TestJSONOptional_ContentType pins how the optional body interacts with the
+// media-type gate. An absent body is the one case a client legitimately sends
+// no Content-Type for, so "no header + nothing to decode" stays a success;
+// the moment there is something to decode, or the client names a non-JSON
+// type, the request is a 415 exactly like JSON.
+func TestJSONOptional_ContentType(t *testing.T) {
+	tests := []struct {
+		name        string
+		contentType string
+		noHeader    bool
+		body        string
+		wantStatus  int
+		wantErr     bool
+		wantName    string
+	}{
+		{name: "no header, empty body", noHeader: true, body: ``, wantStatus: http.StatusOK, wantName: "preset"},
+		{name: "no header, whitespace body", noHeader: true, body: " \n\t ", wantStatus: http.StatusOK, wantName: "preset"},
+		{name: "no header, JSON body", noHeader: true, body: `{"name":"hello"}`, wantStatus: http.StatusUnsupportedMediaType, wantErr: true, wantName: "preset"},
+		{name: "no header, garbage body", noHeader: true, body: `nope`, wantStatus: http.StatusUnsupportedMediaType, wantErr: true, wantName: "preset"},
+		{name: "text/plain, empty body", contentType: "text/plain", body: ``, wantStatus: http.StatusUnsupportedMediaType, wantErr: true, wantName: "preset"},
+		{name: "text/plain, JSON body", contentType: "text/plain", body: `{"name":"hello"}`, wantStatus: http.StatusUnsupportedMediaType, wantErr: true, wantName: "preset"},
+		{name: "application/json, empty body", contentType: "application/json", body: ``, wantStatus: http.StatusOK, wantName: "preset"},
+		{name: "application/json with charset, JSON body", contentType: "application/json; charset=utf-8", body: `{"name":"hello"}`, wantStatus: http.StatusOK, wantName: "hello"},
+		{name: "application/vnd.api+json, JSON body", contentType: "application/vnd.api+json", body: `{"name":"hello"}`, wantStatus: http.StatusOK, wantName: "hello"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(tt.body))
+			if !tt.noHeader {
+				r.Header.Set("Content-Type", tt.contentType)
+			}
+			w := httptest.NewRecorder()
+
+			dst := testPayload{Name: "preset"}
+			err := request.JSONOptional(w, r, &dst)
+
+			assert.Equal(t, tt.wantStatus, w.Code)
+			assert.Equal(t, tt.wantName, dst.Name)
+			if !tt.wantErr {
+				require.NoError(t, err)
+				assert.Equal(t, 0, w.Body.Len())
+				return
+			}
+
+			require.Error(t, err)
+			var body errorEnvelope
+			require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+			assert.Equal(t, "UNSUPPORTED_MEDIA_TYPE", body.Code)
+		})
+	}
+}
+
+// TestJSONOptional_TrailingData verifies the optional body shares the
+// one-value rule with JSON.
+func TestJSONOptional_TrailingData(t *testing.T) {
+	w := httptest.NewRecorder()
+
+	var dst testPayload
+	err := request.JSONOptional(w, jsonRequest(`{"name":"a"} {"name":"b"}`), &dst)
+
+	require.Error(t, err)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+
+	var body errorEnvelope
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	assert.Equal(t, "INVALID_JSON", body.Code)
 }

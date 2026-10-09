@@ -8,6 +8,24 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ### Cambiado
 
+- **`request`: `JSON`, `JSONWithLimit` y `JSONOptional` exigen un `Content-Type`
+  JSON.** Antes decodificaban cualquier cuerpo sin mirar la cabecera. Ahora
+  aceptan `application/json` y cualquier `application/*+json` (con parámetros
+  como `charset`); cualquier otro tipo, o la cabecera ausente, responde HTTP
+  415 con el nuevo código `response.CodeUnsupportedMediaType`
+  (`UNSUPPORTED_MEDIA_TYPE`) y el nuevo mensaje `Messages.UnsupportedMediaType`.
+  `JSONOptional` conserva su semántica: un cuerpo vacío sin cabecera sigue
+  devolviendo `nil`; un cuerpo no vacío sin cabecera, o una cabecera no JSON,
+  es 415. Cambio de comportamiento para consumidores cuyos clientes no envían
+  la cabecera: la opción `request.AllowAnyContentType()` en `request.New`
+  desactiva el chequeo para ese `Decoder` (las funciones a nivel de paquete
+  siguen siendo estrictas).
+- **`request`: el cuerpo debe contener exactamente un valor JSON.** Un segundo
+  valor o cualquier byte distinto de espacio en blanco tras el primero
+  (`{"a":1} {"b":2}`, `{"a":1}garbage`) responde HTTP 400 `INVALID_JSON` con el
+  nuevo mensaje `Messages.TrailingData`. Antes el resto del cuerpo se ignoraba
+  en silencio. Este chequeo no tiene opción de desactivación.
+- `httpx/response`: constante `CodeUnsupportedMediaType` (`UNSUPPORTED_MEDIA_TYPE`).
 - **Versión mínima de Go: 1.26.** Corregir las vulnerabilidades alcanzables
   GO-2026-6603/6610/6611/6612/6617 exige `golang.org/x/net` v0.60.0, que
   declara `go 1.26.0` (igual que `x/text` v0.42.0 y `x/crypto` v0.57.0). No

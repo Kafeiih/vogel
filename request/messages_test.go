@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -23,6 +22,8 @@ func TestDefaultMessages_ExactTexts(t *testing.T) {
 	assert.Equal(t, "Request body exceeds the 1MB limit", m.BodyTooLarge(1))
 	assert.Equal(t, "flag must be a boolean", m.InvalidBoolean("flag"))
 	assert.Equal(t, "amount must be a valid decimal", m.InvalidDecimal("amount"))
+	assert.Equal(t, "Content-Type must be application/json", m.UnsupportedMediaType)
+	assert.Equal(t, "Request body contains data after the JSON value", m.TrailingData)
 }
 
 // TestWithMessages_OverridesDecodeMessage verifies a decode-path message
@@ -32,7 +33,7 @@ func TestWithMessages_OverridesDecodeMessage(t *testing.T) {
 		EmptyBody: "custom empty body message",
 	}))
 
-	r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(""))
+	r := jsonRequest("")
 	w := httptest.NewRecorder()
 
 	var dst testPayload
@@ -101,12 +102,12 @@ func TestValidator_AddError(t *testing.T) {
 func TestPackageLevelJSON_MatchesNewDecoderDefaultBytes(t *testing.T) {
 	body := `{this is not json}`
 
-	r1 := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	r1 := jsonRequest(body)
 	w1 := httptest.NewRecorder()
 	var dst1 testPayload
 	err1 := request.JSON(w1, r1, &dst1)
 
-	r2 := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	r2 := jsonRequest(body)
 	w2 := httptest.NewRecorder()
 	var dst2 testPayload
 	err2 := request.New().JSON(w2, r2, &dst2)
