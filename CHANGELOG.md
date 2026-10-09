@@ -26,6 +26,22 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   nuevo mensaje `Messages.TrailingData`. Antes el resto del cuerpo se ignoraba
   en silencio. Este chequeo no tiene opción de desactivación.
 - `httpx/response`: constante `CodeUnsupportedMediaType` (`UNSUPPORTED_MEDIA_TYPE`).
+- **`httpx/middleware`: `SecurityHeaders` añade `Cache-Control: no-store` y
+  `Pragma: no-cache`.** Las respuestas de una API autenticada son por usuario
+  y no deben quedar en la caché del navegador ni de un proxy intermedio. Las
+  cabeceras se fijan antes de llamar al siguiente handler, así que un handler
+  que sirve contenido realmente cacheable (un recurso público, un esquema
+  versionado) puede sobreescribir `Cache-Control` y borrar `Pragma` antes de
+  escribir su respuesta.
+- **`httpx/middleware`: `RequireAccess` y `WriteAccessError` registran cada
+  denegación (403) en nivel `Warn`.** Antes el 403 era silencioso; solo el 503
+  se logueaba. La línea `authorization denied` lleva `user_id`,
+  `resource_kind`, `resource_id` (el parámetro `id` de la ruta o `*` cuando no
+  hay), `action`, `method`, `path` y `request_id` (el que `RequestContext`
+  puente en `reqctx`; vacío si ese middleware no está montado). No incluye el
+  token ni ninguna cabecera. Desde `WriteAccessError` (dentro de un handler)
+  `resource_kind`, `resource_id` y `action` van vacíos. El 401 sigue sin
+  loguearse.
 - **Versión mínima de Go: 1.26.** Corregir las vulnerabilidades alcanzables
   GO-2026-6603/6610/6611/6612/6617 exige `golang.org/x/net` v0.60.0, que
   declara `go 1.26.0` (igual que `x/text` v0.42.0 y `x/crypto` v0.57.0). No

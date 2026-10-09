@@ -12,10 +12,58 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/go-chi/chi/v5"
+
 	"github.com/kafeiih/vogel/access"
 	"github.com/kafeiih/vogel/auth"
 	"github.com/kafeiih/vogel/authz"
+	"github.com/kafeiih/vogel/reqctx"
 )
+
+// capturingHandler is a slog.Handler that keeps every record it receives so
+// a test can assert on the level and attributes of what a middleware logged,
+// without parsing text or JSON output.
+type capturingHandler struct {
+	mu      sync.Mutex
+	records []slog.Record
+}
+
+func (h *capturingHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *capturingHandler) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.records = append(h.records, r.Clone())
+	return nil
+}
+
+func (h *capturingHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+
+func (h *capturingHandler) WithGroup(string) slog.Handler { return h }
+
+func (h *capturingHandler) all() []slog.Record {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]slog.Record(nil), h.records...)
+}
+
+// attrs flattens a record's attributes into a map keyed by attribute name.
+func attrs(r slog.Record) map[string]any {
+	out := make(map[string]any, r.NumAttrs())
+	r.Attrs(func(a slog.Attr) bool {
+		out[a.Key] = a.Value.Any()
+		return true
+	})
+	return out
+}
+
+// withRouteParam attaches a chi route context carrying one URL parameter to
+// r, so chi.URLParam resolves it exactly as it would inside a mounted router.
+func withRouteParam(r *http.Request, key, value string) *http.Request {
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add(key, value)
+	return r.WithContext(context.WithValue(r.Context(), chi.RouteCtxKey, rctx))
+}
 
 // recordingChecker implements authz.Checker, recording every call it
 // receives (the Principal and Resource it saw, and a running call count) so
@@ -152,6 +200,136 @@ func TestRequireAccess_WithoutPrincipalAttributes_AttrStaysNil(t *testing.T) {
 
 	if checker.lastPrincipal().Attr != nil {
 		t.Errorf("principal.Attr = %#v, want nil", checker.lastPrincipal().Attr)
+	}
+}
+
+func TestRequireAccess_Forbidden_LogsDenialWithActorResourceAndRequest(t *testing.T) {
+	checker := &recordingChecker{allowed: false}
+	guard := access.New(checker)
+	captured := &capturingHandler{}
+
+	called := false
+	handler := RequireAccess(guard, "documents", "delete", slog.New(captured))(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	}))
+
+	req := httptest.NewRequest(http.MethodDelete, "/documents/doc-42", nil)
+	req.Header.Set("Authorization", "Bearer secret-token")
+	req = withPrincipal(req, &auth.Principal{UserID: "u1"})
+	req = withRouteParam(req, "id", "doc-42")
+	req = req.WithContext(reqctx.WithRequestID(req.Context(), "req-123"))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if called {
+		t.Fatal("next.ServeHTTP was called despite the checker denying the request")
+	}
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+
+	records := captured.all()
+	if len(records) != 1 {
+		t.Fatalf("logged %d records, want exactly 1", len(records))
+	}
+	r := records[0]
+	if r.Level != slog.LevelWarn {
+		t.Errorf("level = %v, want %v", r.Level, slog.LevelWarn)
+	}
+	got := attrs(r)
+	want := map[string]any{
+		"user_id":       "u1",
+		"resource_kind": "documents",
+		"resource_id":   "doc-42",
+		"action":        "delete",
+		"method":        http.MethodDelete,
+		"path":          "/documents/doc-42",
+		"request_id":    "req-123",
+	}
+	for key, wantVal := range want {
+		if got[key] != wantVal {
+			t.Errorf("attr %q = %#v, want %#v", key, got[key], wantVal)
+		}
+	}
+	for key, val := range got {
+		if s, ok := val.(string); ok && strings.Contains(s, "secret-token") {
+			t.Errorf("attr %q = %q leaks the bearer token", key, s)
+		}
+	}
+}
+
+func TestRequireAccess_Forbidden_WithoutRouteID_LogsWildcardResourceID(t *testing.T) {
+	checker := &recordingChecker{allowed: false}
+	guard := access.New(checker)
+	captured := &capturingHandler{}
+
+	handler := RequireAccess(guard, "documents", "create", slog.New(captured))(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+
+	req := withPrincipal(httptest.NewRequest(http.MethodPost, "/documents", nil), &auth.Principal{UserID: "u1"})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+	records := captured.all()
+	if len(records) != 1 {
+		t.Fatalf("logged %d records, want exactly 1", len(records))
+	}
+	got := attrs(records[0])
+	if got["resource_id"] != wildcardResourceID {
+		t.Errorf("resource_id = %#v, want %q", got["resource_id"], wildcardResourceID)
+	}
+	if got["request_id"] != "" {
+		t.Errorf("request_id = %#v, want empty when no request ID was bridged", got["request_id"])
+	}
+}
+
+func TestRequireAccess_Unauthenticated_Returns401WithoutLogging(t *testing.T) {
+	checker := &recordingChecker{allowed: true}
+	guard := access.New(checker)
+	captured := &capturingHandler{}
+
+	handler := RequireAccess(guard, "documents", "read", slog.New(captured))(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+
+	// No principal on the context: guard.Check fails with ErrUnauthenticated.
+	req := httptest.NewRequest(http.MethodGet, "/documents/1", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+	if n := len(captured.all()); n != 0 {
+		t.Errorf("logged %d records on the 401 path, want 0", n)
+	}
+}
+
+func TestWriteAccessError_Forbidden_LogsDenialWithoutResource(t *testing.T) {
+	captured := &capturingHandler{}
+	rec := httptest.NewRecorder()
+	req := withPrincipal(httptest.NewRequest(http.MethodGet, "/documents/7", nil), &auth.Principal{UserID: "u2"})
+
+	WriteAccessError(rec, req, access.ErrForbidden, slog.New(captured))
+
+	records := captured.all()
+	if len(records) != 1 {
+		t.Fatalf("logged %d records, want exactly 1", len(records))
+	}
+	if records[0].Level != slog.LevelWarn {
+		t.Errorf("level = %v, want %v", records[0].Level, slog.LevelWarn)
+	}
+	got := attrs(records[0])
+	if got["user_id"] != "u2" {
+		t.Errorf("user_id = %#v, want %q", got["user_id"], "u2")
+	}
+	if got["method"] != http.MethodGet || got["path"] != "/documents/7" {
+		t.Errorf("method/path = %#v/%#v, want %q/%q", got["method"], got["path"], http.MethodGet, "/documents/7")
+	}
+	// A handler-side call knows nothing about the route, so these are empty
+	// rather than fabricated.
+	if got["resource_kind"] != "" || got["resource_id"] != "" || got["action"] != "" {
+		t.Errorf("resource_kind/resource_id/action = %#v/%#v/%#v, want all empty", got["resource_kind"], got["resource_id"], got["action"])
 	}
 }
 
