@@ -420,3 +420,40 @@ func TestWriteAccessError_Nil_ReturnsFalseAndWritesNothing(t *testing.T) {
 		t.Errorf("body = %q, want empty", rec.Body.String())
 	}
 }
+
+func TestWriteAccessError_NilLogger_StillWrites403(t *testing.T) {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/documents/1", nil)
+
+	handled := WriteAccessError(rec, req, access.ErrForbidden, nil)
+
+	if !handled {
+		t.Fatal("WriteAccessError returned false for ErrForbidden")
+	}
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+}
+
+func TestWriteAccessError_Unavailable_LogsSameRequestFieldsAsDenial(t *testing.T) {
+	capture := &capturingHandler{}
+	logger := slog.New(capture)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/documents/1", nil)
+
+	WriteAccessError(rec, req, access.ErrUnavailable, logger)
+
+	records := capture.all()
+	if len(records) != 1 {
+		t.Fatalf("logged %d records, want exactly 1", len(records))
+	}
+	got := attrs(records[0])
+	for _, key := range []string{"error", "user_id", "resource_kind", "resource_id", "action", "method", "path", "request_id"} {
+		if _, ok := got[key]; !ok {
+			t.Errorf("503 record is missing attribute %q", key)
+		}
+	}
+	if got["method"] != http.MethodDelete || got["path"] != "/documents/1" {
+		t.Errorf("method/path = %q/%q, want DELETE//documents/1", got["method"], got["path"])
+	}
+}

@@ -95,22 +95,28 @@ func WriteAccessError(w http.ResponseWriter, r *http.Request, err error, logger 
 // action are used only for the log lines on ErrForbidden and ErrUnavailable;
 // any of them may be empty (WriteAccessError, called from inside a handler
 // that already knows less about the route than the middleware did, does not
-// always have them).
+// always have them). A nil logger falls back to slog.Default, so a caller
+// that never wired one still gets its 403 instead of a panic.
 //
-// A denial (ErrForbidden) is logged at Warn level with the actor, the
-// resource and action that were refused, the request method and path, and
-// the request ID bridged by RequestContext (empty when that middleware is
-// not mounted). A 403 is the signal an audit trail and an alerting rule both
-// want to see -- a burst of them from one user is either a broken client or
-// someone probing -- so it must not be silent. The token and every other
-// header are deliberately left out. An unauthenticated request (ErrUnauth-
-// enticated) is NOT logged here: it carries no actor to attribute, and the
-// Authenticate middleware already owns that path.
+// Both log lines carry the same request fields: the actor, the resource and
+// action, the request method and path, and the request ID bridged by
+// RequestContext (empty when that middleware is not mounted). A denial
+// (ErrForbidden) is logged at Warn level because a 403 is the signal an
+// audit trail and an alerting rule both want to see -- a burst of them from
+// one user is either a broken client or someone probing -- so it must not
+// be silent. The token and every other header are deliberately left out. An
+// unauthenticated request (ErrUnauthenticated) is NOT logged here: it
+// carries no actor to attribute, and the Authenticate middleware already
+// owns that path.
 //
 // It returns false -- writing nothing -- for any error that is not one of
 // the three access sentinels, so WriteAccessError can report "I did not
 // handle this" to its caller.
 func writeAccessStatus(w http.ResponseWriter, r *http.Request, err error, logger *slog.Logger, msgs AuthMessages, resourceKind, resourceID, action string) bool {
+	if logger == nil {
+		logger = slog.Default()
+	}
+
 	switch {
 	case errors.Is(err, access.ErrUnauthenticated):
 		response.Error(w, r, http.StatusUnauthorized, response.CodeUnauthorized, msgs.Unauthorized)
@@ -134,7 +140,11 @@ func writeAccessStatus(w http.ResponseWriter, r *http.Request, err error, logger
 			"error", err,
 			"user_id", userIDFromContext(r.Context()),
 			"resource_kind", resourceKind,
+			"resource_id", resourceID,
 			"action", action,
+			"method", r.Method,
+			"path", r.URL.Path,
+			"request_id", reqctx.RequestIDFromContext(r.Context()),
 		)
 		response.Error(w, r, http.StatusServiceUnavailable, response.CodeServiceUnavailable, msgs.ServiceUnavailable)
 		return true
