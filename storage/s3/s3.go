@@ -25,14 +25,19 @@ type Config struct {
 	AccessKey     string        // Static access key (empty = use IAM/instance role)
 	SecretKey     string        // Static secret key
 	PathStyle     bool          // Use path-style access (required for MinIO)
-	PresignExpiry time.Duration // Default presigned URL expiry (default: 15m)
+	PresignExpiry time.Duration // Default presigned URL expiry when a call passes expiry <= 0 (default: 15m)
 }
+
+// DefaultPresignExpiry is the presigned URL lifetime used when
+// Config.PresignExpiry is zero and a call passes a non-positive expiry.
+const DefaultPresignExpiry = 15 * time.Minute
 
 // Storage implements storage.Storage using AWS SDK v2.
 type S3Storage struct {
 	client        *s3.Client
 	presignClient *s3.PresignClient
 	bucket        string
+	presignExpiry time.Duration
 	logger        *slog.Logger
 }
 
@@ -80,12 +85,28 @@ func NewS3Storage(cfg Config, logger *slog.Logger) (*S3Storage, error) {
 	client := s3.New(s3.Options{}, opts...)
 	presignClient := s3.NewPresignClient(client)
 
+	presignExpiry := cfg.PresignExpiry
+	if presignExpiry <= 0 {
+		presignExpiry = DefaultPresignExpiry
+	}
+
 	return &S3Storage{
 		client:        client,
 		presignClient: presignClient,
 		bucket:        cfg.Bucket,
+		presignExpiry: presignExpiry,
 		logger:        logger,
 	}, nil
+}
+
+// effectiveExpiry returns expiry, or the configured default when expiry is
+// not positive, so a caller can pass 0 to mean "whatever the adapter was
+// configured with".
+func (s *S3Storage) effectiveExpiry(expiry time.Duration) time.Duration {
+	if expiry <= 0 {
+		return s.presignExpiry
+	}
+	return expiry
 }
 
 // Upload stores a file in the configured bucket.
@@ -148,12 +169,26 @@ func (s *S3Storage) Delete(ctx context.Context, key string) error {
 }
 
 // PresignedGetURL generates a temporary download URL.
-func (s *S3Storage) PresignedGetURL(ctx context.Context, key string, expiry time.Duration) (string, error) {
-	req, err := s.presignClient.PresignGetObject(ctx, &s3.GetObjectInput{
-		Bucket: aws.String(s.bucket),
-		Key:    aws.String(key),
-	}, func(o *s3.PresignOptions) {
-		o.Expires = expiry
+//
+// A non-positive expiry uses Config.PresignExpiry. The options are folded with
+// storage.ApplyPresignGetOptions and mapped onto the S3 response-header
+// overrides (response-content-disposition, response-content-type), which S3
+// signs as part of the URL: the default "attachment" disposition cannot be
+// stripped by whoever holds the link.
+func (s *S3Storage) PresignedGetURL(ctx context.Context, key string, expiry time.Duration, opts ...storage.PresignGetOption) (string, error) {
+	o := storage.ApplyPresignGetOptions(opts...)
+
+	input := &s3.GetObjectInput{
+		Bucket:                     aws.String(s.bucket),
+		Key:                        aws.String(key),
+		ResponseContentDisposition: aws.String(o.ContentDisposition),
+	}
+	if o.ContentType != "" {
+		input.ResponseContentType = aws.String(o.ContentType)
+	}
+
+	req, err := s.presignClient.PresignGetObject(ctx, input, func(po *s3.PresignOptions) {
+		po.Expires = s.effectiveExpiry(expiry)
 	})
 	if err != nil {
 		return "", fmt.Errorf("storage: presign get %q: %w", key, err)
@@ -162,13 +197,14 @@ func (s *S3Storage) PresignedGetURL(ctx context.Context, key string, expiry time
 }
 
 // PresignedPutURL generates a temporary upload URL.
+// A non-positive expiry uses Config.PresignExpiry.
 func (s *S3Storage) PresignedPutURL(ctx context.Context, key string, contentType string, expiry time.Duration) (string, error) {
 	req, err := s.presignClient.PresignPutObject(ctx, &s3.PutObjectInput{
 		Bucket:      aws.String(s.bucket),
 		Key:         aws.String(key),
 		ContentType: aws.String(contentType),
 	}, func(o *s3.PresignOptions) {
-		o.Expires = expiry
+		o.Expires = s.effectiveExpiry(expiry)
 	})
 	if err != nil {
 		return "", fmt.Errorf("storage: presign put %q: %w", key, err)

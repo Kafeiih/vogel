@@ -55,6 +55,26 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   cliente; solo valida que el valor sea una IP. Montar `RealIP` únicamente
   detrás de un proxy confiable.
 - CI: nuevo job `govulncheck` que escanea la raíz y `examples/boilerplate`.
+- **`storage`: `Storage.PresignedGetURL` acepta opciones variádicas
+  (`...PresignGetOption`).** La firma del puerto cambia: toda implementación
+  propia (fakes de test incluidos) debe añadir el parámetro
+  `opts ...storage.PresignGetOption`; los llamadores existentes compilan sin
+  cambios. Nuevas en `storage`: `PresignGetOptions`, `ApplyPresignGetOptions`
+  (aplica los valores por defecto; los adaptadores deben usarla),
+  `WithContentDisposition`, `AsAttachment` (construye
+  `attachment; filename="<nombre>"` eliminando CR, LF, comillas y barras
+  invertidas; con nombre vacío queda `attachment`) y `WithResponseContentType`.
+- **`storage/s3`: las URL de descarga prefirmadas sirven el objeto como
+  `attachment` por defecto.** `PresignedGetURL` fija
+  `response-content-disposition=attachment` (firmado en la URL, no se puede
+  quitar) y, con `WithResponseContentType`, `response-content-type`. Antes el
+  navegador renderizaba un HTML o SVG subido en el origen del bucket. Cambio de
+  comportamiento: quien necesite renderizado en línea pasa
+  `storage.WithContentDisposition("inline")` explícitamente.
+- **`storage/s3`: `Config.PresignExpiry` se respeta.** Se declaraba pero nada lo
+  leía. Ahora `PresignedGetURL` y `PresignedPutURL` lo usan cuando el `expiry`
+  de la llamada es `<= 0` (nueva constante `DefaultPresignExpiry` = 15m cuando
+  tampoco está configurado). Un `expiry` positivo sigue mandando.
 
 ## [0.8.0] — 2026-09-30
 
