@@ -97,6 +97,15 @@ go run ./cmd/api
 > `NOTIFICATION_DEFAULT_FROM`, `SMTP_*`, `SENDGRID_API_KEY`,
 > `METRICS_LISTEN_ADDR`. Ver `internal/infrastructure/config/config.go` para
 > el detalle completo de cada una.
+>
+> `TRUSTED_PROXIES` (opcional, vacía por defecto) lista, separados por comas,
+> los CIDR o IP de los proxies inversos o balanceadores cuyas cabeceras
+> `X-Forwarded-For` / `X-Real-IP` se aceptan para resolver la IP del cliente
+> (la que queda en `audit_log.ip` y la que usa el rate limit por IP), p. ej.
+> `TRUSTED_PROXIES=10.0.0.0/8,192.168.1.10`. Vacía, esas cabeceras se ignoran
+> y la IP es siempre la del par TCP: un cliente no puede falsificarla. Detrás
+> de un balanceador hay que declararlo aquí, o todas las requests aparecen con
+> su IP. Un valor inválido hace fallar el arranque.
 
 `docker compose -f deploy/docker-compose.developer.yaml` levanta Postgres,
 Cerbos y MinIO para desarrollo local. `docker compose -f

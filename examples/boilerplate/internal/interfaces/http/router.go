@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -22,11 +23,12 @@ import (
 // clientIPKey is an httprate.KeyFunc that rate-limits by client IP.
 //
 // httprate.KeyByIP is deprecated in favor of resolving the client IP
-// upstream (e.g. via chi's middleware.ClientIPFromXFF) and keying off that —
-// but chi's own middleware.RealIP is already mounted upstream in NewRouter
-// and rewrites r.RemoteAddr from the trusted proxy headers this application
-// configures, so reading r.RemoteAddr here is equivalent without adding a
-// second, redundant IP-resolution middleware. CanonicalizeIP buckets IPv6
+// upstream and keying off that. vmw.RealIP is mounted upstream in NewRouter
+// and rewrites r.RemoteAddr from X-Forwarded-For / X-Real-IP only when the
+// direct peer is one of RouterConfig.TrustedProxies (TRUSTED_PROXIES), so
+// reading r.RemoteAddr here is equivalent without a second, redundant
+// IP-resolution middleware -- and a client connecting directly cannot spoof
+// its way into a fresh bucket. CanonicalizeIP buckets IPv6
 // clients by their /64 so one client cannot rotate within its own block to
 // dodge the limit.
 func clientIPKey(r *http.Request) (string, error) {
@@ -42,6 +44,10 @@ type RouterConfig struct {
 	AppURL      string
 	Timeout     time.Duration
 	CORSOrigins []string
+
+	// TrustedProxies are the only peers whose X-Forwarded-For / X-Real-IP
+	// headers vmw.RealIP believes (TRUSTED_PROXIES). Empty trusts none.
+	TrustedProxies []netip.Prefix
 }
 
 // AuthMessages holds the Spanish user-facing strings for authentication and
@@ -72,7 +78,12 @@ func NewRouter(deps Dependencies) *chi.Mux {
 	// vmw.RequestContext: RequestContext reads the request ID via chi's
 	// middleware.GetReqID, it does not generate one itself.
 	r.Use(middleware.RequestID)
-	r.Use(middleware.RealIP)
+
+	// Resolve the client IP before RequestContext records it (reqctx,
+	// audit_log.ip) and before the IP-keyed rate limiter reads it. Unlike
+	// chi's middleware.RealIP, forwarding headers are only believed from a
+	// configured trusted proxy; with TRUSTED_PROXIES empty they are ignored.
+	r.Use(vmw.RealIP(deps.Config.TrustedProxies...))
 
 	// The sole writer of reqctx's request ID, client IP, and User-Agent.
 	// Mounted immediately after RequestID and before StructuredLogger: if

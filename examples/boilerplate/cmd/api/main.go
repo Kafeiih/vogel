@@ -260,6 +260,8 @@ func runServer() error {
 		AppURL:      cfg.App.Url,
 		Timeout:     cfg.App.Timeout,
 		CORSOrigins: cfg.CORS.AllowedOrigins,
+
+		TrustedProxies: cfg.App.TrustedProxies,
 	}
 
 	deps := httpiface.Dependencies{

@@ -6,6 +6,29 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ## [Unreleased]
 
+### Agregado
+
+- **`httpx/middleware`: `RealIP(trusted ...netip.Prefix)` y
+  `ParseTrustedProxies`.** Reemplazo del `middleware.RealIP` de chi, que cree
+  `X-Forwarded-For`, `X-Real-IP` y `True-Client-IP` de cualquier cliente (un
+  cliente directo podía falsificar su IP en `reqctx`, en `audit_log.ip` y en la
+  clave del rate limit). Las cabeceras solo se consultan si el par directo
+  (`r.RemoteAddr`) está dentro de un prefijo confiable; sin prefijos nunca se
+  consultan. `X-Forwarded-For` se recorre de derecha a izquierda saltando los
+  proxies confiables y se toma la primera IP no confiable (si todas son
+  confiables, la de más a la izquierda); una entrada vacía o inválida detiene
+  el recorrido y deja `r.RemoteAddr` sin cambios. `X-Real-IP` se usa solo si no
+  hay `X-Forwarded-For`; `True-Client-IP` se ignora siempre. Acepta puertos,
+  zonas IPv6 e IPv4 mapeadas en IPv6. `ParseTrustedProxies` convierte una
+  lista separada por comas de CIDR o IP sueltas (`/32` o `/128`) en prefijos y
+  devuelve error ante cualquier entrada inválida.
+- **`examples/boilerplate`: nueva variable `TRUSTED_PROXIES`** (CIDR o IP
+  separadas por comas, vacía por defecto). El router monta `vmw.RealIP` con
+  esos prefijos en lugar del `middleware.RealIP` de chi; un valor inválido
+  hace fallar el arranque. Cambio de comportamiento: detrás de un balanceador,
+  hay que declarar sus direcciones en `TRUSTED_PROXIES` o todas las requests
+  aparecen con la IP del balanceador.
+
 ### Cambiado
 
 - **`request`: `JSON`, `JSONWithLimit` y `JSONOptional` exigen un `Content-Type`
