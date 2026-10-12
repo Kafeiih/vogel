@@ -101,6 +101,40 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   cambios: `WithRedactedKeys` amplía la lista y `WithRedactor` instala un
   hook propio (`audit.Redactor`). Cambio de comportamiento: quien leía esos
   valores desde el log de auditoría deja de verlos.
+- **`workflow`: `Move`, `Claim` y `Release` usan control de concurrencia
+  optimista.** Antes leían el caso y lo reescribían con
+  `UPDATE ... WHERE id = $1`, así que dos llamadas concurrentes sobre el mismo
+  caso podían leer el mismo estado y la última escritura pisaba a la primera
+  en silencio (dos personas "tomaban" el mismo caso, o un `Move` deshacía un
+  `Claim`). Ahora `workflow_case` tiene una revisión de fila: el nuevo campo
+  `Case.Revision` (`int64`, distinto de `Case.Version`, que sigue siendo la
+  versión de la definición) se lee en cada carga, `Create` lo deja en 0 y
+  `Repository.Update` es un compare-and-swap
+  (`... SET ..., revision = revision + 1 WHERE id = $1 AND revision = $n`) que,
+  si tiene éxito, avanza también el `Case.Revision` en memoria. Si la revisión
+  ya no coincide, `Update` devuelve el nuevo centinela `workflow.ErrConflict`
+  (envuelto con contexto) y no escribe nada; si el caso no existe, sigue
+  devolviendo `workflow.ErrCaseNotFound`. El motor escribe el caso ANTES de
+  agregar eventos, así que un `Move`/`Claim`/`Release` en conflicto no agrega
+  ningún evento. Aun así, el llamador debe hacer rollback de su transacción
+  ante cualquier error (una guarda pudo haber escrito en ella). **Para
+  reintentar:** ante `errors.Is(err, workflow.ErrConflict)`, hacer rollback y
+  repetir la operación completa desde una lectura nueva (nueva transacción);
+  un reintento acotado con backoff corto basta, y conviene volver a evaluar
+  si la operación sigue teniendo sentido (p. ej. el caso ya fue tomado por
+  otra persona). Bajo aislamiento `REPEATABLE READ`/`SERIALIZABLE`,
+  PostgreSQL aborta al segundo escritor con un error de serialización
+  (SQLSTATE `40001`) en vez de `ErrConflict`; también es seguro reintentarlo.
+  Quien implemente `workflow.Repository` por su cuenta debe respetar el mismo
+  contrato. Nueva migración `workflow/migrations/003_workflow_case_revision.sql`:
+  agrega `workflow_case.revision BIGINT NOT NULL DEFAULT 0`. **Todo
+  consumidor debe correr esta migración ANTES de desplegar esta versión de
+  `vogel`** — igual que la 002, no es opcional:
+  `workflow/postgres/repository.go` lee y escribe `revision` de forma
+  incondicional, así que contra una base de datos sin la 003 fallan
+  `Engine.Open`, `Move`, `Claim`, `Release`, `Available`, `EligibilityFor` e
+  `Inbox`. Los casos existentes arrancan en revisión 0. Correrla vía
+  `migrate.Up` con `workflow/migrations.FS()`, como la 001 y la 002.
 
 ## [0.8.0] — 2026-09-30
 

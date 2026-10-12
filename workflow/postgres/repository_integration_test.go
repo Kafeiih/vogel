@@ -252,3 +252,83 @@ func TestRepository_ListByEligibility_FiltersByOverdue(t *testing.T) {
 	require.Len(t, got, 1)
 	assert.Equal(t, overdue.ID, got[0].ID)
 }
+
+func TestRepository_Create_StartsAtRevisionZero(t *testing.T) {
+	pool := startTestPool(t)
+	repo := postgres.NewRepository()
+	ctx := context.Background()
+
+	c := newCase("compras", "solicitud-rev0")
+	c.Revision = 42 // Create ignores any caller-supplied revision.
+	require.NoError(t, repo.Create(ctx, pool, c))
+	assert.Equal(t, int64(0), c.Revision)
+
+	got, err := repo.GetByID(ctx, pool, c.ID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), got.Revision)
+}
+
+func TestRepository_Update_StaleRevision_ReturnsErrConflict(t *testing.T) {
+	pool := startTestPool(t)
+	repo := postgres.NewRepository()
+	ctx := context.Background()
+
+	c := newCase("compras", "solicitud-race")
+	require.NoError(t, repo.Create(ctx, pool, c))
+
+	// Two independent loads of the same case, as two concurrent callers
+	// would hold them.
+	first, err := repo.GetByID(ctx, pool, c.ID)
+	require.NoError(t, err)
+	second, err := repo.GetByID(ctx, pool, c.ID)
+	require.NoError(t, err)
+
+	first.AssignedTo = "u1"
+	require.NoError(t, repo.Update(ctx, pool, first))
+	assert.Equal(t, int64(1), first.Revision, "a successful update advances the in-memory revision")
+
+	second.AssignedTo = "u2"
+	second.State = "review"
+	err = repo.Update(ctx, pool, second)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, workflow.ErrConflict), "want ErrConflict, got %v", err)
+	assert.False(t, errors.Is(err, workflow.ErrCaseNotFound))
+	assert.Equal(t, int64(0), second.Revision, "a conflicting update leaves the caller's revision untouched")
+
+	got, err := repo.GetByID(ctx, pool, c.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "u1", got.AssignedTo, "the first writer's update survives")
+	assert.Equal(t, "draft", got.State, "the stale write is not applied")
+	assert.Equal(t, int64(1), got.Revision)
+
+	// The first caller, holding the advanced revision, can keep writing.
+	first.State = "review"
+	require.NoError(t, repo.Update(ctx, pool, first))
+	assert.Equal(t, int64(2), first.Revision)
+}
+
+func TestRepository_Update_MissingCase_ReturnsErrCaseNotFound(t *testing.T) {
+	pool := startTestPool(t)
+	repo := postgres.NewRepository()
+	ctx := context.Background()
+
+	err := repo.Update(ctx, pool, newCase("compras", "solicitud-missing"))
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, workflow.ErrCaseNotFound), "want ErrCaseNotFound, got %v", err)
+	assert.False(t, errors.Is(err, workflow.ErrConflict))
+}
+
+func TestMigrations_003_AddsRevisionColumn(t *testing.T) {
+	pool := startTestPool(t)
+	ctx := context.Background()
+
+	var dataType, nullable, def string
+	err := pool.QueryRow(ctx, `
+        SELECT data_type, is_nullable, column_default
+        FROM information_schema.columns
+        WHERE table_name = 'workflow_case' AND column_name = 'revision'`).Scan(&dataType, &nullable, &def)
+	require.NoError(t, err, "migration 003 must add workflow_case.revision")
+	assert.Equal(t, "bigint", dataType)
+	assert.Equal(t, "NO", nullable)
+	assert.Equal(t, "0", def)
+}

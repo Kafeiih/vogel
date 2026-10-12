@@ -16,7 +16,7 @@ import (
 )
 
 const caseColumns = `id, definition, version, domain, external_id, unit, state, status,
-    assigned_to, opened_at, closed_at, deadline_at`
+    assigned_to, opened_at, closed_at, deadline_at, revision`
 
 const eventColumns = `id, case_id, seq, kind, from_state, to_state, action, actor_id, occurred_at, comment`
 
@@ -42,12 +42,13 @@ type rowScanner interface {
 	Scan(dest ...any) error
 }
 
-// Create inserts a new case. A unique-violation on (domain, external_id) is
+// Create inserts a new case at revision 0 (whatever c.Revision held) and
+// sets c.Revision to 0. A unique-violation on (domain, external_id) is
 // mapped to workflow.ErrCaseExists.
 func (r *Repository) Create(ctx context.Context, db pgxtx.DBTX, c *workflow.Case) error {
 	_, err := db.Exec(ctx, `
         INSERT INTO workflow_case (`+caseColumns+`)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 0)`,
 		c.ID, c.Definition, c.Version, c.Domain, c.ExternalID, c.Unit, c.State, string(c.Status),
 		c.AssignedTo, c.OpenedAt, c.ClosedAt, c.DeadlineAt,
 	)
@@ -58,6 +59,7 @@ func (r *Repository) Create(ctx context.Context, db pgxtx.DBTX, c *workflow.Case
 		}
 		return fmt.Errorf("workflow: create case: %w", err)
 	}
+	c.Revision = 0
 	return nil
 }
 
@@ -87,22 +89,45 @@ func (r *Repository) GetByExternalID(ctx context.Context, db pgxtx.DBTX, domain,
 	return c, nil
 }
 
-// Update persists every mutable field of c.
+// Update persists every mutable field of c as a compare-and-swap on
+// c.Revision: the row is written only while its stored revision still equals
+// c.Revision, and the write advances it by one. On success c.Revision is
+// advanced to match, so a caller holding c can keep using it. When no row
+// matches, a follow-up existence check tells the two failures apart:
+// workflow.ErrCaseNotFound when the case does not exist, workflow.ErrConflict
+// when a concurrent writer committed first (nothing is written either way).
+//
+// Under READ COMMITTED (PostgreSQL's default) a concurrent UPDATE of the same
+// row blocks until the first writer commits, then re-evaluates the revision
+// predicate and matches zero rows, yielding ErrConflict. Under REPEATABLE
+// READ or SERIALIZABLE, PostgreSQL itself aborts the second writer with a
+// serialization failure (SQLSTATE 40001) instead; that error is returned
+// wrapped as-is and is equally safe to retry.
 func (r *Repository) Update(ctx context.Context, db pgxtx.DBTX, c *workflow.Case) error {
 	tag, err := db.Exec(ctx, `
         UPDATE workflow_case SET
             definition = $2, version = $3, domain = $4, external_id = $5, unit = $6,
-            state = $7, status = $8, assigned_to = $9, opened_at = $10, closed_at = $11, deadline_at = $12
-        WHERE id = $1`,
+            state = $7, status = $8, assigned_to = $9, opened_at = $10, closed_at = $11, deadline_at = $12,
+            revision = revision + 1
+        WHERE id = $1 AND revision = $13`,
 		c.ID, c.Definition, c.Version, c.Domain, c.ExternalID, c.Unit,
 		c.State, string(c.Status), c.AssignedTo, c.OpenedAt, c.ClosedAt, c.DeadlineAt,
+		c.Revision,
 	)
 	if err != nil {
 		return fmt.Errorf("workflow: update case: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("workflow: update case: %w", workflow.ErrCaseNotFound)
+		var exists bool
+		if err := db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM workflow_case WHERE id = $1)`, c.ID).Scan(&exists); err != nil {
+			return fmt.Errorf("workflow: update case: %w", err)
+		}
+		if !exists {
+			return fmt.Errorf("workflow: update case: %w", workflow.ErrCaseNotFound)
+		}
+		return fmt.Errorf("workflow: update case %s at revision %d: %w", c.ID, c.Revision, workflow.ErrConflict)
 	}
+	c.Revision++
 	return nil
 }
 
@@ -205,7 +230,7 @@ func scanCase(row rowScanner) (*workflow.Case, error) {
 	var status string
 	if err := row.Scan(
 		&c.ID, &c.Definition, &c.Version, &c.Domain, &c.ExternalID, &c.Unit, &c.State, &status,
-		&c.AssignedTo, &c.OpenedAt, &c.ClosedAt, &c.DeadlineAt,
+		&c.AssignedTo, &c.OpenedAt, &c.ClosedAt, &c.DeadlineAt, &c.Revision,
 	); err != nil {
 		return nil, err
 	}
