@@ -78,15 +78,24 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 - **`audit`: `Recorder.Record` redacta valores sensibles antes de persistir.**
   Antes `audit_log` guardaba contraseñas, tokens y secretos tal como llegaban
   en `InputPayload`, los snapshots y `ChangedFields`. Ahora el valor de toda
-  clave que coincide con la lista de denegación (`password`, `token`,
-  `secret`, `authorization`, `api_key`, `cookie`) se reemplaza por
+  clave que coincide con la lista de denegación (`password`, `passwd`,
+  `token`, `secret`, `authorization`, `api_key`, `private_key`, `credential`,
+  `cookie`) se reemplaza por
   `audit.RedactedValue` (`[REDACTED]`) en los cuatro campos y a cualquier
   profundidad (mapas, slices y structs, estos en su forma JSON); la clave se
   conserva y un `nil` sigue siendo `nil`. En `ChangedFields` el nombre del
   campo se mantiene y se redactan `old` y `new` por separado. La coincidencia
   ignora mayúsculas, `_`, `-`, `.` y espacios, y es por subcadena
   (`access_token`, `refreshToken`, `client_secret`, `X-Api-Key` y
-  `Set-Cookie` quedan cubiertas; también `token_count`, a propósito). Los
+  `Set-Cookie` quedan cubiertas, y `credential` cubre `credentials`; también
+  `token_count`, a propósito). `session` queda fuera a propósito porque
+  redactaría `session_id` y contadores; se agrega con
+  `WithRedactedKeys("session")`. La redacción falla cerrada: si un payload
+  no se puede redactar (un mapa o slice que se contiene a sí mismo, o un valor
+  que `encoding/json` no codifica, como un canal, una función o un `NaN`),
+  `Record` devuelve un error que envuelve `audit.ErrUnredactable` y no
+  persiste nada; el valor de una clave sensible se reemplaza sin inspeccionarlo,
+  así que nunca provoca ese error. Los
   mapas del llamador no se modifican. `NewRecorder` acepta opciones variádicas
   (`...RecorderOption`), así que los llamadores existentes compilan sin
   cambios: `WithRedactedKeys` amplía la lista y `WithRedactor` instala un

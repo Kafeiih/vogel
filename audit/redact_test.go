@@ -2,8 +2,11 @@ package audit
 
 import (
 	"context"
+	"errors"
+	"math"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -42,6 +45,16 @@ func TestSensitiveKey_DefaultDenylistMatching(t *testing.T) {
 		{"X-Api-Key", true},
 		{"cookie", true},
 		{"Set-Cookie", true},
+		{"passwd", true},
+		{"old_passwd", true},
+		{"private_key", true},
+		{"privateKey", true},
+		{"ssh-private-key", true},
+		{"credential", true},
+		{"credentials", true},
+		{"aws_credentials", true},
+		{"session_id", false},
+		{"session", false},
 		{"username", false},
 		{"email", false},
 		{"name", false},
@@ -81,7 +94,7 @@ func TestRecord_RedactsNestedMapsAndSlices(t *testing.T) {
 	payload := map[string]any{
 		"user": map[string]any{
 			"name":        "alice",
-			"credentials": map[string]any{"api_key": "k-1", "scope": "read"},
+			"integration": map[string]any{"api_key": "k-1", "scope": "read"},
 		},
 		"sessions": []any{
 			map[string]any{"id": "s1", "cookie": "c1"},
@@ -95,7 +108,7 @@ func TestRecord_RedactsNestedMapsAndSlices(t *testing.T) {
 	assert.Equal(t, map[string]any{
 		"user": map[string]any{
 			"name":        "alice",
-			"credentials": map[string]any{"api_key": RedactedValue, "scope": "read"},
+			"integration": map[string]any{"api_key": RedactedValue, "scope": "read"},
 		},
 		"sessions": []any{
 			map[string]any{"id": "s1", "cookie": RedactedValue},
@@ -224,4 +237,135 @@ func TestRecord_NilPayloadsStayNil(t *testing.T) {
 	assert.Nil(t, e.BeforeSnapshot)
 	assert.Nil(t, e.AfterSnapshot)
 	assert.Nil(t, e.ChangedFields)
+}
+
+// recordErr records a single entry through a Recorder built with opts and
+// returns Record's error and what reached the repository. It fails the test
+// instead of hanging if Record does not return, so a redaction regression
+// that loops forever cannot stall the suite.
+func recordErr(t *testing.T, ropts []RecorderOption, opts ...Option) ([]*Entry, error) {
+	t.Helper()
+	repo := &fakeRepository{}
+	r := NewRecorder(repo, ropts...)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- r.Record(context.Background(), nil, SourceHTTP, ActionUpdate, "widget", "w-1", opts...)
+	}()
+	select {
+	case err := <-done:
+		return repo.created, err
+	case <-time.After(5 * time.Second):
+		t.Fatal("Record did not return within 5s")
+		return nil, nil
+	}
+}
+
+func TestRecord_UnredactablePayload_FailsClosed(t *testing.T) {
+	cyclicMap := map[string]any{"name": "a"}
+	cyclicMap["self"] = cyclicMap
+
+	cyclicSlice := make([]any, 2)
+	cyclicSlice[0] = "a"
+	cyclicSlice[1] = cyclicSlice
+
+	indirectMap := map[string]any{}
+	indirectMap["items"] = []any{map[string]any{"parent": indirectMap}}
+
+	type withChan struct{ C chan int }
+
+	tests := []struct {
+		name string
+		opt  Option
+	}{
+		{"map containing itself", WithInputPayload(cyclicMap)},
+		{"slice containing itself", WithInputPayload(map[string]any{"list": cyclicSlice})},
+		{"cycle through a nested slice", WithAfterSnapshot(indirectMap)},
+		{"cycle in ChangedFields diff side", WithChangedFields(map[string]any{"meta": map[string]any{"old": nil, "new": cyclicMap}})},
+		{"channel value", WithInputPayload(map[string]any{"ch": make(chan int)})},
+		{"func value", WithBeforeSnapshot(map[string]any{"fn": func() {}})},
+		{"complex value", WithInputPayload(map[string]any{"c": complex(1, 2)})},
+		{"NaN float", WithInputPayload(map[string]any{"ratio": math.NaN()})},
+		{"struct with a channel field", WithInputPayload(map[string]any{"s": withChan{C: make(chan int)}})},
+		{"unencodable value nested in a slice", WithInputPayload(map[string]any{"list": []any{"ok", make(chan int)}})},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			created, err := recordErr(t, nil, tt.opt)
+
+			require.Error(t, err)
+			assert.True(t, errors.Is(err, ErrUnredactable), "error %v does not wrap ErrUnredactable", err)
+			assert.Empty(t, created, "nothing may reach the repository")
+		})
+	}
+}
+
+func TestRecord_UnencodableValueUnderSensitiveKey_IsRedacted(t *testing.T) {
+	cyclic := map[string]any{}
+	cyclic["self"] = cyclic
+
+	e := recordOne(t, nil, WithInputPayload(map[string]any{
+		"password":     make(chan int),
+		"secret_hook":  func() {},
+		"api_key_tree": cyclic,
+		"name":         "a",
+	}))
+
+	assert.Equal(t, map[string]any{
+		"password":     RedactedValue,
+		"secret_hook":  RedactedValue,
+		"api_key_tree": RedactedValue,
+		"name":         "a",
+	}, e.InputPayload)
+}
+
+func TestRecord_SharedNonCyclicValue_IsNotACycle(t *testing.T) {
+	shared := map[string]any{"password": "pw", "n": 1}
+	list := []any{shared, shared}
+
+	e := recordOne(t, nil, WithInputPayload(map[string]any{"a": shared, "b": shared, "list": list}))
+
+	want := map[string]any{"password": RedactedValue, "n": 1}
+	assert.Equal(t, map[string]any{"a": want, "b": want, "list": []any{want, want}}, e.InputPayload)
+}
+
+func TestWithRedactedKeys_IgnoresEmptyKeys(t *testing.T) {
+	payload := map[string]any{"name": "a", "email": "a@example.com", "password": "pw"}
+
+	e := recordOne(t, []RecorderOption{WithRedactedKeys("", "  ", "_-.")}, WithInputPayload(payload))
+
+	assert.Equal(t, map[string]any{
+		"name":     "a",
+		"email":    "a@example.com",
+		"password": RedactedValue,
+	}, e.InputPayload)
+}
+
+func TestWithRedactor_HookDecliningFallsThrough(t *testing.T) {
+	var seen []string
+	decline := func(key string, _ any) (any, bool) {
+		seen = append(seen, key)
+		return nil, false
+	}
+	maskNote := func(key string, _ any) (any, bool) {
+		if key == "note" {
+			return "masked", true
+		}
+		return nil, false
+	}
+	payload := map[string]any{
+		"note":   "hello",
+		"name":   "a",
+		"nested": map[string]any{"password": "pw", "city": "x"},
+	}
+
+	e := recordOne(t, []RecorderOption{WithRedactor(decline), WithRedactor(maskNote)}, WithInputPayload(payload))
+
+	assert.Equal(t, map[string]any{
+		"note":   "masked",
+		"name":   "a",
+		"nested": map[string]any{"password": RedactedValue, "city": "x"},
+	}, e.InputPayload)
+	assert.ElementsMatch(t, []string{"note", "name", "nested", "city"}, seen,
+		"a declining hook sees every non-denylisted key, and the walk descends into nested values")
 }
