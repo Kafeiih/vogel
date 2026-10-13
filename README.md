@@ -116,6 +116,44 @@ transacción (la receta está en el encabezado de la migración). Los tests de
 integración que limpiaban `audit_log` con `TRUNCATE` o `DELETE` deben pasar a una base
 nueva por test o a una transacción con rollback.
 
+### Un rol para migrar, otro para servir
+
+Los triggers solo protegen `audit_log` si el rol con el que la aplicación se
+conecta **no** es el dueño de la tabla. Quien corre las migraciones queda como
+dueño, así que una aplicación que migra al arrancar con su propio
+`DATABASE_URL` puede deshabilitar los triggers y la garantía append-only se
+pierde. En producción, separá los roles:
+
+- **Migrador** (`app_migrator`): dueño del esquema y de las tablas. Solo lo usa
+  el paso de migración del despliegue, nunca el proceso que atiende requests.
+- **Runtime** (`app_runtime`): el rol de la API y del worker. No es dueño de
+  nada; sobre `audit_log` tiene solo `SELECT` e `INSERT`.
+
+```sql
+-- Como superusuario, una vez por base:
+CREATE ROLE app_migrator LOGIN PASSWORD '...';
+CREATE ROLE app_runtime  LOGIN PASSWORD '...';
+GRANT CREATE, USAGE ON SCHEMA public TO app_migrator;
+-- En PostgreSQL < 15, PUBLIC puede crear en el esquema public por defecto:
+REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+GRANT USAGE ON SCHEMA public TO app_runtime;
+
+-- Como app_migrator, después de aplicar las migraciones:
+GRANT SELECT, INSERT ON audit_log TO app_runtime;
+-- Tablas propias de la aplicación (y las de workflow, si se usa):
+GRANT SELECT, INSERT, UPDATE, DELETE ON <tablas> TO app_runtime;
+-- Tablas de versión de goose: un proceso que corre migrate.Up al arrancar
+-- (como el boilerplate) solo las lee cuando no hay nada pendiente.
+GRANT SELECT ON goose_db_version, vogel_db_version TO app_runtime;
+```
+
+Las migraciones se aplican con la URL del migrador (en el boilerplate,
+`./api migrate up`) antes de arrancar los procesos con la URL del runtime. Si
+el runtime arrancara con una migración pendiente, fallaría por falta de
+permisos, que es el comportamiento buscado. El lock de `migrate` es un
+advisory lock de sesión, que no requiere permisos sobre ninguna tabla. La purga de retención descrita
+arriba también la ejecuta el migrador, por ser el dueño.
+
 ## Correcciones aplicadas durante la extracción
 
 Los paquetes de origen tenían veinte problemas conocidos; todos se corrigieron
