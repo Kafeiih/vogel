@@ -245,7 +245,8 @@ if err != nil {
 `httpx/middleware.WriteAccessError` es la contraparte, dentro del handler,
 del mapeo de estados que `RequirePermission`/`RequireAccess` ya hacen en el
 router: mapea `access.ErrUnauthenticated`/`ErrForbidden`/`ErrUnavailable` a
-401/403/503 (logueando en el caso de 503), y devuelve `false` sin escribir
+401/403/503 (logueando el 403 en `Warn` con `user_id`, `method`, `path` y
+`request_id`, y el 503 en `Error`), y devuelve `false` sin escribir
 nada para cualquier otro error, de modo que el handler puede seguir con su
 propio mapeo de errores de dominio.
 
