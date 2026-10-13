@@ -137,8 +137,15 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   cambios. Nuevas en `storage`: `PresignGetOptions`, `ApplyPresignGetOptions`
   (aplica los valores por defecto; los adaptadores deben usarla),
   `WithContentDisposition`, `AsAttachment` (construye
-  `attachment; filename="<nombre>"` eliminando CR, LF, comillas y barras
-  invertidas; con nombre vacío queda `attachment`) y `WithResponseContentType`.
+  `attachment; filename="<nombre>"` eliminando caracteres de control, incluidos
+  CR, LF y tabulador, caracteres de formato Unicode como los que invierten la
+  dirección del texto, separadores de línea, comillas y barras invertidas; con
+  nombre vacío queda `attachment`. Un nombre con caracteres no ASCII se envía
+  además como `filename*=UTF-8''<nombre codificado>` según RFC 5987, con un
+  `filename` de respaldo donde cada carácter no ASCII pasa a `_`; el valor de
+  la cabecera siempre es ASCII imprimible) y `WithResponseContentType`.
+  `examples/api`: el presigner falso respeta el contrato de `expiry` (un valor
+  `<= 0` usa un valor por defecto de 15m, como `storage/s3`).
 - **`storage/s3`: las URL de descarga prefirmadas sirven el objeto como
   `attachment` por defecto.** `PresignedGetURL` fija
   `response-content-disposition=attachment` (firmado en la URL, no se puede

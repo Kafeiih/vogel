@@ -1,6 +1,9 @@
 package storage
 
-import "strings"
+import (
+	"strings"
+	"unicode"
+)
 
 // DefaultContentDisposition is the Content-Disposition a presigned GET carries
 // when the caller passes no disposition option. It is "attachment" on purpose:
@@ -62,16 +65,29 @@ func WithContentDisposition(disposition string) PresignGetOption {
 // AsAttachment sets Content-Disposition to attachment; filename="<name>" so
 // the browser saves the object under name instead of the object key.
 //
-// name is sanitized for the quoted-string: CR, LF, double quotes and
-// backslashes are removed and surrounding whitespace is trimmed, so a name
+// name is sanitized first: control characters (C0, DEL and C1, which include
+// CR, LF and tab), Unicode format characters (such as the bidi overrides that
+// disguise an extension), line and paragraph separators, double quotes and
+// backslashes are removed, and surrounding whitespace is trimmed, so a name
 // taken from user input cannot close the quoted-string or split the header.
 // When nothing is left after sanitizing, the disposition is a bare
 // "attachment" and the browser falls back to the object key.
+//
+// The header value is always printable ASCII. A name that is ASCII after
+// sanitizing is sent as filename="<name>". A name with non-ASCII characters
+// is sent twice, per RFC 6266: a filename="<fallback>" parameter, where each
+// non-ASCII character becomes '_', for clients that ignore the extended form,
+// and a filename* parameter in the RFC 5987 form (UTF-8, no language tag, the
+// name percent-encoded), which current browsers prefer:
+//
+//	attachment; filename="informe-a_o.pdf"; filename*=UTF-8''informe-a%C3%B1o.pdf
 func AsAttachment(name string) PresignGetOption {
 	return func(o *PresignGetOptions) {
 		clean := strings.TrimSpace(strings.Map(func(r rune) rune {
-			switch r {
-			case '\r', '\n', '"', '\\':
+			switch {
+			case r == '"', r == '\\':
+				return -1
+			case unicode.IsControl(r), unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp):
 				return -1
 			}
 			return r
@@ -81,8 +97,54 @@ func AsAttachment(name string) PresignGetOption {
 			o.ContentDisposition = DefaultContentDisposition
 			return
 		}
-		o.ContentDisposition = `attachment; filename="` + clean + `"`
+
+		fallback, ascii := asciiFallback(clean)
+		o.ContentDisposition = `attachment; filename="` + fallback + `"`
+		if !ascii {
+			o.ContentDisposition += "; filename*=UTF-8''" + rfc5987Encode(clean)
+		}
 	}
+}
+
+// asciiFallback replaces every non-ASCII rune of a sanitized name with '_'
+// and reports whether name was ASCII already.
+func asciiFallback(name string) (fallback string, ascii bool) {
+	ascii = true
+	fallback = strings.Map(func(r rune) rune {
+		if r > unicode.MaxASCII {
+			ascii = false
+			return '_'
+		}
+		return r
+	}, name)
+	return fallback, ascii
+}
+
+// rfc5987Encode percent-encodes the UTF-8 bytes of s that are not attr-char
+// as defined by RFC 5987 section 3.2.1.
+func rfc5987Encode(s string) string {
+	const hex = "0123456789ABCDEF"
+	var b strings.Builder
+	b.Grow(len(s) * 3)
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if isAttrChar(c) {
+			b.WriteByte(c)
+			continue
+		}
+		b.WriteByte('%')
+		b.WriteByte(hex[c>>4])
+		b.WriteByte(hex[c&0x0f])
+	}
+	return b.String()
+}
+
+func isAttrChar(c byte) bool {
+	switch {
+	case 'a' <= c && c <= 'z', 'A' <= c && c <= 'Z', '0' <= c && c <= '9':
+		return true
+	}
+	return strings.IndexByte("!#$&+-.^_`|~", c) >= 0
 }
 
 // WithResponseContentType overrides the Content-Type the store returns with

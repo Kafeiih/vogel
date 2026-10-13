@@ -43,6 +43,41 @@ func TestAsAttachment(t *testing.T) {
 			filename: "\"\r\n\\",
 			want:     "attachment",
 		},
+		{
+			name:     "control characters are stripped",
+			filename: "re\x00po\trt\x1b\x7f.pdf",
+			want:     `attachment; filename="report.pdf"`,
+		},
+		{
+			name:     "name made only of control characters falls back to a bare attachment",
+			filename: "\x00\x01\t\x7f\u0085",
+			want:     "attachment",
+		},
+		{
+			name:     "non-ASCII name gets an ASCII fallback and an RFC 5987 filename*",
+			filename: "informe-año.pdf",
+			want:     `attachment; filename="informe-a_o.pdf"; filename*=UTF-8''informe-a%C3%B1o.pdf`,
+		},
+		{
+			name:     "CR/LF injection in a non-ASCII name stays on one header line",
+			filename: "año\r\nSet-Cookie: x=1 .pdf",
+			want:     `attachment; filename="a_oSet-Cookie: x=1.pdf"; filename*=UTF-8''a%C3%B1oSet-Cookie%3A%20x%3D1.pdf`,
+		},
+		{
+			name:     "C1 controls and bidi overrides are stripped from both forms",
+			filename: "fac\u0085tura‮gpj.exe ñ",
+			want:     `attachment; filename="facturagpj.exe _"; filename*=UTF-8''facturagpj.exe%20%C3%B1`,
+		},
+		{
+			name:     "fully non-ASCII name keeps a placeholder fallback",
+			filename: "報告",
+			want:     `attachment; filename="__"; filename*=UTF-8''%E5%A0%B1%E5%91%8A`,
+		},
+		{
+			name:     "RFC 5987 attr-chars are not percent-encoded",
+			filename: "a!#$&+-.^_`|~1ñ%",
+			want:     "attachment; filename=\"a!#$&+-.^_`|~1_%\"; filename*=UTF-8''a!#$&+-.^_`|~1%C3%B1%25",
+		},
 	}
 
 	for _, tt := range tests {
@@ -50,6 +85,11 @@ func TestAsAttachment(t *testing.T) {
 			got := ApplyPresignGetOptions(AsAttachment(tt.filename))
 			if got.ContentDisposition != tt.want {
 				t.Errorf("ContentDisposition = %q, want %q", got.ContentDisposition, tt.want)
+			}
+			for _, r := range got.ContentDisposition {
+				if r < 0x20 || r > 0x7e {
+					t.Fatalf("ContentDisposition %q contains rune %U outside printable ASCII", got.ContentDisposition, r)
+				}
 			}
 		})
 	}
