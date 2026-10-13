@@ -428,7 +428,11 @@ type MoveInput struct {
 // another writer changed the case after Move read it, Move fails with
 // ErrConflict and appends no event; the caller must roll back its
 // transaction (a guard may already have written to it) and may retry from a
-// fresh read.
+// fresh read. The check only sees writers that advance Case.Revision: during
+// a rolling deploy, a process still running a vogel release from before the
+// revision column overwrites cases without advancing it, so its writes can
+// be lost undetected until every such process is replaced (see
+// workflow/postgres Repository.Update for the deploy order).
 func (e *Engine) Move(ctx context.Context, db pgxtx.DBTX, in MoveInput) (*Case, error) {
 	c, err := e.repo.GetByID(ctx, db, in.CaseID)
 	if err != nil {

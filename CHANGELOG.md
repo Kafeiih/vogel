@@ -238,6 +238,17 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   `Engine.Open`, `Move`, `Claim`, `Release`, `Available`, `EligibilityFor` e
   `Inbox`. Los casos existentes arrancan en revisión 0. Correrla vía
   `migrate.Up` con `workflow/migrations.FS()`, como la 001 y la 002.
+  **Orden de despliegue:** la detección de conflictos solo funciona cuando
+  TODOS los procesos que escriben `workflow_case` avanzan `revision`. Un
+  binario compilado con una versión anterior de `vogel` actualiza el caso sin
+  tocar `revision`, así que durante un despliegue gradual (binarios viejos y
+  nuevos a la vez) un escritor nuevo puede leer la revisión n, un escritor
+  viejo sobrescribir la fila (que sigue en n) y el nuevo confirmar su propia
+  escritura en n: el cambio del viejo se pierde sin ningún `ErrConflict`, y
+  los escritores viejos nunca detectan conflictos. Aplicar la 003, luego
+  reemplazar TODOS los binarios viejos (o detener sus escrituras) antes de
+  confiar en `ErrConflict`; mientras tanto se pueden seguir perdiendo
+  actualizaciones concurrentes en silencio, igual que antes de este cambio.
 
 ## [0.8.0] — 2026-09-30
 
