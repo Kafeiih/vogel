@@ -76,6 +76,18 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   error si es inválido (vacío sigue permitido), para que una configuración
   mala falle al arrancar. Los errores de los adaptadores ya no incluyen la
   dirección: antes `notification/smtp` citaba `From` y `To` en el mensaje.
+- **`examples/boilerplate`: `api server` ya no aplica migraciones.** Antes
+  `server` (y el binario sin argumentos) corría `migrate.Up` de todos los
+  conjuntos al arrancar, lo que obligaba al rol que sirve a ser dueño de las
+  tablas y le permitía deshabilitar los triggers append-only de `audit_log`.
+  Ahora el arranque sigue las fases de Zitadel: `api migrate up` aplica las
+  migraciones (con `DB_URL`, idealmente un rol migrador), `api server` solo
+  sirve, y el nuevo `api start-from-migrate` migra y luego sirve, igual que
+  el `server` anterior. `make dev` usa `start-from-migrate` y el compose de
+  despliegue agrega un servicio `migrate` de una sola ejecución del que
+  depende `api` (`service_completed_successfully`). Cambio de
+  comportamiento: quien arranque con `server` debe correr `migrate up` antes
+  de desplegar, o usar `start-from-migrate` en desarrollo.
 - `httpx/response`: constante `CodeUnsupportedMediaType` (`UNSUPPORTED_MEDIA_TYPE`).
 - **`httpx/middleware`: `SecurityHeaders` añade `Cache-Control: no-store` y
   `Pragma: no-cache`.** Las respuestas de una API autenticada son por usuario

@@ -15,14 +15,33 @@ services:
       timeout: 3s
       retries: 5
 
+  # One-shot setup step: applies every migration set and exits. In
+  # production DB_URL here is the migrator role, which owns the tables; the
+  # api service then serves with a role that cannot alter audit_log.
+  migrate:
+    image: ghcr.io/kafeiih/vogel-boilerplate:latest
+    build:
+      context: ..
+      target: api
+    command: ["migrate", "up"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_URL: "postgres://postgres:postgres@postgres:5432/boilerplate_db?sslmode=disable"
+    restart: "no"
+
   api:
     image: ghcr.io/kafeiih/vogel-boilerplate:latest
     build:
       context: ..
       target: api
+    command: ["server"]
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     ports:
       - "8080:8080"
     env_file:
