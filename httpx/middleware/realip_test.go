@@ -6,6 +6,8 @@ import (
 	"net/netip"
 	"slices"
 	"testing"
+
+	"github.com/kafeiih/vogel/reqctx"
 )
 
 func mustPrefixes(t *testing.T, s string) []netip.Prefix {
@@ -216,17 +218,27 @@ func TestRealIP(t *testing.T) {
 	}
 }
 
+// TestRealIP_FeedsRequestContext proves the resolved client IP reaches
+// reqctx.RequestInfo -- the value audit and log lines read -- and not only
+// r.RemoteAddr. An IPv6 client exercises RequestContext's host/port split on
+// a bare address without a port.
 func TestRealIP_FeedsRequestContext(t *testing.T) {
-	var ip string
+	var (
+		info reqctx.RequestInfo
+		ok   bool
+	)
 	h := RealIP(mustPrefixes(t, "10.0.0.0/8")...)(RequestContext(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-		ip = r.RemoteAddr
+		info, ok = reqctx.RequestInfoFromContext(r.Context())
 	})))
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.RemoteAddr = "10.0.0.1:4242"
 	req.Header.Set("X-Forwarded-For", "2001:db8::1")
 	h.ServeHTTP(httptest.NewRecorder(), req)
-	if ip != "2001:db8::1" {
-		t.Errorf("RemoteAddr = %q, want %q", ip, "2001:db8::1")
+	if !ok {
+		t.Fatal("RequestInfoFromContext: no RequestInfo stored")
+	}
+	if info.IP != "2001:db8::1" {
+		t.Errorf("RequestInfo.IP = %q, want %q", info.IP, "2001:db8::1")
 	}
 }
 
