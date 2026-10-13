@@ -166,16 +166,23 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   `token_count`, a propósito). `session` queda fuera a propósito porque
   redactaría `session_id` y contadores; se agrega con
   `WithRedactedKeys("session")`. La redacción falla cerrada: si un payload
-  no se puede redactar (un mapa o slice que se contiene a sí mismo, o un valor
-  que `encoding/json` no codifica, como un canal, una función o un `NaN`),
+  no se puede redactar (un mapa o slice que se contiene a sí mismo, un
+  anidamiento de más de 1000 niveles, o un valor que `encoding/json` no
+  codifica, como un canal, una función o un `NaN`),
   `Record` devuelve un error que envuelve `audit.ErrUnredactable` y no
   persiste nada; el valor de una clave sensible se reemplaza sin inspeccionarlo,
   así que nunca provoca ese error. Los
   mapas del llamador no se modifican. `NewRecorder` acepta opciones variádicas
   (`...RecorderOption`), así que los llamadores existentes compilan sin
   cambios: `WithRedactedKeys` amplía la lista y `WithRedactor` instala un
-  hook propio (`audit.Redactor`). Cambio de comportamiento: quien leía esos
-  valores desde el log de auditoría deja de verlos.
+  hook propio (`audit.Redactor`). El valor que devuelve un hook no se guarda
+  tal cual: se normaliza a su forma JSON y se recorre igual que el original,
+  así que una clave de la lista de denegación dentro del reemplazo también se
+  redacta y uno que no se puede redactar hace fallar `Record` con
+  `audit.ErrUnredactable`. Dos slices que comparten el arreglo subyacente con
+  distinta longitud (`s` y `s[:1]`) ya no se confunden con un ciclo. Cambio de
+  comportamiento: quien leía esos valores desde el log de auditoría deja de
+  verlos.
 - **`workflow`: `Move`, `Claim` y `Release` usan control de concurrencia
   optimista.** Antes leían el caso y lo reescribían con
   `UPDATE ... WHERE id = $1`, así que dos llamadas concurrentes sobre el mismo

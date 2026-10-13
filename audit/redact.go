@@ -40,10 +40,18 @@ var defaultRedactedKeys = []string{
 // Redactor is a custom redaction hook installed with WithRedactor. It is
 // called for every key at every nesting level of an entry's payloads whose
 // key the denylist did not already match, with the value as the package
-// stores it (map[string]any, []any, or a JSON scalar). Returning ok=true
-// replaces the value with replacement and stops descending into it;
-// returning ok=false leaves the value to the remaining hooks and to the
-// recursive walk.
+// stores it (map[string]any, []any, or a JSON scalar). Returning ok=false
+// leaves the value to the remaining hooks and to the recursive walk.
+//
+// Returning ok=true replaces the value with replacement, and no later hook
+// sees the value under that key. The replacement may be any value
+// encoding/json can encode, including a struct, a typed map or slice, or the
+// value the hook was given: it is normalized to its JSON form and walked like
+// any other value, so a denylisted key nested inside it is still redacted and
+// hooks still run on its nested keys. A replacement that cannot be redacted
+// (one that contains itself, nests too deeply, or cannot be encoded) makes
+// Record fail with ErrUnredactable. A scalar replacement such as a masked
+// string is stored as is.
 type Redactor func(key string, value any) (replacement any, ok bool)
 
 // RecorderOption customizes a Recorder at construction time.
@@ -131,8 +139,19 @@ type redactor struct {
 // walk is the state of one redaction pass over one payload: the maps and
 // slices on the path from its root to the value being redacted, and the depth.
 type walk struct {
-	path  map[uintptr]struct{}
+	path  map[container]struct{}
 	depth int
+}
+
+// container identifies a map or slice on the walk's path. A slice is
+// identified by its data pointer and its length, the way encoding/json does:
+// two slices of one backing array with different lengths (outer and
+// outer[:1]) are different values, and neither contains the other merely by
+// sharing memory. A genuine cycle repeats the same slice header, so it is
+// still detected. A map has length -1 so it never collides with a slice.
+type container struct {
+	ptr uintptr
+	len int
 }
 
 // redactEntry replaces e's payloads with redacted copies. When a payload
@@ -206,7 +225,7 @@ func (rd redactor) redactMap(w *walk, m map[string]any) (map[string]any, error) 
 	if m == nil {
 		return nil, nil
 	}
-	leave, err := w.enter(reflect.ValueOf(m).Pointer())
+	leave, err := w.enter(container{ptr: reflect.ValueOf(m).Pointer(), len: -1})
 	if err != nil {
 		return nil, err
 	}
@@ -240,7 +259,14 @@ func (rd redactor) redactField(w *walk, key string, value any) (any, error) {
 	}
 	for _, h := range rd.hooks {
 		if repl, ok := h(key, value); ok {
-			return repl, nil
+			// The replacement goes through the same walk as the value it
+			// replaces, so a hook cannot reintroduce a denylisted key. The
+			// walk descends into the replacement and never calls hooks again
+			// for this key, so a hook returning its input cannot recurse.
+			if value, err = normalizeValue(repl); err != nil {
+				return nil, fmt.Errorf("key %q: redactor replacement: %w", key, err)
+			}
+			break
 		}
 	}
 	return rd.redactValue(w, value)
@@ -255,7 +281,7 @@ func (rd redactor) redactValue(w *walk, value any) (any, error) {
 		if v == nil {
 			return v, nil
 		}
-		leave, err := w.enter(reflect.ValueOf(v).Pointer())
+		leave, err := w.enter(container{ptr: reflect.ValueOf(v).Pointer(), len: len(v)})
 		if err != nil {
 			return nil, err
 		}
@@ -277,29 +303,32 @@ func (rd redactor) redactValue(w *walk, value any) (any, error) {
 	}
 }
 
-// enter records that the walk descends into the map or slice whose data
-// pointer is ptr, and returns the function that undoes it on the way back up.
-// Only the current path is tracked, so a value shared by two siblings is not
-// mistaken for a cycle. A zero ptr (an empty slice) cannot contain itself, so
-// it only counts towards the depth.
-func (w *walk) enter(ptr uintptr) (leave func(), err error) {
+// enter records that the walk descends into the map or slice c, and returns
+// the function that undoes it on the way back up. Only the current path is
+// tracked, so a value shared by two siblings is not mistaken for a cycle. An
+// empty slice cannot contain anything, itself included, so it only counts
+// towards the depth; that also keeps empty slices that share a data pointer
+// (the runtime's zero-size allocation) from looking like a cycle. Past
+// maxRedactDepth the walk fails closed with ErrUnredactable.
+func (w *walk) enter(c container) (leave func(), err error) {
 	if w.depth >= maxRedactDepth {
 		return nil, fmt.Errorf("%w: nested deeper than %d levels", ErrUnredactable, maxRedactDepth)
 	}
-	if ptr != 0 {
-		if _, onPath := w.path[ptr]; onPath {
+	tracked := c.ptr != 0 && c.len != 0
+	if tracked {
+		if _, onPath := w.path[c]; onPath {
 			return nil, fmt.Errorf("%w: value contains itself", ErrUnredactable)
 		}
 		if w.path == nil {
-			w.path = make(map[uintptr]struct{})
+			w.path = make(map[container]struct{})
 		}
-		w.path[ptr] = struct{}{}
+		w.path[c] = struct{}{}
 	}
 	w.depth++
 	return func() {
 		w.depth--
-		if ptr != 0 {
-			delete(w.path, ptr)
+		if tracked {
+			delete(w.path, c)
 		}
 	}, nil
 }
