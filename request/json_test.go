@@ -2,6 +2,7 @@ package request_test
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -75,7 +76,7 @@ func TestJSON_ContentType(t *testing.T) {
 			var body errorEnvelope
 			require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
 			assert.Equal(t, "UNSUPPORTED_MEDIA_TYPE", body.Code)
-			assert.Equal(t, "Content-Type must be application/json", body.Message)
+			assert.Equal(t, "Content-Type must be application/json or application/*+json", body.Message)
 		})
 	}
 }
@@ -97,6 +98,7 @@ func TestJSON_TrailingData(t *testing.T) {
 		{name: "garbage after the value", body: `{"a":1}garbage`, wantStatus: http.StatusBadRequest},
 		{name: "second value on a new line", body: "{\"a\":1}\n{\"a\":2}", wantStatus: http.StatusBadRequest},
 		{name: "null after the value", body: `{"a":1} null`, wantStatus: http.StatusBadRequest},
+		{name: "truncated second value", body: `{"a":1} "unterminated`, wantStatus: http.StatusBadRequest},
 		{name: "trailing whitespace is fine", body: "{\"a\":1} \n\t", wantStatus: http.StatusOK},
 		{name: "single value", body: `{"a":1}`, wantStatus: http.StatusOK},
 	}
@@ -303,4 +305,41 @@ func TestJSONWithLimit_11MBRejected(t *testing.T) {
 	err := request.JSONWithLimit(w, r, &dst, tenMB)
 	require.Error(t, err, "11MB payload should be rejected")
 	assert.Equal(t, http.StatusRequestEntityTooLarge, w.Code)
+}
+
+// failAfterReader yields data, then fails every later Read with err, the way
+// a body whose connection drops after the first JSON value does.
+type failAfterReader struct {
+	data []byte
+	err  error
+}
+
+func (f *failAfterReader) Read(p []byte) (int, error) {
+	if len(f.data) == 0 {
+		return 0, f.err
+	}
+	n := copy(p, f.data)
+	f.data = f.data[n:]
+	return n, nil
+}
+
+// TestJSON_ReadErrorAfterTheValue pins that a body read failure after the
+// first JSON value is reported like any other body read failure (400
+// INVALID_JSON with the InvalidBody message, returning the read error), not
+// as trailing data the client never sent.
+func TestJSON_ReadErrorAfterTheValue(t *testing.T) {
+	errDropped := errors.New("connection dropped")
+	r := httptest.NewRequest(http.MethodPost, "/", &failAfterReader{data: []byte(`{"name":"a"}`), err: errDropped})
+	r.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	var dst testPayload
+	err := request.JSON(w, r, &dst)
+
+	require.ErrorIs(t, err, errDropped)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	var body errorEnvelope
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	assert.Equal(t, "INVALID_JSON", body.Code)
+	assert.Equal(t, "Invalid request body", body.Message)
 }

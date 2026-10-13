@@ -217,3 +217,22 @@ func TestJSONOptional_TrailingData(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
 	assert.Equal(t, "INVALID_JSON", body.Code)
 }
+
+// TestJSONOptional_NoHeaderBodyPastTheLimit pins that a body without a
+// Content-Type that trips the byte limit while JSONOptional checks whether
+// it is empty gets the 413 that names the real problem, as it does with a
+// JSON header, instead of a 415.
+func TestJSONOptional_NoHeaderBodyPastTheLimit(t *testing.T) {
+	r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(strings.Repeat(" ", 1<<20+16)))
+	w := httptest.NewRecorder()
+
+	dst := testPayload{Name: "preset"}
+	err := request.JSONOptional(w, r, &dst)
+
+	require.Error(t, err)
+	assert.Equal(t, http.StatusRequestEntityTooLarge, w.Code)
+	var body errorEnvelope
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	assert.Equal(t, "BODY_TOO_LARGE", body.Code)
+	assert.Equal(t, "preset", dst.Name)
+}

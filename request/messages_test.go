@@ -22,7 +22,7 @@ func TestDefaultMessages_ExactTexts(t *testing.T) {
 	assert.Equal(t, "Request body exceeds the 1MB limit", m.BodyTooLarge(1))
 	assert.Equal(t, "flag must be a boolean", m.InvalidBoolean("flag"))
 	assert.Equal(t, "amount must be a valid decimal", m.InvalidDecimal("amount"))
-	assert.Equal(t, "Content-Type must be application/json", m.UnsupportedMediaType)
+	assert.Equal(t, "Content-Type must be application/json or application/*+json", m.UnsupportedMediaType)
 	assert.Equal(t, "Request body contains data after the JSON value", m.TrailingData)
 }
 

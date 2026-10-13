@@ -36,18 +36,28 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   aceptan `application/json` y cualquier `application/*+json` (con parámetros
   como `charset`); cualquier otro tipo, o la cabecera ausente, responde HTTP
   415 con el nuevo código `response.CodeUnsupportedMediaType`
-  (`UNSUPPORTED_MEDIA_TYPE`) y el nuevo mensaje `Messages.UnsupportedMediaType`.
+  (`UNSUPPORTED_MEDIA_TYPE`) y el nuevo mensaje `Messages.UnsupportedMediaType`
+  (por defecto `Content-Type must be application/json or application/*+json`,
+  que le dice al cliente qué se acepta).
   `JSONOptional` conserva su semántica: un cuerpo vacío sin cabecera sigue
   devolviendo `nil`; un cuerpo no vacío sin cabecera, o una cabecera no JSON,
-  es 415. Cambio de comportamiento para consumidores cuyos clientes no envían
+  es 415, salvo que el cuerpo sin cabecera supere el límite de bytes
+  (por ejemplo, solo espacios en blanco más allá del límite), que es 413 como
+  con cabecera. Cambio de comportamiento para consumidores cuyos clientes no envían
   la cabecera: la opción `request.AllowAnyContentType()` en `request.New`
-  desactiva el chequeo para ese `Decoder` (las funciones a nivel de paquete
-  siguen siendo estrictas).
+  desactiva el chequeo para ese `Decoder`. Es la única forma de desactivarlo:
+  las funciones a nivel de paquete siguen siendo estrictas a propósito y no
+  tienen interruptor.
 - **`request`: el cuerpo debe contener exactamente un valor JSON.** Un segundo
   valor o cualquier byte distinto de espacio en blanco tras el primero
   (`{"a":1} {"b":2}`, `{"a":1}garbage`) responde HTTP 400 `INVALID_JSON` con el
   nuevo mensaje `Messages.TrailingData`. Antes el resto del cuerpo se ignoraba
-  en silencio. Este chequeo no tiene opción de desactivación.
+  en silencio. Este chequeo no tiene opción de desactivación. Si la lectura
+  del cuerpo falla después del primer valor (por ejemplo, se corta la
+  conexión), no se informa como datos sobrantes: responde como cualquier otro
+  error de lectura del cuerpo (HTTP 400 `INVALID_JSON` con
+  `Messages.InvalidBody`, o 413 si se superó el límite) y se devuelve el error
+  de lectura.
 - **`config`: el error de `ValidURL` ya no incluye el valor.** Antes citaba la
   URL completa (y el error de `url.Parse`, que también la cita), así que una
   URL con credenciales, como el DSN de una base de datos, dejaba la contraseña
