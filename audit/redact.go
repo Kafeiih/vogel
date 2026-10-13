@@ -279,7 +279,7 @@ func (rd redactor) redactValue(w *walk, value any) (any, error) {
 		return rd.redactMap(w, v)
 	case []any:
 		if v == nil {
-			return v, nil
+			return nil, nil
 		}
 		leave, err := w.enter(container{ptr: reflect.ValueOf(v).Pointer(), len: len(v)})
 		if err != nil {

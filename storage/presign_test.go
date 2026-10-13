@@ -65,7 +65,7 @@ func TestAsAttachment(t *testing.T) {
 		},
 		{
 			name:     "C1 controls and bidi overrides are stripped from both forms",
-			filename: "fac\u0085tura‮gpj.exe ñ",
+			filename: "fac\u0085tura\u202egpj.exe ñ",
 			want:     `attachment; filename="facturagpj.exe _"; filename*=UTF-8''facturagpj.exe%20%C3%B1`,
 		},
 		{
