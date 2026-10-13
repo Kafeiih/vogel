@@ -4,8 +4,10 @@ export DB_URL
 .PHONY: dev build test migrate lint docker gen-docs worker build-worker migrate-up migrate-down migrate-status migrate-create
 
 # Desarrollo
+# start-from-migrate aplica las migraciones y luego sirve (comodidad local).
+# En despliegue: "api migrate up" con un rol migrador y luego "api server".
 dev:
-	go run ./cmd/api
+	go run ./cmd/api start-from-migrate
 
 worker:
 	go run ./cmd/worker

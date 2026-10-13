@@ -186,6 +186,11 @@ docker compose -f deploy/docker-compose.yaml up -d
 
 **Si el problema es una migracion:**
 
+Las migraciones no corren al arrancar la API (`./api server` solo sirve): las
+aplica el servicio `migrate` del compose (`./api migrate up`) antes de que
+arranque `api`. Si `migrate` falla, `api` no arranca; revisar
+`docker compose -f deploy/docker-compose.yaml logs migrate`.
+
 1. **No** desplegar la version nueva hasta resolver la migracion
 2. Revertir la ultima migracion:
    ```bash
