@@ -128,16 +128,29 @@ func (s *fakeStorage) Delete(_ context.Context, key string) error {
 	return nil
 }
 
+// fakePresignExpiry stands in for an adapter's configured default lifetime
+// (storage/s3 uses Config.PresignExpiry, or s3.DefaultPresignExpiry = 15m).
+const fakePresignExpiry = 15 * time.Minute
+
+// presignExpiry applies the storage.Storage contract: a non-positive expiry
+// means "use the adapter's configured default"; a positive one is used as is.
+func presignExpiry(expiry time.Duration) time.Duration {
+	if expiry <= 0 {
+		return fakePresignExpiry
+	}
+	return expiry
+}
+
 func (s *fakeStorage) PresignedGetURL(_ context.Context, key string, expiry time.Duration, opts ...storage.PresignGetOption) (string, error) {
 	// Fold the options the same way a real adapter does so the fake URL
 	// shows the disposition the frontend would get ("attachment" by default).
 	o := storage.ApplyPresignGetOptions(opts...)
 	return fmt.Sprintf("http://localhost/fake-storage/%s?expires=%d&disposition=%s",
-		key, time.Now().Add(expiry).Unix(), url.QueryEscape(o.ContentDisposition)), nil
+		key, time.Now().Add(presignExpiry(expiry)).Unix(), url.QueryEscape(o.ContentDisposition)), nil
 }
 
 func (s *fakeStorage) PresignedPutURL(_ context.Context, key string, _ string, expiry time.Duration) (string, error) {
-	return fmt.Sprintf("http://localhost/fake-storage/%s?expires=%d", key, time.Now().Add(expiry).Unix()), nil
+	return fmt.Sprintf("http://localhost/fake-storage/%s?expires=%d", key, time.Now().Add(presignExpiry(expiry)).Unix()), nil
 }
 
 // fakeNotifier implements notification.Notifier by logging the message

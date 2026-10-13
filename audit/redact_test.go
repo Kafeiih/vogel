@@ -369,3 +369,155 @@ func TestWithRedactor_HookDecliningFallsThrough(t *testing.T) {
 	assert.ElementsMatch(t, []string{"note", "name", "nested", "city"}, seen,
 		"a declining hook sees every non-denylisted key, and the walk descends into nested values")
 }
+
+func TestWithRedactor_ReplacementIsWalkedByTheDenylist(t *testing.T) {
+	expand := func(key string, value any) (any, bool) {
+		if key != "profile" {
+			return nil, false
+		}
+		return map[string]any{
+			"name":   "a",
+			"token":  "leaked",
+			"tokens": []any{map[string]any{"api_key": "k", "id": 1}},
+		}, true
+	}
+
+	e := recordOne(t, []RecorderOption{WithRedactor(expand)},
+		WithInputPayload(map[string]any{"profile": "raw"}))
+
+	assert.Equal(t, map[string]any{
+		"profile": map[string]any{
+			"name":   "a",
+			"token":  RedactedValue,
+			"tokens": RedactedValue,
+		},
+	}, e.InputPayload)
+}
+
+func TestWithRedactor_ReplacementIsNormalizedAndWalked(t *testing.T) {
+	type creds struct {
+		User     string `json:"user"`
+		Password string `json:"password"`
+	}
+	asStruct := func(key string, _ any) (any, bool) {
+		if key == "login" {
+			return []creds{{User: "a", Password: "pw"}}, true
+		}
+		return nil, false
+	}
+
+	e := recordOne(t, []RecorderOption{WithRedactor(asStruct)},
+		WithInputPayload(map[string]any{"login": "raw"}))
+
+	assert.Equal(t, map[string]any{
+		"login": []any{map[string]any{"user": "a", "password": RedactedValue}},
+	}, e.InputPayload)
+}
+
+func TestWithRedactor_HookReturningItsInputTerminates(t *testing.T) {
+	identity := func(_ string, value any) (any, bool) { return value, true }
+	payload := map[string]any{
+		"name":   "a",
+		"nested": map[string]any{"password": "pw", "list": []any{map[string]any{"secret": "s"}}},
+	}
+
+	created, err := recordErr(t, []RecorderOption{WithRedactor(identity)}, WithInputPayload(payload))
+
+	require.NoError(t, err)
+	require.Len(t, created, 1)
+	assert.Equal(t, map[string]any{
+		"name":   "a",
+		"nested": map[string]any{"password": RedactedValue, "list": []any{map[string]any{"secret": RedactedValue}}},
+	}, created[0].InputPayload)
+}
+
+func TestWithRedactor_UnredactableReplacement_FailsClosed(t *testing.T) {
+	cyclic := map[string]any{}
+	cyclic["self"] = cyclic
+	tests := []struct {
+		name string
+		repl any
+	}{
+		{"cyclic map", cyclic},
+		{"channel", make(chan int)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			hook := func(key string, _ any) (any, bool) {
+				if key == "data" {
+					return tt.repl, true
+				}
+				return nil, false
+			}
+
+			created, err := recordErr(t, []RecorderOption{WithRedactor(hook)},
+				WithInputPayload(map[string]any{"data": "raw"}))
+
+			require.Error(t, err)
+			assert.True(t, errors.Is(err, ErrUnredactable), "error %v does not wrap ErrUnredactable", err)
+			assert.Empty(t, created)
+		})
+	}
+}
+
+func TestRecord_NestingDeeperThanTheCap_FailsClosed(t *testing.T) {
+	nest := func(levels int, wrap func(any) any) any {
+		var v any = "leaf"
+		for range levels {
+			v = wrap(v)
+		}
+		return v
+	}
+	inMap := func(v any) any { return map[string]any{"n": v} }
+	inSlice := func(v any) any { return []any{v} }
+
+	tests := []struct {
+		name string
+		wrap func(any) any
+	}{
+		{"nested maps", inMap},
+		{"nested slices", inSlice},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name+" at the cap are accepted", func(t *testing.T) {
+			// The payload map itself is one level, so maxRedactDepth-1 more fit.
+			created, err := recordErr(t, nil,
+				WithInputPayload(map[string]any{"n": nest(maxRedactDepth-1, tt.wrap)}))
+
+			require.NoError(t, err)
+			assert.Len(t, created, 1)
+		})
+		t.Run(tt.name+" past the cap fail closed", func(t *testing.T) {
+			created, err := recordErr(t, nil,
+				WithInputPayload(map[string]any{"n": nest(maxRedactDepth, tt.wrap)}))
+
+			require.Error(t, err)
+			assert.True(t, errors.Is(err, ErrUnredactable), "error %v does not wrap ErrUnredactable", err)
+			assert.Contains(t, err.Error(), "nested deeper than")
+			assert.Empty(t, created)
+		})
+	}
+}
+
+func TestRecord_SlicesSharingABackingArray_AreNotACycle(t *testing.T) {
+	outer := make([]any, 2)
+	inner := outer[:1] // same data pointer as outer, different length
+	outer[0] = map[string]any{"password": "pw"}
+	outer[1] = inner
+
+	empty := make([]any, 0, 4)
+	nestedEmpty := []any{empty, []any{empty[:0]}}
+
+	created, err := recordErr(t, nil, WithInputPayload(map[string]any{
+		"outer": outer,
+		"empty": nestedEmpty,
+	}))
+
+	require.NoError(t, err)
+	require.Len(t, created, 1)
+	redacted := map[string]any{"password": RedactedValue}
+	assert.Equal(t, map[string]any{
+		"outer": []any{redacted, []any{redacted}},
+		"empty": []any{[]any{}, []any{[]any{}}},
+	}, created[0].InputPayload)
+}
