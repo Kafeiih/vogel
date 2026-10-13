@@ -54,6 +54,16 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   en el log de arranque. Ahora el mensaje solo nombra la variable. Cambio de
   comportamiento: el error ya no envuelve el `*url.Error` de `url.Parse`, así
   que `errors.As` sobre él deja de encontrarlo.
+- **`notification`: `Message.Validate` exige que `To` y `From` sean una
+  dirección válida.** Antes solo comprobaba que no estuvieran vacíos. Ahora
+  cada uno debe ser una única dirección RFC 5322 según `net/mail.ParseAddress`,
+  sola (`a@b.cl`) o con nombre (`Nombre <a@b.cl>`); se rechazan listas de
+  varias direcciones y cualquier CR/LF, que permitiría inyectar cabeceras. El
+  error nombra el campo pero no la dirección. `notification/sendgrid` separa
+  el nombre de la dirección antes de llamar a la API (antes enviaba
+  `Nombre <a@b.cl>` entero como dirección). Cambio de comportamiento: un
+  mensaje con una dirección mal formada que antes llegaba al proveedor ahora
+  falla en `Validate`.
 - `httpx/response`: constante `CodeUnsupportedMediaType` (`UNSUPPORTED_MEDIA_TYPE`).
 - **`httpx/middleware`: `SecurityHeaders` añade `Cache-Control: no-store` y
   `Pragma: no-cache`.** Las respuestas de una API autenticada son por usuario

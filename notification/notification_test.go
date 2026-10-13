@@ -77,3 +77,43 @@ func TestMessage_Validate_TextOnly(t *testing.T) {
 		t.Errorf("unexpected error for text-only message: %v", err)
 	}
 }
+
+func TestMessage_Validate_RejectsMalformedAddresses(t *testing.T) {
+	base := Message{
+		To:      "user@example.com",
+		From:    "noreply@institution.cl",
+		Subject: "Welcome",
+		Text:    "Hello",
+	}
+	cases := []struct {
+		name     string
+		to, from string
+	}{
+		{"to without at sign", "user.example.com", base.From},
+		{"to with header injection", "user@example.com\r\nBcc: victim@example.com", base.From},
+		{"to with two addresses", "a@example.com, b@example.com", base.From},
+		{"from without domain", base.To, "noreply@"},
+		{"from with header injection", base.To, "noreply@institution.cl\nBcc: victim@example.com"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			msg := base
+			msg.To, msg.From = tc.to, tc.from
+			if err := msg.Validate(); err == nil {
+				t.Errorf("expected error for To=%q From=%q", tc.to, tc.from)
+			}
+		})
+	}
+}
+
+func TestMessage_Validate_AcceptsDisplayName(t *testing.T) {
+	msg := &Message{
+		To:      "Ana Pérez <ana@example.com>",
+		From:    `"Institución" <noreply@institution.cl>`,
+		Subject: "Welcome",
+		Text:    "Hello",
+	}
+	if err := msg.Validate(); err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
