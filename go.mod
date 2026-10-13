@@ -2,6 +2,8 @@ module github.com/kafeiih/vogel
 
 go 1.26.0
 
+toolchain go1.26.9
+
 require (
 	github.com/aws/aws-sdk-go-v2 v1.41.5
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.14
