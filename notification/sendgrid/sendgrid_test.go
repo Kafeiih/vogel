@@ -40,3 +40,19 @@ func TestNewSendGridNotifier_NilLogger(t *testing.T) {
 		t.Fatal("expected error for nil logger")
 	}
 }
+
+func TestSGEmail_SplitsDisplayName(t *testing.T) {
+	e, err := sgEmail("Ana Pérez <ana@example.com>")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if e.Name != "Ana Pérez" || e.Address != "ana@example.com" {
+		t.Errorf("got Name=%q Address=%q", e.Name, e.Address)
+	}
+}
+
+func TestSGEmail_RejectsMalformed(t *testing.T) {
+	if _, err := sgEmail("not an address"); err == nil {
+		t.Error("expected error")
+	}
+}

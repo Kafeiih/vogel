@@ -88,7 +88,6 @@ type createDocumentRequest struct {
 	Title    string `json:"title"`
 	Kind     string `json:"kind"`
 	IssuedAt string `json:"issued_at"`
-	OwnerID  string `json:"owner_id"`
 }
 
 // Create is the centerpiece of this example: it shows why
@@ -109,7 +108,21 @@ type createDocumentRequest struct {
 // the job becomes visible to a worker if and only if the whole transaction
 // commits -- exactly like the document row, the workflow case, and the
 // audit entry it is enqueued alongside.
+//
+// The owner is always the authenticated caller, never a client-supplied
+// field: accepting owner_id from the body would let any writer create a
+// document owned by someone else and thereby grant that user the
+// owner-only delete permission (see fakeChecker). Because request.JSON
+// disallows unknown fields, a body that still sends owner_id is rejected
+// with 400 instead of being silently ignored.
 func (h *DocumentHandler) Create(w http.ResponseWriter, r *http.Request) {
+	ownerID := actorID(r.Context())
+	if ownerID == "" {
+		// Unreachable behind vmw.Authenticate; fail closed regardless.
+		response.Error(w, r, http.StatusUnauthorized, response.CodeUnauthorized, "authentication required")
+		return
+	}
+
 	var req createDocumentRequest
 	if err := request.JSON(w, r, &req); err != nil {
 		// request.JSON already wrote the error response.
@@ -130,9 +143,6 @@ func (h *DocumentHandler) Create(w http.ResponseWriter, r *http.Request) {
 	if !kindOK {
 		fields["kind"] = "kind must be one of contract, invoice, report"
 	}
-	if req.OwnerID == "" {
-		fields["owner_id"] = "owner_id is required"
-	}
 	issuedAt, dateErr := stringutil.ParseFlexibleDate(req.IssuedAt)
 	if dateErr != nil {
 		fields["issued_at"] = "issued_at must be a valid date (DD/MM/YYYY, DD-MM-YYYY or YYYY-MM-DD)"
@@ -147,7 +157,7 @@ func (h *DocumentHandler) Create(w http.ResponseWriter, r *http.Request) {
 		Title:     req.Title,
 		Kind:      req.Kind,
 		IssuedAt:  issuedAt,
-		OwnerID:   req.OwnerID,
+		OwnerID:   ownerID,
 		CreatedAt: time.Now(),
 	}
 

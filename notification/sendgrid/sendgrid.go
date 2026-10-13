@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	netmail "net/mail"
 
 	"github.com/sendgrid/sendgrid-go"
 	"github.com/sendgrid/sendgrid-go/helpers/mail"
@@ -52,8 +53,14 @@ func (n *SendGridNotifier) Send(ctx context.Context, msg *notification.Message) 
 		from = n.defaultFrom
 	}
 
-	sgFrom := mail.NewEmail("", from)
-	sgTo := mail.NewEmail("", msg.To)
+	sgFrom, err := sgEmail(from)
+	if err != nil {
+		return fmt.Errorf("notification/sendgrid: invalid from: %w", err)
+	}
+	sgTo, err := sgEmail(msg.To)
+	if err != nil {
+		return fmt.Errorf("notification/sendgrid: invalid to: %w", err)
+	}
 
 	sgMail := mail.NewSingleEmail(sgFrom, msg.Subject, sgTo, msg.Text, msg.HTML)
 
@@ -72,4 +79,15 @@ func (n *SendGridNotifier) Send(ctx context.Context, msg *notification.Message) 
 		"status", response.StatusCode,
 	)
 	return nil
+}
+
+// sgEmail parses an RFC 5322 address into SendGrid's name/address pair. The
+// API takes them as separate JSON fields, so passing "Name <a@b.cl>" whole as
+// the address would be rejected or delivered to a literal string.
+func sgEmail(addr string) (*mail.Email, error) {
+	a, err := netmail.ParseAddress(addr)
+	if err != nil {
+		return nil, err
+	}
+	return mail.NewEmail(a.Name, a.Address), nil
 }

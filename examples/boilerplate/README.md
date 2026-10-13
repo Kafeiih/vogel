@@ -115,7 +115,13 @@ ese build sólo funciona **después** de quitar el `replace` (ver arriba):
 mientras el `go.mod` apunte a `../..`, el contexto de build de Docker no
 tiene forma de ver el código de `vogel` fuera de este directorio.
 
-Las migraciones corren solas al arrancar. Verificación:
+Las migraciones corren solas al arrancar. Es una comodidad de desarrollo: el
+rol que migra queda como dueño de `audit_log` y puede deshabilitar sus triggers
+append-only. En producción, aplicá las migraciones con un rol migrador
+(`./api migrate up`) y arrancá la API y el worker con un rol que solo tenga
+`SELECT` e `INSERT` sobre `audit_log`; la receta de roles y permisos está en
+la sección «Un rol para migrar, otro para servir» del README de `vogel`.
+Verificación:
 
 ```bash
 curl -s localhost:8080/v1/healthz

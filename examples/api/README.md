@@ -54,7 +54,7 @@ TOKEN='u-1:oscar:admin'
 curl -s -X POST localhost:8080/api/v1/documents \
   -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
-  -d '{"title":"Contrato marco","kind":"contract","issued_at":"03/02/2026","owner_id":"u-1"}'
+  -d '{"title":"Contrato marco","kind":"contract","issued_at":"03/02/2026"}'
 
 # Ver el rastro de auditoría que esa única llamada dejó
 curl -s "localhost:8080/api/v1/audit?resource_type=document" -H "Authorization: Bearer $TOKEN"

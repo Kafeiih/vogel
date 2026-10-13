@@ -15,6 +15,7 @@ package notification
 import (
 	"context"
 	"fmt"
+	"net/mail"
 )
 
 // Message represents an email to be sent.
@@ -27,13 +28,23 @@ type Message struct {
 	Text    string `json:"text"`    // Plain text body (optional if HTML is set)
 }
 
-// Validate checks that required fields are present.
+// Validate checks that required fields are present and that To and From are
+// each a single RFC 5322 address, bare ("a@b.cl") or with a display name
+// ("Name <a@b.cl>"), as parsed by net/mail.ParseAddress. Parsing rejects CR/LF,
+// so an address cannot smuggle extra headers into the message. Errors name the
+// field but not the address, which is personal data.
 func (m *Message) Validate() error {
 	if m.To == "" {
 		return fmt.Errorf("notification: To is required")
 	}
+	if _, err := mail.ParseAddress(m.To); err != nil {
+		return fmt.Errorf("notification: To is not a valid email address")
+	}
 	if m.From == "" {
 		return fmt.Errorf("notification: From is required")
+	}
+	if _, err := mail.ParseAddress(m.From); err != nil {
+		return fmt.Errorf("notification: From is not a valid email address")
 	}
 	if m.Subject == "" {
 		return fmt.Errorf("notification: Subject is required")
