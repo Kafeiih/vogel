@@ -4,6 +4,24 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el versionado,
 [SemVer](https://semver.org/lang/es/).
 
+## [Unreleased]
+
+### Cambiado
+
+- **Versión mínima de Go: 1.26.** Corregir las vulnerabilidades alcanzables
+  GO-2026-6603/6610/6611/6612/6617 exige `golang.org/x/net` v0.60.0, que
+  declara `go 1.26.0` (igual que `x/text` v0.42.0 y `x/crypto` v0.57.0). No
+  existe una versión corregida que conserve 1.25. Los consumidores necesitan
+  Go 1.26 o superior, o `GOTOOLCHAIN` con descarga automática.
+- Dependencias: `golang.org/x/net` v0.57.0 → v0.60.0, `google.golang.org/grpc`
+  v1.83.0 → v1.83.1 (GO-2026-6348, alcanzable desde `authz/cerbos` y
+  `notification/sendgrid`) y `github.com/go-chi/chi/v5` v5.2.3 → v5.3.2
+  (GO-2026-5774/5775/5777 en `middleware.RealIP`). Nota: chi v5.3.2 sigue
+  confiando en `X-Forwarded-For`, `X-Real-IP` y `True-Client-IP` de cualquier
+  cliente; solo valida que el valor sea una IP. Montar `RealIP` únicamente
+  detrás de un proxy confiable.
+- CI: nuevo job `govulncheck` que escanea la raíz y `examples/boilerplate`.
+
 ## [0.8.0] — 2026-09-30
 
 ### Agregado
