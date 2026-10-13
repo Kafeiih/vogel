@@ -2,6 +2,13 @@
 // across handlers: JSON body decoding with a Content-Type check, size limits
 // and error mapping (json.go), localizable user-facing messages
 // (messages.go), and query/URL-parameter validation (validate.go).
+//
+// The Content-Type check fails closed: a body must be declared as
+// application/json or application/*+json, or the request is rejected with
+// HTTP 415. The package-level JSON, JSONWithLimit and JSONOptional always
+// enforce it and have no switch to turn it off. The only escape hatch is a
+// Decoder built with New(AllowAnyContentType()), so relaxing the check is an
+// explicit, per-Decoder decision that shows up where that Decoder is built.
 package request
 
 import (
@@ -53,7 +60,8 @@ func New(opts ...Option) *Decoder {
 }
 
 // AllowAnyContentType disables the Content-Type check for a Decoder built
-// with New: every body is decoded whatever media type the client declares,
+// with New, and is the only way to disable it; the package-level functions
+// always enforce it. With it, every body is decoded whatever media type the client declares,
 // or declares none, exactly as this package behaved before the check
 // existed. It is an escape hatch for a consumer with legacy clients that
 // cannot be fixed to send application/json; every other rule — the byte
@@ -71,7 +79,9 @@ var defaultDecoder = New()
 // JSON decodes the request body into data and returns nil on success.
 // The body is limited to defaultMaxBytes, must be declared as application/json
 // or application/*+json by the Content-Type header, and must hold exactly one
-// JSON value. On failure it writes a 400/413/415 JSON response directly and
+// JSON value. The Content-Type check cannot be disabled here; use a Decoder
+// built with New(AllowAnyContentType()) for clients that cannot send the
+// header. On failure it writes a 400/413/415 JSON response directly and
 // returns the error, so the caller only needs:
 //
 //	if err := request.JSON(w, r, &req); err != nil {
@@ -82,9 +92,9 @@ func JSON(w http.ResponseWriter, r *http.Request, data any) error {
 }
 
 // JSONWithLimit decodes the request body into data with a caller-supplied byte
-// limit. It behaves like JSON but lets callers override the default limit —
-// for example, a bulk-import endpoint that legitimately accepts larger bodies.
-// On failure it writes a 400/413/415 JSON response directly and returns the error.
+// limit. It behaves like JSON, including the Content-Type check, but lets
+// callers override the default limit — for example, a bulk-import endpoint
+// that legitimately accepts larger bodies. On failure it writes a 400/413/415 JSON response directly and returns the error.
 func JSONWithLimit(w http.ResponseWriter, r *http.Request, data any, maxBytes int64) error {
 	return defaultDecoder.JSONWithLimit(w, r, data, maxBytes)
 }
@@ -98,7 +108,10 @@ func JSONWithLimit(w http.ResponseWriter, r *http.Request, data any, maxBytes in
 // example — as opposed to a required body that happens to be malformed,
 // which is still a 400 exactly like JSON. An empty body may also omit the
 // Content-Type header; a non-empty body must declare a JSON media type or
-// the request is a 415 exactly like JSON.
+// the request is a 415 exactly like JSON. A body without the header is read
+// only far enough to tell whether it is empty, so one that is whitespace past
+// the byte limit is a 413, as it is with the header. As with JSON,
+// only a Decoder built with New(AllowAnyContentType()) skips the check.
 func JSONOptional(w http.ResponseWriter, r *http.Request, data any) error {
 	return defaultDecoder.JSONOptional(w, r, data)
 }
@@ -135,7 +148,7 @@ func (d *Decoder) decode(w http.ResponseWriter, r *http.Request, data any, maxBy
 	decoder.DisallowUnknownFields()
 
 	if d.checksContentType() {
-		if err := d.checkContentType(w, r, decoder, allowEmpty); err != nil {
+		if err := d.checkContentType(w, r, decoder, maxBytes, allowEmpty); err != nil {
 			if errors.Is(err, errAbsentOptionalBody) {
 				return nil
 			}
@@ -151,20 +164,24 @@ func (d *Decoder) decode(w http.ResponseWriter, r *http.Request, data any, maxBy
 		return err
 	}
 
-	// Exactly one value: anything but EOF after it — a second value, stray
-	// bytes, or the byte limit tripping on the extra bytes — is an error.
-	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		var maxBytesErr *http.MaxBytesError
-		if errors.As(err, &maxBytesErr) {
-			d.writeDecodeError(w, r, err, maxBytes)
-			return err
-		}
+	// Exactly one value: anything but EOF after it is an error. A token, a
+	// syntax error or a value cut short is data the client sent after the
+	// value; any other error (the byte limit tripping on the extra bytes, or
+	// the body read failing) is reported like the same failure on the first
+	// value.
+	_, err := decoder.Token()
+	var syntaxErr *json.SyntaxError
+	switch {
+	case errors.Is(err, io.EOF):
+		return nil
+	case err == nil, errors.As(err, &syntaxErr), errors.Is(err, io.ErrUnexpectedEOF):
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidJSON,
 			d.msgs().TrailingData)
 		return errTrailingData
+	default:
+		d.writeDecodeError(w, r, err, maxBytes)
+		return err
 	}
-
-	return nil
 }
 
 var (
@@ -188,7 +205,8 @@ func (d *Decoder) checksContentType() bool {
 
 // checkContentType enforces the media-type gate. It returns nil when the body
 // may be decoded, errAbsentOptionalBody when allowEmpty is set and the
-// request carries neither a Content-Type nor a body, and
+// request carries neither a Content-Type nor a body, the limit error — after
+// writing the 413 — when checking for an absent body reads past maxBytes, and
 // errUnsupportedMediaType — after writing the 415 — otherwise.
 //
 // The header is only optional for an absent body: a client that sends
@@ -196,14 +214,22 @@ func (d *Decoder) checksContentType() bool {
 // body is absent, so whitespace-only bodies count as empty exactly as they do
 // for JSONOptional with a proper header, and the Content-Length header —
 // which a chunked request does not carry — is never consulted.
-func (d *Decoder) checkContentType(w http.ResponseWriter, r *http.Request, decoder *json.Decoder, allowEmpty bool) error {
+func (d *Decoder) checkContentType(w http.ResponseWriter, r *http.Request, decoder *json.Decoder, maxBytes int64, allowEmpty bool) error {
 	contentType := r.Header.Get("Content-Type")
-	if contentType == "" && allowEmpty {
-		if _, err := decoder.Token(); errors.Is(err, io.EOF) {
-			return errAbsentOptionalBody
-		}
-	} else if isJSONMediaType(contentType) {
+	if isJSONMediaType(contentType) {
 		return nil
+	}
+
+	if contentType == "" && allowEmpty {
+		_, err := decoder.Token()
+		var maxBytesErr *http.MaxBytesError
+		switch {
+		case errors.Is(err, io.EOF):
+			return errAbsentOptionalBody
+		case errors.As(err, &maxBytesErr):
+			d.writeDecodeError(w, r, err, maxBytes)
+			return err
+		}
 	}
 
 	response.Error(w, r, http.StatusUnsupportedMediaType, response.CodeUnsupportedMediaType,

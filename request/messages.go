@@ -133,7 +133,7 @@ func DefaultMessages() Messages {
 		},
 		InvalidBody: "Invalid request body",
 
-		UnsupportedMediaType: "Content-Type must be application/json",
+		UnsupportedMediaType: "Content-Type must be application/json or application/*+json",
 		TrailingData:         "Request body contains data after the JSON value",
 
 		Required:           func(field string) string { return field + " is required" },

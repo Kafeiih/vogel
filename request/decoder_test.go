@@ -218,3 +218,50 @@ func TestAllowAnyContentType(t *testing.T) {
 		assert.Equal(t, http.StatusUnsupportedMediaType, w.Code)
 	})
 }
+
+// TestAllowAnyContentType_WithMessages pins that the two options compose in
+// either order: the gate is off and the custom messages are used.
+func TestAllowAnyContentType_WithMessages(t *testing.T) {
+	msgs := request.Messages{
+		UnsupportedMediaType: "custom 415",
+		TrailingData:         "custom trailing",
+		EmptyBody:            "custom empty",
+	}
+	orders := map[string][]request.Option{
+		"AllowAnyContentType first": {request.AllowAnyContentType(), request.WithMessages(msgs)},
+		"WithMessages first":        {request.WithMessages(msgs), request.AllowAnyContentType()},
+	}
+	for name, opts := range orders {
+		t.Run(name, func(t *testing.T) {
+			d := request.New(opts...)
+
+			decode := func(contentType, body string) (*httptest.ResponseRecorder, testPayload, error) {
+				r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+				if contentType != "" {
+					r.Header.Set("Content-Type", contentType)
+				}
+				w := httptest.NewRecorder()
+				var dst testPayload
+				err := d.JSON(w, r, &dst)
+				return w, dst, err
+			}
+
+			w, dst, err := decode("text/plain", `{"name":"hello"}`)
+			require.NoError(t, err, "the gate is disabled")
+			assert.Equal(t, "hello", dst.Name)
+			assert.Equal(t, 0, w.Body.Len())
+
+			for _, c := range []struct{ contentType, body, want string }{
+				{"text/plain", `{"name":"hello"}garbage`, "custom trailing"},
+				{"", ``, "custom empty"},
+			} {
+				w, _, err := decode(c.contentType, c.body)
+				require.Error(t, err)
+				assert.Equal(t, http.StatusBadRequest, w.Code)
+				var body errorEnvelope
+				require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+				assert.Equal(t, c.want, body.Message)
+			}
+		})
+	}
+}

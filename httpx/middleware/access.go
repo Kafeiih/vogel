@@ -35,6 +35,22 @@ import (
 //
 // Fail-closed: on any error, this middleware writes a response (via
 // WriteAccessError) and returns without calling next.ServeHTTP.
+//
+// Log volume: every denial (403) writes one Warn line to logger, with no
+// sampling or rate limiting of its own. A client that probes many resources
+// it may not see -- an enumeration attempt, or a broken client retrying in
+// a loop -- therefore produces one Warn line per request, and the log volume
+// grows with the attacker's request rate. That is deliberate (the denials
+// are the signal), but a service exposed to untrusted clients should bound
+// it at the logger, not here: pass a *slog.Logger whose slog.Handler wraps
+// the real one with a sampling or rate-limiting handler (keyed, for
+// example, on the "user_id" or "path" attribute, so one noisy client cannot
+// drown out the others), or pass a logger whose handler level is above
+// slog.LevelWarn to drop the denial lines entirely while still keeping the
+// 503 Error lines. A request rate limiter mounted in front of the router
+// (vogel ships none; httprate is a common choice) bounds the log volume as
+// a side effect. The same
+// applies to WriteAccessError, which logs through the same path.
 func RequireAccess(guard *access.Guard, resourceKind, action string, logger *slog.Logger, opts ...AuthOption) func(http.Handler) http.Handler {
 	msgs := DefaultAuthMessages()
 	for _, opt := range opts {
@@ -76,6 +92,10 @@ func RequireAccess(guard *access.Guard, resourceKind, action string, logger *slo
 // the router: a handler that calls guard.Check after loading an entity uses
 // WriteAccessError to get the exact same 401/403/503 mapping and logging the
 // middleware gives every route, without duplicating the switch itself.
+//
+// Like RequireAccess, it logs every 403 at Warn with no sampling of its own;
+// see the "Log volume" paragraph on RequireAccess for how to bound that
+// with a sampling or rate-limiting slog.Handler.
 func WriteAccessError(w http.ResponseWriter, r *http.Request, err error, logger *slog.Logger, opts ...AuthOption) bool {
 	if err == nil {
 		return false
