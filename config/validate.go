@@ -13,13 +13,20 @@ import (
 // that a setting was non-empty, so a malformed endpoint (a missing "https://",
 // a stray space) passed validation and failed later inside whatever HTTP
 // client used it, with a less specific error further from the actual cause.
+//
+// The returned error never contains value, not even in part: URLs such as
+// database DSNs routinely carry a password in their userinfo, and this error
+// is typically logged at boot. url.Parse's own error is dropped for the same
+// reason, since it quotes the input and some of its messages (an invalid
+// port, for instance) echo fragments of the userinfo. u.Redacted() is not
+// enough either: it only masks a password it managed to parse as one.
 func ValidURL(fieldName, value string) error {
 	u, err := url.Parse(value)
 	if err != nil {
-		return fmt.Errorf("%s must be a well-formed URL: %w", fieldName, err)
+		return fmt.Errorf("%s must be a well-formed URL", fieldName)
 	}
 	if u.Scheme == "" || u.Host == "" {
-		return fmt.Errorf("%s must be an absolute URL with a scheme and host, got %q", fieldName, value)
+		return fmt.Errorf("%s must be an absolute URL with a scheme and host", fieldName)
 	}
 	return nil
 }

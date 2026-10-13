@@ -35,6 +35,29 @@ func TestValidURL(t *testing.T) {
 	}
 }
 
+// TestValidURL_NeverEchoesTheValue guards against leaking credentials: a
+// connection string such as a DSN often carries a password, and the error
+// ValidURL returns is typically logged at boot.
+func TestValidURL_NeverEchoesTheValue(t *testing.T) {
+	cases := []struct {
+		name  string
+		value string
+	}{
+		{"unparsable with password in the port position", "postgres://user:s3cr3t/x@db:5432/app"},
+		{"missing host with userinfo", "postgres://user:s3cr3t@"},
+		{"missing scheme with userinfo", "user:s3cr3t@db:5432"},
+		{"control character", "https://user:s3cr3t@db/app"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := config.ValidURL("DATABASE_URL", tc.value)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "DATABASE_URL")
+			assert.NotContains(t, err.Error(), "s3cr3t")
+		})
+	}
+}
+
 func TestIntRange(t *testing.T) {
 	assert.NoError(t, config.IntRange("PORT", 50, 1, 100))
 	assert.NoError(t, config.IntRange("PORT", 1, 1, 100), "min boundary is inclusive")

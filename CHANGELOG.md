@@ -48,6 +48,12 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   (`{"a":1} {"b":2}`, `{"a":1}garbage`) responde HTTP 400 `INVALID_JSON` con el
   nuevo mensaje `Messages.TrailingData`. Antes el resto del cuerpo se ignoraba
   en silencio. Este chequeo no tiene opción de desactivación.
+- **`config`: el error de `ValidURL` ya no incluye el valor.** Antes citaba la
+  URL completa (y el error de `url.Parse`, que también la cita), así que una
+  URL con credenciales, como el DSN de una base de datos, dejaba la contraseña
+  en el log de arranque. Ahora el mensaje solo nombra la variable. Cambio de
+  comportamiento: el error ya no envuelve el `*url.Error` de `url.Parse`, así
+  que `errors.As` sobre él deja de encontrarlo.
 - `httpx/response`: constante `CodeUnsupportedMediaType` (`UNSUPPORTED_MEDIA_TYPE`).
 - **`httpx/middleware`: `SecurityHeaders` añade `Cache-Control: no-store` y
   `Pragma: no-cache`.** Las respuestas de una API autenticada son por usuario
