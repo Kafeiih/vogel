@@ -204,10 +204,19 @@ func parseTrustedProxies(errs *config.Errors) []netip.Prefix {
 	return prefixes
 }
 
+// WorkerSchema returns the PostgreSQL schema River's tables live in
+// (WORKER_SCHEMA, default "river"). It reads only that variable, so "api
+// migrate up" can apply River's migrations without the variables Load
+// requires for serving; the worker reads the same value through
+// parseWorkerConfig.
+func WorkerSchema() string {
+	return config.String("WORKER_SCHEMA", "river")
+}
+
 // parseWorkerConfig reads WORKER_* env vars and returns a worker.Config with
 // defaults.
 func parseWorkerConfig() worker.Config {
-	schema := config.String("WORKER_SCHEMA", "river")
+	schema := WorkerSchema()
 
 	defaultMax := 100
 	if v := os.Getenv("WORKER_DEFAULT_MAX_WORKERS"); v != "" {

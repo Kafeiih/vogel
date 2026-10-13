@@ -88,6 +88,18 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   depende `api` (`service_completed_successfully`). Cambio de
   comportamiento: quien arranque con `server` debe correr `migrate up` antes
   de desplegar, o usar `start-from-migrate` en desarrollo.
+- **`examples/boilerplate`: el worker ya no migra River al arrancar.** Antes
+  `cmd/worker` corría `worker.EnsureSchema` y `queue.Migrate` en cada
+  arranque, lo que exigía permiso `CREATE` al rol del worker y hacía migrar a
+  cada réplica. Ahora `worker server` (y el binario sin argumentos) solo
+  procesa jobs; `api migrate up` (y `api start-from-migrate`) crean el
+  esquema `WORKER_SCHEMA` y aplican las migraciones de River, y el nuevo
+  `worker start-from-migrate` migra River y luego procesa jobs, como el
+  worker anterior. `api migrate down` nunca revierte River y `api migrate
+  status` no lo lista. `make worker` usa `start-from-migrate` y en el compose
+  de despliegue `worker` también espera al servicio `migrate`. Cambio de
+  comportamiento: un worker desplegado sin correr antes `api migrate up`
+  falla al arrancar si las tablas de River no existen.
 - `httpx/response`: constante `CodeUnsupportedMediaType` (`UNSUPPORTED_MEDIA_TYPE`).
 - **`httpx/middleware`: `SecurityHeaders` añade `Cache-Control: no-store` y
   `Pragma: no-cache`.** Las respuestas de una API autenticada son por usuario

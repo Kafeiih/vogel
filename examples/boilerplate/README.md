@@ -120,15 +120,19 @@ start` / `zitadel start-from-setup`:
 
 | Subcomando | Qué hace | Cuándo usarlo |
 |---|---|---|
-| `./api migrate up` | Aplica todos los conjuntos de migraciones contra `DB_URL` y termina | En despliegue, como paso previo, con un rol migrador |
+| `./api migrate up` | Aplica todos los conjuntos de migraciones contra `DB_URL`, crea el esquema de River (`WORKER_SCHEMA`, default `river`) y aplica sus migraciones, y termina | En despliegue, como paso previo, con un rol migrador |
 | `./api server` (o `./api` sin argumentos) | Sirve la API; **no** toca el esquema | En despliegue, después de `migrate up`, con un rol que solo tenga `SELECT` e `INSERT` sobre `audit_log` |
-| `./api start-from-migrate` | Aplica las migraciones y luego sirve, en un solo proceso | En desarrollo local (`make dev`) |
+| `./api start-from-migrate` | Aplica las migraciones (River incluido) y luego sirve, en un solo proceso | En desarrollo local (`make dev`) |
+| `./worker server` (o `./worker` sin argumentos) | Procesa jobs; **no** crea el esquema de River ni lo migra | En despliegue, después de `migrate up`, con un rol sin permiso `CREATE` |
+| `./worker start-from-migrate` | Crea el esquema de River, aplica sus migraciones y luego procesa jobs | En desarrollo local (`make worker`) |
 
 `start-from-migrate` es una comodidad de desarrollo: el rol que migra queda
 como dueño de `audit_log` y puede deshabilitar sus triggers append-only, así
 que no sirve para producción. El compose de despliegue ya sigue el esquema de
 dos fases: un servicio `migrate` de una sola ejecución corre `migrate up` y
-`api` arranca con `server` solo cuando ese servicio terminó bien. La receta de
+`api` y `worker` arrancan con `server` solo cuando ese servicio terminó bien.
+Si cambia `WORKER_SCHEMA`, el servicio `migrate` y el `worker` deben recibir
+el mismo valor. La receta de
 roles y permisos está en la sección «Un rol para migrar, otro para servir» del
 README de `vogel`.
 Verificación:
@@ -140,7 +144,7 @@ curl -s localhost:8080/v1/healthz
 El worker se arranca aparte:
 
 ```bash
-go run ./cmd/worker
+go run ./cmd/worker start-from-migrate   # o: make worker
 ```
 
 El `Makefile` resume estos comandos (`make dev`, `make worker`, `make
@@ -200,6 +204,11 @@ librería.
 las de audit: `migrate.Down` deshace la última migración del conjunto que
 recibe, y la única migración de audit es la que crea `audit_log`, así que
 incluirla borraría el registro de auditoría en cada `migrate down`.
+
+Las migraciones de River no son de goose: `migrate up` las aplica (son
+idempotentes y registra cada versión aplicada), pero `migrate down` nunca las
+revierte —sus migraciones de bajada borran las tablas de jobs y todos los
+jobs encolados— y `migrate status` no las lista.
 
 `internal/infrastructure/database/migrations/` trae una única migración de
 ejemplo (`001_enable_pgcrypto.sql`, habilita la extensión `pgcrypto` para

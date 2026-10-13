@@ -21,15 +21,57 @@ import (
 
 	"github.com/kafeiih/vogel/examples/boilerplate/internal/application/jobs"
 	"github.com/kafeiih/vogel/examples/boilerplate/internal/infrastructure/config"
+	"github.com/kafeiih/vogel/examples/boilerplate/internal/infrastructure/riverschema"
 )
 
 func main() {
-	if err := run(); err != nil {
+	var subcmd string
+	if len(os.Args) > 1 {
+		subcmd = os.Args[1]
+	}
+	cmd, err := parseCommand(subcmd)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	if err := run(cmd == cmdStartFromMigrate); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func run() error {
+// command is a top-level subcommand of the worker binary. It mirrors the api
+// binary's phases: River's schema is applied by "api migrate up", so the
+// worker's role does not need CREATE privileges and replicas do not race to
+// migrate at boot.
+type command int
+
+const (
+	// cmdServer processes jobs only and never touches the schema. A bare
+	// "worker" is an alias for "worker server".
+	cmdServer command = iota
+	// cmdStartFromMigrate ensures River's schema and applies its migrations,
+	// then processes jobs. It is a development convenience: the worker's role
+	// must be able to create the schema and its tables.
+	cmdStartFromMigrate
+)
+
+// parseCommand maps the first CLI argument to a command.
+func parseCommand(subcmd string) (command, error) {
+	switch subcmd {
+	case "", "server":
+		return cmdServer, nil
+	case "start-from-migrate":
+		return cmdStartFromMigrate, nil
+	default:
+		return 0, fmt.Errorf("unknown subcommand %q; valid: server, start-from-migrate", subcmd)
+	}
+}
+
+// run processes jobs until SIGINT/SIGTERM. With migrateFirst
+// ("start-from-migrate") it first applies River's schema against
+// cfg.Database.URL; without it ("server") the schema must already be current,
+// applied by "api migrate up" with a migrator role.
+func run(migrateFirst bool) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
@@ -89,22 +131,15 @@ func run() error {
 		return fmt.Errorf("creating river queue: %w", err)
 	}
 
-	// Run River schema migrations
-	migrateCtx, migrateCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer migrateCancel()
+	if migrateFirst {
+		migrateCtx, migrateCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer migrateCancel()
 
-	// River creates its tables INSIDE cfg.Worker.Schema but does not create
-	// the schema itself. On a freshly provisioned DB this would fail with
-	// SQLSTATE 3F000. EnsureSchema is idempotent.
-	if err := worker.EnsureSchema(migrateCtx, pool, cfg.Worker.Schema); err != nil {
-		return fmt.Errorf("ensuring worker schema: %w", err)
+		if err := riverschema.Migrate(migrateCtx, pool, cfg.Worker.Schema, appLogger.Logger); err != nil {
+			return err
+		}
+		appLogger.Info("river migrations applied")
 	}
-
-	if err := queue.Migrate(migrateCtx); err != nil {
-		return fmt.Errorf("running river migrations: %w", err)
-	}
-
-	appLogger.Info("river migrations applied")
 
 	// Start processing jobs
 	workerCtx, workerCancel := context.WithCancel(context.Background())

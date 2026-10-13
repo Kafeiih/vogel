@@ -94,3 +94,24 @@ func TestWorkerConfig_MalformedQueues(t *testing.T) {
 		t.Error("Queues: 'malformed' without colon should be skipped")
 	}
 }
+
+func TestWorkerSchema_DefaultsToRiver(t *testing.T) {
+	t.Setenv("WORKER_SCHEMA", "")
+
+	if got := WorkerSchema(); got != "river" {
+		t.Errorf("WorkerSchema() = %q, want %q", got, "river")
+	}
+}
+
+func TestWorkerSchema_ReadsWorkerSchemaEnv(t *testing.T) {
+	t.Setenv("WORKER_SCHEMA", "jobs")
+
+	if got := WorkerSchema(); got != "jobs" {
+		t.Errorf("WorkerSchema() = %q, want %q", got, "jobs")
+	}
+	// The migrate path and the worker must agree on the schema, so the full
+	// worker config reads the same value.
+	if got := parseWorkerConfig().Schema; got != "jobs" {
+		t.Errorf("parseWorkerConfig().Schema = %q, want %q", got, "jobs")
+	}
+}

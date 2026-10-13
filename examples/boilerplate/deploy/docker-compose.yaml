@@ -15,9 +15,11 @@ services:
       timeout: 3s
       retries: 5
 
-  # One-shot setup step: applies every migration set and exits. In
-  # production DB_URL here is the migrator role, which owns the tables; the
-  # api service then serves with a role that cannot alter audit_log.
+  # One-shot setup step: applies every migration set, River's schema
+  # included, and exits. In production DB_URL here is the migrator role,
+  # which owns the tables; api and worker then run with roles that cannot
+  # alter audit_log or create tables. WORKER_SCHEMA, if set, must match the
+  # worker's.
   migrate:
     image: ghcr.io/kafeiih/vogel-boilerplate:latest
     build:
@@ -54,9 +56,12 @@ services:
     build:
       context: ..
       target: worker
+    command: ["server"]
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     env_file:
       - .env
     environment:
