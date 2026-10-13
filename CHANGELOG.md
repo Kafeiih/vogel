@@ -28,6 +28,8 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   hace fallar el arranque. Cambio de comportamiento: detrás de un balanceador,
   hay que declarar sus direcciones en `TRUSTED_PROXIES` o todas las requests
   aparecen con la IP del balanceador.
+- `httpx/response`: constante `CodeUnsupportedMediaType` (`UNSUPPORTED_MEDIA_TYPE`).
+- CI: nuevo job `govulncheck` que escanea la raíz y `examples/boilerplate`.
 
 ### Cambiado
 
@@ -114,7 +116,14 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   de despliegue `worker` también espera al servicio `migrate`. Cambio de
   comportamiento: un worker desplegado sin correr antes `api migrate up`
   falla al arrancar si las tablas de River no existen.
-- `httpx/response`: constante `CodeUnsupportedMediaType` (`UNSUPPORTED_MEDIA_TYPE`).
+- **`examples/api`: `POST /documents` ya no acepta `owner_id`.** Antes el
+  dueño del documento venía del cuerpo de la request, así que cualquier
+  usuario con permiso de escritura podía crear un documento a nombre de otro
+  y darle el permiso de borrado reservado al dueño. Ahora el dueño es siempre
+  el principal autenticado (`auth.FromContext`); sin principal la respuesta
+  es 401. Cambio de comportamiento: como `request.JSON` rechaza campos
+  desconocidos, un cuerpo que todavía envía `owner_id` recibe 400 en vez de
+  ignorarse.
 - **`httpx/middleware`: `SecurityHeaders` añade `Cache-Control: no-store` y
   `Pragma: no-cache`.** Las respuestas de una API autenticada son por usuario
   y no deben quedar en la caché del navegador ni de un proxy intermedio. Las
@@ -143,7 +152,6 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   confiando en `X-Forwarded-For`, `X-Real-IP` y `True-Client-IP` de cualquier
   cliente; solo valida que el valor sea una IP. Montar `RealIP` únicamente
   detrás de un proxy confiable.
-- CI: nuevo job `govulncheck` que escanea la raíz y `examples/boilerplate`.
 - **`storage`: `Storage.PresignedGetURL` acepta opciones variádicas
   (`...PresignGetOption`).** La firma del puerto cambia: toda implementación
   propia (fakes de test incluidos) debe añadir el parámetro
