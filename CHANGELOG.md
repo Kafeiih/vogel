@@ -38,7 +38,7 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   se logueaba. La línea `authorization denied` lleva `user_id`,
   `resource_kind`, `resource_id` (el parámetro `id` de la ruta o `*` cuando no
   hay), `action`, `method`, `path` y `request_id` (el que `RequestContext`
-  puente en `reqctx`; vacío si ese middleware no está montado). No incluye el
+  pone en `reqctx`; vacío si ese middleware no está montado). No incluye el
   token ni ninguna cabecera. Desde `WriteAccessError` (dentro de un handler)
   `resource_kind`, `resource_id` y `action` van vacíos. El 401 sigue sin
   loguearse.
@@ -75,6 +75,23 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   leía. Ahora `PresignedGetURL` y `PresignedPutURL` lo usan cuando el `expiry`
   de la llamada es `<= 0` (nueva constante `DefaultPresignExpiry` = 15m cuando
   tampoco está configurado). Un `expiry` positivo sigue mandando.
+- **`audit`: `Recorder.Record` redacta valores sensibles antes de persistir.**
+  Antes `audit_log` guardaba contraseñas, tokens y secretos tal como llegaban
+  en `InputPayload`, los snapshots y `ChangedFields`. Ahora el valor de toda
+  clave que coincide con la lista de denegación (`password`, `token`,
+  `secret`, `authorization`, `api_key`, `cookie`) se reemplaza por
+  `audit.RedactedValue` (`[REDACTED]`) en los cuatro campos y a cualquier
+  profundidad (mapas, slices y structs, estos en su forma JSON); la clave se
+  conserva y un `nil` sigue siendo `nil`. En `ChangedFields` el nombre del
+  campo se mantiene y se redactan `old` y `new` por separado. La coincidencia
+  ignora mayúsculas, `_`, `-`, `.` y espacios, y es por subcadena
+  (`access_token`, `refreshToken`, `client_secret`, `X-Api-Key` y
+  `Set-Cookie` quedan cubiertas; también `token_count`, a propósito). Los
+  mapas del llamador no se modifican. `NewRecorder` acepta opciones variádicas
+  (`...RecorderOption`), así que los llamadores existentes compilan sin
+  cambios: `WithRedactedKeys` amplía la lista y `WithRedactor` instala un
+  hook propio (`audit.Redactor`). Cambio de comportamiento: quien leía esos
+  valores desde el log de auditoría deja de verlos.
 
 ## [0.8.0] — 2026-09-30
 

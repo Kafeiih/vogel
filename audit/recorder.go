@@ -139,12 +139,27 @@ func WithError(code, message string) Option {
 
 // Recorder provides a simple API for recording audit entries.
 type Recorder struct {
-	repo Repository
+	repo         Repository
+	redactedKeys []string
+	redactors    []Redactor
+	redact       redactor
 }
 
 // NewRecorder creates a new Recorder with the given repository.
-func NewRecorder(repo Repository) *Recorder {
-	return &Recorder{repo: repo}
+//
+// Every entry is redacted before it reaches repo: the value under any key
+// matching the denylist (password, token, secret, authorization, api_key,
+// cookie, plus WithRedactedKeys) is replaced with RedactedValue in
+// InputPayload, BeforeSnapshot, AfterSnapshot and ChangedFields, at every
+// nesting level. WithRedactor adds custom hooks. The caller's maps are never
+// modified; the entry gets redacted copies.
+func NewRecorder(repo Repository, opts ...RecorderOption) *Recorder {
+	r := &Recorder{repo: repo, redactedKeys: append([]string(nil), defaultRedactedKeys...)}
+	for _, opt := range opts {
+		opt(r)
+	}
+	r.redact = redactor{keys: newKeyMatcher(r.redactedKeys), hooks: r.redactors}
+	return r
 }
 
 // Record creates an audit entry using the given db (a pool or a live
@@ -209,6 +224,10 @@ func (r *Recorder) Record(ctx context.Context, db pgxtx.DBTX, source Source, act
 	for _, opt := range opts {
 		opt(entry)
 	}
+
+	// Redaction runs last, after every Option, so no Option can reintroduce
+	// a sensitive value behind it.
+	r.redact.redactEntry(entry)
 
 	return r.repo.Create(ctx, db, entry)
 }
