@@ -196,10 +196,19 @@ down` nunca revierte River: sus migraciones de bajada borran los jobs
 encolados.
 
 1. **No** desplegar la version nueva hasta resolver la migracion
-2. Revertir la ultima migracion:
+2. Revertir la ultima migracion con el subcomando del propio binario, usando
+   la URL del rol migrador (el dueño de las tablas):
    ```bash
-   goose -dir internal/infrastructure/database/migrations postgres "$DB_URL" down
+   # Con el compose de despliegue:
+   docker compose -f deploy/docker-compose.yaml run --rm migrate migrate down
+   # O con el binario directamente:
+   DB_URL="<url del rol migrador>" ./api migrate down
    ```
+   `migrate down` revierte solo la ultima migracion de este servicio, toma el
+   mismo advisory lock que `migrate up` y nunca toca `audit_log` ni River. No
+   uses el CLI de `goose` directo: se salta ese lock y no sabe de las tablas
+   de version separadas de cada conjunto. `./api migrate status` muestra el
+   estado antes y despues.
 3. Verificar que la version anterior funciona con el schema revertido
 4. Investigar la causa del fallo en la migracion
 
