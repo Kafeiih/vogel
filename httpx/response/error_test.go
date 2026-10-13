@@ -23,6 +23,10 @@ func TestCodeUnprocessableEntity_Value(t *testing.T) {
 	assert.Equal(t, "UNPROCESSABLE_ENTITY", response.CodeUnprocessableEntity)
 }
 
+func TestCodeUnsupportedMediaType_Value(t *testing.T) {
+	assert.Equal(t, "UNSUPPORTED_MEDIA_TYPE", response.CodeUnsupportedMediaType)
+}
+
 func TestError_JSONShapeUnchanged(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
