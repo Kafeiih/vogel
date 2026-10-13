@@ -240,7 +240,9 @@ func runServer() error {
 	//   publicStore := storageReg.Get("public")
 	//   privateStore := storageReg.Get("private")
 	//   err := publicStore.Upload(ctx, &storage.UploadInput{Key: "assets/logo.png", Body: f, ContentType: "image/png"})
-	//   url, err := privateStore.PresignedGetURL(ctx, "docs/licencia.pdf", 15*time.Minute)
+	//   // 0 expiry = the backend's PresignExpiry; the URL serves the object as an
+	//   // attachment unless you pass storage.WithContentDisposition("inline").
+	//   url, err := privateStore.PresignedGetURL(ctx, "docs/licencia.pdf", 0, storage.AsAttachment("licencia.pdf"))
 	if len(cfg.Storages) > 0 {
 		storageReg, err := s3.NewStorageRegistry(cfg.Storages, appLogger.Logger)
 		if err != nil {

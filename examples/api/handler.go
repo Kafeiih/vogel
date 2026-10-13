@@ -621,6 +621,10 @@ func (h *DocumentHandler) DownloadURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// No disposition option: the port defaults to Content-Disposition:
+	// attachment, so the browser downloads the object under its key rather
+	// than rendering it on the bucket origin. Document keeps no original
+	// filename; a record that did would pass storage.AsAttachment(name).
 	url, err := h.storage.PresignedGetURL(r.Context(), doc.StorageKey, 15*time.Minute)
 	if err != nil {
 		h.logger.ErrorContext(r.Context(), "download url: presign", "error", err)

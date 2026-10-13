@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/url"
 	"slices"
 	"strings"
 	"sync"
@@ -127,8 +128,12 @@ func (s *fakeStorage) Delete(_ context.Context, key string) error {
 	return nil
 }
 
-func (s *fakeStorage) PresignedGetURL(_ context.Context, key string, expiry time.Duration) (string, error) {
-	return fmt.Sprintf("http://localhost/fake-storage/%s?expires=%d", key, time.Now().Add(expiry).Unix()), nil
+func (s *fakeStorage) PresignedGetURL(_ context.Context, key string, expiry time.Duration, opts ...storage.PresignGetOption) (string, error) {
+	// Fold the options the same way a real adapter does so the fake URL
+	// shows the disposition the frontend would get ("attachment" by default).
+	o := storage.ApplyPresignGetOptions(opts...)
+	return fmt.Sprintf("http://localhost/fake-storage/%s?expires=%d&disposition=%s",
+		key, time.Now().Add(expiry).Unix(), url.QueryEscape(o.ContentDisposition)), nil
 }
 
 func (s *fakeStorage) PresignedPutURL(_ context.Context, key string, _ string, expiry time.Duration) (string, error) {

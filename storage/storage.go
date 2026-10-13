@@ -14,7 +14,9 @@
 //	    ContentType: "application/pdf",
 //	})
 //
-//	// Generate a presigned download URL for frontend:
+//	// Generate a presigned download URL for frontend (served as an attachment
+//	// by default; pass storage.AsAttachment("report.pdf") to name the download,
+//	// or storage.WithContentDisposition("inline") to let the browser render it):
 //	url, err := storage.PresignedGetURL(ctx, "docs/report.pdf", 15*time.Minute)
 package storage
 
@@ -56,9 +58,19 @@ type Storage interface {
 
 	// PresignedGetURL generates a temporary URL for downloading a file.
 	// The URL is valid for the specified duration and requires no authentication.
-	PresignedGetURL(ctx context.Context, key string, expiry time.Duration) (string, error)
+	// A non-positive expiry means "use the adapter's configured default".
+	//
+	// Without options the URL asks the store to serve the object with
+	// Content-Disposition: attachment (see DefaultContentDisposition), so a
+	// browser downloads it instead of rendering it on the bucket origin. A
+	// consumer that wants inline rendering opts in explicitly with
+	// WithContentDisposition("inline"); AsAttachment sets a download filename
+	// and WithResponseContentType overrides the returned Content-Type.
+	// Adapters fold the options with ApplyPresignGetOptions.
+	PresignedGetURL(ctx context.Context, key string, expiry time.Duration, opts ...PresignGetOption) (string, error)
 
 	// PresignedPutURL generates a temporary URL for uploading a file.
 	// The URL is valid for the specified duration and accepts the specified content type.
+	// A non-positive expiry means "use the adapter's configured default".
 	PresignedPutURL(ctx context.Context, key string, contentType string, expiry time.Duration) (string, error)
 }
