@@ -47,6 +47,7 @@ func (f *fakeRepository) Create(_ context.Context, _ pgxtx.DBTX, c *Case) error 
 	if _, exists := f.byExtID[key]; exists {
 		return ErrCaseExists
 	}
+	c.Revision = 0
 	f.cases[c.ID] = *c
 	f.byExtID[key] = c.ID
 	return nil
@@ -80,9 +81,16 @@ func (f *fakeRepository) Update(_ context.Context, _ pgxtx.DBTX, c *Case) error 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	if _, ok := f.cases[c.ID]; !ok {
+	// Same compare-and-swap contract as workflow/postgres.Repository.Update:
+	// the write only lands while c.Revision still matches the stored case.
+	stored, ok := f.cases[c.ID]
+	if !ok {
 		return ErrCaseNotFound
 	}
+	if stored.Revision != c.Revision {
+		return ErrConflict
+	}
+	c.Revision++
 	f.cases[c.ID] = *c
 	return nil
 }
@@ -1550,4 +1558,138 @@ func TestOpen_UsesLatestVersionWhenUnpinned(t *testing.T) {
 	c, err := e.Open(context.Background(), nil, OpenInput{Definition: "purchase", Domain: "d", ExternalID: "1"})
 	require.NoError(t, err)
 	assert.Equal(t, 2, c.Version)
+}
+
+// racingRepository wraps fakeRepository and runs beforeUpdate exactly once,
+// at the start of the first Update call, to simulate a concurrent writer
+// that commits between the engine's read (GetByID) and its write (Update).
+type racingRepository struct {
+	*fakeRepository
+	once         sync.Once
+	beforeUpdate func()
+}
+
+func (r *racingRepository) Update(ctx context.Context, db pgxtx.DBTX, c *Case) error {
+	r.once.Do(func() {
+		if r.beforeUpdate != nil {
+			r.beforeUpdate()
+		}
+	})
+	return r.fakeRepository.Update(ctx, db, c)
+}
+
+// concurrentReassign is the competing writer used by the race tests: it
+// reads the case fresh and reassigns it to "intruder", committing first.
+func concurrentReassign(t *testing.T, repo *fakeRepository, caseID uuid.UUID) func() {
+	return func() {
+		fresh, err := repo.GetByID(context.Background(), nil, caseID)
+		require.NoError(t, err)
+		fresh.AssignedTo = "intruder"
+		require.NoError(t, repo.Update(context.Background(), nil, fresh))
+	}
+}
+
+func TestEngine_StaleRead_ReturnsErrConflictAndPersistsNothing(t *testing.T) {
+	tests := []struct {
+		name    string
+		prepare func(t *testing.T, e *Engine, c *Case)
+		act     func(e *Engine, c *Case) (*Case, error)
+	}{
+		{
+			name: "move",
+			act: func(e *Engine, c *Case) (*Case, error) {
+				return e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "submit", ActorID: "u1"})
+			},
+		},
+		{
+			name: "claim",
+			act: func(e *Engine, c *Case) (*Case, error) {
+				return e.Claim(context.Background(), nil, c.ID, "u1")
+			},
+		},
+		{
+			name: "release",
+			prepare: func(t *testing.T, e *Engine, c *Case) {
+				_, err := e.Claim(context.Background(), nil, c.ID, "u1")
+				require.NoError(t, err)
+			},
+			act: func(e *Engine, c *Case) (*Case, error) {
+				return e.Release(context.Background(), nil, c.ID, "u1")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inner := newFakeRepository()
+			repo := &racingRepository{fakeRepository: inner}
+			e := New(repo, Config{}, testLogger(), WithDefinitions(testDefinition()))
+			c := openTestCase(t, e)
+			if tt.prepare != nil {
+				// prepare's own Update must not trigger the race hook.
+				repo.once.Do(func() {})
+				tt.prepare(t, e, c)
+				repo.once = sync.Once{}
+			}
+
+			before, err := inner.GetByID(context.Background(), nil, c.ID)
+			require.NoError(t, err)
+			eventsBefore, err := inner.ListEvents(context.Background(), nil, c.ID)
+			require.NoError(t, err)
+
+			repo.beforeUpdate = concurrentReassign(t, inner, c.ID)
+
+			got, err := tt.act(e, c)
+			require.Error(t, err)
+			assert.Nil(t, got)
+			assert.True(t, errors.Is(err, ErrConflict), "want ErrConflict, got %v", err)
+
+			after, err := inner.GetByID(context.Background(), nil, c.ID)
+			require.NoError(t, err)
+			assert.Equal(t, "intruder", after.AssignedTo, "the concurrent writer's update must survive")
+			assert.Equal(t, before.State, after.State, "the stale write must not be applied")
+			assert.Equal(t, before.Status, after.Status)
+			assert.Equal(t, before.Revision+1, after.Revision, "only the concurrent writer advanced the revision")
+
+			eventsAfter, err := inner.ListEvents(context.Background(), nil, c.ID)
+			require.NoError(t, err)
+			assert.Equal(t, eventsBefore, eventsAfter, "a conflicting operation must not append events")
+		})
+	}
+}
+
+func TestEngine_Revision_AdvancesOnEveryCaseWrite(t *testing.T) {
+	repo := newFakeRepository()
+	e := New(repo, Config{}, testLogger(), WithDefinitions(testDefinition()))
+	require.NoError(t, e.RegisterGuard("under-budget", alwaysTrueGuard))
+	ctx := context.Background()
+
+	c := openTestCase(t, e)
+	assert.Equal(t, int64(0), c.Revision, "a freshly opened case starts at revision 0")
+
+	claimed, err := e.Claim(ctx, nil, c.ID, "u1")
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), claimed.Revision)
+
+	// A same-actor re-claim is a no-op and must not bump the revision.
+	again, err := e.Claim(ctx, nil, c.ID, "u1")
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), again.Revision)
+
+	released, err := e.Release(ctx, nil, c.ID, "u1")
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), released.Revision)
+
+	moved, err := e.Move(ctx, nil, MoveInput{CaseID: c.ID, Action: "submit", ActorID: "u1"})
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), moved.Revision)
+
+	closed, err := e.Move(ctx, nil, MoveInput{CaseID: c.ID, Action: "approve", ActorID: "u1"})
+	require.NoError(t, err)
+	assert.Equal(t, StatusClosed, closed.Status)
+	assert.Equal(t, int64(4), closed.Revision)
+
+	stored, err := repo.GetByID(ctx, nil, c.ID)
+	require.NoError(t, err)
+	assert.Equal(t, closed.Revision, stored.Revision, "the returned case matches the persisted revision")
 }

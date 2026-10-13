@@ -602,6 +602,13 @@ type Case struct {
 	OpenedAt   time.Time
 	ClosedAt   *time.Time
 	DeadlineAt *time.Time
+	// Revision is the row's optimistic-concurrency token. It is unrelated
+	// to Version, which is the Definition version the case runs on. Create
+	// always persists 0; every successful Repository.Update compares it
+	// against the stored value and advances both by one, so a write based on
+	// a stale read fails with ErrConflict instead of silently overwriting a
+	// concurrent change (a lost update).
+	Revision int64
 }
 
 // Event is a single append-only history record for a Case.
@@ -650,6 +657,12 @@ var (
 	ErrNoRoute                 = errors.New("workflow: no route matched at decision node")
 	ErrTooManyDecisionHops     = errors.New("workflow: exceeded maximum decision node hops")
 	ErrReturnNotVisited        = errors.New("workflow: case never occupied the return transition's target node")
+	// ErrConflict reports that the case changed between the engine's read
+	// and its write: its Revision no longer matches the stored row because a
+	// concurrent writer committed first. The failing call persisted nothing
+	// (no case update, no event); the caller should roll back its
+	// transaction and may retry the whole operation from a fresh read.
+	ErrConflict = errors.New("workflow: case was modified concurrently")
 )
 
 // GuardFunc evaluates whether a transition may be taken for the given case.
@@ -675,6 +688,13 @@ type GuardFunc func(ctx context.Context, db pgxtx.DBTX, c Case) (bool, error)
 
 // Repository defines persistence operations for cases and their event
 // history. See workflow/postgres for the PostgreSQL-backed implementation.
+//
+// Create must persist Revision as 0 and leave c.Revision at 0. Update is a
+// compare-and-swap on Revision: it writes only when the stored revision
+// equals c.Revision, and on success advances both the stored row and
+// c.Revision by one. It returns ErrCaseNotFound when no case has c.ID, and
+// ErrConflict when the case exists but its revision moved on (a concurrent
+// write won); in both cases nothing is written.
 type Repository interface {
 	Create(ctx context.Context, db pgxtx.DBTX, c *Case) error
 	GetByID(ctx context.Context, db pgxtx.DBTX, id uuid.UUID) (*Case, error)
