@@ -131,10 +131,12 @@ como dueño de `audit_log` y puede deshabilitar sus triggers append-only, así
 que no sirve para producción. El compose de despliegue ya sigue el esquema de
 dos fases: un servicio `migrate` de una sola ejecución corre `migrate up` y
 `api` y `worker` arrancan con `server` solo cuando ese servicio terminó bien.
-Si cambia `WORKER_SCHEMA`, el servicio `migrate` y el `worker` deben recibir
-el mismo valor. La receta de
-roles y permisos está en la sección «Un rol para migrar, otro para servir» del
-README de `vogel`.
+`WORKER_SCHEMA` se define una sola vez en el compose (bloque
+`x-worker-schema`) y llega con el mismo valor a `migrate`, `api` y `worker`:
+se toma de `deploy/.env` o, si no está, vale `river`. `migrate` no carga
+`.env` completo, así que el rol migrador no recibe los secretos de la
+aplicación. La receta de roles y permisos está en la sección «Un rol para
+migrar, otro para servir» del README de `vogel`.
 Verificación:
 
 ```bash

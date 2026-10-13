@@ -103,6 +103,17 @@ func (r *Repository) GetByExternalID(ctx context.Context, db pgxtx.DBTX, domain,
 // READ or SERIALIZABLE, PostgreSQL itself aborts the second writer with a
 // serialization failure (SQLSTATE 40001) instead; that error is returned
 // wrapped as-is and is equally safe to retry.
+//
+// Rollout: the check only works when EVERY writer of workflow_case bumps
+// revision. A binary built against a vogel release that predates migration
+// 003 updates the row without touching revision, so while old and new
+// binaries run side by side (a rolling deploy) a new writer can read
+// revision n, have an old writer overwrite the row (still at n), and then
+// commit its own write at n -- the old writer's change is lost and no
+// ErrConflict is raised. Old writers never detect conflicts at all. Apply
+// migration 003 first, then replace ALL old binaries (or stop them from
+// writing) before relying on ErrConflict; until then concurrent updates
+// can still be lost silently, exactly as before this check existed.
 func (r *Repository) Update(ctx context.Context, db pgxtx.DBTX, c *workflow.Case) error {
 	tag, err := db.Exec(ctx, `
         UPDATE workflow_case SET

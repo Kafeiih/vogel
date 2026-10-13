@@ -28,6 +28,8 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   hace fallar el arranque. Cambio de comportamiento: detrás de un balanceador,
   hay que declarar sus direcciones en `TRUSTED_PROXIES` o todas las requests
   aparecen con la IP del balanceador.
+- `httpx/response`: constante `CodeUnsupportedMediaType` (`UNSUPPORTED_MEDIA_TYPE`).
+- CI: nuevo job `govulncheck` que escanea la raíz y `examples/boilerplate`.
 
 ### Cambiado
 
@@ -61,7 +63,11 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 - **`config`: el error de `ValidURL` ya no incluye el valor.** Antes citaba la
   URL completa (y el error de `url.Parse`, que también la cita), así que una
   URL con credenciales, como el DSN de una base de datos, dejaba la contraseña
-  en el log de arranque. Ahora el mensaje solo nombra la variable. Cambio de
+  en el log de arranque. Ahora el mensaje nombra la variable y un motivo fijo
+  que no contiene ninguna parte del valor, para poder diagnosticar sin verlo:
+  `must be a well-formed URL` (`url.Parse` la rechazó), `missing scheme`,
+  `missing "//" before the host` (un `host:puerto` sin esquema, que
+  `url.Parse` lee como `esquema:opaco`) o `missing host`. Cambio de
   comportamiento: el error ya no envuelve el `*url.Error` de `url.Parse`, así
   que `errors.As` sobre él deja de encontrarlo.
 - **`notification`: `Message.Validate` exige que `To` y `From` sean una
@@ -110,7 +116,14 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   de despliegue `worker` también espera al servicio `migrate`. Cambio de
   comportamiento: un worker desplegado sin correr antes `api migrate up`
   falla al arrancar si las tablas de River no existen.
-- `httpx/response`: constante `CodeUnsupportedMediaType` (`UNSUPPORTED_MEDIA_TYPE`).
+- **`examples/api`: `POST /documents` ya no acepta `owner_id`.** Antes el
+  dueño del documento venía del cuerpo de la request, así que cualquier
+  usuario con permiso de escritura podía crear un documento a nombre de otro
+  y darle el permiso de borrado reservado al dueño. Ahora el dueño es siempre
+  el principal autenticado (`auth.FromContext`); sin principal la respuesta
+  es 401. Cambio de comportamiento: como `request.JSON` rechaza campos
+  desconocidos, un cuerpo que todavía envía `owner_id` recibe 400 en vez de
+  ignorarse.
 - **`httpx/middleware`: `SecurityHeaders` añade `Cache-Control: no-store` y
   `Pragma: no-cache`.** Las respuestas de una API autenticada son por usuario
   y no deben quedar en la caché del navegador ni de un proxy intermedio. Las
@@ -139,7 +152,6 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   confiando en `X-Forwarded-For`, `X-Real-IP` y `True-Client-IP` de cualquier
   cliente; solo valida que el valor sea una IP. Montar `RealIP` únicamente
   detrás de un proxy confiable.
-- CI: nuevo job `govulncheck` que escanea la raíz y `examples/boilerplate`.
 - **`storage`: `Storage.PresignedGetURL` acepta opciones variádicas
   (`...PresignGetOption`).** La firma del puerto cambia: toda implementación
   propia (fakes de test incluidos) debe añadir el parámetro
@@ -234,6 +246,17 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   `Engine.Open`, `Move`, `Claim`, `Release`, `Available`, `EligibilityFor` e
   `Inbox`. Los casos existentes arrancan en revisión 0. Correrla vía
   `migrate.Up` con `workflow/migrations.FS()`, como la 001 y la 002.
+  **Orden de despliegue:** la detección de conflictos solo funciona cuando
+  TODOS los procesos que escriben `workflow_case` avanzan `revision`. Un
+  binario compilado con una versión anterior de `vogel` actualiza el caso sin
+  tocar `revision`, así que durante un despliegue gradual (binarios viejos y
+  nuevos a la vez) un escritor nuevo puede leer la revisión n, un escritor
+  viejo sobrescribir la fila (que sigue en n) y el nuevo confirmar su propia
+  escritura en n: el cambio del viejo se pierde sin ningún `ErrConflict`, y
+  los escritores viejos nunca detectan conflictos. Aplicar la 003, luego
+  reemplazar TODOS los binarios viejos (o detener sus escrituras) antes de
+  confiar en `ErrConflict`; mientras tanto se pueden seguir perdiendo
+  actualizaciones concurrentes en silencio, igual que antes de este cambio.
 
 ## [0.8.0] — 2026-09-30
 
