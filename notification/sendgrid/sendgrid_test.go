@@ -2,7 +2,10 @@ package sendgrid
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -123,5 +126,67 @@ func TestSend_NoFromAndNoDefault(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "no default") {
 		t.Fatalf("err = %v, want missing From / no default error", err)
+	}
+}
+
+// TestSend_SplitsNameAndAddress drives Send end to end against a local
+// httptest server (sendgrid.Client embeds rest.Request, so its BaseURL can be
+// redirected in-package without network access) and asserts the JSON body
+// carries From and To as separate name/email fields, not the whole
+// "Name <addr>" string as the address.
+func TestSend_SplitsNameAndAddress(t *testing.T) {
+	type email struct {
+		Name  string `json:"name"`
+		Email string `json:"email"`
+	}
+	var body struct {
+		From             email `json:"from"`
+		Personalizations []struct {
+			To []email `json:"to"`
+		} `json:"personalizations"`
+	}
+	var decodeErr error
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		decodeErr = json.NewDecoder(r.Body).Decode(&body)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(srv.Close)
+
+	n, err := NewSendGridNotifier(Config{APIKey: "SG.test"}, "Default Sender <noreply@inst.cl>", slog.Default())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	n.client.BaseURL = srv.URL + "/v3/mail/send"
+
+	tests := []struct {
+		name     string
+		from     string
+		wantFrom email
+	}{
+		{name: "message From with display name", from: "Soporte <soporte@inst.cl>", wantFrom: email{Name: "Soporte", Email: "soporte@inst.cl"}},
+		{name: "default From with display name", from: "", wantFrom: email{Name: "Default Sender", Email: "noreply@inst.cl"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := n.Send(context.Background(), &notification.Message{
+				From: tt.from, To: "Juana Pérez <juana@example.com>", Subject: "Hola", Text: "Hola",
+			})
+			if err != nil {
+				t.Fatalf("Send: %v", err)
+			}
+			if decodeErr != nil {
+				t.Fatalf("decoding request body: %v", decodeErr)
+			}
+			if body.From != tt.wantFrom {
+				t.Errorf("from = %+v, want %+v", body.From, tt.wantFrom)
+			}
+			if len(body.Personalizations) != 1 || len(body.Personalizations[0].To) != 1 {
+				t.Fatalf("personalizations = %+v, want exactly one recipient", body.Personalizations)
+			}
+			wantTo := email{Name: "Juana Pérez", Email: "juana@example.com"}
+			if got := body.Personalizations[0].To[0]; got != wantTo {
+				t.Errorf("to = %+v, want %+v", got, wantTo)
+			}
+		})
 	}
 }
