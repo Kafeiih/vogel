@@ -5,12 +5,13 @@ export DB_URL
 
 # Desarrollo
 # start-from-migrate aplica las migraciones y luego sirve (comodidad local).
-# En despliegue: "api migrate up" con un rol migrador y luego "api server".
+# En despliegue: "api migrate up" con un rol migrador (incluye River) y luego
+# "api server" y "worker server".
 dev:
 	go run ./cmd/api start-from-migrate
 
 worker:
-	go run ./cmd/worker
+	go run ./cmd/worker start-from-migrate
 
 # Build
 build:

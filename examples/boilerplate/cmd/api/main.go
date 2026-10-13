@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
 
 	auditpkg "github.com/kafeiih/vogel/audit"
@@ -26,6 +28,7 @@ import (
 	"github.com/kafeiih/vogel/examples/boilerplate/internal/infrastructure/config"
 	appmigrate "github.com/kafeiih/vogel/examples/boilerplate/internal/infrastructure/database/migrate"
 	"github.com/kafeiih/vogel/examples/boilerplate/internal/infrastructure/database/migrations"
+	"github.com/kafeiih/vogel/examples/boilerplate/internal/infrastructure/riverschema"
 	httpiface "github.com/kafeiih/vogel/examples/boilerplate/internal/interfaces/http"
 	"github.com/kafeiih/vogel/examples/boilerplate/internal/interfaces/http/handler"
 )
@@ -81,8 +84,9 @@ const (
 	// cmdServer serves only and never touches the schema. A bare "api" is
 	// an alias for "api server".
 	cmdServer command = iota
-	// cmdStartFromMigrate applies every migration set and then serves. It
-	// is a development convenience: the serving role must own the tables.
+	// cmdStartFromMigrate applies every migration set (River included) and
+	// then serves. It is a development convenience: the serving role must
+	// own the tables.
 	cmdStartFromMigrate
 	// cmdMigrate runs the migrate subcommands (up, down, status, create).
 	cmdMigrate
@@ -133,14 +137,19 @@ func runMigrate(args []string) error {
 				return fmt.Errorf("running %s migrations: %w", set.name, err)
 			}
 		}
-		return nil
+		return migrateRiver(ctx, dbURL)
 	case "down":
 		// Only this service's own set is rolled back. migrate.Down reverts the
 		// latest migration of the set it is given, and the audit set's only
 		// migration creates audit_log — including it would drop the audit
-		// trail on every "migrate down".
+		// trail on every "migrate down". River's schema is never rolled back
+		// either: its down migrations drop the job tables and every queued
+		// job with them.
 		return migrate.Down(ctx, dbURL, migrations.FS)
 	case "status":
+		// Lists the goose sets only. River's migrations are not goose
+		// migrations; "migrate up" applies them idempotently and logs each
+		// version it applies.
 		for i, set := range migrationSets() {
 			if i > 0 {
 				fmt.Println()
@@ -157,6 +166,19 @@ func runMigrate(args []string) error {
 		}
 		return fmt.Errorf("unknown migrate subcommand %q; valid: up, down, status, create", subcmd)
 	}
+}
+
+// migrateRiver ensures the worker's River schema (WORKER_SCHEMA, the same
+// variable the worker reads) and applies River's migrations, so "worker
+// server" can start with a role that cannot create tables.
+func migrateRiver(ctx context.Context, dbURL string) error {
+	pool, err := pgxpool.New(ctx, dbURL)
+	if err != nil {
+		return fmt.Errorf("connecting for river migrations: %w", err)
+	}
+	defer pool.Close()
+
+	return riverschema.Migrate(ctx, pool, config.WorkerSchema(), slog.Default())
 }
 
 // migrationSet is one embedded set of goose migrations and the options it
@@ -179,9 +201,9 @@ func migrationSets() []migrationSet {
 }
 
 // runServer serves the API. With migrateFirst ("start-from-migrate") it first
-// applies every migration set against cfg.Database.URL; without it ("server")
-// the schema must already be current, applied by "migrate up" with a
-// migrator role.
+// applies every migration set and River's schema against cfg.Database.URL;
+// without it ("server") the schema must already be current, applied by
+// "migrate up" with a migrator role.
 func runServer(migrateFirst bool) error {
 	cfg, err := config.Load()
 	if err != nil {
@@ -221,6 +243,10 @@ func runServer(migrateFirst bool) error {
 			if err := migrate.Up(ctx, cfg.Database.URL, set.fsys, set.opts); err != nil {
 				return fmt.Errorf("running %s migrations: %w", set.name, err)
 			}
+		}
+		// Same River step as "migrate up", so both leave the database alike.
+		if err := riverschema.Migrate(ctx, pool, cfg.Worker.Schema, appLogger.Logger); err != nil {
+			return err
 		}
 	}
 
