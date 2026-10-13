@@ -64,6 +64,18 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   `Nombre <a@b.cl>` entero como dirección). Cambio de comportamiento: un
   mensaje con una dirección mal formada que antes llegaba al proveedor ahora
   falla en `Validate`.
+- **`notification`: `Message.From` es opcional y el `defaultFrom` de los
+  adaptadores por fin se aplica.** `smtp.NewSMTPNotifier` y
+  `sendgrid.NewSendGridNotifier` reciben un `defaultFrom` para usar cuando el
+  mensaje no trae `From`, pero `Send` llamaba antes a `Validate`, que
+  rechazaba un `From` vacío, así que ese valor por defecto nunca se usaba.
+  Ahora `Validate` acepta `From` vacío (si viene, sigue teniendo que ser una
+  dirección válida) y `Send` usa `msg.From` o, si está vacío, `defaultFrom`;
+  si ambos están vacíos, `Send` falla sin contactar al proveedor. Los
+  constructores validan `defaultFrom` con `net/mail.ParseAddress` y devuelven
+  error si es inválido (vacío sigue permitido), para que una configuración
+  mala falle al arrancar. Los errores de los adaptadores ya no incluyen la
+  dirección: antes `notification/smtp` citaba `From` y `To` en el mensaje.
 - `httpx/response`: constante `CodeUnsupportedMediaType` (`UNSUPPORTED_MEDIA_TYPE`).
 - **`httpx/middleware`: `SecurityHeaders` añade `Cache-Control: no-store` y
   `Pragma: no-cache`.** Las respuestas de una API autenticada son por usuario

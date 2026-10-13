@@ -1,6 +1,9 @@
 package notification
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestMessage_Validate_Valid(t *testing.T) {
 	msg := &Message{
@@ -27,15 +30,40 @@ func TestMessage_Validate_EmptyTo(t *testing.T) {
 	}
 }
 
-func TestMessage_Validate_EmptyFrom(t *testing.T) {
+func TestMessage_Validate_EmptyFromIsAllowed(t *testing.T) {
+	// From is optional: adapters fall back to their configured default sender.
 	msg := &Message{
 		To:      "user@example.com",
 		From:    "",
 		Subject: "Welcome",
+		Text:    "Hello",
 	}
 
-	if err := msg.Validate(); err == nil {
-		t.Error("expected error for empty From")
+	if err := msg.Validate(); err != nil {
+		t.Errorf("unexpected error for empty From: %v", err)
+	}
+}
+
+func TestMessage_Validate_ErrorsDoNotEchoAddresses(t *testing.T) {
+	cases := []struct {
+		name     string
+		to, from string
+		secret   string
+	}{
+		{"malformed to", "ana.example.com", "", "ana.example.com"},
+		{"malformed from", "user@example.com", "noreply@", "noreply@"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			msg := &Message{To: tc.to, From: tc.from, Subject: "Welcome", Text: "Hello"}
+			err := msg.Validate()
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if strings.Contains(err.Error(), tc.secret) {
+				t.Errorf("error %q echoes the address", err)
+			}
+		})
 	}
 }
 
