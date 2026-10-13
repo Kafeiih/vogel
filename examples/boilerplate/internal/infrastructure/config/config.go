@@ -17,6 +17,7 @@
 package config
 
 import (
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -27,6 +28,7 @@ import (
 	"github.com/kafeiih/vogel/auth/zitadel"
 	"github.com/kafeiih/vogel/authz/cerbos"
 	"github.com/kafeiih/vogel/config"
+	vmw "github.com/kafeiih/vogel/httpx/middleware"
 	"github.com/kafeiih/vogel/notification/sendgrid"
 	"github.com/kafeiih/vogel/notification/smtp"
 	"github.com/kafeiih/vogel/postgres"
@@ -48,13 +50,20 @@ type Config struct {
 }
 
 // AppConfig holds settings with no vogel equivalent: this application's own
-// identity and HTTP timeout.
+// identity, HTTP timeout, and the reverse proxies allowed to report the
+// client IP.
 type AppConfig struct {
 	Env     string // development, staging, production
 	Port    string // :8080
 	Url     string // localhost:8080
 	Version string
 	Timeout time.Duration // 30s
+
+	// TrustedProxies (TRUSTED_PROXIES, comma-separated CIDRs or IPs, default
+	// empty) are the only peers whose X-Forwarded-For / X-Real-IP headers
+	// vmw.RealIP believes. Empty means no header is trusted and the client
+	// IP is always the TCP peer.
+	TrustedProxies []netip.Prefix
 }
 
 // MetricsConfig holds configuration for the dedicated Prometheus metrics
@@ -109,6 +118,8 @@ func Load() (*Config, error) {
 	maxConnIdleTime := errs.Duration("DB_MAX_CONN_IDLE_TIME", 30*time.Minute)
 	connectTimeout := errs.Duration("DB_CONNECT_TIMEOUT", 10*time.Second)
 
+	trustedProxies := parseTrustedProxies(&errs)
+
 	if err := errs.Err(); err != nil {
 		return nil, err
 	}
@@ -122,6 +133,8 @@ func Load() (*Config, error) {
 			Url:     config.String("APP_URL", "localhost:8080"),
 			Version: config.String("APP_VERSION", "0.1.0"),
 			Timeout: appTimeout,
+
+			TrustedProxies: trustedProxies,
 		},
 		Database: postgres.Config{
 			URL:             dbURL,
@@ -177,10 +190,33 @@ func parseSlice(key, sep string) []string {
 	return result
 }
 
+// parseTrustedProxies reads TRUSTED_PROXIES via vmw.ParseTrustedProxies and
+// records an error naming the variable if any entry is invalid. Unlike most
+// optional variables here, a bad value fails the boot instead of falling back
+// to a default: silently trusting no proxy would make every client appear as
+// the proxy's IP, and there is no safe guess for what was meant.
+func parseTrustedProxies(errs *config.Errors) []netip.Prefix {
+	prefixes, err := vmw.ParseTrustedProxies(os.Getenv("TRUSTED_PROXIES"))
+	if err != nil {
+		errs.Addf("TRUSTED_PROXIES: %v", err)
+		return nil
+	}
+	return prefixes
+}
+
+// WorkerSchema returns the PostgreSQL schema River's tables live in
+// (WORKER_SCHEMA, default "river"). It reads only that variable, so "api
+// migrate up" can apply River's migrations without the variables Load
+// requires for serving; the worker reads the same value through
+// parseWorkerConfig.
+func WorkerSchema() string {
+	return config.String("WORKER_SCHEMA", "river")
+}
+
 // parseWorkerConfig reads WORKER_* env vars and returns a worker.Config with
 // defaults.
 func parseWorkerConfig() worker.Config {
-	schema := config.String("WORKER_SCHEMA", "river")
+	schema := WorkerSchema()
 
 	defaultMax := 100
 	if v := os.Getenv("WORKER_DEFAULT_MAX_WORKERS"); v != "" {

@@ -186,6 +186,15 @@ docker compose -f deploy/docker-compose.yaml up -d
 
 **Si el problema es una migracion:**
 
+Las migraciones no corren al arrancar la API ni el worker (`./api server` solo
+sirve y `./worker server` solo procesa jobs): las aplica el servicio `migrate`
+del compose (`./api migrate up`, que incluye el esquema y las migraciones de
+River) antes de que arranquen `api` y `worker`. Si `migrate` falla, ninguno
+de los dos arranca; revisar
+`docker compose -f deploy/docker-compose.yaml logs migrate`. `./api migrate
+down` nunca revierte River: sus migraciones de bajada borran los jobs
+encolados.
+
 1. **No** desplegar la version nueva hasta resolver la migracion
 2. Revertir la ultima migracion:
    ```bash

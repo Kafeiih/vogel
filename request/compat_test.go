@@ -71,6 +71,9 @@ func TestJSON_DefaultResponsesAreByteIdenticalToV030(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(tt.body))
+			// The v0.3.0 golden bodies predate the Content-Type gate; the
+			// header is request setup, not part of the pinned response.
+			r.Header.Set("Content-Type", "application/json")
 			w := httptest.NewRecorder()
 
 			var dst testPayload

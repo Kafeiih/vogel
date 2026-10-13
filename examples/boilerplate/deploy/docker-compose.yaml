@@ -1,3 +1,11 @@
+# River's schema name is shared by migrate (which creates it) and by api and
+# worker (which use it). It is defined once here and merged into each service
+# so the three cannot drift: compose reads WORKER_SCHEMA from deploy/.env, or
+# falls back to "river". migrate deliberately does not load .env, so the
+# migrator role never sees the application's secrets.
+x-worker-schema: &worker-schema
+  WORKER_SCHEMA: ${WORKER_SCHEMA:-river}
+
 services:
   postgres:
     image: postgres:17-alpine
@@ -15,19 +23,41 @@ services:
       timeout: 3s
       retries: 5
 
+  # One-shot setup step: applies every migration set, River's schema
+  # included, and exits. In production DB_URL here is the migrator role,
+  # which owns the tables; api and worker then run with roles that cannot
+  # alter audit_log or create tables.
+  migrate:
+    image: ghcr.io/kafeiih/vogel-boilerplate:latest
+    build:
+      context: ..
+      target: api
+    command: ["migrate", "up"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      <<: *worker-schema
+      DB_URL: "postgres://postgres:postgres@postgres:5432/boilerplate_db?sslmode=disable"
+    restart: "no"
+
   api:
     image: ghcr.io/kafeiih/vogel-boilerplate:latest
     build:
       context: ..
       target: api
+    command: ["server"]
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     ports:
       - "8080:8080"
     env_file:
       - .env
     environment:
+      <<: *worker-schema
       DB_URL: "postgres://postgres:postgres@postgres:5432/boilerplate_db?sslmode=disable"
 
   worker:
@@ -35,12 +65,16 @@ services:
     build:
       context: ..
       target: worker
+    command: ["server"]
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     env_file:
       - .env
     environment:
+      <<: *worker-schema
       DB_URL: "postgres://postgres:postgres@postgres:5432/boilerplate_db?sslmode=disable"
     restart: unless-stopped
 

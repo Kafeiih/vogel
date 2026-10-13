@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	netmail "net/mail"
 
 	gomail "github.com/wneessen/go-mail"
 
@@ -38,12 +39,22 @@ type SMTPNotifier struct {
 }
 
 // NewSMTPNotifier creates an SMTP-backed notifier.
+//
+// defaultFrom is the sender used when a message has no From. It may be empty,
+// in which case every message must set From; when set it must be a single
+// RFC 5322 address (net/mail.ParseAddress), or construction fails so a bad
+// configuration is caught at boot rather than on the first Send.
 func NewSMTPNotifier(cfg Config, defaultFrom string, logger *slog.Logger) (*SMTPNotifier, error) {
 	if cfg.Host == "" {
 		return nil, fmt.Errorf("notification/smtp: host is required")
 	}
 	if logger == nil {
 		return nil, fmt.Errorf("notification/smtp: logger is required")
+	}
+	if defaultFrom != "" {
+		if _, err := netmail.ParseAddress(defaultFrom); err != nil {
+			return nil, fmt.Errorf("notification/smtp: default From is not a valid email address")
+		}
 	}
 
 	return &SMTPNotifier{
@@ -57,23 +68,26 @@ func NewSMTPNotifier(cfg Config, defaultFrom string, logger *slog.Logger) (*SMTP
 }
 
 // Send delivers an email via SMTP. Each call dials a new connection — see the
-// SMTPNotifier doc comment.
+// SMTPNotifier doc comment. The sender is msg.From, or the notifier's default
+// when msg.From is empty; if both are empty Send fails without dialing.
 func (n *SMTPNotifier) Send(ctx context.Context, msg *notification.Message) error {
 	if err := msg.Validate(); err != nil {
 		return err
 	}
 
-	from := msg.From
-	if from == "" {
-		from = n.defaultFrom
+	from, err := resolveFrom(msg.From, n.defaultFrom)
+	if err != nil {
+		return err
 	}
 
+	// go-mail's parse errors quote the address, so they are not wrapped:
+	// addresses are personal data and must not reach logs.
 	m := gomail.NewMsg()
 	if err := m.From(from); err != nil {
-		return fmt.Errorf("notification/smtp: invalid from %q: %w", from, err)
+		return fmt.Errorf("notification/smtp: From is not a valid email address")
 	}
 	if err := m.To(msg.To); err != nil {
-		return fmt.Errorf("notification/smtp: invalid to %q: %w", msg.To, err)
+		return fmt.Errorf("notification/smtp: To is not a valid email address")
 	}
 
 	m.Subject(msg.Subject)
@@ -108,4 +122,16 @@ func (n *SMTPNotifier) Send(ctx context.Context, msg *notification.Message) erro
 		"subject", msg.Subject,
 	)
 	return nil
+}
+
+// resolveFrom picks the message sender, falling back to the configured
+// default when the message leaves From empty.
+func resolveFrom(msgFrom, defaultFrom string) (string, error) {
+	if msgFrom != "" {
+		return msgFrom, nil
+	}
+	if defaultFrom != "" {
+		return defaultFrom, nil
+	}
+	return "", fmt.Errorf("notification/smtp: From is missing and no default sender is configured")
 }

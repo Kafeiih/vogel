@@ -1,0 +1,14 @@
+# Keeps the SHA-pinned actions in .github/workflows current. Dependabot
+# rewrites both the commit SHA and the trailing "# vX.Y.Z" comment. Go
+# modules are not listed: govulncheck in CI already flags vulnerable ones.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: ci

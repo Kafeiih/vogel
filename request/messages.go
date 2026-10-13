@@ -48,6 +48,17 @@ type Messages struct {
 	// does not match any of the more specific cases above.
 	InvalidBody string
 
+	// UnsupportedMediaType is used on HTTP 415 when the request's Content-Type
+	// is not application/json or application/*+json, or is missing where a
+	// body is required (JSON, JSONWithLimit, or JSONOptional with a non-empty
+	// body). A Decoder built with AllowAnyContentType never uses it.
+	UnsupportedMediaType string
+
+	// TrailingData is used on HTTP 400 when the body carries anything other
+	// than whitespace after the first JSON value — a second value, or stray
+	// bytes — even though that first value decoded fine.
+	TrailingData string
+
 	// Required is used by Validator methods that reject a missing/empty
 	// value (UUIDParam, Int64Param, PublicIDParam), as part of a 400
 	// validation-error response written by WriteErrors.
@@ -122,6 +133,9 @@ func DefaultMessages() Messages {
 		},
 		InvalidBody: "Invalid request body",
 
+		UnsupportedMediaType: "Content-Type must be application/json or application/*+json",
+		TrailingData:         "Request body contains data after the JSON value",
+
 		Required:           func(field string) string { return field + " is required" },
 		InvalidUUID:        func(field string) string { return field + " must be a valid UUID" },
 		NotInteger:         func(field string) string { return field + " must be an integer" },
@@ -163,6 +177,12 @@ func WithMessages(m Messages) Option {
 		}
 		if m.InvalidBody != "" {
 			d.messages.InvalidBody = m.InvalidBody
+		}
+		if m.UnsupportedMediaType != "" {
+			d.messages.UnsupportedMediaType = m.UnsupportedMediaType
+		}
+		if m.TrailingData != "" {
+			d.messages.TrailingData = m.TrailingData
 		}
 		if m.Required != nil {
 			d.messages.Required = m.Required

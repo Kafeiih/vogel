@@ -13,13 +13,34 @@ import (
 // that a setting was non-empty, so a malformed endpoint (a missing "https://",
 // a stray space) passed validation and failed later inside whatever HTTP
 // client used it, with a less specific error further from the actual cause.
+//
+// The returned error never contains value, not even in part: URLs such as
+// database DSNs routinely carry a password in their userinfo, and this error
+// is typically logged at boot. url.Parse's own error is dropped for the same
+// reason, since it quotes the input and some of its messages (an invalid
+// port, for instance) echo fragments of the userinfo. u.Redacted() is not
+// enough either: it only masks a password it managed to parse as one.
+//
+// Instead, the error names the field and one fixed, value-free reason so an
+// operator can still tell the failure modes apart: "must be a well-formed
+// URL" (url.Parse rejected it), "missing scheme", "missing \"//\" before the
+// host" (a bare host:port, which url.Parse reads as scheme:opaque), or
+// "missing host".
 func ValidURL(fieldName, value string) error {
 	u, err := url.Parse(value)
 	if err != nil {
-		return fmt.Errorf("%s must be a well-formed URL: %w", fieldName, err)
+		return fmt.Errorf("%s must be a well-formed URL", fieldName)
 	}
-	if u.Scheme == "" || u.Host == "" {
-		return fmt.Errorf("%s must be an absolute URL with a scheme and host, got %q", fieldName, value)
+	switch {
+	case u.Scheme == "":
+		return fmt.Errorf("%s must be an absolute URL: missing scheme", fieldName)
+	case u.Opaque != "":
+		// "localhost:3593" parses with "localhost" as the scheme and "3593"
+		// as opaque data, so "missing host" would point the operator at the
+		// wrong mistake.
+		return fmt.Errorf(`%s must be an absolute URL: missing "//" before the host (a bare host:port needs a scheme such as https://)`, fieldName)
+	case u.Host == "":
+		return fmt.Errorf("%s must be an absolute URL: missing host", fieldName)
 	}
 	return nil
 }

@@ -4,6 +4,260 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el versionado,
 [SemVer](https://semver.org/lang/es/).
 
+## [Unreleased]
+
+### Agregado
+
+- **`httpx/middleware`: `RealIP(trusted ...netip.Prefix)` y
+  `ParseTrustedProxies`.** Reemplazo del `middleware.RealIP` de chi, que cree
+  `X-Forwarded-For`, `X-Real-IP` y `True-Client-IP` de cualquier cliente (un
+  cliente directo podía falsificar su IP en `reqctx`, en `audit_log.ip` y en la
+  clave del rate limit). Las cabeceras solo se consultan si el par directo
+  (`r.RemoteAddr`) está dentro de un prefijo confiable; sin prefijos nunca se
+  consultan. `X-Forwarded-For` se recorre de derecha a izquierda saltando los
+  proxies confiables y se toma la primera IP no confiable (si todas son
+  confiables, la de más a la izquierda); una entrada vacía o inválida detiene
+  el recorrido y deja `r.RemoteAddr` sin cambios. `X-Real-IP` se usa solo si no
+  hay `X-Forwarded-For`; `True-Client-IP` se ignora siempre. Acepta puertos,
+  zonas IPv6 e IPv4 mapeadas en IPv6. `ParseTrustedProxies` convierte una
+  lista separada por comas de CIDR o IP sueltas (`/32` o `/128`) en prefijos y
+  devuelve error ante cualquier entrada inválida.
+- **`examples/boilerplate`: nueva variable `TRUSTED_PROXIES`** (CIDR o IP
+  separadas por comas, vacía por defecto). El router monta `vmw.RealIP` con
+  esos prefijos en lugar del `middleware.RealIP` de chi; un valor inválido
+  hace fallar el arranque. Cambio de comportamiento: detrás de un balanceador,
+  hay que declarar sus direcciones en `TRUSTED_PROXIES` o todas las requests
+  aparecen con la IP del balanceador.
+- `httpx/response`: constante `CodeUnsupportedMediaType` (`UNSUPPORTED_MEDIA_TYPE`).
+- CI: nuevo job `govulncheck` que escanea la raíz y `examples/boilerplate`.
+
+### Cambiado
+
+- **`request`: `JSON`, `JSONWithLimit` y `JSONOptional` exigen un `Content-Type`
+  JSON.** Antes decodificaban cualquier cuerpo sin mirar la cabecera. Ahora
+  aceptan `application/json` y cualquier `application/*+json` (con parámetros
+  como `charset`); cualquier otro tipo, o la cabecera ausente, responde HTTP
+  415 con el nuevo código `response.CodeUnsupportedMediaType`
+  (`UNSUPPORTED_MEDIA_TYPE`) y el nuevo mensaje `Messages.UnsupportedMediaType`
+  (por defecto `Content-Type must be application/json or application/*+json`,
+  que le dice al cliente qué se acepta).
+  `JSONOptional` conserva su semántica: un cuerpo vacío sin cabecera sigue
+  devolviendo `nil`; un cuerpo no vacío sin cabecera, o una cabecera no JSON,
+  es 415, salvo que el cuerpo sin cabecera supere el límite de bytes
+  (por ejemplo, solo espacios en blanco más allá del límite), que es 413 como
+  con cabecera. Cambio de comportamiento para consumidores cuyos clientes no envían
+  la cabecera: la opción `request.AllowAnyContentType()` en `request.New`
+  desactiva el chequeo para ese `Decoder`. Es la única forma de desactivarlo:
+  las funciones a nivel de paquete siguen siendo estrictas a propósito y no
+  tienen interruptor.
+- **`request`: el cuerpo debe contener exactamente un valor JSON.** Un segundo
+  valor o cualquier byte distinto de espacio en blanco tras el primero
+  (`{"a":1} {"b":2}`, `{"a":1}garbage`) responde HTTP 400 `INVALID_JSON` con el
+  nuevo mensaje `Messages.TrailingData`. Antes el resto del cuerpo se ignoraba
+  en silencio. Este chequeo no tiene opción de desactivación. Si la lectura
+  del cuerpo falla después del primer valor (por ejemplo, se corta la
+  conexión), no se informa como datos sobrantes: responde como cualquier otro
+  error de lectura del cuerpo (HTTP 400 `INVALID_JSON` con
+  `Messages.InvalidBody`, o 413 si se superó el límite) y se devuelve el error
+  de lectura.
+- **`config`: el error de `ValidURL` ya no incluye el valor.** Antes citaba la
+  URL completa (y el error de `url.Parse`, que también la cita), así que una
+  URL con credenciales, como el DSN de una base de datos, dejaba la contraseña
+  en el log de arranque. Ahora el mensaje nombra la variable y un motivo fijo
+  que no contiene ninguna parte del valor, para poder diagnosticar sin verlo:
+  `must be a well-formed URL` (`url.Parse` la rechazó), `missing scheme`,
+  `missing "//" before the host` (un `host:puerto` sin esquema, que
+  `url.Parse` lee como `esquema:opaco`) o `missing host`. Cambio de
+  comportamiento: el error ya no envuelve el `*url.Error` de `url.Parse`, así
+  que `errors.As` sobre él deja de encontrarlo.
+- **`notification`: `Message.Validate` exige que `To` y `From` sean una
+  dirección válida.** Antes solo comprobaba que no estuvieran vacíos. Ahora
+  cada uno debe ser una única dirección RFC 5322 según `net/mail.ParseAddress`,
+  sola (`a@b.cl`) o con nombre (`Nombre <a@b.cl>`); se rechazan listas de
+  varias direcciones y cualquier CR/LF, que permitiría inyectar cabeceras. El
+  error nombra el campo pero no la dirección. `notification/sendgrid` separa
+  el nombre de la dirección antes de llamar a la API (antes enviaba
+  `Nombre <a@b.cl>` entero como dirección). Cambio de comportamiento: un
+  mensaje con una dirección mal formada que antes llegaba al proveedor ahora
+  falla en `Validate`.
+- **`notification`: `Message.From` es opcional y el `defaultFrom` de los
+  adaptadores por fin se aplica.** `smtp.NewSMTPNotifier` y
+  `sendgrid.NewSendGridNotifier` reciben un `defaultFrom` para usar cuando el
+  mensaje no trae `From`, pero `Send` llamaba antes a `Validate`, que
+  rechazaba un `From` vacío, así que ese valor por defecto nunca se usaba.
+  Ahora `Validate` acepta `From` vacío (si viene, sigue teniendo que ser una
+  dirección válida) y `Send` usa `msg.From` o, si está vacío, `defaultFrom`;
+  si ambos están vacíos, `Send` falla sin contactar al proveedor. Los
+  constructores validan `defaultFrom` con `net/mail.ParseAddress` y devuelven
+  error si es inválido (vacío sigue permitido), para que una configuración
+  mala falle al arrancar. Los errores de los adaptadores ya no incluyen la
+  dirección: antes `notification/smtp` citaba `From` y `To` en el mensaje.
+- **`examples/boilerplate`: `api server` ya no aplica migraciones.** Antes
+  `server` (y el binario sin argumentos) corría `migrate.Up` de todos los
+  conjuntos al arrancar, lo que obligaba al rol que sirve a ser dueño de las
+  tablas y le permitía deshabilitar los triggers append-only de `audit_log`.
+  Ahora el arranque sigue las fases de Zitadel: `api migrate up` aplica las
+  migraciones (con `DB_URL`, idealmente un rol migrador), `api server` solo
+  sirve, y el nuevo `api start-from-migrate` migra y luego sirve, igual que
+  el `server` anterior. `make dev` usa `start-from-migrate` y el compose de
+  despliegue agrega un servicio `migrate` de una sola ejecución del que
+  depende `api` (`service_completed_successfully`). Cambio de
+  comportamiento: quien arranque con `server` debe correr `migrate up` antes
+  de desplegar, o usar `start-from-migrate` en desarrollo.
+- **`examples/boilerplate`: el worker ya no migra River al arrancar.** Antes
+  `cmd/worker` corría `worker.EnsureSchema` y `queue.Migrate` en cada
+  arranque, lo que exigía permiso `CREATE` al rol del worker y hacía migrar a
+  cada réplica. Ahora `worker server` (y el binario sin argumentos) solo
+  procesa jobs; `api migrate up` (y `api start-from-migrate`) crean el
+  esquema `WORKER_SCHEMA` y aplican las migraciones de River, y el nuevo
+  `worker start-from-migrate` migra River y luego procesa jobs, como el
+  worker anterior. `api migrate down` nunca revierte River y `api migrate
+  status` no lo lista. `make worker` usa `start-from-migrate` y en el compose
+  de despliegue `worker` también espera al servicio `migrate`. Cambio de
+  comportamiento: un worker desplegado sin correr antes `api migrate up`
+  falla al arrancar si las tablas de River no existen.
+- **`examples/api`: `POST /documents` ya no acepta `owner_id`.** Antes el
+  dueño del documento venía del cuerpo de la request, así que cualquier
+  usuario con permiso de escritura podía crear un documento a nombre de otro
+  y darle el permiso de borrado reservado al dueño. Ahora el dueño es siempre
+  el principal autenticado (`auth.FromContext`); sin principal la respuesta
+  es 401. Cambio de comportamiento: como `request.JSON` rechaza campos
+  desconocidos, un cuerpo que todavía envía `owner_id` recibe 400 en vez de
+  ignorarse.
+- **`httpx/middleware`: `SecurityHeaders` añade `Cache-Control: no-store` y
+  `Pragma: no-cache`.** Las respuestas de una API autenticada son por usuario
+  y no deben quedar en la caché del navegador ni de un proxy intermedio. Las
+  cabeceras se fijan antes de llamar al siguiente handler, así que un handler
+  que sirve contenido realmente cacheable (un recurso público, un esquema
+  versionado) puede sobreescribir `Cache-Control` y borrar `Pragma` antes de
+  escribir su respuesta.
+- **`httpx/middleware`: `RequireAccess` y `WriteAccessError` registran cada
+  denegación (403) en nivel `Warn`.** Antes el 403 era silencioso; solo el 503
+  se logueaba. La línea `authorization denied` lleva `user_id`,
+  `resource_kind`, `resource_id` (el parámetro `id` de la ruta o `*` cuando no
+  hay), `action`, `method`, `path` y `request_id` (el que `RequestContext`
+  pone en `reqctx`; vacío si ese middleware no está montado). No incluye el
+  token ni ninguna cabecera. Desde `WriteAccessError` (dentro de un handler)
+  `resource_kind`, `resource_id` y `action` van vacíos. El 401 sigue sin
+  loguearse.
+- **Versión mínima de Go: 1.26.** Corregir las vulnerabilidades alcanzables
+  GO-2026-6603/6610/6611/6612/6617 exige `golang.org/x/net` v0.60.0, que
+  declara `go 1.26.0` (igual que `x/text` v0.42.0 y `x/crypto` v0.57.0). No
+  existe una versión corregida que conserve 1.25. Los consumidores necesitan
+  Go 1.26 o superior, o `GOTOOLCHAIN` con descarga automática.
+- Dependencias: `golang.org/x/net` v0.57.0 → v0.60.0, `google.golang.org/grpc`
+  v1.83.0 → v1.83.1 (GO-2026-6348, alcanzable desde `authz/cerbos` y
+  `notification/sendgrid`) y `github.com/go-chi/chi/v5` v5.2.3 → v5.3.2
+  (GO-2026-5774/5775/5777 en `middleware.RealIP`). Nota: chi v5.3.2 sigue
+  confiando en `X-Forwarded-For`, `X-Real-IP` y `True-Client-IP` de cualquier
+  cliente; solo valida que el valor sea una IP. Montar `RealIP` únicamente
+  detrás de un proxy confiable.
+- **`storage`: `Storage.PresignedGetURL` acepta opciones variádicas
+  (`...PresignGetOption`).** La firma del puerto cambia: toda implementación
+  propia (fakes de test incluidos) debe añadir el parámetro
+  `opts ...storage.PresignGetOption`; los llamadores existentes compilan sin
+  cambios. Nuevas en `storage`: `PresignGetOptions`, `ApplyPresignGetOptions`
+  (aplica los valores por defecto; los adaptadores deben usarla),
+  `WithContentDisposition`, `AsAttachment` (construye
+  `attachment; filename="<nombre>"` eliminando caracteres de control, incluidos
+  CR, LF y tabulador, caracteres de formato Unicode como los que invierten la
+  dirección del texto, separadores de línea, comillas y barras invertidas; con
+  nombre vacío queda `attachment`. Un nombre con caracteres no ASCII se envía
+  además como `filename*=UTF-8''<nombre codificado>` según RFC 5987, con un
+  `filename` de respaldo donde cada carácter no ASCII pasa a `_`; el valor de
+  la cabecera siempre es ASCII imprimible) y `WithResponseContentType`.
+  `examples/api`: el presigner falso respeta el contrato de `expiry` (un valor
+  `<= 0` usa un valor por defecto de 15m, como `storage/s3`).
+- **`storage/s3`: las URL de descarga prefirmadas sirven el objeto como
+  `attachment` por defecto.** `PresignedGetURL` fija
+  `response-content-disposition=attachment` (firmado en la URL, no se puede
+  quitar) y, con `WithResponseContentType`, `response-content-type`. Antes el
+  navegador renderizaba un HTML o SVG subido en el origen del bucket. Cambio de
+  comportamiento: quien necesite renderizado en línea pasa
+  `storage.WithContentDisposition("inline")` explícitamente.
+- **`storage/s3`: `Config.PresignExpiry` se respeta.** Se declaraba pero nada lo
+  leía. Ahora `PresignedGetURL` y `PresignedPutURL` lo usan cuando el `expiry`
+  de la llamada es `<= 0` (nueva constante `DefaultPresignExpiry` = 15m cuando
+  tampoco está configurado). Un `expiry` positivo sigue mandando.
+- **`audit`: `Recorder.Record` redacta valores sensibles antes de persistir.**
+  Antes `audit_log` guardaba contraseñas, tokens y secretos tal como llegaban
+  en `InputPayload`, los snapshots y `ChangedFields`. Ahora el valor de toda
+  clave que coincide con la lista de denegación (`password`, `passwd`,
+  `token`, `secret`, `authorization`, `api_key`, `private_key`, `credential`,
+  `cookie`) se reemplaza por
+  `audit.RedactedValue` (`[REDACTED]`) en los cuatro campos y a cualquier
+  profundidad (mapas, slices y structs, estos en su forma JSON); la clave se
+  conserva y un `nil` sigue siendo `nil`. En `ChangedFields` el nombre del
+  campo se mantiene y se redactan `old` y `new` por separado. La coincidencia
+  ignora mayúsculas, `_`, `-`, `.` y espacios, y es por subcadena
+  (`access_token`, `refreshToken`, `client_secret`, `X-Api-Key` y
+  `Set-Cookie` quedan cubiertas, y `credential` cubre `credentials`; también
+  `token_count`, a propósito). `session` queda fuera a propósito porque
+  redactaría `session_id` y contadores; se agrega con
+  `WithRedactedKeys("session")`. La redacción falla cerrada: si un payload
+  no se puede redactar (un mapa o slice que se contiene a sí mismo, un
+  anidamiento de más de 1000 niveles, o un valor que `encoding/json` no
+  codifica, como un canal, una función o un `NaN`),
+  `Record` devuelve un error que envuelve `audit.ErrUnredactable` y no
+  persiste nada; el valor de una clave sensible se reemplaza sin inspeccionarlo,
+  así que nunca provoca ese error. Los
+  mapas del llamador no se modifican. `NewRecorder` acepta opciones variádicas
+  (`...RecorderOption`), así que los llamadores existentes compilan sin
+  cambios: `WithRedactedKeys` amplía la lista y `WithRedactor` instala un
+  hook propio (`audit.Redactor`). El valor que devuelve un hook no se guarda
+  tal cual: se normaliza a su forma JSON y se recorre igual que el original,
+  así que una clave de la lista de denegación dentro del reemplazo también se
+  redacta y uno que no se puede redactar hace fallar `Record` con
+  `audit.ErrUnredactable`. Dos slices que comparten el arreglo subyacente con
+  distinta longitud (`s` y `s[:1]`) ya no se confunden con un ciclo. Cambio de
+  comportamiento: quien leía esos valores desde el log de auditoría deja de
+  verlos.
+- **`workflow`: `Move`, `Claim` y `Release` usan control de concurrencia
+  optimista.** Antes leían el caso y lo reescribían con
+  `UPDATE ... WHERE id = $1`, así que dos llamadas concurrentes sobre el mismo
+  caso podían leer el mismo estado y la última escritura pisaba a la primera
+  en silencio (dos personas "tomaban" el mismo caso, o un `Move` deshacía un
+  `Claim`). Ahora `workflow_case` tiene una revisión de fila: el nuevo campo
+  `Case.Revision` (`int64`, distinto de `Case.Version`, que sigue siendo la
+  versión de la definición) se lee en cada carga, `Create` lo deja en 0 y
+  `Repository.Update` es un compare-and-swap
+  (`... SET ..., revision = revision + 1 WHERE id = $1 AND revision = $n`) que,
+  si tiene éxito, avanza también el `Case.Revision` en memoria. Si la revisión
+  ya no coincide, `Update` devuelve el nuevo centinela `workflow.ErrConflict`
+  (envuelto con contexto) y no escribe nada; si el caso no existe, sigue
+  devolviendo `workflow.ErrCaseNotFound`. El motor escribe el caso ANTES de
+  agregar eventos, así que un `Move`/`Claim`/`Release` en conflicto no agrega
+  ningún evento. Aun así, el llamador debe hacer rollback de su transacción
+  ante cualquier error (una guarda pudo haber escrito en ella). **Para
+  reintentar:** ante `errors.Is(err, workflow.ErrConflict)`, hacer rollback y
+  repetir la operación completa desde una lectura nueva (nueva transacción);
+  un reintento acotado con backoff corto basta, y conviene volver a evaluar
+  si la operación sigue teniendo sentido (p. ej. el caso ya fue tomado por
+  otra persona). Bajo aislamiento `REPEATABLE READ`/`SERIALIZABLE`,
+  PostgreSQL aborta al segundo escritor con un error de serialización
+  (SQLSTATE `40001`) en vez de `ErrConflict`; también es seguro reintentarlo.
+  Quien implemente `workflow.Repository` por su cuenta debe respetar el mismo
+  contrato. Nueva migración `workflow/migrations/003_workflow_case_revision.sql`:
+  agrega `workflow_case.revision BIGINT NOT NULL DEFAULT 0`. **Todo
+  consumidor debe correr esta migración ANTES de desplegar esta versión de
+  `vogel`** — igual que la 002, no es opcional:
+  `workflow/postgres/repository.go` lee y escribe `revision` de forma
+  incondicional, así que contra una base de datos sin la 003 fallan
+  `Engine.Open`, `Move`, `Claim`, `Release`, `Available`, `EligibilityFor` e
+  `Inbox`. Los casos existentes arrancan en revisión 0. Correrla vía
+  `migrate.Up` con `workflow/migrations.FS()`, como la 001 y la 002.
+  **Orden de despliegue:** la detección de conflictos solo funciona cuando
+  TODOS los procesos que escriben `workflow_case` avanzan `revision`. Un
+  binario compilado con una versión anterior de `vogel` actualiza el caso sin
+  tocar `revision`, así que durante un despliegue gradual (binarios viejos y
+  nuevos a la vez) un escritor nuevo puede leer la revisión n, un escritor
+  viejo sobrescribir la fila (que sigue en n) y el nuevo confirmar su propia
+  escritura en n: el cambio del viejo se pierde sin ningún `ErrConflict`, y
+  los escritores viejos nunca detectan conflictos. Aplicar la 003, luego
+  reemplazar TODOS los binarios viejos (o detener sus escrituras) antes de
+  confiar en `ErrConflict`; mientras tanto se pueden seguir perdiendo
+  actualizaciones concurrentes en silencio, igual que antes de este cambio.
+
 ## [0.8.0] — 2026-09-30
 
 ### Agregado

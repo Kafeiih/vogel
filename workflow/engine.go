@@ -422,6 +422,17 @@ type MoveInput struct {
 // terminal node directly with no further hops. EventClosed.Action never
 // repeats in.Action once a route hop followed it — it describes how the
 // case actually reached the terminal node, not what the human asked for.
+//
+// Concurrency: the case is written through Repository.Update, a
+// compare-and-swap on Case.Revision, BEFORE any event is appended. If
+// another writer changed the case after Move read it, Move fails with
+// ErrConflict and appends no event; the caller must roll back its
+// transaction (a guard may already have written to it) and may retry from a
+// fresh read. The check only sees writers that advance Case.Revision: during
+// a rolling deploy, a process still running a vogel release from before the
+// revision column overwrites cases without advancing it, so its writes can
+// be lost undetected until every such process is replaced (see
+// workflow/postgres Repository.Update for the deploy order).
 func (e *Engine) Move(ctx context.Context, db pgxtx.DBTX, in MoveInput) (*Case, error) {
 	c, err := e.repo.GetByID(ctx, db, in.CaseID)
 	if err != nil {
@@ -609,6 +620,9 @@ func findTransition(candidates []Transition, action string) (Transition, bool) {
 
 // Claim assigns the case to actorID. Re-claiming by the same actor is a
 // no-op success; claiming a case already assigned to someone else fails.
+// Like Move, the case update is a revision compare-and-swap performed before
+// the event is appended: a concurrent change fails with ErrConflict and
+// persists nothing, so two racing claimers can never both win.
 func (e *Engine) Claim(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID, actorID string) (*Case, error) {
 	c, err := e.repo.GetByID(ctx, db, caseID)
 	if err != nil {
@@ -636,7 +650,8 @@ func (e *Engine) Claim(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID, act
 	return c, nil
 }
 
-// Release clears the case's assignment.
+// Release clears the case's assignment. A concurrent change to the case
+// fails with ErrConflict and persists nothing (see Claim).
 func (e *Engine) Release(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID, actorID string) (*Case, error) {
 	c, err := e.repo.GetByID(ctx, db, caseID)
 	if err != nil {

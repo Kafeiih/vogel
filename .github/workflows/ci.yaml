@@ -26,14 +26,14 @@ jobs:
     name: Lint + Unit + Build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go.mod
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v7
+        uses: golangci/golangci-lint-action@9fae48acfc02a90574d7c304a1758ef9895495fa # v7.0.1
         with:
           version: v2.13.2
           # Sin --build-tags=integration el linter NO mira ningun archivo con
@@ -91,7 +91,7 @@ jobs:
 
       - name: Upload unit coverage
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: coverage-unit
           path: coverage-unit.out
@@ -106,9 +106,9 @@ jobs:
     name: Boilerplate example
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: examples/boilerplate/go.mod
 
@@ -118,6 +118,39 @@ jobs:
       - name: Test
         run: cd examples/boilerplate && go test ./... -race -cover
 
+  # Vulnerabilidades conocidas en dependencias, usando el call graph: solo
+  # falla cuando el codigo de vogel (o del boilerplate) ALCANZA la funcion
+  # vulnerable, no por el mero hecho de requerir el modulo. Corre sobre los
+  # dos modulos porque el boilerplate es un modulo Go aparte, con su propio
+  # go.mod/go.sum y dependencias que la raiz no tiene (River, entre otras).
+  #
+  # Este job depende de la base de datos de vuln.go.dev en el momento de
+  # correr, no solo del diff: un advisory nuevo puede poner en rojo un PR que
+  # no toco ninguna dependencia. Cuando pase, el arreglo es un bump de la
+  # dependencia afectada (en un PR aparte si hace falta), no es tarea del
+  # autor del PR que quedo en rojo.
+  vuln:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+
+      # Version fija: un release nuevo del scanner no debe cambiar el
+      # resultado de CI sin un cambio en este repo. Se sube a mano.
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
+
+      - name: Scan vogel
+        run: govulncheck ./...
+
+      - name: Scan boilerplate
+        run: cd examples/boilerplate && govulncheck ./...
+
   # Tests de integracion (testcontainers + postgres): lo mas caro del set.
   # Corren SOLO en un PR con el label 'run-integration', que se agrega al ir
   # a mergear. Asi no se pagan en cada push intermedio.
@@ -126,9 +159,9 @@ jobs:
     if: github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'run-integration')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go.mod
 
@@ -137,7 +170,7 @@ jobs:
 
       - name: Upload integration coverage
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: coverage-integration
           path: coverage-integration.out

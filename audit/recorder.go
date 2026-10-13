@@ -2,6 +2,7 @@ package audit
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"strings"
 	"time"
@@ -139,12 +140,29 @@ func WithError(code, message string) Option {
 
 // Recorder provides a simple API for recording audit entries.
 type Recorder struct {
-	repo Repository
+	repo         Repository
+	redactedKeys []string
+	redactors    []Redactor
+	redact       redactor
 }
 
 // NewRecorder creates a new Recorder with the given repository.
-func NewRecorder(repo Repository) *Recorder {
-	return &Recorder{repo: repo}
+//
+// Every entry is redacted before it reaches repo: the value under any key
+// matching the denylist (password, passwd, token, secret, authorization,
+// api_key, private_key, credential, cookie, plus WithRedactedKeys) is
+// replaced with RedactedValue in InputPayload, BeforeSnapshot, AfterSnapshot
+// and ChangedFields, at every nesting level. WithRedactor adds custom hooks.
+// The caller's maps are never modified; the entry gets redacted copies. A
+// payload that cannot be redacted makes Record return an error wrapping
+// ErrUnredactable, and nothing is persisted.
+func NewRecorder(repo Repository, opts ...RecorderOption) *Recorder {
+	r := &Recorder{repo: repo, redactedKeys: append([]string(nil), defaultRedactedKeys...)}
+	for _, opt := range opts {
+		opt(r)
+	}
+	r.redact = redactor{keys: newKeyMatcher(r.redactedKeys), hooks: r.redactors}
+	return r
 }
 
 // Record creates an audit entry using the given db (a pool or a live
@@ -208,6 +226,13 @@ func (r *Recorder) Record(ctx context.Context, db pgxtx.DBTX, source Source, act
 
 	for _, opt := range opts {
 		opt(entry)
+	}
+
+	// Redaction runs last, after every Option, so no Option can reintroduce
+	// a sensitive value behind it. A payload redaction cannot vouch for (a
+	// cycle, an unencodable value) fails closed: nothing is persisted.
+	if err := r.redact.redactEntry(entry); err != nil {
+		return fmt.Errorf("audit: record %s %s/%s: %w", category, resourceType, resourceID, err)
 	}
 
 	return r.repo.Create(ctx, db, entry)

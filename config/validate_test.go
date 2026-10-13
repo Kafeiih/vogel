@@ -10,17 +10,25 @@ import (
 )
 
 func TestValidURL(t *testing.T) {
+	// wantReason is the value-free diagnostic the error must carry so an
+	// operator can tell the failure modes apart without the value itself
+	// being echoed (see TestValidURL_NeverEchoesTheValue).
 	cases := []struct {
-		name    string
-		value   string
-		wantErr bool
+		name       string
+		value      string
+		wantErr    bool
+		wantReason string
 	}{
-		{"valid https URL", "https://auth.institucion.gob", false},
-		{"valid http URL with port", "http://localhost:3593", false},
-		{"missing scheme", "localhost:3593", true},
-		{"missing host", "https://", true},
-		{"garbage", "not a url at all", true},
-		{"empty", "", true},
+		{"valid https URL", "https://auth.institucion.gob", false, ""},
+		{"valid http URL with port", "http://localhost:3593", false, ""},
+		// url.Parse reads "localhost" as the scheme and "3593" as opaque
+		// data, so this is reported as a missing "//", not a missing host.
+		{"host and port without a scheme", "localhost:3593", true, `missing "//" before the host`},
+		{"missing host", "https://", true, "missing host"},
+		{"garbage", "not a url at all", true, "missing scheme"},
+		{"empty", "", true, "missing scheme"},
+		{"relative path", "/callback", true, "missing scheme"},
+		{"unparsable", "https://example.com:port/", true, "must be a well-formed URL"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -28,9 +36,33 @@ func TestValidURL(t *testing.T) {
 			if tc.wantErr {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), "ISSUER_URL")
+				assert.Contains(t, err.Error(), tc.wantReason)
 			} else {
 				require.NoError(t, err)
 			}
+		})
+	}
+}
+
+// TestValidURL_NeverEchoesTheValue guards against leaking credentials: a
+// connection string such as a DSN often carries a password, and the error
+// ValidURL returns is typically logged at boot.
+func TestValidURL_NeverEchoesTheValue(t *testing.T) {
+	cases := []struct {
+		name  string
+		value string
+	}{
+		{"unparsable with password in the port position", "postgres://user:s3cr3t/x@db:5432/app"},
+		{"missing host with userinfo", "postgres://user:s3cr3t@"},
+		{"missing scheme with userinfo", "user:s3cr3t@db:5432"},
+		{"control character", "https://user:s3cr3t@db\x7f/app"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := config.ValidURL("DATABASE_URL", tc.value)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "DATABASE_URL")
+			assert.NotContains(t, err.Error(), "s3cr3t")
 		})
 	}
 }

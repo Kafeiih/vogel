@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
 
 	auditpkg "github.com/kafeiih/vogel/audit"
@@ -26,6 +28,7 @@ import (
 	"github.com/kafeiih/vogel/examples/boilerplate/internal/infrastructure/config"
 	appmigrate "github.com/kafeiih/vogel/examples/boilerplate/internal/infrastructure/database/migrate"
 	"github.com/kafeiih/vogel/examples/boilerplate/internal/infrastructure/database/migrations"
+	"github.com/kafeiih/vogel/examples/boilerplate/internal/infrastructure/riverschema"
 	httpiface "github.com/kafeiih/vogel/examples/boilerplate/internal/interfaces/http"
 	"github.com/kafeiih/vogel/examples/boilerplate/internal/interfaces/http/handler"
 )
@@ -54,18 +57,52 @@ func main() {
 	if len(args) > 0 {
 		subcmd = args[0]
 	}
+	cmd, err := parseCommand(subcmd)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	switch cmd {
+	case cmdServer:
+		err = runServer(false)
+	case cmdStartFromMigrate:
+		err = runServer(true)
+	case cmdMigrate:
+		err = runMigrate(args[1:])
+	}
+	if err != nil {
+		log.Fatal(err)
+	}
+}
+
+// command is a top-level subcommand of the api binary. The startup phases
+// follow Zitadel's setup/start split: migrations are a separate step so the
+// serving role does not need to own the schema.
+type command int
+
+const (
+	// cmdServer serves only and never touches the schema. A bare "api" is
+	// an alias for "api server".
+	cmdServer command = iota
+	// cmdStartFromMigrate applies every migration set (River included) and
+	// then serves. It is a development convenience: the serving role must
+	// own the tables.
+	cmdStartFromMigrate
+	// cmdMigrate runs the migrate subcommands (up, down, status, create).
+	cmdMigrate
+)
+
+// parseCommand maps the first CLI argument to a command.
+func parseCommand(subcmd string) (command, error) {
 	switch subcmd {
 	case "", "server":
-		if err := runServer(); err != nil {
-			log.Fatal(err)
-		}
+		return cmdServer, nil
+	case "start-from-migrate":
+		return cmdStartFromMigrate, nil
 	case "migrate":
-		if err := runMigrate(args[1:]); err != nil {
-			log.Fatal(err)
-		}
+		return cmdMigrate, nil
 	default:
-		fmt.Fprintf(os.Stderr, "unknown subcommand %q; valid: server, migrate\n", subcmd)
-		os.Exit(1)
+		return 0, fmt.Errorf("unknown subcommand %q; valid: server, start-from-migrate, migrate", subcmd)
 	}
 }
 
@@ -100,14 +137,19 @@ func runMigrate(args []string) error {
 				return fmt.Errorf("running %s migrations: %w", set.name, err)
 			}
 		}
-		return nil
+		return migrateRiver(ctx, dbURL)
 	case "down":
 		// Only this service's own set is rolled back. migrate.Down reverts the
 		// latest migration of the set it is given, and the audit set's only
 		// migration creates audit_log — including it would drop the audit
-		// trail on every "migrate down".
+		// trail on every "migrate down". River's schema is never rolled back
+		// either: its down migrations drop the job tables and every queued
+		// job with them.
 		return migrate.Down(ctx, dbURL, migrations.FS)
 	case "status":
+		// Lists the goose sets only. River's migrations are not goose
+		// migrations; "migrate up" applies them idempotently and logs each
+		// version it applies.
 		for i, set := range migrationSets() {
 			if i > 0 {
 				fmt.Println()
@@ -126,6 +168,19 @@ func runMigrate(args []string) error {
 	}
 }
 
+// migrateRiver ensures the worker's River schema (WORKER_SCHEMA, the same
+// variable the worker reads) and applies River's migrations, so "worker
+// server" can start with a role that cannot create tables.
+func migrateRiver(ctx context.Context, dbURL string) error {
+	pool, err := pgxpool.New(ctx, dbURL)
+	if err != nil {
+		return fmt.Errorf("connecting for river migrations: %w", err)
+	}
+	defer pool.Close()
+
+	return riverschema.Migrate(ctx, pool, config.WorkerSchema(), slog.Default())
+}
+
 // migrationSet is one embedded set of goose migrations and the options it
 // runs with.
 type migrationSet struct {
@@ -135,8 +190,8 @@ type migrationSet struct {
 }
 
 // migrationSets lists every migration set this service applies, in order.
-// runServer and the migrate subcommand both read it, so a set added here is
-// applied at boot and by "migrate up" alike. Each set numbers from 001, so
+// "start-from-migrate" and "migrate up" both read it, so a set added here is
+// applied by either. Each set numbers from 001, so
 // each needs its own goose version table.
 func migrationSets() []migrationSet {
 	return []migrationSet{
@@ -145,7 +200,11 @@ func migrationSets() []migrationSet {
 	}
 }
 
-func runServer() error {
+// runServer serves the API. With migrateFirst ("start-from-migrate") it first
+// applies every migration set and River's schema against cfg.Database.URL;
+// without it ("server") the schema must already be current, applied by
+// "migrate up" with a migrator role.
+func runServer(migrateFirst bool) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
@@ -178,10 +237,16 @@ func runServer() error {
 	// de migraciones" section of vogel's examples/api/README.md — this
 	// boilerplate only needs two of the three since it does not use
 	// vogel/workflow.
-	for _, set := range migrationSets() {
-		set.opts.Logger = appLogger.Logger
-		if err := migrate.Up(ctx, cfg.Database.URL, set.fsys, set.opts); err != nil {
-			return fmt.Errorf("running %s migrations: %w", set.name, err)
+	if migrateFirst {
+		for _, set := range migrationSets() {
+			set.opts.Logger = appLogger.Logger
+			if err := migrate.Up(ctx, cfg.Database.URL, set.fsys, set.opts); err != nil {
+				return fmt.Errorf("running %s migrations: %w", set.name, err)
+			}
+		}
+		// Same River step as "migrate up", so both leave the database alike.
+		if err := riverschema.Migrate(ctx, pool, cfg.Worker.Schema, appLogger.Logger); err != nil {
+			return err
 		}
 	}
 
@@ -240,7 +305,9 @@ func runServer() error {
 	//   publicStore := storageReg.Get("public")
 	//   privateStore := storageReg.Get("private")
 	//   err := publicStore.Upload(ctx, &storage.UploadInput{Key: "assets/logo.png", Body: f, ContentType: "image/png"})
-	//   url, err := privateStore.PresignedGetURL(ctx, "docs/licencia.pdf", 15*time.Minute)
+	//   // 0 expiry = the backend's PresignExpiry; the URL serves the object as an
+	//   // attachment unless you pass storage.WithContentDisposition("inline").
+	//   url, err := privateStore.PresignedGetURL(ctx, "docs/licencia.pdf", 0, storage.AsAttachment("licencia.pdf"))
 	if len(cfg.Storages) > 0 {
 		storageReg, err := s3.NewStorageRegistry(cfg.Storages, appLogger.Logger)
 		if err != nil {
@@ -258,6 +325,8 @@ func runServer() error {
 		AppURL:      cfg.App.Url,
 		Timeout:     cfg.App.Timeout,
 		CORSOrigins: cfg.CORS.AllowedOrigins,
+
+		TrustedProxies: cfg.App.TrustedProxies,
 	}
 
 	deps := httpiface.Dependencies{

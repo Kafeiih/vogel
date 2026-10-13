@@ -61,7 +61,7 @@ no existe fuera de este repositorio — y nada compila.
 cd examples/boilerplate
 cp .env.example .env    # ver más abajo si el archivo no existe en su copia
 docker compose -f deploy/docker-compose.developer.yaml up -d   # Postgres + Cerbos
-go run ./cmd/api
+go run ./cmd/api start-from-migrate   # o: make dev
 ```
 
 > Este agente no pudo crear `.env.example` en este repositorio por una regla
@@ -97,6 +97,15 @@ go run ./cmd/api
 > `NOTIFICATION_DEFAULT_FROM`, `SMTP_*`, `SENDGRID_API_KEY`,
 > `METRICS_LISTEN_ADDR`. Ver `internal/infrastructure/config/config.go` para
 > el detalle completo de cada una.
+>
+> `TRUSTED_PROXIES` (opcional, vacía por defecto) lista, separados por comas,
+> los CIDR o IP de los proxies inversos o balanceadores cuyas cabeceras
+> `X-Forwarded-For` / `X-Real-IP` se aceptan para resolver la IP del cliente
+> (la que queda en `audit_log.ip` y la que usa el rate limit por IP), p. ej.
+> `TRUSTED_PROXIES=10.0.0.0/8,192.168.1.10`. Vacía, esas cabeceras se ignoran
+> y la IP es siempre la del par TCP: un cliente no puede falsificarla. Detrás
+> de un balanceador hay que declararlo aquí, o todas las requests aparecen con
+> su IP. Un valor inválido hace fallar el arranque.
 
 `docker compose -f deploy/docker-compose.developer.yaml` levanta Postgres,
 Cerbos y MinIO para desarrollo local. `docker compose -f
@@ -106,7 +115,29 @@ ese build sólo funciona **después** de quitar el `replace` (ver arriba):
 mientras el `go.mod` apunte a `../..`, el contexto de build de Docker no
 tiene forma de ver el código de `vogel` fuera de este directorio.
 
-Las migraciones corren solas al arrancar. Verificación:
+El binario separa el arranque en fases, como `zitadel setup` / `zitadel
+start` / `zitadel start-from-setup`:
+
+| Subcomando | Qué hace | Cuándo usarlo |
+|---|---|---|
+| `./api migrate up` | Aplica todos los conjuntos de migraciones contra `DB_URL`, crea el esquema de River (`WORKER_SCHEMA`, default `river`) y aplica sus migraciones, y termina | En despliegue, como paso previo, con un rol migrador |
+| `./api server` (o `./api` sin argumentos) | Sirve la API; **no** toca el esquema | En despliegue, después de `migrate up`, con un rol que solo tenga `SELECT` e `INSERT` sobre `audit_log` |
+| `./api start-from-migrate` | Aplica las migraciones (River incluido) y luego sirve, en un solo proceso | En desarrollo local (`make dev`) |
+| `./worker server` (o `./worker` sin argumentos) | Procesa jobs; **no** crea el esquema de River ni lo migra | En despliegue, después de `migrate up`, con un rol sin permiso `CREATE` |
+| `./worker start-from-migrate` | Crea el esquema de River, aplica sus migraciones y luego procesa jobs | En desarrollo local (`make worker`) |
+
+`start-from-migrate` es una comodidad de desarrollo: el rol que migra queda
+como dueño de `audit_log` y puede deshabilitar sus triggers append-only, así
+que no sirve para producción. El compose de despliegue ya sigue el esquema de
+dos fases: un servicio `migrate` de una sola ejecución corre `migrate up` y
+`api` y `worker` arrancan con `server` solo cuando ese servicio terminó bien.
+`WORKER_SCHEMA` se define una sola vez en el compose (bloque
+`x-worker-schema`) y llega con el mismo valor a `migrate`, `api` y `worker`:
+se toma de `deploy/.env` o, si no está, vale `river`. `migrate` no carga
+`.env` completo, así que el rol migrador no recibe los secretos de la
+aplicación. La receta de roles y permisos está en la sección «Un rol para
+migrar, otro para servir» del README de `vogel`.
+Verificación:
 
 ```bash
 curl -s localhost:8080/v1/healthz
@@ -115,7 +146,7 @@ curl -s localhost:8080/v1/healthz
 El worker se arranca aparte:
 
 ```bash
-go run ./cmd/worker
+go run ./cmd/worker start-from-migrate   # o: make worker
 ```
 
 El `Makefile` resume estos comandos (`make dev`, `make worker`, `make
@@ -153,9 +184,9 @@ desarrollo real y no depende de nada que se haya borrado.
 ### Tres conjuntos de migraciones, dos tablas de versión
 
 `cmd/api/main.go` declara los conjuntos en `migrationSets()` y aplica cada uno
-contra su propia tabla de versión de goose. El arranque del servidor y
+contra su propia tabla de versión de goose. `./api start-from-migrate` y
 `./api migrate up|status` leen esa misma lista, así que migrar como paso
-discreto del despliegue deja la base igual que arrancar el servidor:
+discreto del despliegue deja la base igual que `start-from-migrate`:
 
 | Conjunto | Tabla de versión |
 |---|---|
@@ -175,6 +206,11 @@ librería.
 las de audit: `migrate.Down` deshace la última migración del conjunto que
 recibe, y la única migración de audit es la que crea `audit_log`, así que
 incluirla borraría el registro de auditoría en cada `migrate down`.
+
+Las migraciones de River no son de goose: `migrate up` las aplica (son
+idempotentes y registra cada versión aplicada), pero `migrate down` nunca las
+revierte —sus migraciones de bajada borran las tablas de jobs y todos los
+jobs encolados— y `migrate status` no las lista.
 
 `internal/infrastructure/database/migrations/` trae una única migración de
 ejemplo (`001_enable_pgcrypto.sql`, habilita la extensión `pgcrypto` para
