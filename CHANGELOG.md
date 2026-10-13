@@ -61,7 +61,11 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 - **`config`: el error de `ValidURL` ya no incluye el valor.** Antes citaba la
   URL completa (y el error de `url.Parse`, que también la cita), así que una
   URL con credenciales, como el DSN de una base de datos, dejaba la contraseña
-  en el log de arranque. Ahora el mensaje solo nombra la variable. Cambio de
+  en el log de arranque. Ahora el mensaje nombra la variable y un motivo fijo
+  que no contiene ninguna parte del valor, para poder diagnosticar sin verlo:
+  `must be a well-formed URL` (`url.Parse` la rechazó), `missing scheme`,
+  `missing "//" before the host` (un `host:puerto` sin esquema, que
+  `url.Parse` lee como `esquema:opaco`) o `missing host`. Cambio de
   comportamiento: el error ya no envuelve el `*url.Error` de `url.Parse`, así
   que `errors.As` sobre él deja de encontrarlo.
 - **`notification`: `Message.Validate` exige que `To` y `From` sean una
