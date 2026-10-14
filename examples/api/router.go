@@ -5,7 +5,6 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
-	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -33,15 +32,16 @@ func NewRouter(
 ) http.Handler {
 	r := chi.NewRouter()
 
-	// chi's own request-ID middleware MUST run upstream of vmw.RequestContext:
-	// RequestContext reads the request ID via chi's middleware.GetReqID, it
-	// does not generate one itself. Without chimw.RequestID mounted first,
-	// every downstream reader of reqctx (logger.Logger.WithContext,
-	// audit.Recorder.Record) would silently see an empty request ID.
-	r.Use(chimw.RequestID)
+	// vogel's request-ID middleware MUST run upstream of vmw.RequestContext:
+	// RequestContext does not generate an ID itself. Without vmw.RequestID
+	// mounted first, every downstream reader of reqctx
+	// (logger.Logger.WithContext, audit.Recorder.Record) would silently see
+	// an empty request ID. Unlike chi's middleware.RequestID, it always
+	// generates the ID server-side and never adopts a client X-Request-Id.
+	r.Use(vmw.RequestID)
 
 	// The sole writer of reqctx's request ID, client IP, and User-Agent --
-	// mounted immediately after chimw.RequestID so every middleware below it,
+	// mounted immediately after vmw.RequestID so every middleware below it,
 	// and every handler, can read that metadata via reqctx.
 	r.Use(vmw.RequestContext)
 

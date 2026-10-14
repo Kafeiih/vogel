@@ -72,6 +72,48 @@ func TestRequestContext_BridgesChiRequestIDIntoReqctx(t *testing.T) {
 	}
 }
 
+func TestRequestContext_PrefersVogelRequestID(t *testing.T) {
+	var captured, generated string
+
+	// chi's RequestID mounted outside vogel's: chi would honor a client
+	// X-Request-Id, but vogel's ID must win.
+	handler := chimw.RequestID(RequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		generated = reqctx.RequestIDFromContext(r.Context())
+		RequestContext(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			captured = reqctx.RequestIDFromContext(r.Context())
+		})).ServeHTTP(w, r)
+	})))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set(RequestIDHeader, "client-forged")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if captured == "" || captured != generated {
+		t.Errorf("RequestContext request ID = %q, want vogel's generated ID %q", captured, generated)
+	}
+	if captured == "client-forged" {
+		t.Error("RequestContext used the client-supplied X-Request-Id")
+	}
+}
+
+func TestRequestContext_FallsBackToChiRequestID(t *testing.T) {
+	var captured, chiID string
+
+	handler := chimw.RequestID(RequestContext(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured = reqctx.RequestIDFromContext(r.Context())
+		chiID = chimw.GetReqID(r.Context())
+	})))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if captured == "" || captured != chiID {
+		t.Errorf("RequestContext request ID = %q, want chi's %q when vogel's RequestID is not mounted", captured, chiID)
+	}
+}
+
 func TestRequestContext_NoChiRequestID_SetsEmptyString(t *testing.T) {
 	var captured string
 	seen := false

@@ -74,10 +74,11 @@ type Dependencies struct {
 func NewRouter(deps Dependencies) *chi.Mux {
 	r := chi.NewRouter()
 
-	// chi's own request-ID middleware MUST run upstream of
-	// vmw.RequestContext: RequestContext reads the request ID via chi's
-	// middleware.GetReqID, it does not generate one itself.
-	r.Use(middleware.RequestID)
+	// vogel's request-ID middleware MUST run upstream of
+	// vmw.RequestContext: RequestContext does not generate an ID itself.
+	// Unlike chi's middleware.RequestID, it always generates the ID
+	// server-side and never adopts a client-supplied X-Request-Id.
+	r.Use(vmw.RequestID)
 
 	// Resolve the client IP before RequestContext records it (reqctx,
 	// audit_log.ip) and before the IP-keyed rate limiter reads it. Unlike

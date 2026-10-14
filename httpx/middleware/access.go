@@ -112,7 +112,7 @@ func WriteAccessError(w http.ResponseWriter, r *http.Request, err error, logger 
 // writeAccessStatus is the single status-mapping function shared by
 // RequireAccess and WriteAccessError, so the two call paths cannot drift
 // apart on which error maps to which status. resourceKind, resourceID and
-// action are used only for the log lines on ErrForbidden and ErrUnavailable;
+// action are used only for the log lines;
 // any of them may be empty (WriteAccessError, called from inside a handler
 // that already knows less about the route than the middleware did, does not
 // always have them). A nil logger falls back to slog.Default, so a caller
@@ -125,9 +125,9 @@ func WriteAccessError(w http.ResponseWriter, r *http.Request, err error, logger 
 // audit trail and an alerting rule both want to see -- a burst of them from
 // one user is either a broken client or someone probing -- so it must not
 // be silent. The token and every other header are deliberately left out. An
-// unauthenticated request (ErrUnauthenticated) is NOT logged here: it
-// carries no actor to attribute, and the Authenticate middleware already
-// owns that path.
+// unauthenticated request (ErrUnauthenticated: no principal reached the
+// guard, e.g. a route mounted without Authenticate) is logged at Warn with
+// the same fields and an empty user_id, so it is not a silent 401.
 //
 // It returns false -- writing nothing -- for any error that is not one of
 // the three access sentinels, so WriteAccessError can report "I did not
@@ -139,6 +139,15 @@ func writeAccessStatus(w http.ResponseWriter, r *http.Request, err error, logger
 
 	switch {
 	case errors.Is(err, access.ErrUnauthenticated):
+		logger.WarnContext(r.Context(), "authorization without authenticated principal",
+			"user_id", userIDFromContext(r.Context()),
+			"resource_kind", resourceKind,
+			"resource_id", resourceID,
+			"action", action,
+			"method", r.Method,
+			"path", r.URL.Path,
+			"request_id", reqctx.RequestIDFromContext(r.Context()),
+		)
 		response.Error(w, r, http.StatusUnauthorized, response.CodeUnauthorized, msgs.Unauthorized)
 		return true
 
