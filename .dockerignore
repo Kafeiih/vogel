@@ -1,0 +1,52 @@
+# Build context filter for examples/boilerplate/Dockerfile, which is built
+# with the repository root as context (its go.mod replaces vogel with ../..):
+#   docker build -f examples/boilerplate/Dockerfile --target api .
+#
+# The builder stage runs "COPY . /src": everything not excluded here ends up
+# in a build layer, and secrets in a layer survive even when a later step
+# deletes them. Keep credentials, VCS data and local artefacts out.
+
+# Secrets and environment files (deploy/.env, .env.local, ...).
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
+**/*.crt
+**/*.p12
+**/*.pfx
+**/key.json
+**/secrets/
+
+# VCS, CI and editor/tool state.
+.git
+.gitignore
+.gitattributes
+.github/
+.gitleaks.toml
+.golangci.yml
+**/.idea/
+**/.vscode/
+**/.claude/
+**/.codegraph/
+**/.atl/
+**/*.swp
+**/*~
+**/.DS_Store
+
+# Build outputs and test artefacts.
+**/bin/
+**/vendor/
+**/coverage*
+**/*.out
+**/*.test
+**/*.prof
+
+# Not compiled into the image: prose, the other example, task notes, and the
+# boilerplate's deployment files.
+docs/
+odd/
+**/*.md
+examples/api/
+examples/boilerplate/deploy/
+examples/boilerplate/Dockerfile
+**/.dockerignore

@@ -54,6 +54,13 @@ x-hardened: &hardened
   tmpfs:
     - /tmp:size=16m,mode=1777
 
+# Built from the repository root: the boilerplate's go.mod replaces vogel
+# with ../.., so the build needs the library's sources too (see the comment
+# at the top of the Dockerfile; the root .dockerignore filters the context).
+x-build: &build
+  context: ../../..
+  dockerfile: examples/boilerplate/Dockerfile
+
 # The serving processes get .env as env_file; these overrides take precedence
 # over it, so the passwords that can alter the schema never reach them.
 x-scrub-db-admin-secrets: &scrub-db-admin-secrets
@@ -94,7 +101,7 @@ services:
     image: ghcr.io/kafeiih/vogel-boilerplate:${APP_VERSION:?set APP_VERSION in deploy/.env}
     <<: *hardened
     build:
-      context: ..
+      <<: *build
       target: api
     command: ["migrate", "up"]
     depends_on:
@@ -135,7 +142,7 @@ services:
     image: ghcr.io/kafeiih/vogel-boilerplate:${APP_VERSION:?set APP_VERSION in deploy/.env}
     <<: *hardened
     build:
-      context: ..
+      <<: *build
       target: api
     command: ["server"]
     depends_on:
@@ -157,7 +164,7 @@ services:
     image: ghcr.io/kafeiih/vogel-boilerplate-worker:${APP_VERSION:?set APP_VERSION in deploy/.env}
     <<: *hardened
     build:
-      context: ..
+      <<: *build
       target: worker
     command: ["server"]
     depends_on:

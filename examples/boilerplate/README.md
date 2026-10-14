@@ -147,10 +147,20 @@ go run ./cmd/api start-from-migrate   # o: make dev
 `docker compose -f deploy/docker-compose.developer.yaml` levanta Postgres,
 Cerbos y MinIO para desarrollo local. `docker compose -f
 deploy/docker-compose.yaml` es el compose de despliegue (API + worker +
-Postgres) que construye la imagen desde el `Dockerfile` de este directorio —
-ese build sólo funciona **después** de quitar el `replace` (ver arriba):
-mientras el `go.mod` apunte a `../..`, el contexto de build de Docker no
-tiene forma de ver el código de `vogel` fuera de este directorio.
+Postgres) que construye la imagen desde el `Dockerfile` de este directorio.
+Como el `go.mod` apunta a `../..` con el `replace`, el contexto de build es
+la **raíz del repositorio**, no este directorio (el compose ya lo configura
+así, y el `.dockerignore` de la raíz filtra lo que entra):
+
+```bash
+# desde la raíz de vogel
+docker build -f examples/boilerplate/Dockerfile --target api -t boilerplate:api .
+docker build -f examples/boilerplate/Dockerfile --target worker -t boilerplate:worker .
+```
+
+En una copia sin `replace` (ver "Cómo copiar este boilerplate"), el módulo
+es la raíz del contexto: construya desde ese directorio con `--build-arg
+APP_DIR=.` (o cambie el valor por defecto en el `Dockerfile`).
 
 El binario separa el arranque en fases, como `zitadel setup` / `zitadel
 start` / `zitadel start-from-setup`:
