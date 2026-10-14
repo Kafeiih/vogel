@@ -245,8 +245,10 @@ func run() error {
 
 	docs := NewDocumentHandler(documentStore, engine, wfRepo, recorder, queue, fileStorage, txManager, pool, accessGuard, log.Logger)
 
-	// 9. The public API server; see newAPIServer for its timeouts.
-	srv := newAPIServer(cfg, NewRouter(docs, auditHandler, authenticator, checker, accessGuard, metrics, pool, log.Logger))
+	// 9. The public API server; see newAPIServer for its timeouts and
+	// ipRateLimiter for the per-process, per-IP request budget.
+	limiter := newIPRateLimiter(cfg.RateLimitRequests, cfg.RateLimitWindow)
+	srv := newAPIServer(cfg, NewRouter(docs, auditHandler, authenticator, checker, accessGuard, metrics, limiter, pool, log.Logger))
 
 	// Internal metrics listener (METRICS_ADDR, loopback by default), apart
 	// from the public API port. Binding here, before serving, makes a busy

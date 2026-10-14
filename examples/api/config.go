@@ -1,6 +1,7 @@
 package main
 
 import (
+	"math"
 	"strings"
 	"time"
 
@@ -35,6 +36,12 @@ type Config struct {
 	ReadTimeout       time.Duration // HTTP_READ_TIMEOUT, default 15s
 	WriteTimeout      time.Duration // HTTP_WRITE_TIMEOUT, default 30s
 	IdleTimeout       time.Duration // HTTP_IDLE_TIMEOUT, default 60s
+
+	// Per-client-IP request budget for /api/v1 (see ipRateLimiter):
+	// RateLimitRequests (RATE_LIMIT_REQUESTS, default 300) per
+	// RateLimitWindow (RATE_LIMIT_WINDOW, default 1m). Both must be positive.
+	RateLimitRequests int
+	RateLimitWindow   time.Duration
 }
 
 // LoadConfig reads every setting from the environment and validates it
@@ -71,6 +78,10 @@ func LoadConfig() (Config, error) {
 	writeTimeout := positiveDuration(&errs, "HTTP_WRITE_TIMEOUT", 30*time.Second)
 	idleTimeout := positiveDuration(&errs, "HTTP_IDLE_TIMEOUT", 60*time.Second)
 
+	rateLimitRequests := errs.Int("RATE_LIMIT_REQUESTS", 300)
+	errs.IntRange("RATE_LIMIT_REQUESTS", rateLimitRequests, 1, math.MaxInt32)
+	rateLimitWindow := positiveDuration(&errs, "RATE_LIMIT_WINDOW", time.Minute)
+
 	if err := errs.Err(); err != nil {
 		return Config{}, err
 	}
@@ -88,6 +99,9 @@ func LoadConfig() (Config, error) {
 		ReadTimeout:       readTimeout,
 		WriteTimeout:      writeTimeout,
 		IdleTimeout:       idleTimeout,
+
+		RateLimitRequests: rateLimitRequests,
+		RateLimitWindow:   rateLimitWindow,
 	}, nil
 }
 

@@ -159,3 +159,26 @@ func TestNewAPIServer_SetsTimeoutsAndHeaderLimit(t *testing.T) {
 			srv.MaxHeaderBytes, maxHeaderBytes, http.DefaultMaxHeaderBytes)
 	}
 }
+
+func TestLoadConfig_RateLimitDefaultsAndValidation(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://u:p@localhost:5432/db?sslmode=disable")
+	unsetEnv(t, "RATE_LIMIT_REQUESTS")
+	unsetEnv(t, "RATE_LIMIT_WINDOW")
+
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if cfg.RateLimitRequests != 300 || cfg.RateLimitWindow != time.Minute {
+		t.Errorf("rate limit = %d per %v, want 300 per 1m0s", cfg.RateLimitRequests, cfg.RateLimitWindow)
+	}
+
+	for key, val := range map[string]string{"RATE_LIMIT_REQUESTS": "0", "RATE_LIMIT_WINDOW": "0s"} {
+		t.Run(key, func(t *testing.T) {
+			t.Setenv(key, val)
+			if _, err := LoadConfig(); err == nil || !strings.Contains(err.Error(), key) {
+				t.Errorf("LoadConfig() with %s=%s error = %v, want one naming %s", key, val, err, key)
+			}
+		})
+	}
+}
