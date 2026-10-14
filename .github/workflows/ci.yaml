@@ -112,6 +112,15 @@ jobs:
         with:
           go-version-file: examples/boilerplate/go.mod
 
+      # Same linter version and the root .golangci.yml: the boilerplate is the
+      # template consumers copy, so it is held to the library's rules.
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.13.2
+          working-directory: examples/boilerplate
+          args: --config ../../.golangci.yml --build-tags=integration
+
       - name: Build
         run: cd examples/boilerplate && go build ./...
 
