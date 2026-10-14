@@ -55,7 +55,7 @@ func writeHeartbeat(path string, now time.Time) error {
 // checkHeartbeat returns nil when path holds a beat no older than maxAge at
 // now. A missing file is reported as an error wrapping os.ErrNotExist.
 func checkHeartbeat(path string, now time.Time, maxAge time.Duration) error {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // path is heartbeatPath() (a fixed name in the temp directory), never input
 	if err != nil {
 		return fmt.Errorf("reading heartbeat: %w", err)
 	}
