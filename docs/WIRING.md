@@ -37,7 +37,12 @@ más arriba en la cadena.
 // httpx/middleware/requestcontext.go
 func RequestContext(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ctx := reqctx.WithRequestID(r.Context(), chimw.GetReqID(r.Context()))
+		id := reqctx.RequestIDFromContext(r.Context())
+		if id == "" {
+			id = chimw.GetReqID(r.Context())
+		}
+		ctx := reqctx.WithRequestID(r.Context(), id)
+		ctx = reqctx.WithUserSlot(ctx) // ver «El usuario autenticado en el log»
 
 		ip, _, err := net.SplitHostPort(r.RemoteAddr)
 		if err != nil || ip == "" {
@@ -116,6 +121,55 @@ La contrapartida: `StructuredLogger` ahora depende de que `RequestContext`
 esté montado más arriba. Sin él, la línea de acceso imprime `request_id`
 vacío — que es exactamente lo que corresponde, porque en ese escenario la
 fila de `audit_log` también lo tiene vacío.
+
+### El usuario autenticado en el log: el slot de `reqctx`
+
+Las líneas de log de una request autenticada llevan además `user_id`, para
+poder responder «qué hizo este usuario» sin cruzar con `audit_log`. El dato
+lo conoce `Authenticate`, pero quien escribe la línea de acceso,
+`StructuredLogger`, está montado **por fuera** de `Authenticate`: el
+`Principal` que este guarda viaja en una request derivada
+(`r.WithContext`) que el logger nunca ve, porque al terminar la request sigue
+teniendo el contexto anterior. Un valor de contexto común no alcanza.
+
+Por eso `reqctx` tiene, además de las claves inmutables, un **slot**
+mutable:
+
+1. `RequestContext` instala el slot vacío (`reqctx.WithUserSlot`): es un
+   puntero, así que todo contexto derivado de ahí —el que ve el logger y el
+   que ve el handler— comparte la misma celda. Si ya hay un slot, no crea
+   otro (uno interno ocultaría al externo).
+2. `Authenticate`, al validar el token, escribe en el slot
+   `reqctx.SetUserID(ctx, principal.UserID)`: **solo el ID opaco** del
+   usuario, nunca el username, los roles ni el token, porque el valor
+   termina en cada línea de acceso. Una request rechazada no escribe nada.
+3. Lo leen `reqctx.UserIDFromContext`:
+   - `StructuredLogger`, en la línea de acceso que emite al terminar la
+     request (después de que `next` volvió, así que la escritura ya ocurrió);
+   - `logger.Logger.WithContext(ctx)`, en las líneas que escriben los
+     handlers y servicios.
+
+   Ambos agregan `"user_id"` solo si hay un valor: una request anónima, o un
+   log fuera de una request, conserva la forma de siempre (sin la clave).
+
+La celda es un `atomic.Pointer` porque un handler envuelto en
+`http.TimeoutHandler` corre en otra goroutine que puede seguir —y escribir el
+slot— después de que el logger de afuera ya está leyendo; con el atómico la
+línea lleva el ID o nada, sin carrera de datos.
+
+**Requiere `RequestContext` más arriba que `StructuredLogger` y
+`Authenticate`**, que es el orden documentado. Sin él no hay slot:
+`SetUserID` no hace nada, la autenticación sigue funcionando y simplemente
+no se registra `user_id` — la misma degradación silenciosa que el
+`request_id` vacío. El slot no reemplaza a `auth.FromContext`: para decidir
+algo con el usuario, los handlers siguen leyendo el `Principal`.
+
+Las marcas de tiempo de `logger.New` / `logger.NewDefault` se emiten siempre
+en UTC, sea cual sea la zona horaria del host, para poder ordenar y
+correlacionar líneas de servicios en zonas distintas (y con `audit_log`, cuyo
+`created_at` es `timestamptz`) sin aritmética de offsets. Solo se convierte
+el `time` del registro; un `time.Time` que el código loguea como atributo
+propio conserva su zona.
 
 ## 2. Autenticación y autorización
 

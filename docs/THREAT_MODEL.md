@@ -130,15 +130,44 @@ datos a ningún tercero por su cuenta: solo a los que el consumidor configura.
 | Mensajes de error que filtran infraestructura | Errores de base solo en el log; respuestas genéricas |
 | Dependencia comprometida o vulnerable | Acciones fijadas por SHA, Dependabot, `govulncheck`, SBOM por release |
 
-## 6. Responsabilidades del consumidor (resumen)
+## 6. Responsabilidades del consumidor
+
+`vogel` corre dentro del proceso: valida lo que recibe y falla cerrado, pero
+no controla la red, la infraestructura ni la operación del servicio que lo
+usa. Lo siguiente queda a cargo del consumidor porque la librería no puede
+imponerlo; la última columna dice dónde está el control de `vogel`
+relacionado o la guía.
+
+| Responsabilidad | Por qué `vogel` no puede imponerla | Dónde |
+|---|---|---|
+| Terminar TLS en el borde (o en el propio `http.Server`) y declarar los proxies de confianza | La librería recibe un `http.Handler`, no el listener; `RealIP` solo puede creer en los CIDR que le pasen, y si no se declaran, todas las requests salen con la IP del balanceador | `httpx/middleware.RealIP`, `ParseTrustedProxies`; §4 |
+| Rate limiting en el borde, o con un almacenamiento compartido entre réplicas | `RateLimitJSON` solo da la respuesta 429; un limitador en memoria (como el de `examples/api`) cuenta por proceso, así que con N réplicas el límite efectivo es N veces el configurado | `httpx/middleware.RateLimitJSON`; §5 |
+| Autenticación y autorización en **cada** ruta no pública | El router es del consumidor; montar `Authenticate` sin `RequirePermission`/`RequireAccess` (o al revés) compila y arranca | `docs/WIRING.md` §2 y §6; test de rutas de `examples/api` |
+| Configurar la validación de tokens: `ClientID` (audiencia), y según el riesgo `AllowedAuthorizedParties`, `MaxTokenLifetime` e introspección | Los valores dependen de la aplicación registrada en Zitadel; con `AllowedAuthorizedParties` vacío no se controla `azp` | `auth/zitadel.Config`; `docs/WIRING.md` §2 |
+| Cerbos con TLS y políticas propias | `authz/cerbos` usa TLS salvo `Plaintext: true`, pero no emite el certificado del PDP (que debe validar contra las raíces del sistema) ni escribe las políticas | `authz/cerbos.Config`; `examples/boilerplate/docs/CERBOS_POLICIES.md` |
+| Separar el rol migrador del rol de ejecución | `vogel` recibe un pool ya conectado; los triggers append-only de `audit_log` protegen del rol de ejecución solo si ese rol no es dueño de la tabla | `migrate`, `audit`; `examples/boilerplate/deploy/initdb/` |
+| TLS hacia PostgreSQL | `postgres.Config.RequireTLS` rechaza los `sslmode` que no verifican el certificado, pero el consumidor decide activarlo y provee la base con TLS y su CA | `postgres.Config`; `examples/boilerplate/deploy/RUNBOOK.md` §0 |
+| Gestión de secretos: almacenarlos fuera del código y de las imágenes, y rotarlos | `config` solo lee variables de entorno; no sabe de dónde vienen ni cuándo caducan | `config`; RUNBOOK §10 |
+| Retención y exportación de `audit_log` | La tabla es append-only y `vogel` no purga nada solo: cuánto guardarla, y si exportarla a un almacenamiento inmutable, es una decisión legal y operativa; la purga es un procedimiento manual del dueño de la tabla | `audit`; procedimiento en `audit/migrations/002_audit_log_append_only.sql`; §3 y §7 |
+| Claves sensibles propias en la redacción de auditoría | La lista por defecto cubre nombres genéricos (`password`, `token`, ...), no los campos de cada dominio | `audit.WithRedactedKeys` |
+| Envío y retención de logs | `logger.NewDefault` escribe a stdout (JSON en `production`, con `request_id` y `user_id` y marcas de tiempo en UTC); recolectarlos, protegerlos y borrarlos a tiempo es de la plataforma | `logger`; `docs/WIRING.md` §1 |
+| Respaldos cifrados con restauración probada | La librería no ve la base desde afuera | RUNBOOK §9 |
+| Parchear dependencias e imágenes | `vogel` fija y actualiza sus propios módulos, pero el binario final lo construye el consumidor con sus versiones y sus imágenes base | `.github/dependabot.yml`, `.github/workflows/trivy.yaml`; RUNBOOK §0 «Parches» |
+| Registrar a los terceros como encargados de tratamiento | Contractual | §3 |
+
+Lista de verificación para un servicio nuevo:
 
 - [ ] TLS en el borde y `TRUSTED_PROXIES` correcto.
 - [ ] `Authenticate` y una autorización (`RequirePermission` o `RequireAccess`) en cada ruta no pública.
-- [ ] Rate limiting por IP real y por usuario, sobre todo con introspección.
-- [ ] Rol migrador y rol de ejecución separados; `RequireTLS` fuera de desarrollo.
+- [ ] Rate limiting por IP real y por usuario, compartido entre réplicas, sobre todo con introspección.
+- [ ] `ClientID` y, si aplica, `AllowedAuthorizedParties`, `MaxTokenLifetime` e introspección configurados.
+- [ ] Cerbos con TLS (nunca `Plaintext` fuera de una red local de confianza).
+- [ ] Rol migrador y rol de ejecución separados; `RequireTLS` activado con `sslmode=verify-full`.
+- [ ] Secretos en un gestor, nunca en la imagen; rotación documentada.
 - [ ] Claves sensibles propias agregadas a la redacción de auditoría.
 - [ ] Retención de `audit_log`, logs y jobs definida y documentada.
-- [ ] Respaldos cifrados con restauración probada y rotación de secretos (ver `examples/boilerplate/deploy/RUNBOOK.md`).
+- [ ] Respaldos cifrados con restauración probada (ver `examples/boilerplate/deploy/RUNBOOK.md`).
+- [ ] Dependencias e imágenes base con actualización periódica y escaneo de vulnerabilidades.
 - [ ] Terceros (§3) registrados como encargados de tratamiento.
 
 ## 7. Riesgos residuales
