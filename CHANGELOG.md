@@ -8,6 +8,15 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ### Agregado
 
+- **`request`: `Validator.MaxLen(param, value, max)` y el mensaje
+  `Messages.TooLong(field, max)`.** Registra un error de validación si el
+  valor tiene más de `max` caracteres, contados en runas
+  (`utf8.RuneCountInString`) y no en bytes; un valor vacío siempre pasa y el
+  valor se devuelve sin cambios. El texto por defecto es
+  `<campo> must be at most <max> characters long` y se localiza con
+  `WithMessages` como los demás.
+- **`audit/httpx`: constante `MaxFilterLength`** (256), el largo máximo de
+  los filtros de texto libre de `FiltersFromRequest`.
 - **`httpx/middleware`: `RealIP(trusted ...netip.Prefix)` y
   `ParseTrustedProxies`.** Reemplazo del `middleware.RealIP` de chi, que cree
   `X-Forwarded-For`, `X-Real-IP` y `True-Client-IP` de cualquier cliente (un
@@ -80,6 +89,11 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ### Cambiado
 
+- **`audit/httpx.FiltersFromRequest` rechaza filtros de texto libre
+  demasiado largos.** `actor_id`, `resource_type`, `operation_name`,
+  `aggregate_type` y `aggregate_id` de más de `MaxFilterLength` (256)
+  caracteres registran un error de validación, y `Handler.List` responde 400
+  sin consultar el repositorio. Antes se pasaban tal cual a la consulta.
 - **`httpx/middleware.SecurityHeaders` agrega aislamiento entre orígenes y
   `Cache-Control: private, no-store`.** Ahora envía
   `Cross-Origin-Opener-Policy: same-origin` y

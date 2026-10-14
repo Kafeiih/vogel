@@ -430,3 +430,34 @@ func TestValidator_WriteErrors(t *testing.T) {
 func requestWithRouteContext(r *http.Request, rctx *chi.Context) *http.Request {
 	return r.WithContext(context.WithValue(r.Context(), chi.RouteCtxKey, rctx))
 }
+
+func TestValidator_MaxLen(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		max     int
+		wantErr bool
+	}{
+		{name: "empty is allowed", value: "", max: 3},
+		{name: "shorter than max", value: "ab", max: 3},
+		{name: "exactly max", value: "abc", max: 3},
+		{name: "longer than max", value: "abcd", max: 3, wantErr: true},
+		// Length counts runes, not bytes: four multi-byte runes fit in 4.
+		{name: "multi-byte runes at max", value: "ñáéí", max: 4},
+		{name: "multi-byte runes over max", value: "ñáéíó", max: 4, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			v := request.NewValidator()
+
+			got := v.MaxLen("name", tt.value, tt.max)
+
+			assert.Equal(t, tt.value, got, "MaxLen returns the value unchanged")
+			assert.Equal(t, tt.wantErr, v.HasErrors())
+			if tt.wantErr {
+				assert.Equal(t, "name must be at most 4 characters long", request.DefaultMessages().TooLong("name", 4))
+				assert.Equal(t, request.DefaultMessages().TooLong("name", tt.max), v.Errors()["name"])
+			}
+		})
+	}
+}

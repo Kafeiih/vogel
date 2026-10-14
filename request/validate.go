@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -232,6 +233,18 @@ func (v *Validator) Enum(param, value string, allowed []string) string {
 		}
 	}
 	v.AddError(param, v.messages.NotAllowed(param))
+	return value
+}
+
+// MaxLen validates that a string value is at most max characters long,
+// counted in runes (utf8.RuneCountInString), not bytes, so a multi-byte
+// character counts once. It records a TooLong error when the value is longer
+// and returns the value as-is either way; an empty value always passes, so
+// combine it with a required check when the field is mandatory.
+func (v *Validator) MaxLen(param, value string, max int) string {
+	if utf8.RuneCountInString(value) > max {
+		v.AddError(param, v.messages.TooLong(param, max))
+	}
 	return value
 }
 
