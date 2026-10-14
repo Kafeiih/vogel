@@ -92,6 +92,14 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   si no existe). Solo el job que publica tiene `contents: write`, y no hace
   checkout ni corre el generador. El README explica cómo descargarlo y
   verificarlo.
+- Documentación de seguridad: `SECURITY.md` (reporte privado de
+  vulnerabilidades, versiones con soporte, plazos y alcance),
+  `docs/THREAT_MODEL.md` (límites de confianza, datos personales y terceros,
+  superficie de ataque, casos de abuso y riesgos residuales),
+  `.github/CODEOWNERS` para los paquetes sensibles y una plantilla de PR con
+  checklist de seguridad. El runbook del boilerplate suma respaldos con
+  simulacro de restauración, rotación de secretos, revocación de tokens y
+  comunicación de incidentes.
 - **`notification/sendgrid` y `auth/zitadel`: campo opcional
   `Config.HTTPTimeout` y constante `DefaultHTTPTimeout`** en cada paquete
   (30s y 10s respectivamente). Cero usa el valor por defecto; un valor

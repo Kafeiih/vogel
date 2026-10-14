@@ -1,0 +1,21 @@
+# Changes to these paths need a review from the repository owner. They hold
+# the security-sensitive parts of vogel: authentication, authorization, the
+# HTTP edge, input decoding, the audit trail, database and storage access,
+# the workflow engine, migrations, CI and the security policy. With branch
+# protection set to "Require review from Code Owners", a PR touching them
+# cannot merge without that review.
+#
+# Later rules win over earlier ones; keep the specific paths below.
+
+/auth/       @Kafeiih
+/authz/      @Kafeiih
+/access/     @Kafeiih
+/httpx/      @Kafeiih
+/request/    @Kafeiih
+/audit/      @Kafeiih
+/postgres/   @Kafeiih
+/storage/    @Kafeiih
+/workflow/   @Kafeiih
+/migrate/    @Kafeiih
+/.github/    @Kafeiih
+/SECURITY.md @Kafeiih
