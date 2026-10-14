@@ -88,6 +88,12 @@ type Dependencies struct {
 func NewRouter(deps Dependencies) *chi.Mux {
 	r := chi.NewRouter()
 
+	// Security headers first, before any middleware that can write a
+	// response: Recovery's 500, the rate limiters' 429, Timeout's 504,
+	// Authenticate's 401, RequirePermission's 403 and chi's 404/405 all
+	// carry them, not only the responses of the routes' own handlers.
+	r.Use(vmw.SecurityHeaders)
+
 	// vogel's request-ID middleware MUST run upstream of
 	// vmw.RequestContext: RequestContext does not generate an ID itself.
 	// Unlike chi's middleware.RequestID, it always generates the ID
@@ -120,58 +126,53 @@ func NewRouter(deps Dependencies) *chi.Mux {
 	r.Use(middleware.Timeout(deps.Config.Timeout))
 
 	r.Route("/v1", func(r chi.Router) {
-		// All API routes get security headers
+		// API description: only on an explicit opt-in
+		// (SWAGGER_ENABLED=true, never in production). Otherwise it is
+		// not registered at all (404), so it cannot map the API for an
+		// unauthenticated caller.
+		if deps.Config.EnableSwagger {
+			r.With(swaggerHeaders).Get("/swagger/*", httpSwagger.Handler(
+				httpSwagger.URL("/v1/swagger/doc.json"),
+			))
+		}
+
+		// Rutas públicas — health checks (Kubernetes probes)
+		r.Get("/healthz", deps.HealthHandler.Check)
+		r.Get("/readyz", deps.HealthHandler.Ready)
+		r.Get("/livez", deps.HealthHandler.Live)
+
+		// Authenticated routes
 		r.Group(func(r chi.Router) {
-			r.Use(vmw.SecurityHeaders)
+			r.Use(vmw.Authenticate(deps.Authenticator, deps.Logger, authMessages))
 
-			// API description: only on an explicit opt-in
-			// (SWAGGER_ENABLED=true, never in production). Otherwise it is
-			// not registered at all (404), so it cannot map the API for an
-			// unauthenticated caller.
-			if deps.Config.EnableSwagger {
-				r.With(swaggerHeaders).Get("/swagger/*", httpSwagger.Handler(
-					httpSwagger.URL("/v1/swagger/doc.json"),
-				))
-			}
+			// Rate limiting por usuario autenticado: 1000 req/min
+			r.Use(httprate.LimitBy(1000, 1*time.Minute,
+				func(r *http.Request) (string, error) {
+					if principal := auth.FromContext(r.Context()); principal != nil {
+						return principal.UserID, nil
+					}
+					return clientIPKey(r)
+				},
+				httprate.WithLimitHandler(vmw.RateLimitJSON()),
+			))
 
-			// Rutas públicas — health checks (Kubernetes probes)
-			r.Get("/healthz", deps.HealthHandler.Check)
-			r.Get("/readyz", deps.HealthHandler.Ready)
-			r.Get("/livez", deps.HealthHandler.Live)
-
-			// Authenticated routes
-			r.Group(func(r chi.Router) {
-				r.Use(vmw.Authenticate(deps.Authenticator, deps.Logger, authMessages))
-
-				// Rate limiting por usuario autenticado: 1000 req/min
-				r.Use(httprate.LimitBy(1000, 1*time.Minute,
+			// Audit log (read-only) — limite más estricto: 30 req/min
+			r.Route("/audit", func(r chi.Router) {
+				r.Use(httprate.LimitBy(30, 1*time.Minute,
 					func(r *http.Request) (string, error) {
 						if principal := auth.FromContext(r.Context()); principal != nil {
-							return principal.UserID, nil
+							return "audit:" + principal.UserID, nil
 						}
 						return clientIPKey(r)
 					},
 					httprate.WithLimitHandler(vmw.RateLimitJSON()),
 				))
 
-				// Audit log (read-only) — limite más estricto: 30 req/min
-				r.Route("/audit", func(r chi.Router) {
-					r.Use(httprate.LimitBy(30, 1*time.Minute,
-						func(r *http.Request) (string, error) {
-							if principal := auth.FromContext(r.Context()); principal != nil {
-								return "audit:" + principal.UserID, nil
-							}
-							return clientIPKey(r)
-						},
-						httprate.WithLimitHandler(vmw.RateLimitJSON()),
-					))
-
-					// Cerbos authorization: principal must have "list" on audit resource
-					r.With(vmw.RequirePermission(deps.AuthzChecker, "audit:entry", "list", deps.Logger, authMessages)).
-						Get("/", deps.AuditHandler.List)
-					r.With(vmw.RequirePermission(deps.AuthzChecker, "audit:entry", "view", deps.Logger, authMessages)).
-						Get("/{id}", deps.AuditHandler.GetByID)
-				})
+				// Cerbos authorization: principal must have "list" on audit resource
+				r.With(vmw.RequirePermission(deps.AuthzChecker, "audit:entry", "list", deps.Logger, authMessages)).
+					Get("/", deps.AuditHandler.List)
+				r.With(vmw.RequirePermission(deps.AuthzChecker, "audit:entry", "view", deps.Logger, authMessages)).
+					Get("/{id}", deps.AuditHandler.GetByID)
 			})
 		})
 	})
@@ -179,8 +180,9 @@ func NewRouter(deps Dependencies) *chi.Mux {
 	return r
 }
 
-// swaggerHeaders runs after vmw.SecurityHeaders and swaps only its CSP for
-// swaggerCSP; every other security header stays as SecurityHeaders set it.
+// swaggerHeaders runs after vmw.SecurityHeaders (mounted first in NewRouter)
+// and swaps only its CSP for swaggerCSP; every other security header stays as
+// SecurityHeaders set it.
 func swaggerHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Security-Policy", swaggerCSP)

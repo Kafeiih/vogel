@@ -91,3 +91,54 @@ func TestNewRouter_CORSDoesNotAllowCredentials(t *testing.T) {
 		t.Errorf("Access-Control-Allow-Credentials = %q, want it absent", got)
 	}
 }
+
+// assertSecurityHeaders checks a representative subset of what
+// vmw.SecurityHeaders sets.
+func assertSecurityHeaders(t *testing.T, rec *httptest.ResponseRecorder) {
+	t.Helper()
+	for header, want := range map[string]string{
+		"X-Content-Type-Options":  "nosniff",
+		"X-Frame-Options":         "DENY",
+		"Content-Security-Policy": "default-src 'none'",
+		"Cache-Control":           "private, no-store",
+	} {
+		if got := rec.Header().Get(header); got != want {
+			t.Errorf("%s = %q, want %q (status %d)", header, got, want, rec.Code)
+		}
+	}
+}
+
+// SecurityHeaders is the outermost middleware, so a response written before
+// a route's handler runs -- an authentication failure, a rate-limit
+// rejection, an unknown route -- carries the same headers as a success.
+func TestNewRouter_EarlyRejectionsCarrySecurityHeaders(t *testing.T) {
+	t.Run("401 from Authenticate", func(t *testing.T) {
+		router := newRouterWithConfig(t, RouterConfig{})
+		rec := get(router, "/v1/audit/")
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("GET /v1/audit/ without a token = %d, want %d", rec.Code, http.StatusUnauthorized)
+		}
+		assertSecurityHeaders(t, rec)
+	})
+
+	t.Run("404 outside /v1", func(t *testing.T) {
+		router := newRouterWithConfig(t, RouterConfig{})
+		rec := get(router, "/nope")
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("GET /nope = %d, want %d", rec.Code, http.StatusNotFound)
+		}
+		assertSecurityHeaders(t, rec)
+	})
+
+	t.Run("429 from the global per-IP limiter", func(t *testing.T) {
+		router := newRouterWithConfig(t, RouterConfig{})
+		var rec *httptest.ResponseRecorder
+		for range 101 {
+			rec = get(router, "/v1/livez")
+		}
+		if rec.Code != http.StatusTooManyRequests {
+			t.Fatalf("101st GET /v1/livez = %d, want %d", rec.Code, http.StatusTooManyRequests)
+		}
+		assertSecurityHeaders(t, rec)
+	})
+}
