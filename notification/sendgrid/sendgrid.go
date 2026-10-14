@@ -104,7 +104,7 @@ func (n *SendGridNotifier) Send(ctx context.Context, msg *notification.Message) 
 
 	sgMail := mail.NewSingleEmail(sgFrom, msg.Subject, sgTo, msg.Text, msg.HTML)
 
-	status, body, err := n.post(ctx, mail.GetRequestBody(sgMail))
+	status, messageID, body, err := n.post(ctx, mail.GetRequestBody(sgMail))
 	if err != nil {
 		return fmt.Errorf("notification/sendgrid: sending: %w", err)
 	}
@@ -113,10 +113,12 @@ func (n *SendGridNotifier) Send(ctx context.Context, msg *notification.Message) 
 		return fmt.Errorf("notification/sendgrid: API error %d: %s", status, body)
 	}
 
+	// Recipient and subject are personal data (a subject often names the
+	// person or their case), so the log carries only the delivery outcome
+	// and SendGrid's message ID, which correlates with its activity feed.
 	n.logger.InfoContext(ctx, "email sent via SendGrid",
-		"to", msg.To,
-		"subject", msg.Subject,
 		"status", status,
+		"message_id", messageID,
 	)
 	return nil
 }
@@ -126,13 +128,14 @@ func (n *SendGridNotifier) Send(ctx context.Context, msg *notification.Message) 
 const maxResponseBody = 64 << 10
 
 // post sends body to the mail send endpoint through the notifier's bounded
-// HTTP client. It builds a fresh request from the SDK template on every
-// call, so concurrent Sends share nothing mutable.
-func (n *SendGridNotifier) post(ctx context.Context, body []byte) (int, string, error) {
+// HTTP client and returns the status code, SendGrid's X-Message-Id and the
+// (capped) response body. It builds a fresh request from the SDK template on
+// every call, so concurrent Sends share nothing mutable.
+func (n *SendGridNotifier) post(ctx context.Context, body []byte) (int, string, string, error) {
 	tmpl := n.client.Request
 	req, err := http.NewRequestWithContext(ctx, string(tmpl.Method), tmpl.BaseURL, bytes.NewReader(body))
 	if err != nil {
-		return 0, "", err
+		return 0, "", "", err
 	}
 	for k, v := range tmpl.Headers {
 		req.Header.Set(k, v)
@@ -141,15 +144,15 @@ func (n *SendGridNotifier) post(ctx context.Context, body []byte) (int, string, 
 
 	resp, err := n.httpClient.Do(req)
 	if err != nil {
-		return 0, "", err
+		return 0, "", "", err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBody))
 	if err != nil {
-		return 0, "", fmt.Errorf("reading response: %w", err)
+		return 0, "", "", fmt.Errorf("reading response: %w", err)
 	}
-	return resp.StatusCode, string(respBody), nil
+	return resp.StatusCode, resp.Header.Get("X-Message-Id"), string(respBody), nil
 }
 
 // sgEmail parses an RFC 5322 address into SendGrid's name/address pair. The

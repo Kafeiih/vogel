@@ -297,6 +297,13 @@ Todos los cambios relevantes de `vogel`. El formato sigue
     porque `oauth.DefaultJWTAuthorization` le pasa `nil` a `oauth.WithJWT`;
     ahora `New` llama a `oauth.WithJWT` con un cliente de timeout 10s
     (`Config.HTTPTimeout`).
+- **`notification/sendgrid`: el log de envío exitoso ya no incluye
+  destinatario ni asunto.** `email sent via SendGrid` registraba `to` (la
+  dirección completa, con nombre) y `subject`; ambos son datos personales (un
+  asunto suele nombrar a la persona o su caso). Ahora registra solo `status`
+  y `message_id` (la cabecera `X-Message-Id` de SendGrid, que permite cruzar
+  el envío con su activity feed sin exponer datos). Quien filtraba o contaba
+  envíos por `to` o `subject` en sus logs debe usar `message_id`.
 
 ## [0.8.0] — 2026-09-30
 
