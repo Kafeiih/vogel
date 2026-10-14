@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/kafeiih/vogel/httpx/response"
@@ -18,11 +19,18 @@ type Pinger interface {
 type HealthHandler struct {
 	db     Pinger
 	logger *slog.Logger
+
+	// dbDown is the database state the last ping observed, shared by every
+	// probe. Logging only when it flips keeps a caller hammering the public
+	// probes during an outage from flooding the log with one ERROR per
+	// request.
+	dbDown atomic.Bool
 }
 
 // NewHealthHandler builds the probe handlers. logger receives the cause of a
-// failed database ping, which the response never carries; nil uses
-// slog.Default().
+// failed database ping, which the response never carries, once per outage:
+// at Error when the database becomes unreachable and at Info when it answers
+// again. nil uses slog.Default().
 func NewHealthHandler(db Pinger, logger *slog.Logger) *HealthHandler {
 	if logger == nil {
 		logger = slog.Default()
@@ -46,11 +54,10 @@ func (h *HealthHandler) Check(w http.ResponseWriter, r *http.Request) {
 	dbStatus := "up"
 	dbCheck := map[string]any{"status": dbStatus}
 
-	if err := h.db.Ping(ctx); err != nil {
+	if err := h.ping(ctx, "health check"); err != nil {
 		// The endpoint is public: the driver's error names hosts, ports,
-		// roles and TLS details, so it is logged here and the caller only
-		// learns that the database is down.
-		h.logger.ErrorContext(ctx, "health check: database ping failed", "error", err)
+		// roles and TLS details, so ping logs it and the caller only learns
+		// that the database is down.
 		dbStatus = "down"
 		dbCheck["status"] = dbStatus
 	}
@@ -84,8 +91,7 @@ func (h *HealthHandler) Ready(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
 
-	if err := h.db.Ping(ctx); err != nil {
-		h.logger.ErrorContext(ctx, "readiness check: database ping failed", "error", err)
+	if err := h.ping(ctx, "readiness check"); err != nil {
 		result := map[string]any{
 			"status": "not_ready",
 			"reason": "database unavailable",
@@ -107,4 +113,21 @@ func (h *HealthHandler) Ready(w http.ResponseWriter, r *http.Request) {
 //	@Router			/livez [get]
 func (h *HealthHandler) Live(w http.ResponseWriter, r *http.Request) {
 	response.JSON(w, http.StatusOK, map[string]string{"status": "alive"})
+}
+
+// ping checks the database and logs only state transitions: the first
+// failure after a healthy state at Error (with the cause), the first success
+// after a failure at Info. probe names the endpoint that observed the change.
+func (h *HealthHandler) ping(ctx context.Context, probe string) error {
+	err := h.db.Ping(ctx)
+	if err != nil {
+		if h.dbDown.CompareAndSwap(false, true) {
+			h.logger.ErrorContext(ctx, probe+": database ping failed", "error", err)
+		}
+		return err
+	}
+	if h.dbDown.CompareAndSwap(true, false) {
+		h.logger.InfoContext(ctx, probe+": database reachable again")
+	}
+	return nil
 }

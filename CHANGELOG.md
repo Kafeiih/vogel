@@ -517,8 +517,14 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   puertos; el compose de desarrollo sigue publicando el 5433. El runbook
   documenta que en producción los DSN deben usar `sslmode=verify-full` contra
   un PostgreSQL con TLS. Quien ya usaba este compose debe agregar las tres
-  variables a `deploy/.env` y recrear el volumen (los roles se crean solo en
-  el primer arranque).
+  variables a `deploy/.env` y actualizar el volumen existente sin borrarlo:
+  `10-roles.sh` es idempotente y se puede correr a mano como superusuario,
+  y el nuevo `deploy/initdb/upgrade-ownership.sql` transfiere a
+  `app_migrator` las tablas, secuencias, funciones, tipos y el esquema de
+  River que las migraciones anteriores crearon como `postgres` (sin
+  `REASSIGN OWNED`, que PostgreSQL rechaza para el superusuario de arranque
+  y que movería también objetos de toda la base). El procedimiento está en la
+  sección 0 del runbook, «Actualizar un volumen existente».
 - **`examples/boilerplate`: build de contenedores endurecido.** Nuevo
   `.dockerignore` (el `Dockerfile` hace `COPY . .`) que excluye `.env*`,
   claves y certificados, `.git`, `deploy/`, `bin/`, coverage y carpetas de
@@ -530,15 +536,22 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   `worker` corren con el sistema de archivos raíz de solo lectura y un
   `tmpfs` en `/tmp`. Quien ya usaba este compose debe definir `APP_VERSION`.
 - **`examples/boilerplate`: `/v1/healthz` ya no expone el error de la base,
-  Swagger solo fuera de producción y CORS sin credenciales.** El chequeo
+  Swagger solo con opt-in explícito y CORS sin credenciales.** El chequeo
   profundo devolvía a cualquier llamador sin autenticar el texto del error
   del ping (`checks.database.error`), que puede nombrar hosts, puertos, roles
   y detalles de TLS; ahora responde solo `status: down` y el error queda en
   el log del servidor (`NewHealthHandler` recibe un `*slog.Logger`; `/readyz`
-  también registra la causa). `/v1/swagger/*` se montaba siempre; ahora solo
-  si `RouterConfig.EnableSwagger` (que `main.go` activa cuando `APP_ENV` no
-  es `production`), bajo `SecurityHeaders` y con una CSP propia que permite
-  el script y los estilos inline de swagger-ui. CORS pasa a
+  también registra la causa), solo cuando el estado cambia: `Error` al pasar
+  de sana a caída y `Info` al recuperarse, para que un llamador anónimo no
+  llene el log con un error por cada sondeo durante una caída.
+  `/v1/swagger/*` se montaba siempre; ahora solo si
+  `RouterConfig.EnableSwagger`, que `main.go` toma de la nueva variable
+  `SWAGGER_ENABLED` (por defecto `false`; con `APP_ENV=production` y `true`
+  el arranque falla), bajo `SecurityHeaders` y con una CSP propia que
+  permite el script y los estilos inline de swagger-ui. No depende de
+  `APP_ENV` porque el compose de despliegue corre con `development` (su
+  Postgres no sirve TLS) y no debe publicar la descripción de la API; en
+  desarrollo local hay que agregar `SWAGGER_ENABLED=true` al `.env`. CORS pasa a
   `AllowCredentials: false`: la autenticación es un Bearer token, no una
   cookie.
 - **`examples/api`: `/metrics` sale del router público.** Se sirve en un

@@ -334,8 +334,9 @@ func runServer(migrateFirst bool) error {
 
 		TrustedProxies: cfg.App.TrustedProxies,
 
-		// Swagger UI and spec only outside production (APP_ENV).
-		EnableSwagger: !cfg.IsProduction(),
+		// Swagger UI and spec only on an explicit SWAGGER_ENABLED=true
+		// (never in production; config.Load rejects it there).
+		EnableSwagger: cfg.App.SwaggerEnabled,
 	}
 
 	deps := httpiface.Dependencies{

@@ -50,8 +50,9 @@ type RouterConfig struct {
 	TrustedProxies []netip.Prefix
 
 	// EnableSwagger mounts the Swagger UI and spec under /v1/swagger/.
-	// main.go sets it outside production only; the zero value leaves the
-	// routes unregistered, so a forgotten setting fails closed.
+	// main.go sets it from SWAGGER_ENABLED (default false, refused in
+	// production); the zero value leaves the routes unregistered, so a
+	// forgotten setting fails closed.
 	EnableSwagger bool
 }
 
@@ -123,9 +124,10 @@ func NewRouter(deps Dependencies) *chi.Mux {
 		r.Group(func(r chi.Router) {
 			r.Use(vmw.SecurityHeaders)
 
-			// API description: development and staging only. In production
-			// it is not registered at all (404), so it cannot map the API
-			// for an unauthenticated caller.
+			// API description: only on an explicit opt-in
+			// (SWAGGER_ENABLED=true, never in production). Otherwise it is
+			// not registered at all (404), so it cannot map the API for an
+			// unauthenticated caller.
 			if deps.Config.EnableSwagger {
 				r.With(swaggerHeaders).Get("/swagger/*", httpSwagger.Handler(
 					httpSwagger.URL("/v1/swagger/doc.json"),

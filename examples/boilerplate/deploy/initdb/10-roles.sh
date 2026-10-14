@@ -1,12 +1,18 @@
 #!/bin/sh
-# Creates the two application roles the deploy compose connects with. The
-# official postgres image runs every *.sh in /docker-entrypoint-initdb.d once,
-# as the superuser, only when the data directory is empty (first start of the
-# volume). Changing a password later needs ALTER ROLE by hand, or a fresh
-# volume.
+# Creates the two application roles the deploy compose connects with, and the
+# database-level privileges they need. The official postgres image runs every
+# *.sh in /docker-entrypoint-initdb.d once, as the superuser, only when the
+# data directory is empty (first start of the volume).
+#
+# The script is idempotent, so the same file also serves an EXISTING volume
+# (one created before these roles existed, or to rotate their passwords): run
+# it by hand as the superuser, see "Actualizar un volumen existente" in
+# deploy/RUNBOOK.md section 0. Each run creates a missing role and sets both
+# passwords to the current APP_MIGRATOR_PASSWORD / APP_RUNTIME_PASSWORD.
 #
 #   app_migrator  owns the schemas and tables: only the one-shot "migrate"
-#                 service (./api migrate up) logs in with it.
+#                 (./api migrate up) and "grants" (runtime-grants.sql)
+#                 services log in with it.
 #   app_runtime   owns nothing: api and worker log in with it. It cannot
 #                 create, alter or drop objects, so it cannot disable
 #                 audit_log's append-only triggers.
@@ -21,13 +27,19 @@
 # variable fails through ${VAR:?}, which stops the entrypoint.
 
 psql -v ON_ERROR_STOP=1 \
-	--username "$POSTGRES_USER" \
-	--dbname "$POSTGRES_DB" \
+	--username "${POSTGRES_USER:-postgres}" \
+	--dbname "${POSTGRES_DB:?POSTGRES_DB is required}" \
 	-v migrator_password="${APP_MIGRATOR_PASSWORD:?APP_MIGRATOR_PASSWORD is required}" \
 	-v runtime_password="${APP_RUNTIME_PASSWORD:?APP_RUNTIME_PASSWORD is required}" \
-	-v dbname="$POSTGRES_DB" <<'SQL'
-CREATE ROLE app_migrator LOGIN PASSWORD :'migrator_password';
-CREATE ROLE app_runtime LOGIN PASSWORD :'runtime_password';
+	-v dbname="${POSTGRES_DB}" <<'SQL'
+-- CREATE ROLE has no IF NOT EXISTS: create only the missing roles, then set
+-- LOGIN and the password on both, which also rotates an existing password.
+SELECT format('CREATE ROLE %I', r)
+FROM unnest(ARRAY['app_migrator', 'app_runtime']) AS r
+WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r)
+\gexec
+ALTER ROLE app_migrator LOGIN PASSWORD :'migrator_password';
+ALTER ROLE app_runtime LOGIN PASSWORD :'runtime_password';
 
 -- Nobody but these two roles (and the superuser) connects to this database.
 REVOKE ALL ON DATABASE :"dbname" FROM PUBLIC;
@@ -45,6 +57,8 @@ GRANT USAGE ON SCHEMA public TO app_runtime;
 -- (this application's own tables) is readable and writable by the runtime
 -- role. runtime-grants.sql then narrows audit_log back to SELECT and INSERT,
 -- and the goose version tables to SELECT, after every migration run.
+-- (Tables that already existed before app_migrator owned them get the same
+-- grants from upgrade-ownership.sql.)
 ALTER DEFAULT PRIVILEGES FOR ROLE app_migrator IN SCHEMA public
 	GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO app_runtime;
 ALTER DEFAULT PRIVILEGES FOR ROLE app_migrator IN SCHEMA public

@@ -64,6 +64,13 @@ type AppConfig struct {
 	// vmw.RealIP believes. Empty means no header is trusted and the client
 	// IP is always the TCP peer.
 	TrustedProxies []netip.Prefix
+
+	// SwaggerEnabled (SWAGGER_ENABLED, default false) serves the Swagger UI
+	// and spec under /v1/swagger/. It is an explicit opt-in rather than
+	// "APP_ENV is not production": the deploy compose runs with
+	// APP_ENV=development (its bundled Postgres serves no TLS) and must not
+	// publish the API description. See parseSwaggerEnabled.
+	SwaggerEnabled bool
 }
 
 // MetricsConfig holds configuration for the dedicated Prometheus metrics
@@ -121,11 +128,12 @@ func Load() (*Config, error) {
 	trustedProxies := parseTrustedProxies(&errs)
 	cerbosCfg := parseCerbosConfig(&errs)
 
+	env := config.String("APP_ENV", "development")
+	swaggerEnabled := parseSwaggerEnabled(&errs, env)
+
 	if err := errs.Err(); err != nil {
 		return nil, err
 	}
-
-	env := config.String("APP_ENV", "development")
 
 	cfg := &Config{
 		App: AppConfig{
@@ -136,6 +144,7 @@ func Load() (*Config, error) {
 			Timeout: appTimeout,
 
 			TrustedProxies: trustedProxies,
+			SwaggerEnabled: swaggerEnabled,
 		},
 		Database: postgres.Config{
 			URL:             dbURL,
@@ -200,6 +209,21 @@ func parseTrustedProxies(errs *config.Errors) []netip.Prefix {
 		return nil
 	}
 	return prefixes
+}
+
+// parseSwaggerEnabled reads SWAGGER_ENABLED (default false). Any value other
+// than a strconv.ParseBool true leaves Swagger off, so a typo fails closed.
+// In production a true value is a config error rather than silently
+// ignored: the API description maps every route for an unauthenticated
+// caller, and an operator who set it should learn at boot that it is
+// refused there.
+func parseSwaggerEnabled(errs *config.Errors, env string) bool {
+	enabled := config.Bool("SWAGGER_ENABLED", false)
+	if enabled && env == "production" {
+		errs.Addf("SWAGGER_ENABLED: must not be true with APP_ENV=production")
+		return false
+	}
+	return enabled
 }
 
 // WorkerSchema returns the PostgreSQL schema River's tables live in
