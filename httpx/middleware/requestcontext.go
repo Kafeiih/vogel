@@ -22,12 +22,26 @@ import (
 //     audit_log row for the same request are provably linked.
 //   - neither logger nor audit needs to import httpx or chi to get at it.
 //
-// Mount chi's own middleware.RequestID (or equivalent) upstream of this
-// middleware — RequestContext reads the upstream ID via chi's GetReqID
-// rather than generating one itself.
+// Mount vogel's RequestID upstream of this middleware: RequestContext does
+// not generate an ID itself. It prefers the ID RequestID stored in reqctx
+// and, only when there is none, falls back to chi's middleware.GetReqID, so
+// a consumer that still mounts chi's middleware.RequestID keeps working
+// unchanged. Prefer vogel's RequestID: chi's honors a client-supplied
+// X-Request-Id header verbatim, so with it a client chooses the request_id
+// that reaches logs, audit_log rows and error responses.
+//
+// Mount it before Authenticate: the auth-failure log reads the client IP and
+// request ID from reqctx, so with RequestContext mounted after it a rejected
+// request is logged with an empty ip and request_id (RequirePermission and
+// RequireAccess read the request ID the same way). docs/WIRING.md gives the
+// full middleware order.
 func RequestContext(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ctx := reqctx.WithRequestID(r.Context(), chimw.GetReqID(r.Context()))
+		id := reqctx.RequestIDFromContext(r.Context())
+		if id == "" {
+			id = chimw.GetReqID(r.Context())
+		}
+		ctx := reqctx.WithRequestID(r.Context(), id)
 
 		ip, _, err := net.SplitHostPort(r.RemoteAddr)
 		if err != nil || ip == "" {

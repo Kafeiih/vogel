@@ -119,6 +119,7 @@ func Load() (*Config, error) {
 	connectTimeout := errs.Duration("DB_CONNECT_TIMEOUT", 10*time.Second)
 
 	trustedProxies := parseTrustedProxies(&errs)
+	cerbosCfg := parseCerbosConfig(&errs)
 
 	if err := errs.Err(); err != nil {
 		return nil, err
@@ -149,10 +150,7 @@ func Load() (*Config, error) {
 			Issuer:   zitadelIssuer,
 			ClientID: zitadelClientID,
 		},
-		Cerbos: cerbos.Config{
-			Host:   config.String("CERBOS_HOST", "localhost:3593"),
-			UseTLS: config.Bool("CERBOS_TLS", false),
-		},
+		Cerbos: cerbosCfg,
 		CORS: CORSConfig{
 			AllowedOrigins: parseSlice("CORS_ALLOWED_ORIGINS", ","),
 			AllowedMethods: []string{"GET", "POST", "PUT", "PATCH", "DELETE"},
@@ -297,6 +295,23 @@ func parseStorageConfigs() map[string]s3.Config {
 	}
 
 	return configs
+}
+
+// parseCerbosConfig reads the Cerbos PDP connection. TLS is the default;
+// CERBOS_PLAINTEXT=true opts out, for the local development container only.
+//
+// CERBOS_TLS, which CERBOS_PLAINTEXT replaced, is rejected whenever it is set
+// (whatever its value) and recorded in errs: a deployment that still carries
+// it would otherwise be switched to TLS silently and only fail later, with a
+// 503 on every authorization call.
+func parseCerbosConfig(errs *config.Errors) cerbos.Config {
+	if _, ok := os.LookupEnv("CERBOS_TLS"); ok {
+		errs.Addf("CERBOS_TLS is no longer read: remove it and set CERBOS_PLAINTEXT=true only if the Cerbos PDP listens without TLS (TLS is the default)")
+	}
+	return cerbos.Config{
+		Host:      config.String("CERBOS_HOST", "localhost:3593"),
+		Plaintext: config.Bool("CERBOS_PLAINTEXT", false),
+	}
 }
 
 // parseMetricsConfig reads METRICS_* env vars and returns a MetricsConfig

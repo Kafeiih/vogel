@@ -8,6 +8,7 @@ import (
 
 	"github.com/kafeiih/vogel/auth"
 	"github.com/kafeiih/vogel/httpx/response"
+	"github.com/kafeiih/vogel/reqctx"
 )
 
 // bearerScheme is the RFC 6750 §2.1 "Authorization Request Header Field"
@@ -71,8 +72,11 @@ func extractBearerToken(r *http.Request) (token string, ok bool) {
 //   - auth.ErrForbidden -> 403
 //   - anything else, including auth.ErrUnauthenticated -> 401
 //
-// The underlying error is always logged server-side at error level; its
-// detail is never included in the response body.
+// The underlying error is always logged server-side at error level, with the
+// request method, path, client IP and request ID (the last two from reqctx,
+// empty when RequestContext is not mounted upstream); the token is never
+// logged, and the error detail is never included in the response body. Mount
+// RequestContext before this middleware so those fields are filled in.
 func Authenticate(a auth.Authenticator, logger *slog.Logger, opts ...AuthOption) func(http.Handler) http.Handler {
 	msgs := DefaultAuthMessages()
 	for _, opt := range opts {
@@ -83,14 +87,14 @@ func Authenticate(a auth.Authenticator, logger *slog.Logger, opts ...AuthOption)
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			token, ok := extractBearerToken(r)
 			if !ok {
-				logger.ErrorContext(r.Context(), "authentication failed", "error", auth.ErrUnauthenticated)
+				logAuthFailure(logger, r, auth.ErrUnauthenticated)
 				response.Error(w, r, http.StatusUnauthorized, response.CodeUnauthorized, msgs.Unauthorized)
 				return
 			}
 
 			principal, err := a.Authenticate(r.Context(), token)
 			if err != nil {
-				logger.ErrorContext(r.Context(), "authentication failed", "error", err)
+				logAuthFailure(logger, r, err)
 
 				switch {
 				case errors.Is(err, auth.ErrServiceUnavailable):
@@ -106,4 +110,17 @@ func Authenticate(a auth.Authenticator, logger *slog.Logger, opts ...AuthOption)
 			next.ServeHTTP(w, r.WithContext(auth.WithPrincipal(r.Context(), principal)))
 		})
 	}
+}
+
+// logAuthFailure logs a failed authentication with the request fields needed
+// to trace it (method, path, client IP, request ID) and never the credential.
+func logAuthFailure(logger *slog.Logger, r *http.Request, err error) {
+	info, _ := reqctx.RequestInfoFromContext(r.Context())
+	logger.ErrorContext(r.Context(), "authentication failed",
+		"error", err,
+		"method", r.Method,
+		"path", r.URL.Path,
+		"ip", info.IP,
+		"request_id", reqctx.RequestIDFromContext(r.Context()),
+	)
 }

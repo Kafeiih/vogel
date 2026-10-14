@@ -15,6 +15,7 @@ services:
       timeout: 3s
       retries: 5
 
+  # Serves gRPC without TLS: run the app with CERBOS_PLAINTEXT=true locally.
   cerbos:
     image: ghcr.io/cerbos/cerbos:latest
     ports:

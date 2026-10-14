@@ -6,6 +6,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"slices"
+	"time"
 
 	"github.com/zitadel/oidc/v3/pkg/oidc"
 	"github.com/zitadel/zitadel-go/v3/pkg/authorization"
@@ -19,6 +22,43 @@ import (
 type Config struct {
 	Issuer   string // Zitadel instance issuer URL, e.g. "https://my-instance.zitadel.cloud"
 	ClientID string // OIDC client/application ID used for audience validation
+
+	// HTTPTimeout bounds each request of OIDC discovery and of the JWKS
+	// downloads (on construction and whenever an unknown key ID forces a
+	// refresh). Zero means DefaultHTTPTimeout; negative is a construction
+	// error. Without it the SDK falls back to http.DefaultClient, which has
+	// no timeout, so a stalled issuer could hang token validation.
+	HTTPTimeout time.Duration
+
+	// MaxTokenLifetime, when positive, rejects tokens whose lifetime
+	// (exp - iat) exceeds it, and tokens without an iat claim. Zero disables
+	// the check; negative is a construction error. It bounds how long a
+	// leaked token stays usable even if the issuer is configured to mint
+	// long-lived ones.
+	MaxTokenLifetime time.Duration
+
+	// AllowedAuthorizedParties, when non-empty, is the list of client IDs
+	// whose tokens are accepted: a token whose azp is missing, empty or not
+	// in the list is rejected. Empty (the default) skips the check, because
+	// for an access token azp names the client that requested it — in the
+	// usual Zitadel setup a frontend app, not this API (ClientID) — so
+	// comparing it with ClientID would reject every such request. Audience
+	// validation against ClientID applies either way. An empty entry is a
+	// construction error.
+	AllowedAuthorizedParties []string
+}
+
+// DefaultHTTPTimeout is the per-request timeout for discovery and JWKS
+// fetches used when Config.HTTPTimeout is zero.
+const DefaultHTTPTimeout = 10 * time.Second
+
+// jwksHTTPClient returns the client used for OIDC discovery and JWKS fetches.
+func jwksHTTPClient(cfg Config) *http.Client {
+	timeout := cfg.HTTPTimeout
+	if timeout == 0 {
+		timeout = DefaultHTTPTimeout
+	}
+	return &http.Client{Timeout: timeout}
 }
 
 // Authenticator implements auth.Authenticator using Zitadel's local JWT
@@ -31,7 +71,9 @@ type Config struct {
 // Zitadel SDK transitively — defeating the whole point of the port/adapter
 // split (see the vogel README).
 type Authenticator struct {
-	authorizer *authorization.Authorizer[*oauth.IntrospectionContext]
+	authorizer               *authorization.Authorizer[*oauth.IntrospectionContext]
+	allowedAuthorizedParties []string
+	maxTokenLifetime         time.Duration
 }
 
 // New creates an Authenticator that validates tokens issued by the Zitadel
@@ -43,24 +85,40 @@ func New(ctx context.Context, cfg Config) (*Authenticator, error) {
 	if cfg.ClientID == "" {
 		return nil, fmt.Errorf("auth/zitadel: client ID is required")
 	}
+	if cfg.HTTPTimeout < 0 {
+		return nil, fmt.Errorf("auth/zitadel: HTTP timeout must not be negative")
+	}
+	if cfg.MaxTokenLifetime < 0 {
+		return nil, fmt.Errorf("auth/zitadel: max token lifetime must not be negative")
+	}
+	if slices.Contains(cfg.AllowedAuthorizedParties, "") {
+		return nil, fmt.Errorf("auth/zitadel: allowed authorized parties must not contain an empty client ID")
+	}
 
 	z := zitadel.New(cfg.Issuer)
-	authorizer, err := authorization.New(ctx, z, oauth.DefaultJWTAuthorization(cfg.ClientID))
+	// oauth.WithJWT is what DefaultJWTAuthorization wraps, with a nil client
+	// that it replaces by http.DefaultClient; pass a bounded one instead.
+	authorizer, err := authorization.New(ctx, z, oauth.WithJWT(cfg.ClientID, jwksHTTPClient(cfg)))
 	if err != nil {
 		return nil, fmt.Errorf("auth/zitadel: creating authorizer: %w", err)
 	}
 
-	return &Authenticator{authorizer: authorizer}, nil
+	return newFromAuthorizer(authorizer, cfg), nil
 }
 
 // newFromAuthorizer builds an Authenticator around an already-constructed
-// authorizer. Unexported: it exists so this package's own tests can inject a
+// authorizer, taking the claim-check settings (AllowedAuthorizedParties,
+// MaxTokenLifetime) from cfg. Unexported: it exists so this package's own tests can inject a
 // fake authorization.Verifier and exercise the real error-mapping path
 // without a network call or a real Zitadel instance (see zitadel_test.go),
 // while keeping authorization.Authorizer[*oauth.IntrospectionContext] out of
 // the exported constructor surface.
-func newFromAuthorizer(a *authorization.Authorizer[*oauth.IntrospectionContext]) *Authenticator {
-	return &Authenticator{authorizer: a}
+func newFromAuthorizer(a *authorization.Authorizer[*oauth.IntrospectionContext], cfg Config) *Authenticator {
+	return &Authenticator{
+		authorizer:               a,
+		allowedAuthorizedParties: slices.Clone(cfg.AllowedAuthorizedParties),
+		maxTokenLifetime:         cfg.MaxTokenLifetime,
+	}
 }
 
 // Authenticate implements auth.Authenticator.
@@ -76,10 +134,18 @@ func newFromAuthorizer(a *authorization.Authorizer[*oauth.IntrospectionContext])
 // and treats a missing prefix as a malformed token. So the prefix is added
 // back here before the SDK call; this is the one place in the module that
 // needs to know that detail of the SDK's contract.
+//
+// After the SDK accepts the token, checkClaims rejects a non-string azp, an
+// azp outside Config.AllowedAuthorizedParties (when that list is set), a token whose nbf is still in the future, and (when
+// Config.MaxTokenLifetime is set) a token whose lifetime exceeds it; those
+// rejections wrap auth.ErrUnauthenticated like any other invalid token.
 func (a *Authenticator) Authenticate(ctx context.Context, token string) (*auth.Principal, error) {
 	authCtx, err := a.authorizer.CheckAuthorization(ctx, oidc.PrefixBearer+token)
 	if err != nil {
 		return nil, mapError(err)
+	}
+	if err := checkClaims(claimsOf(authCtx), a.allowedAuthorizedParties, a.maxTokenLifetime, time.Now()); err != nil {
+		return nil, fmt.Errorf("auth/zitadel: %w: %w", auth.ErrUnauthenticated, err)
 	}
 
 	return &auth.Principal{

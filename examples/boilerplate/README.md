@@ -86,7 +86,7 @@ go run ./cmd/api start-from-migrate   # o: make dev
 > ZITADEL_CLIENT_ID=your-client-id-here
 >
 > CERBOS_HOST=localhost:3593
-> CERBOS_TLS=false
+> CERBOS_PLAINTEXT=true   # solo para el contenedor local de Cerbos
 >
 > CORS_ALLOWED_ORIGINS=http://localhost:3000
 > ```
@@ -97,6 +97,15 @@ go run ./cmd/api start-from-migrate   # o: make dev
 > `NOTIFICATION_DEFAULT_FROM`, `SMTP_*`, `SENDGRID_API_KEY`,
 > `METRICS_LISTEN_ADDR`. Ver `internal/infrastructure/config/config.go` para
 > el detalle completo de cada una.
+>
+> `CERBOS_PLAINTEXT` (opcional, `false` por defecto) desactiva TLS hacia el
+> PDP de Cerbos. Sin ella la conexión gRPC usa TLS; el contenedor de
+> `docker-compose.developer.yaml` escucha sin TLS, por eso el `.env` local la
+> pone en `true`. Nunca la active en staging ni en producción: las decisiones
+> de autorización viajarían en texto plano. Reemplaza a `CERBOS_TLS`: si esa
+> variable sigue definida (con cualquier valor), el arranque falla con un
+> error que indica usar `CERBOS_PLAINTEXT`, para que la migración no pase
+> inadvertida.
 >
 > `TRUSTED_PROXIES` (opcional, vacía por defecto) lista, separados por comas,
 > los CIDR o IP de los proxies inversos o balanceadores cuyas cabeceras

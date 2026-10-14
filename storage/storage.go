@@ -64,8 +64,10 @@ type Storage interface {
 	// Content-Disposition: attachment (see DefaultContentDisposition), so a
 	// browser downloads it instead of rendering it on the bucket origin. A
 	// consumer that wants inline rendering opts in explicitly with
-	// WithContentDisposition("inline"); AsAttachment sets a download filename
-	// and WithResponseContentType overrides the returned Content-Type.
+	// WithContentDisposition("inline"); AsAttachment sets a download filename.
+	// The returned Content-Type is DefaultResponseContentType
+	// (application/octet-stream) unless WithResponseContentType sets a type
+	// the application verified, so a client-declared type is never served.
 	// Adapters fold the options with ApplyPresignGetOptions.
 	PresignedGetURL(ctx context.Context, key string, expiry time.Duration, opts ...PresignGetOption) (string, error)
 

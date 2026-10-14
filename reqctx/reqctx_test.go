@@ -44,3 +44,19 @@ func TestWithRequestID_DoesNotAffectRequestInfo(t *testing.T) {
 		t.Error("expected RequestInfo absent when only WithRequestID was called")
 	}
 }
+
+func TestClientRequestIDFromContext_NoID_ReturnsEmpty(t *testing.T) {
+	if got := ClientRequestIDFromContext(context.Background()); got != "" {
+		t.Errorf("ClientRequestIDFromContext = %q, want empty string", got)
+	}
+}
+
+func TestClientRequestID_IsSeparateFromRequestID(t *testing.T) {
+	ctx := WithClientRequestID(WithRequestID(context.Background(), "server-1"), "client-1")
+	if got := ClientRequestIDFromContext(ctx); got != "client-1" {
+		t.Errorf("ClientRequestIDFromContext = %q, want %q", got, "client-1")
+	}
+	if got := RequestIDFromContext(ctx); got != "server-1" {
+		t.Errorf("RequestIDFromContext = %q, want %q (the client ID must never replace it)", got, "server-1")
+	}
+}

@@ -18,6 +18,11 @@ import (
 // audit.Recorder.Record report only by coincidence, since both of those read
 // reqctx: a request ID reaching the context by any other route would land in
 // an audit_log row while this access log printed an empty one.
+//
+// When the client sent its own correlation ID (see RequestID), it is logged
+// under "client_request_id", apart from the server-generated "request_id",
+// so a client-chosen value is never mistaken for the server's; the key is
+// left out when there is none.
 func StructuredLogger(logger *slog.Logger) func(next http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -26,7 +31,7 @@ func StructuredLogger(logger *slog.Logger) func(next http.Handler) http.Handler 
 			ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
 
 			defer func() {
-				logger.Info("http request",
+				attrs := []any{
 					"method", r.Method,
 					"path", r.URL.Path,
 					"status", ww.Status(),
@@ -35,7 +40,11 @@ func StructuredLogger(logger *slog.Logger) func(next http.Handler) http.Handler 
 					"remote_addr", r.RemoteAddr,
 					"user_agent", r.UserAgent(),
 					"request_id", reqctx.RequestIDFromContext(r.Context()),
-				)
+				}
+				if clientID := reqctx.ClientRequestIDFromContext(r.Context()); clientID != "" {
+					attrs = append(attrs, "client_request_id", clientID)
+				}
+				logger.Info("http request", attrs...)
 			}()
 
 			next.ServeHTTP(ww, r)

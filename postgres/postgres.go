@@ -2,7 +2,7 @@
 // defaults the source applications lacked: slow-query tracing (see
 // slow_query_tracer.go), Prometheus pool metrics (see metrics.go), a hard
 // startup failure instead of a silent no-op when TLS is required but the DSN
-// does not enable it, and server-side statement/lock/idle-in-transaction
+// does not enable a verified TLS connection, and server-side statement/lock/idle-in-transaction
 // timeouts applied on every new connection.
 package postgres
 
@@ -33,7 +33,7 @@ const (
 // flags package, hardcoded test values, ...) to fill it in.
 type Config struct {
 	// URL is the PostgreSQL connection string (DSN), e.g.
-	// "postgres://user:pass@host:5432/db?sslmode=require".
+	// "postgres://user:pass@host:5432/db?sslmode=verify-full".
 	URL string
 
 	MaxConns        int32
@@ -47,10 +47,15 @@ type Config struct {
 	// immediately". See applyPoolSettings for why that distinction is not
 	// cosmetic.
 
-	// RequireTLS enforces a minimum TLS 1.2 connection. If true and the parsed
-	// DSN does not enable TLS (e.g. sslmode=disable), NewPool fails fast with
-	// an error instead of silently opening a plaintext connection. See
-	// applyTLSConfig for the historical bug this fixes.
+	// RequireTLS demands an encrypted connection to a verified server, with a
+	// minimum of TLS 1.2. If true, NewPool fails fast unless the DSN makes pgx
+	// verify the server certificate for every host it may connect to:
+	// sslmode=verify-full (recommended: chain and hostname), verify-ca
+	// (chain only), or require with sslrootcert (which libpq and pgx treat
+	// as verify-ca). disable, allow, prefer (the default when sslmode is
+	// absent) and a bare require are rejected: they either permit plaintext
+	// or accept any certificate, so a man in the middle could read the
+	// traffic. False takes the DSN as is. See applyTLSConfig.
 	RequireTLS bool
 
 	// StatementTimeout caps how long a single SQL statement may run before
@@ -97,7 +102,8 @@ type Config struct {
 
 // NewPool creates and validates a *pgxpool.Pool from cfg. It fails fast (before
 // returning a pool) if the DSN is invalid, if RequireTLS is true but the DSN
-// does not enable TLS, or if the initial ping fails.
+// does not make pgx verify the server certificate, or if the initial ping
+// fails.
 func NewPool(ctx context.Context, cfg Config, logger *slog.Logger) (*pgxpool.Pool, error) {
 	poolConfig, err := pgxpool.ParseConfig(cfg.URL)
 	if err != nil {
@@ -195,29 +201,53 @@ func resolveTimeoutMillis(configured, defaultValue time.Duration) int64 {
 	}
 }
 
-// applyTLSConfig enforces a minimum TLS 1.2 when requireTLS is true, while
-// preserving the ServerName and other fields that pgxpool.ParseConfig sets
-// from the DSN — replacing TLSConfig wholesale would drop ServerName, breaking
+// applyTLSConfig enforces RequireTLS: every TLS configuration pgx may use
+// (the primary host and every fallback) must exist and verify the server,
+// and each gets a minimum of TLS 1.2. It mutates the configs pgxpool.ParseConfig
+// built from the DSN rather than replacing them, because replacing TLSConfig
+// wholesale would drop ServerName and the verification settings, breaking
 // certificate validation against managed databases like RDS.
 //
-// If requireTLS is true and the DSN disables TLS (e.g. sslmode=disable), pgx
-// has already set ConnConfig.TLSConfig to nil by the time this runs, and
-// pgconn never attempts a TLS handshake in that case regardless of what this
-// function mutates afterward — the source repositories mutated a TLSConfig
-// object anyway, silently producing a plaintext connection while callers
-// believed RequireTLS had taken effect. This returns an error instead, naming
-// the offending setting, so a misconfigured DSN fails at startup rather than
-// shipping an unencrypted production connection.
+// The check reads the parsed configuration instead of the sslmode string, so
+// it also covers keyword/value DSNs, PGSSLMODE and multi-host DSNs. A nil
+// TLSConfig means pgx connects in plaintext for that attempt (disable, or the
+// plaintext leg of allow/prefer); InsecureSkipVerify without a
+// VerifyPeerCertificate callback means any certificate is accepted (prefer,
+// allow's TLS leg, and require without sslrootcert). verify-ca sets
+// InsecureSkipVerify too, but only to replace Go's hostname check with its own
+// chain verification in VerifyPeerCertificate.
+//
+// Historically the source repositories mutated a TLSConfig object even when
+// the DSN disabled TLS, silently producing a plaintext connection while
+// callers believed RequireTLS had taken effect. Failing at startup with an
+// error naming the setting keeps a misconfigured DSN out of production.
 func applyTLSConfig(poolConfig *pgxpool.Config, requireTLS bool) error {
 	if !requireTLS {
 		return nil
 	}
-	if poolConfig.ConnConfig.TLSConfig == nil {
-		return fmt.Errorf(
-			"postgres: RequireTLS is true but the connection string disables TLS " +
-				"(e.g. sslmode=disable); set sslmode=require (or stronger) in the DSN, or set RequireTLS to false",
-		)
+
+	configs := []*tls.Config{poolConfig.ConnConfig.TLSConfig}
+	for _, fb := range poolConfig.ConnConfig.Fallbacks {
+		configs = append(configs, fb.TLSConfig)
 	}
-	poolConfig.ConnConfig.TLSConfig.MinVersion = tls.VersionTLS12
+
+	for _, c := range configs {
+		if c == nil {
+			return fmt.Errorf(
+				"postgres: RequireTLS is true but the connection string allows a plaintext connection " +
+					"(sslmode disable, allow or prefer, or sslmode absent); set sslmode=verify-full in the DSN, or set RequireTLS to false",
+			)
+		}
+		if c.InsecureSkipVerify && c.VerifyPeerCertificate == nil {
+			return fmt.Errorf(
+				"postgres: RequireTLS is true but the connection string does not verify the server certificate " +
+					"(sslmode=require without sslrootcert, or prefer/allow); set sslmode=verify-full (or verify-ca with sslrootcert) in the DSN, or set RequireTLS to false",
+			)
+		}
+	}
+
+	for _, c := range configs {
+		c.MinVersion = tls.VersionTLS12
+	}
 	return nil
 }

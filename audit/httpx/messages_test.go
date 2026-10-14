@@ -14,6 +14,9 @@ func TestDefaultMessages_NeutralEnglishDefaults(t *testing.T) {
 	if m.GetFailed == "" {
 		t.Error("GetFailed default is empty")
 	}
+	if m.InvalidOffset == "" {
+		t.Error("InvalidOffset default is empty")
+	}
 }
 
 func TestWithMessages_OverridesOnlySetFields(t *testing.T) {

@@ -12,6 +12,16 @@ import (
 // origin. Pass WithContentDisposition("inline") to opt into inline rendering.
 const DefaultContentDisposition = "attachment"
 
+// DefaultResponseContentType is the Content-Type a presigned GET asks the
+// store to return when the caller passes no WithResponseContentType. The
+// stored type usually came from the uploading client and is not trusted:
+// serving everything as application/octet-stream, together with the
+// attachment default, means a browser never renders an uploaded object
+// inline unless the consumer opts in. Pass WithResponseContentType with a
+// type the application verified (for example with SniffContentType) to
+// serve it as that type.
+const DefaultResponseContentType = "application/octet-stream"
+
 // PresignGetOptions holds the response-header overrides a presigned GET URL
 // asks the object store to send back. Adapters map these onto their native
 // request (for S3: response-content-disposition and response-content-type).
@@ -23,8 +33,9 @@ type PresignGetOptions struct {
 	// with the object. Never empty after ApplyPresignGetOptions.
 	ContentDisposition string
 
-	// ContentType, when non-empty, overrides the Content-Type the store
-	// returns with the object. Empty means "whatever was stored".
+	// ContentType is the Content-Type the store returns with the object,
+	// overriding whatever was stored. Never empty after
+	// ApplyPresignGetOptions: it defaults to DefaultResponseContentType.
 	ContentType string
 }
 
@@ -35,9 +46,10 @@ type PresignGetOption func(*PresignGetOptions)
 // ApplyPresignGetOptions folds opts over the defaults and returns the result.
 // Adapters implementing Storage.PresignedGetURL call this so every adapter
 // shares the same defaults: ContentDisposition is DefaultContentDisposition
-// unless an option sets a non-empty value. nil options are ignored.
+// and ContentType is DefaultResponseContentType unless an option sets a
+// non-empty value. nil options are ignored.
 func ApplyPresignGetOptions(opts ...PresignGetOption) PresignGetOptions {
-	o := PresignGetOptions{ContentDisposition: DefaultContentDisposition}
+	o := PresignGetOptions{ContentDisposition: DefaultContentDisposition, ContentType: DefaultResponseContentType}
 	for _, opt := range opts {
 		if opt != nil {
 			opt(&o)
@@ -45,6 +57,9 @@ func ApplyPresignGetOptions(opts ...PresignGetOption) PresignGetOptions {
 	}
 	if o.ContentDisposition == "" {
 		o.ContentDisposition = DefaultContentDisposition
+	}
+	if o.ContentType == "" {
+		o.ContentType = DefaultResponseContentType
 	}
 	return o
 }
@@ -147,9 +162,11 @@ func isAttrChar(c byte) bool {
 	return strings.IndexByte("!#$&+-.^_`|~", c) >= 0
 }
 
-// WithResponseContentType overrides the Content-Type the store returns with
-// the object. Use it when the stored metadata is missing or wrong and the
-// consumer knows the real type. An empty value means "whatever was stored".
+// WithResponseContentType sets the Content-Type the store returns with the
+// object instead of DefaultResponseContentType. Use it only with a type the
+// application verified itself (for example the one SniffContentType
+// detected at upload), never with the type the uploading client declared.
+// An empty value keeps DefaultResponseContentType.
 func WithResponseContentType(contentType string) PresignGetOption {
 	return func(o *PresignGetOptions) {
 		o.ContentType = contentType

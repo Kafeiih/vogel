@@ -8,9 +8,12 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
+	"net/http"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 
@@ -26,7 +29,23 @@ type Config struct {
 	SecretKey     string        // Static secret key
 	PathStyle     bool          // Use path-style access (required for MinIO)
 	PresignExpiry time.Duration // Default presigned URL expiry when a call passes expiry <= 0 (default: 15m)
+
+	// ResponseHeaderTimeout bounds the phases that reveal a stalled S3
+	// endpoint, so an Upload or Download whose context has no deadline cannot
+	// hang forever: the wait for the response headers once the request
+	// (including an upload body) has been written, and, when smaller than the
+	// SDK defaults (30s dial, 10s TLS handshake), connection setup as well.
+	// It does not bound the transfer of a response body: a long, healthy
+	// Download keeps streaming for as long as the caller reads it, so callers
+	// bound whole transfers with their context. Zero means
+	// DefaultResponseHeaderTimeout; negative is a construction error.
+	// Presigning does no I/O and is unaffected.
+	ResponseHeaderTimeout time.Duration
 }
+
+// DefaultResponseHeaderTimeout is the response-header bound used when
+// Config.ResponseHeaderTimeout is zero.
+const DefaultResponseHeaderTimeout = 60 * time.Second
 
 // DefaultPresignExpiry is the presigned URL lifetime used when
 // Config.PresignExpiry is zero and a call passes a non-positive expiry.
@@ -52,10 +71,19 @@ func NewS3Storage(cfg Config, logger *slog.Logger) (*S3Storage, error) {
 	if logger == nil {
 		return nil, fmt.Errorf("storage: logger is required")
 	}
+	if cfg.ResponseHeaderTimeout < 0 {
+		return nil, fmt.Errorf("storage: response header timeout must not be negative")
+	}
+
+	headerTimeout := cfg.ResponseHeaderTimeout
+	if headerTimeout == 0 {
+		headerTimeout = DefaultResponseHeaderTimeout
+	}
 
 	opts := []func(*s3.Options){
 		func(o *s3.Options) {
 			o.Region = cfg.Region
+			o.HTTPClient = newHTTPClient(headerTimeout)
 		},
 	}
 
@@ -97,6 +125,23 @@ func NewS3Storage(cfg Config, logger *slog.Logger) (*S3Storage, error) {
 		presignExpiry: presignExpiry,
 		logger:        logger,
 	}, nil
+}
+
+// newHTTPClient returns a BuildableClient that keeps the SDK's transport
+// defaults and bounds only the phases that indicate a stalled endpoint: the
+// wait for response headers, and the dial and TLS handshake when bound is
+// tighter than the SDK defaults. It sets no http.Client.Timeout on purpose:
+// that would also cap body streaming, and the SDK retryer treats it as
+// retryable, so a slow but healthy Download would fail and be re-sent.
+func newHTTPClient(bound time.Duration) *awshttp.BuildableClient {
+	return awshttp.NewBuildableClient().
+		WithDialerOptions(func(d *net.Dialer) {
+			d.Timeout = min(d.Timeout, bound)
+		}).
+		WithTransportOptions(func(tr *http.Transport) {
+			tr.TLSHandshakeTimeout = min(tr.TLSHandshakeTimeout, bound)
+			tr.ResponseHeaderTimeout = bound
+		})
 }
 
 // effectiveExpiry returns expiry, or the configured default when expiry is
@@ -173,8 +218,9 @@ func (s *S3Storage) Delete(ctx context.Context, key string) error {
 // A non-positive expiry uses Config.PresignExpiry. The options are folded with
 // storage.ApplyPresignGetOptions and mapped onto the S3 response-header
 // overrides (response-content-disposition, response-content-type), which S3
-// signs as part of the URL: the default "attachment" disposition cannot be
-// stripped by whoever holds the link.
+// signs as part of the URL: the default "attachment" disposition and
+// "application/octet-stream" type cannot be stripped by whoever holds the
+// link.
 func (s *S3Storage) PresignedGetURL(ctx context.Context, key string, expiry time.Duration, opts ...storage.PresignGetOption) (string, error) {
 	o := storage.ApplyPresignGetOptions(opts...)
 
@@ -182,9 +228,7 @@ func (s *S3Storage) PresignedGetURL(ctx context.Context, key string, expiry time
 		Bucket:                     aws.String(s.bucket),
 		Key:                        aws.String(key),
 		ResponseContentDisposition: aws.String(o.ContentDisposition),
-	}
-	if o.ContentType != "" {
-		input.ResponseContentType = aws.String(o.ContentType)
+		ResponseContentType:        aws.String(o.ContentType),
 	}
 
 	req, err := s.presignClient.PresignGetObject(ctx, input, func(po *s3.PresignOptions) {

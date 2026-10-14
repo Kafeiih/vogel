@@ -28,11 +28,114 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   hace fallar el arranque. Cambio de comportamiento: detrás de un balanceador,
   hay que declarar sus direcciones en `TRUSTED_PROXIES` o todas las requests
   aparecen con la IP del balanceador.
+- **`storage`: `SniffContentType(r, allowed...)` y `ErrContentTypeNotAllowed`.**
+  Detecta el tipo de un archivo subido a partir de su contenido (los primeros
+  512 bytes, con `http.DetectContentType`) en lugar de confiar en el
+  `Content-Type` que declara el cliente, y lo compara con una lista permitida.
+  La comparación usa solo el tipo de medio (ignora parámetros como `charset`
+  y mayúsculas, vía `mime.ParseMediaType`). Devuelve el tipo detectado y un
+  lector con el contenido completo (los bytes leídos incluidos) para pasarlo a
+  `Upload`; si el tipo no está permitido, el error envuelve
+  `ErrContentTypeNotAllowed`. `examples/api` lo usa en la subida de archivos:
+  acepta `application/pdf`, `image/png`, `image/jpeg` y `text/plain`, guarda
+  el tipo detectado y responde 415 a cualquier otro contenido, con un mensaje
+  que lista los tipos aceptados (armado desde la misma lista que se valida).
 - `httpx/response`: constante `CodeUnsupportedMediaType` (`UNSUPPORTED_MEDIA_TYPE`).
 - CI: nuevo job `govulncheck` que escanea la raíz y `examples/boilerplate`.
+- **`notification/sendgrid` y `auth/zitadel`: campo opcional
+  `Config.HTTPTimeout` y constante `DefaultHTTPTimeout`** en cada paquete
+  (30s y 10s respectivamente). Cero usa el valor por defecto; un valor
+  negativo hace fallar el constructor.
+- **`storage/s3`: campo opcional `Config.ResponseHeaderTimeout` y constante
+  `DefaultResponseHeaderTimeout`** (60s). Cero usa el valor por defecto; un
+  valor negativo hace fallar el constructor.
+- **`auth/zitadel`: campo opcional `Config.MaxTokenLifetime`.** Si es
+  positivo, se rechaza (401) todo token cuya vida (`exp - iat`) lo supere, y
+  también un token sin `iat` (o sin `exp`), porque su vida no se puede probar.
+  Cero (el valor por defecto) desactiva la comprobación; un valor negativo hace
+  fallar el constructor. Acota cuánto tiempo sirve un token filtrado aunque el
+  emisor esté configurado para emitir tokens de larga duración.
+- **`auth/zitadel`: campo opcional `Config.AllowedAuthorizedParties`.** Si
+  no está vacío, solo se aceptan tokens cuyo `azp` sea uno de esos client IDs
+  (un `azp` ausente o vacío se rechaza). Vacío (el valor por defecto) no
+  comprueba `azp`; una entrada vacía hace fallar el constructor.
+- **`httpx/middleware`: `RequestID` y constante `RequestIDHeader`
+  (`X-Request-Id`).** Reemplazo del `middleware.RequestID` de chi, que adopta
+  tal cual el `X-Request-Id` que envíe el cliente (un cliente podía elegir el
+  `request_id` de los logs, de `audit_log` y del `trace_id` de los errores,
+  colisionar con el de otra request o inyectar contenido en los logs).
+  `RequestID` genera siempre el ID en el servidor (16 bytes de `crypto/rand`
+  en hexadecimal, 32 caracteres), lo guarda en `reqctx` y en la clave de
+  contexto de chi (así `GetReqID` devuelve el mismo valor) y lo escribe en la
+  cabecera de respuesta `X-Request-Id`. El valor que envíe el cliente solo se
+  conserva como ID de correlación aparte, sin espacios ni caracteres fuera del
+  ASCII visible y truncado a 128 bytes.
+- **`reqctx`: `WithClientRequestID` y `ClientRequestIDFromContext`**, para el
+  ID de correlación enviado por el cliente, separado del ID de request del
+  servidor.
+- **`authz/cerbos`: `(*Checker).Ping(ctx)`.** Pide `ServerInfo` al PDP (una
+  RPC barata que no evalúa políticas) y devuelve un error que nombra el host si
+  falla. Como la conexión gRPC es perezosa, `New` no detecta un host erróneo ni
+  un modo de transporte que no coincide; `Ping` permite detectarlo al arrancar.
 
 ### Cambiado
 
+- **`httpx/middleware.StructuredLogger` registra el ID de correlación del
+  cliente.** Si la request trae uno (`reqctx.ClientRequestIDFromContext`, que
+  `RequestID` guarda saneado), el log de acceso lo incluye bajo
+  `client_request_id`, separado del `request_id` generado por el servidor; sin
+  él, la clave se omite.
+- **`examples/boilerplate`: el arranque de la API falla si el PDP de Cerbos
+  no responde.** Tras construir el checker se hace un `Ping` (cada intento
+  acotado a 5s) que se reintenta con backoff exponencial (desde 500ms, máximo
+  4s entre intentos) durante hasta 30s, para tolerar un PDP que tarda en
+  levantar (orden de arranque de contenedores, un rollout de Cerbos). Si
+  sigue sin responder, el arranque termina con un error que nombra el host,
+  el modo (TLS o plaintext) y `CERBOS_PLAINTEXT`. Antes un despliegue que nunca definió
+  `CERBOS_TLS` (y por eso usaba plaintext) arrancaba bien con el nuevo
+  default TLS y respondía 503 en cada autorización.
+- **`httpx/middleware.RequestContext` prefiere el ID de `RequestID`.** Toma
+  el ID de request ya guardado en `reqctx` y solo si no hay ninguno recurre
+  al `GetReqID` de chi, de modo que quien siga montando el
+  `middleware.RequestID` de chi no ve cambios.
+- **`httpx/middleware`: los logs de fallo de autenticación llevan contexto de
+  la request.** `Authenticate` registra ahora `method`, `path`, `ip` y
+  `request_id` (los dos últimos desde `reqctx`) junto al error, nunca el
+  token. `RequireAccess`/`WriteAccessError` registran en nivel Warn la rama
+  `access.ErrUnauthenticated` (antes respondía 401 sin dejar rastro) con los
+  mismos campos que la denegación 403.
+- **`examples/api` y `examples/boilerplate`: montan `vmw.RequestID`** en lugar
+  del `middleware.RequestID` de chi.
+- **`auth/zitadel`: el autenticador comprueba `azp` y `nbf` además de lo que
+  verifica el SDK.** El verificador local de zitadel-go (`oauth.WithJWT`)
+  comprueba firma, `iss`, `aud` y `exp`, pero no `azp` ni `nbf`. Ahora, tras
+  aceptar el SDK el token, se rechaza (401, con el mismo mensaje genérico de
+  siempre) un token cuyo `azp` no sea un string, un token cuyo `azp` falte, esté
+  vacío o no figure en `Config.AllowedAuthorizedParties` cuando esa lista está
+  configurada, y un token cuyo `nbf` sea posterior al instante actual más un
+  margen de un minuto para el desfase de relojes. Sin
+  `AllowedAuthorizedParties` el valor de `azp` no se compara con nada: en un
+  access token `azp` es el cliente que lo pidió (en el montaje habitual, la app
+  frontend), no esta API, así que exigir `azp == Config.ClientID` rechazaría
+  todas esas peticiones.
+- **`audit/postgres` y `workflow/postgres`: los listados acotan `Limit` y
+  rechazan un `Offset` excesivo.** Antes `Repository.List` (audit) y
+  `Repository.ListByEligibility` (workflow) pasaban cualquier `Limit` y
+  `Offset` a Postgres (solo `audit/httpx` topaba `limit` en 100), y como
+  Postgres lee y descarta cada fila saltada, un `offset` enorme forzaba un
+  recorrido de toda la tabla. Ahora ambos paquetes de dominio exportan
+  `DefaultListLimit` (20), `MaxListLimit` (1000), `MaxListOffset` (100000),
+  `ErrOffsetOutOfRange` y el método `Page()` en `audit.Filters` y
+  `workflow.InboxFilter`, que los repositorios usan: un `Limit` `<= 0` usa
+  20, uno mayor que 1000 se recorta a 1000, y un `Offset` negativo o mayor
+  que 100000 devuelve un error que envuelve `ErrOffsetOutOfRange` sin
+  consultar la base. **Cambio de comportamiento** para quien pedía más de
+  1000 filas por página (recibe 1000) o paginaba más allá de 100000 filas
+  (recibe el error; conviene acotar por filtros, p. ej. rango de fechas).
+  `audit/httpx`: `Handler.List` responde 400 `VALIDATION_ERROR` con
+  `field: "offset"` ante ese error, con el nuevo mensaje configurable
+  `Messages.InvalidOffset`. `examples/api` rechaza con 400 un `offset` mayor
+  que `workflow.MaxListOffset` en el inbox antes de consultar.
 - **`request`: `JSON`, `JSONWithLimit` y `JSONOptional` exigen un `Content-Type`
   JSON.** Antes decodificaban cualquier cuerpo sin mirar la cabecera. Ahora
   aceptan `application/json` y cualquier `application/*+json` (con parámetros
@@ -175,6 +278,18 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   navegador renderizaba un HTML o SVG subido en el origen del bucket. Cambio de
   comportamiento: quien necesite renderizado en línea pasa
   `storage.WithContentDisposition("inline")` explícitamente.
+- **`storage`: las URL de descarga prefirmadas sirven
+  `application/octet-stream` por defecto.** `ApplyPresignGetOptions` fija
+  `ContentType` en la nueva constante `storage.DefaultResponseContentType`
+  salvo que se pase `WithResponseContentType` con un valor no vacío, y
+  `storage/s3` siempre firma `response-content-type`. Antes, sin esa opción,
+  se servía el tipo guardado, que normalmente venía del cliente que subió el
+  archivo. Junto con `attachment` por defecto, el navegador nunca renderiza
+  en línea un objeto subido salvo que el consumidor lo pida. **Cambio de
+  comportamiento**: quien dependía del tipo guardado pasa
+  `WithResponseContentType` con un tipo verificado (p. ej. el que detectó
+  `SniffContentType` al subir). `PresignGetOptions.ContentType` ya no queda
+  vacío tras `ApplyPresignGetOptions`.
 - **`storage/s3`: `Config.PresignExpiry` se respeta.** Se declaraba pero nada lo
   leía. Ahora `PresignedGetURL` y `PresignedPutURL` lo usan cuando el `expiry`
   de la llamada es `<= 0` (nueva constante `DefaultPresignExpiry` = 15m cuando
@@ -257,6 +372,78 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   reemplazar TODOS los binarios viejos (o detener sus escrituras) antes de
   confiar en `ErrConflict`; mientras tanto se pueden seguir perdiendo
   actualizaciones concurrentes en silencio, igual que antes de este cambio.
+- **Cambio incompatible (breaking): `authz/cerbos` usa TLS por defecto.**
+  `cerbos.Config.UseTLS` desaparece y lo reemplaza `Plaintext bool`, una
+  exclusión explícita: el valor cero conecta por TLS. Antes `UseTLS` valía
+  `false` por defecto y eso significaba `cerbos.WithPlaintext()`, así que los
+  principales, sus roles y las decisiones de autorización viajaban en texto
+  plano salvo que el consumidor se acordara de activarlo. Migración:
+  `UseTLS: true` → quitar el campo; `UseTLS: false` (o no declararlo) →
+  `Plaintext: true`, solo si el PDP realmente escucha sin TLS (p. ej. el
+  contenedor local de desarrollo). Un consumidor que no declaraba `UseTLS` y
+  apunta a un PDP sin TLS deja de conectar hasta agregar `Plaintext: true`.
+- **`examples/boilerplate`: `CERBOS_TLS` se reemplaza por `CERBOS_PLAINTEXT`**
+  (`false` por defecto). Sin ella la conexión a Cerbos usa TLS; el `.env` de
+  desarrollo del README la pone en `true` para el contenedor de
+  `docker-compose.developer.yaml`, así que la experiencia local no cambia.
+  `CERBOS_TLS` ya no se lee, y si sigue definida (con cualquier valor, incluso
+  vacía) el arranque falla con un error que nombra `CERBOS_PLAINTEXT` como
+  reemplazo, en lugar de pasar a TLS en silencio y responder 503 en cada
+  autorización contra un PDP sin TLS.
+- **Las llamadas HTTP salientes de `notification/sendgrid`, `storage/s3` y
+  `auth/zitadel` tienen un timeout acotado por defecto.** Antes ninguna lo
+  tenía: un proveedor que dejaba de responder colgaba la goroutine para
+  siempre si el contexto del llamador no traía deadline.
+  - `notification/sendgrid`: cada envío usa un `http.Client` propio con
+    `Timeout` de 30s (`Config.HTTPTimeout`). El SDK solo arma la plantilla de
+    la request; ya no se envía por `rest.DefaultClient` (un `http.Client` sin
+    timeout y global), y como cada `Send` construye su propia request, los
+    envíos concurrentes tampoco comparten el cuerpo que el SDK mutaba en el
+    cliente. La respuesta se lee hasta 64 KiB. Si la lectura del cuerpo falla
+    tras un 2xx, el envío se informa como aceptado y el error se registra en
+    nivel Warn (sin datos personales): devolver error haría que un llamador
+    que reintenta enviara el correo dos veces.
+  - `storage/s3`: `s3.Options.HTTPClient` es un `awshttp.BuildableClient`
+    que conserva los valores de transporte del SDK y agrega
+    `ResponseHeaderTimeout` de 60s (`Config.ResponseHeaderTimeout`): la espera
+    de las cabeceras de respuesta una vez escrita la request (incluido el
+    cuerpo de un `Upload`). Si el valor es menor que los del SDK (30s de dial,
+    10s de handshake TLS), también acota la conexión. No acota la
+    transferencia del cuerpo de la respuesta ni fija `http.Client.Timeout`:
+    un `Download` largo y sano sigue transmitiendo mientras el llamador lea,
+    y la transferencia completa se acota con el contexto. El presign no hace
+    I/O y no cambia.
+  - `auth/zitadel`: el discovery OIDC y la descarga de JWKS (al construir y
+    al refrescar ante un `kid` desconocido) usaban `http.DefaultClient`
+    porque `oauth.DefaultJWTAuthorization` le pasa `nil` a `oauth.WithJWT`;
+    ahora `New` llama a `oauth.WithJWT` con un cliente de timeout 10s
+    (`Config.HTTPTimeout`).
+- **`notification/sendgrid`: el log de envío exitoso ya no incluye
+  destinatario ni asunto.** `email sent via SendGrid` registraba `to` (la
+  dirección completa, con nombre) y `subject`; ambos son datos personales (un
+  asunto suele nombrar a la persona o su caso). Ahora registra solo `status`
+  y `message_id` (la cabecera `X-Message-Id` de SendGrid, que permite cruzar
+  el envío con su activity feed sin exponer datos). Quien filtraba o contaba
+  envíos por `to` o `subject` en sus logs debe usar `message_id`.
+- **`notification/smtp`: el log de envío exitoso ya no incluye destinatario
+  ni asunto**, por la misma razón que en `notification/sendgrid`. `email
+  sent via SMTP` queda sin atributos.
+- **`postgres`: `RequireTLS` exige que pgx verifique el certificado del
+  servidor.** Antes bastaba con que el DSN habilitara TLS, así que
+  `sslmode=require` (y `prefer`, el valor por defecto sin `sslmode`) pasaba el
+  chequeo aunque pgx aceptara cualquier certificado: el tráfico iba cifrado
+  pero un intermediario podía leerlo. Con `RequireTLS: true`, `NewPool` ahora
+  falla al arrancar con `sslmode` `disable`, `allow`, `prefer` (o ausente) y
+  `require` sin `sslrootcert`, y acepta `verify-full` (recomendado),
+  `verify-ca` y `require` con `sslrootcert` (que libpq y pgx tratan como
+  `verify-ca`). El chequeo lee la configuración ya parseada, por lo que cubre
+  también DSN clave/valor, `PGSSLMODE` y DSN con varios hosts; el mínimo de
+  TLS 1.2 se aplica ahora también a los hosts de respaldo (`Fallbacks`), que
+  antes quedaban sin él. **Cambio de comportamiento para quien usa
+  `RequireTLS` con `sslmode=require`:** cambiar el DSN a
+  `sslmode=verify-full` (con `sslrootcert` si la CA del servidor no está en
+  el almacén del sistema, como la de RDS). Con `RequireTLS: false` nada
+  cambia. El ejemplo del comentario de `Config.URL` usa `verify-full`.
 
 ## [0.8.0] — 2026-09-30
 

@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -492,6 +494,12 @@ func (h *DocumentHandler) Inbox(w http.ResponseWriter, r *http.Request) {
 	limit := v.IntQuery(r, "limit", 20)
 	limit = v.MaxInt("limit", limit, 100)
 	offset := v.IntQuery(r, "offset", 0)
+	// The repository rejects an offset above workflow.MaxListOffset with
+	// workflow.ErrOffsetOutOfRange; checking it here answers 400 instead of
+	// surfacing that as a 500.
+	if offset > workflow.MaxListOffset {
+		v.AddError("offset", fmt.Sprintf("offset must not exceed %d", workflow.MaxListOffset))
+	}
 	if v.HasErrors() {
 		v.WriteErrors(w, r)
 		return
@@ -518,6 +526,15 @@ func (h *DocumentHandler) Inbox(w http.ResponseWriter, r *http.Request) {
 // streaming an unbounded body.
 const maxUploadBytes = 25 << 20 // 25 MiB
 
+// allowedUploadTypes are the media types UploadFile accepts, detected from
+// the content by storage.SniffContentType rather than taken from the
+// client's Content-Type header: the document kinds this example stores.
+var allowedUploadTypes = []string{"application/pdf", "image/png", "image/jpeg", "text/plain"}
+
+// disallowedUploadMessage is the 415 message, built from allowedUploadTypes
+// so the list it gives the client cannot drift from what is accepted.
+var disallowedUploadMessage = "file type not allowed: accepted types are " + strings.Join(allowedUploadTypes, ", ")
+
 // UploadFile attaches the raw request body to an existing document through
 // the storage port, then records the attachment in the audit trail.
 //
@@ -538,6 +555,27 @@ func (h *DocumentHandler) UploadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	limited := http.MaxBytesReader(w, r.Body, maxUploadBytes)
+	defer func() { _ = limited.Close() }()
+
+	// The stored (and later served) type comes from the content, never from
+	// the client's Content-Type header, which anyone can set to
+	// application/pdf on an HTML file. Sniffing reads only the first bytes;
+	// body still yields the whole upload. It runs before the document lookup
+	// on purpose, so a disallowed body is refused without a database round
+	// trip: a disallowed upload to a missing document therefore answers 415,
+	// not 404.
+	contentType, body, err := storage.SniffContentType(limited, allowedUploadTypes...)
+	if errors.Is(err, storage.ErrContentTypeNotAllowed) {
+		response.Error(w, r, http.StatusUnsupportedMediaType, response.CodeUnsupportedMediaType, disallowedUploadMessage)
+		return
+	}
+	if err != nil {
+		h.logger.ErrorContext(r.Context(), "upload file: read body", "error", err)
+		response.Error(w, r, http.StatusBadRequest, response.CodeValidationError, "failed to read the uploaded file")
+		return
+	}
+
 	db := pgxtx.DBFromContext(r.Context(), h.pool)
 
 	before, err := h.store.GetByID(r.Context(), db, id)
@@ -550,14 +588,6 @@ func (h *DocumentHandler) UploadFile(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, r, http.StatusInternalServerError, response.CodeInternalError, "failed to get document")
 		return
 	}
-
-	contentType := r.Header.Get("Content-Type")
-	if contentType == "" {
-		contentType = "application/octet-stream"
-	}
-
-	body := http.MaxBytesReader(w, r.Body, maxUploadBytes)
-	defer func() { _ = body.Close() }()
 
 	key := StorageKeyFor(before.ID)
 
