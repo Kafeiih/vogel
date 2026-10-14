@@ -49,7 +49,7 @@ func newTestAuthenticator(t *testing.T, v *fakeVerifier) *Authenticator {
 }
 
 // newTestAuthenticatorWithConfig is newTestAuthenticator with the claim-check
-// settings (ClientID, MaxTokenLifetime) taken from cfg.
+// settings (AllowedAuthorizedParties, MaxTokenLifetime) taken from cfg.
 func newTestAuthenticatorWithConfig(t *testing.T, v *fakeVerifier, cfg Config) *Authenticator {
 	t.Helper()
 	az, err := authorization.New(

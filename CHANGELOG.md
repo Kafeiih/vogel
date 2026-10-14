@@ -54,6 +54,10 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   Cero (el valor por defecto) desactiva la comprobación; un valor negativo hace
   fallar el constructor. Acota cuánto tiempo sirve un token filtrado aunque el
   emisor esté configurado para emitir tokens de larga duración.
+- **`auth/zitadel`: campo opcional `Config.AllowedAuthorizedParties`.** Si
+  no está vacío, solo se aceptan tokens cuyo `azp` sea uno de esos client IDs
+  (un `azp` ausente o vacío se rechaza). Vacío (el valor por defecto) no
+  comprueba `azp`; una entrada vacía hace fallar el constructor.
 - **`httpx/middleware`: `RequestID` y constante `RequestIDHeader`
   (`X-Request-Id`).** Reemplazo del `middleware.RequestID` de chi, que adopta
   tal cual el `X-Request-Id` que envíe el cliente (un cliente podía elegir el
@@ -87,11 +91,14 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   verifica el SDK.** El verificador local de zitadel-go (`oauth.WithJWT`)
   comprueba firma, `iss`, `aud` y `exp`, pero no `azp` ni `nbf`. Ahora, tras
   aceptar el SDK el token, se rechaza (401, con el mismo mensaje genérico de
-  siempre) un token cuyo `azp` esté presente, no vacío y distinto de
-  `Config.ClientID` (o que no sea un string), y un token cuyo `nbf` sea
-  posterior al instante actual más un margen de un minuto para el desfase de
-  relojes. Cambio de comportamiento: un token emitido para otro cliente que
-  incluya a este en `aud` deja de aceptarse.
+  siempre) un token cuyo `azp` no sea un string, un token cuyo `azp` falte, esté
+  vacío o no figure en `Config.AllowedAuthorizedParties` cuando esa lista está
+  configurada, y un token cuyo `nbf` sea posterior al instante actual más un
+  margen de un minuto para el desfase de relojes. Sin
+  `AllowedAuthorizedParties` el valor de `azp` no se compara con nada: en un
+  access token `azp` es el cliente que lo pidió (en el montaje habitual, la app
+  frontend), no esta API, así que exigir `azp == Config.ClientID` rechazaría
+  todas esas peticiones.
 - **`audit/postgres` y `workflow/postgres`: los listados acotan `Limit` y
   rechazan un `Offset` excesivo.** Antes `Repository.List` (audit) y
   `Repository.ListByEligibility` (workflow) pasaban cualquier `Limit` y

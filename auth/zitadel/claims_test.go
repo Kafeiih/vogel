@@ -14,19 +14,25 @@ import (
 
 func TestCheckClaims(t *testing.T) {
 	now := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
-	const clientID = "client-1"
+	allowed := []string{"spa-client", "client-1"}
 
 	tests := []struct {
 		name        string
 		claims      tokenClaims
+		allowed     []string
 		maxLifetime time.Duration
 		wantErr     error
 	}{
-		{name: "azp absent is accepted", claims: tokenClaims{}},
-		{name: "azp equal to the client ID is accepted", claims: tokenClaims{authorizedParty: clientID, hasAuthorizedParty: true}},
-		{name: "azp present but empty is accepted", claims: tokenClaims{authorizedParty: "", hasAuthorizedParty: true}},
-		{name: "azp of another client is rejected", claims: tokenClaims{authorizedParty: "other-client", hasAuthorizedParty: true}, wantErr: errAuthorizedParty},
-		{name: "non-string azp is rejected", claims: tokenClaims{authorizedPartyMalformed: true, hasAuthorizedParty: true}, wantErr: errAuthorizedParty},
+		{name: "no allowlist: azp absent is accepted", claims: tokenClaims{}},
+		{name: "no allowlist: azp of a frontend client is accepted", claims: tokenClaims{authorizedParty: "spa-client", hasAuthorizedParty: true}},
+		{name: "no allowlist: azp present but empty is accepted", claims: tokenClaims{authorizedParty: "", hasAuthorizedParty: true}},
+		{name: "no allowlist: non-string azp is rejected", claims: tokenClaims{authorizedPartyMalformed: true, hasAuthorizedParty: true}, wantErr: errAuthorizedParty},
+		{name: "allowlist: listed azp is accepted", claims: tokenClaims{authorizedParty: "spa-client", hasAuthorizedParty: true}, allowed: allowed},
+		{name: "allowlist: another listed azp is accepted", claims: tokenClaims{authorizedParty: "client-1", hasAuthorizedParty: true}, allowed: allowed},
+		{name: "allowlist: unlisted azp is rejected", claims: tokenClaims{authorizedParty: "other-client", hasAuthorizedParty: true}, allowed: allowed, wantErr: errAuthorizedParty},
+		{name: "allowlist: missing azp is rejected", claims: tokenClaims{}, allowed: allowed, wantErr: errAuthorizedParty},
+		{name: "allowlist: empty azp is rejected", claims: tokenClaims{authorizedParty: "", hasAuthorizedParty: true}, allowed: allowed, wantErr: errAuthorizedParty},
+		{name: "allowlist: non-string azp is rejected", claims: tokenClaims{authorizedPartyMalformed: true, hasAuthorizedParty: true}, allowed: allowed, wantErr: errAuthorizedParty},
 		{name: "nbf in the past is accepted", claims: tokenClaims{notBefore: now.Add(-time.Hour)}},
 		{name: "nbf within the clock-skew leeway is accepted", claims: tokenClaims{notBefore: now.Add(notBeforeLeeway / 2)}},
 		{name: "nbf in the future is rejected", claims: tokenClaims{notBefore: now.Add(time.Hour)}, wantErr: errNotYetValid},
@@ -70,7 +76,7 @@ func TestCheckClaims(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := checkClaims(tt.claims, clientID, tt.maxLifetime, now)
+			err := checkClaims(tt.claims, tt.allowed, tt.maxLifetime, now)
 			if tt.wantErr == nil {
 				if err != nil {
 					t.Fatalf("checkClaims() = %v, want nil", err)
@@ -124,9 +130,9 @@ func TestAuthenticate_RejectsClaimsTheSDKDoesNotCheck(t *testing.T) {
 		wantErr error
 	}{
 		{
-			name:    "azp of another client",
+			name:    "azp outside the allowed authorized parties",
 			resp:    oidc.IntrospectionResponse{Active: true, Subject: "user-1", Claims: map[string]any{"azp": "other-client"}},
-			cfg:     Config{ClientID: "client-1"},
+			cfg:     Config{ClientID: "client-1", AllowedAuthorizedParties: []string{"spa-client"}},
 			wantErr: errAuthorizedParty,
 		},
 		{
@@ -163,15 +169,45 @@ func TestAuthenticate_RejectsClaimsTheSDKDoesNotCheck(t *testing.T) {
 	}
 }
 
-func TestAuthenticate_AcceptsMatchingAzp(t *testing.T) {
-	resp := oidc.IntrospectionResponse{Active: true, Subject: "user-1", Claims: map[string]any{"azp": "client-1"}}
-	a := newTestAuthenticatorWithConfig(t, &fakeVerifier{ctx: &oauth.IntrospectionContext{IntrospectionResponse: resp}}, Config{ClientID: "client-1"})
-	p, err := a.Authenticate(context.Background(), "sometoken")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+// TestAuthenticate_AzpPolicy covers the access-token case the azp check must
+// not break: a frontend app (azp) obtains a token whose aud includes this API.
+func TestAuthenticate_AzpPolicy(t *testing.T) {
+	tests := []struct {
+		name    string
+		azp     any
+		allowed []string
+		wantErr bool
+	}{
+		{name: "azp of a frontend client without an allowlist", azp: "spa-client"},
+		{name: "azp in the allowlist", azp: "spa-client", allowed: []string{"spa-client"}},
+		{name: "azp outside the allowlist", azp: "other-client", allowed: []string{"spa-client"}, wantErr: true},
 	}
-	if p.UserID != "user-1" {
-		t.Errorf("UserID = %q, want user-1", p.UserID)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := oidc.IntrospectionResponse{Active: true, Subject: "user-1", Claims: map[string]any{"azp": tt.azp}}
+			cfg := Config{ClientID: "client-1", AllowedAuthorizedParties: tt.allowed}
+			a := newTestAuthenticatorWithConfig(t, &fakeVerifier{ctx: &oauth.IntrospectionContext{IntrospectionResponse: resp}}, cfg)
+			p, err := a.Authenticate(context.Background(), "sometoken")
+			if tt.wantErr {
+				if !errors.Is(err, auth.ErrUnauthenticated) || !errors.Is(err, errAuthorizedParty) {
+					t.Fatalf("error = %v, want wrapping auth.ErrUnauthenticated and errAuthorizedParty", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if p.UserID != "user-1" {
+				t.Errorf("UserID = %q, want user-1", p.UserID)
+			}
+		})
+	}
+}
+
+func TestNew_EmptyAllowedAuthorizedParty_ReturnsError(t *testing.T) {
+	_, err := New(context.Background(), Config{Issuer: "auth.example.invalid", ClientID: "c", AllowedAuthorizedParties: []string{"spa", ""}})
+	if err == nil {
+		t.Fatal("expected an error for an empty AllowedAuthorizedParties entry, got nil")
 	}
 }
 

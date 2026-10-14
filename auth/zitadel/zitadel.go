@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/zitadel/oidc/v3/pkg/oidc"
@@ -35,6 +36,16 @@ type Config struct {
 	// leaked token stays usable even if the issuer is configured to mint
 	// long-lived ones.
 	MaxTokenLifetime time.Duration
+
+	// AllowedAuthorizedParties, when non-empty, is the list of client IDs
+	// whose tokens are accepted: a token whose azp is missing, empty or not
+	// in the list is rejected. Empty (the default) skips the check, because
+	// for an access token azp names the client that requested it — in the
+	// usual Zitadel setup a frontend app, not this API (ClientID) — so
+	// comparing it with ClientID would reject every such request. Audience
+	// validation against ClientID applies either way. An empty entry is a
+	// construction error.
+	AllowedAuthorizedParties []string
 }
 
 // DefaultHTTPTimeout is the per-request timeout for discovery and JWKS
@@ -60,9 +71,9 @@ func jwksHTTPClient(cfg Config) *http.Client {
 // Zitadel SDK transitively — defeating the whole point of the port/adapter
 // split (see the vogel README).
 type Authenticator struct {
-	authorizer       *authorization.Authorizer[*oauth.IntrospectionContext]
-	clientID         string
-	maxTokenLifetime time.Duration
+	authorizer               *authorization.Authorizer[*oauth.IntrospectionContext]
+	allowedAuthorizedParties []string
+	maxTokenLifetime         time.Duration
 }
 
 // New creates an Authenticator that validates tokens issued by the Zitadel
@@ -80,6 +91,9 @@ func New(ctx context.Context, cfg Config) (*Authenticator, error) {
 	if cfg.MaxTokenLifetime < 0 {
 		return nil, fmt.Errorf("auth/zitadel: max token lifetime must not be negative")
 	}
+	if slices.Contains(cfg.AllowedAuthorizedParties, "") {
+		return nil, fmt.Errorf("auth/zitadel: allowed authorized parties must not contain an empty client ID")
+	}
 
 	z := zitadel.New(cfg.Issuer)
 	// oauth.WithJWT is what DefaultJWTAuthorization wraps, with a nil client
@@ -93,14 +107,18 @@ func New(ctx context.Context, cfg Config) (*Authenticator, error) {
 }
 
 // newFromAuthorizer builds an Authenticator around an already-constructed
-// authorizer, taking the claim-check settings (ClientID, MaxTokenLifetime)
-// from cfg. Unexported: it exists so this package's own tests can inject a
+// authorizer, taking the claim-check settings (AllowedAuthorizedParties,
+// MaxTokenLifetime) from cfg. Unexported: it exists so this package's own tests can inject a
 // fake authorization.Verifier and exercise the real error-mapping path
 // without a network call or a real Zitadel instance (see zitadel_test.go),
 // while keeping authorization.Authorizer[*oauth.IntrospectionContext] out of
 // the exported constructor surface.
 func newFromAuthorizer(a *authorization.Authorizer[*oauth.IntrospectionContext], cfg Config) *Authenticator {
-	return &Authenticator{authorizer: a, clientID: cfg.ClientID, maxTokenLifetime: cfg.MaxTokenLifetime}
+	return &Authenticator{
+		authorizer:               a,
+		allowedAuthorizedParties: slices.Clone(cfg.AllowedAuthorizedParties),
+		maxTokenLifetime:         cfg.MaxTokenLifetime,
+	}
 }
 
 // Authenticate implements auth.Authenticator.
@@ -117,8 +135,8 @@ func newFromAuthorizer(a *authorization.Authorizer[*oauth.IntrospectionContext],
 // back here before the SDK call; this is the one place in the module that
 // needs to know that detail of the SDK's contract.
 //
-// After the SDK accepts the token, checkClaims rejects an azp of another
-// client, a token whose nbf is still in the future, and (when
+// After the SDK accepts the token, checkClaims rejects a non-string azp, an
+// azp outside Config.AllowedAuthorizedParties (when that list is set), a token whose nbf is still in the future, and (when
 // Config.MaxTokenLifetime is set) a token whose lifetime exceeds it; those
 // rejections wrap auth.ErrUnauthenticated like any other invalid token.
 func (a *Authenticator) Authenticate(ctx context.Context, token string) (*auth.Principal, error) {
@@ -126,7 +144,7 @@ func (a *Authenticator) Authenticate(ctx context.Context, token string) (*auth.P
 	if err != nil {
 		return nil, mapError(err)
 	}
-	if err := checkClaims(claimsOf(authCtx), a.clientID, a.maxTokenLifetime, time.Now()); err != nil {
+	if err := checkClaims(claimsOf(authCtx), a.allowedAuthorizedParties, a.maxTokenLifetime, time.Now()); err != nil {
 		return nil, fmt.Errorf("auth/zitadel: %w: %w", auth.ErrUnauthenticated, err)
 	}
 

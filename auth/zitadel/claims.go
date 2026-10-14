@@ -3,6 +3,7 @@ package zitadel
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/zitadel/zitadel-go/v3/pkg/authorization/oauth"
@@ -12,14 +13,17 @@ import (
 // github.com/zitadel/oidc/v3/pkg/op/verifier_access_token.go) checks the
 // issuer, the signature and exp, and oauth.JWTVerification then checks aud.
 // It does not check azp or nbf, and has no notion of a maximum lifetime, so
-// checkClaims adds those after the SDK has accepted the token.
+// checkClaims adds those after the SDK has accepted the token. The azp check
+// is opt-in (Config.AllowedAuthorizedParties): the OIDC rule "azp equals the
+// client ID" is for ID tokens at the relying party; an access token presented
+// to a resource server carries the azp of the client that requested it.
 //
 // Every rejection wraps errClaimsRejected plus one specific sentinel; the
 // Authenticator wraps both under auth.ErrUnauthenticated, so clients see the
 // same generic 401 as for any other invalid token.
 var (
 	errClaimsRejected   = errors.New("token claims rejected")
-	errAuthorizedParty  = errors.New("azp does not match the client ID")
+	errAuthorizedParty  = errors.New("azp is not an allowed authorized party")
 	errNotYetValid      = errors.New("token not valid yet (nbf)")
 	errLifetimeExceeded = errors.New("token lifetime exceeds the configured maximum")
 )
@@ -64,13 +68,17 @@ func claimsOf(c *oauth.IntrospectionContext) tokenClaims {
 
 // checkClaims applies the claim checks the SDK leaves out:
 //
-//   - azp, when present and non-empty, must equal clientID (a non-string azp
-//     is rejected as malformed);
+//   - azp, when present, must be a string (otherwise the token is malformed);
+//   - when allowedParties is non-empty, azp must be present, non-empty and
+//     one of them; when it is empty, the azp value is not checked;
 //   - nbf, when present, must not be later than now plus notBeforeLeeway;
 //   - when maxLifetime is positive, exp - iat must not exceed it, and a token
 //     without iat or exp is rejected because its lifetime cannot be proven.
-func checkClaims(c tokenClaims, clientID string, maxLifetime time.Duration, now time.Time) error {
-	if c.authorizedPartyMalformed || (c.authorizedParty != "" && c.authorizedParty != clientID) {
+func checkClaims(c tokenClaims, allowedParties []string, maxLifetime time.Duration, now time.Time) error {
+	if c.authorizedPartyMalformed {
+		return fmt.Errorf("%w: %w", errClaimsRejected, errAuthorizedParty)
+	}
+	if len(allowedParties) > 0 && (c.authorizedParty == "" || !slices.Contains(allowedParties, c.authorizedParty)) {
 		return fmt.Errorf("%w: %w", errClaimsRejected, errAuthorizedParty)
 	}
 	if !c.notBefore.IsZero() && c.notBefore.After(now.Add(notBeforeLeeway)) {
