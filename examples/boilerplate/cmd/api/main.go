@@ -140,9 +140,11 @@ func runMigrate(args []string) error {
 		return migrateRiver(ctx, dbURL)
 	case "down":
 		// Only this service's own set is rolled back. migrate.Down reverts the
-		// latest migration of the set it is given, and the audit set's only
-		// migration creates audit_log — including it would drop the audit
-		// trail on every "migrate down". River's schema is never rolled back
+		// latest migration of the set it is given: on the audit set that would
+		// first remove audit_log's append-only triggers (002) and, on a second
+		// "migrate down", drop audit_log and the audit trail with it (001).
+		// cmd/api/migrate_integration_test.go proves the audit set and River
+		// are left untouched. River's schema is never rolled back
 		// either: its down migrations drop the job tables and every queued
 		// job with them.
 		return migrate.Down(ctx, dbURL, migrations.FS)
