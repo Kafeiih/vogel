@@ -30,10 +30,13 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   aparecen con la IP del balanceador.
 - `httpx/response`: constante `CodeUnsupportedMediaType` (`UNSUPPORTED_MEDIA_TYPE`).
 - CI: nuevo job `govulncheck` que escanea la raíz y `examples/boilerplate`.
-- **`notification/sendgrid`, `storage/s3`, `auth/zitadel`: campo opcional
+- **`notification/sendgrid` y `auth/zitadel`: campo opcional
   `Config.HTTPTimeout` y constante `DefaultHTTPTimeout`** en cada paquete
-  (30s, 60s y 10s respectivamente). Cero usa el valor por defecto; un valor
+  (30s y 10s respectivamente). Cero usa el valor por defecto; un valor
   negativo hace fallar el constructor.
+- **`storage/s3`: campo opcional `Config.ResponseHeaderTimeout` y constante
+  `DefaultResponseHeaderTimeout`** (60s). Cero usa el valor por defecto; un
+  valor negativo hace fallar el constructor.
 
 ### Cambiado
 
@@ -287,10 +290,14 @@ Todos los cambios relevantes de `vogel`. El formato sigue
     envíos concurrentes tampoco comparten el cuerpo que el SDK mutaba en el
     cliente. La respuesta se lee hasta 64 KiB.
   - `storage/s3`: `s3.Options.HTTPClient` es un `awshttp.BuildableClient`
-    con timeout de 60s por request (`Config.HTTPTimeout`), que conserva los
-    valores de transporte del SDK. El timeout incluye la transferencia del
-    cuerpo: **cambio de comportamiento para quien sube o descarga objetos que
-    tardan más de 60s**; subir `HTTPTimeout` en ese caso. El presign no hace
+    que conserva los valores de transporte del SDK y agrega
+    `ResponseHeaderTimeout` de 60s (`Config.ResponseHeaderTimeout`): la espera
+    de las cabeceras de respuesta una vez escrita la request (incluido el
+    cuerpo de un `Upload`). Si el valor es menor que los del SDK (30s de dial,
+    10s de handshake TLS), también acota la conexión. No acota la
+    transferencia del cuerpo de la respuesta ni fija `http.Client.Timeout`:
+    un `Download` largo y sano sigue transmitiendo mientras el llamador lea,
+    y la transferencia completa se acota con el contexto. El presign no hace
     I/O y no cambia.
   - `auth/zitadel`: el discovery OIDC y la descarga de JWKS (al construir y
     al refrescar ante un `kid` desconocido) usaban `http.DefaultClient`

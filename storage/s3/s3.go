@@ -8,6 +8,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
+	"net/http"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -28,18 +30,22 @@ type Config struct {
 	PathStyle     bool          // Use path-style access (required for MinIO)
 	PresignExpiry time.Duration // Default presigned URL expiry when a call passes expiry <= 0 (default: 15m)
 
-	// HTTPTimeout bounds each HTTP request to the S3 endpoint, including the
-	// transfer of the object body, so a stalled endpoint cannot hang an
-	// Upload or Download whose context has no deadline. Zero means
-	// DefaultHTTPTimeout; negative is a construction error. Raise it for
-	// objects too large to transfer within the default. Presigning does no
-	// I/O and is unaffected.
-	HTTPTimeout time.Duration
+	// ResponseHeaderTimeout bounds the phases that reveal a stalled S3
+	// endpoint, so an Upload or Download whose context has no deadline cannot
+	// hang forever: the wait for the response headers once the request
+	// (including an upload body) has been written, and, when smaller than the
+	// SDK defaults (30s dial, 10s TLS handshake), connection setup as well.
+	// It does not bound the transfer of a response body: a long, healthy
+	// Download keeps streaming for as long as the caller reads it, so callers
+	// bound whole transfers with their context. Zero means
+	// DefaultResponseHeaderTimeout; negative is a construction error.
+	// Presigning does no I/O and is unaffected.
+	ResponseHeaderTimeout time.Duration
 }
 
-// DefaultHTTPTimeout is the per-request timeout used when
-// Config.HTTPTimeout is zero.
-const DefaultHTTPTimeout = 60 * time.Second
+// DefaultResponseHeaderTimeout is the response-header bound used when
+// Config.ResponseHeaderTimeout is zero.
+const DefaultResponseHeaderTimeout = 60 * time.Second
 
 // DefaultPresignExpiry is the presigned URL lifetime used when
 // Config.PresignExpiry is zero and a call passes a non-positive expiry.
@@ -65,22 +71,19 @@ func NewS3Storage(cfg Config, logger *slog.Logger) (*S3Storage, error) {
 	if logger == nil {
 		return nil, fmt.Errorf("storage: logger is required")
 	}
-	if cfg.HTTPTimeout < 0 {
-		return nil, fmt.Errorf("storage: HTTP timeout must not be negative")
+	if cfg.ResponseHeaderTimeout < 0 {
+		return nil, fmt.Errorf("storage: response header timeout must not be negative")
 	}
 
-	httpTimeout := cfg.HTTPTimeout
-	if httpTimeout == 0 {
-		httpTimeout = DefaultHTTPTimeout
+	headerTimeout := cfg.ResponseHeaderTimeout
+	if headerTimeout == 0 {
+		headerTimeout = DefaultResponseHeaderTimeout
 	}
 
 	opts := []func(*s3.Options){
 		func(o *s3.Options) {
 			o.Region = cfg.Region
-			// A BuildableClient keeps the SDK's transport defaults (the
-			// client resolves its dialer settings from it) and only adds
-			// the overall request timeout.
-			o.HTTPClient = awshttp.NewBuildableClient().WithTimeout(httpTimeout)
+			o.HTTPClient = newHTTPClient(headerTimeout)
 		},
 	}
 
@@ -122,6 +125,23 @@ func NewS3Storage(cfg Config, logger *slog.Logger) (*S3Storage, error) {
 		presignExpiry: presignExpiry,
 		logger:        logger,
 	}, nil
+}
+
+// newHTTPClient returns a BuildableClient that keeps the SDK's transport
+// defaults and bounds only the phases that indicate a stalled endpoint: the
+// wait for response headers, and the dial and TLS handshake when bound is
+// tighter than the SDK defaults. It sets no http.Client.Timeout on purpose:
+// that would also cap body streaming, and the SDK retryer treats it as
+// retryable, so a slow but healthy Download would fail and be re-sent.
+func newHTTPClient(bound time.Duration) *awshttp.BuildableClient {
+	return awshttp.NewBuildableClient().
+		WithDialerOptions(func(d *net.Dialer) {
+			d.Timeout = min(d.Timeout, bound)
+		}).
+		WithTransportOptions(func(tr *http.Transport) {
+			tr.TLSHandshakeTimeout = min(tr.TLSHandshakeTimeout, bound)
+			tr.ResponseHeaderTimeout = bound
+		})
 }
 
 // effectiveExpiry returns expiry, or the configured default when expiry is
