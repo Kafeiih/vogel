@@ -164,7 +164,9 @@ una subida.
 `router_test.go` recorre el router con `chi.Walk` y falla si alguna ruta
 bajo `/api/` responde sin pasar por `RequirePermission` o `RequireAccess`,
 o si aparece una ruta pública fuera de `/api/` que no esté declarada en
-`publicRoutes`.
+`publicRoutes`. `rolematrix_test.go` fija, para cada ruta y cada tipo de
+llamador (anónimo, token inválido, usuario común, dueño, admin), si los
+guards lo dejan pasar, y falla si aparece una ruta sin fila en la matriz.
 
 `/api/v1` tiene un límite de pedidos por IP de cliente (`ratelimit.go`):
 `RATE_LIMIT_REQUESTS` pedidos (300) por `RATE_LIMIT_WINDOW` (1m), con la IP
