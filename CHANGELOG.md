@@ -82,6 +82,11 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   que lista los tipos aceptados (armado desde la misma lista que se valida).
 - `httpx/response`: constante `CodeUnsupportedMediaType` (`UNSUPPORTED_MEDIA_TYPE`).
 - CI: nuevo job `govulncheck` que escanea la raíz y `examples/boilerplate`.
+- CI: nuevo workflow `secrets.yaml` que escanea toda la historia de git con
+  gitleaks 8.30.1 (binario verificado por SHA-256) en cada push y pull
+  request, sin filtros de rutas para que un secreto en documentación también
+  se detecte. `.gitleaks.toml` solo exceptúa la clave falsa de SendGrid de
+  los tests.
 - CI: Dependabot también actualiza los módulos Go de la raíz y de
   `examples/boilerplate` (semanal, un PR agrupado por directorio, prefijo
   `build(deps)`). `govulncheck` solo avisa de vulnerabilidades conocidas y
