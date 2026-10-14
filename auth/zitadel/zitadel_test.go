@@ -45,6 +45,13 @@ func (r recordingVerifier) CheckAuthorization(ctx context.Context, token string)
 // supplied initializer directly instead of dialing out.
 func newTestAuthenticator(t *testing.T, v *fakeVerifier) *Authenticator {
 	t.Helper()
+	return newTestAuthenticatorWithConfig(t, v, Config{ClientID: "client-1"})
+}
+
+// newTestAuthenticatorWithConfig is newTestAuthenticator with the claim-check
+// settings (ClientID, MaxTokenLifetime) taken from cfg.
+func newTestAuthenticatorWithConfig(t *testing.T, v *fakeVerifier, cfg Config) *Authenticator {
+	t.Helper()
 	az, err := authorization.New(
 		context.Background(),
 		zitadel.New("https://example.zitadel.cloud"),
@@ -55,7 +62,7 @@ func newTestAuthenticator(t *testing.T, v *fakeVerifier) *Authenticator {
 	if err != nil {
 		t.Fatalf("authorization.New: %v", err)
 	}
-	return newFromAuthorizer(az)
+	return newFromAuthorizer(az, cfg)
 }
 
 func TestAuthenticate_ValidToken_ReturnsPrincipal(t *testing.T) {
@@ -159,7 +166,7 @@ func TestAuthenticate_PassesBearerPrefixedTokenToSDK(t *testing.T) {
 	if err != nil {
 		t.Fatalf("authorization.New: %v", err)
 	}
-	a := newFromAuthorizer(az)
+	a := newFromAuthorizer(az, Config{ClientID: "client-1"})
 
 	if _, err := a.Authenticate(context.Background(), "sometoken"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
