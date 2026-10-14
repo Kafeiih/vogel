@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -250,12 +251,29 @@ func run() error {
 	// goroutine serving it, open indefinitely.
 	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.Port),
-		Handler:           NewRouter(docs, auditHandler, authenticator, checker, accessGuard, metrics, pool, reg, log.Logger),
+		Handler:           NewRouter(docs, auditHandler, authenticator, checker, accessGuard, metrics, pool, log.Logger),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
+
+	// Internal metrics listener (METRICS_ADDR, loopback by default), apart
+	// from the public API port. Binding here, before serving, makes a busy
+	// or invalid address fail the boot instead of silently losing metrics.
+	// A later failure of this listener is logged but does not stop the API.
+	metricsSrv := newMetricsServer(cfg.MetricsAddr, reg)
+	metricsLn, err := net.Listen("tcp", metricsSrv.Addr)
+	if err != nil {
+		return fmt.Errorf("listen metrics on %s: %w", cfg.MetricsAddr, err)
+	}
+	defer func() { _ = metricsSrv.Close() }()
+	go func() {
+		log.Info("serving metrics", "addr", metricsLn.Addr().String())
+		if err := metricsSrv.Serve(metricsLn); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Error("metrics server stopped", "error", err)
+		}
+	}()
 
 	// 10. Serve in a goroutine so this function can select on ctx.Done()
 	// below. http.ErrServerClosed is the expected error produced by our own
@@ -290,6 +308,9 @@ func run() error {
 		// server and River are done using it.
 		if err := srv.Shutdown(shutdownCtx); err != nil {
 			log.Error("http server shutdown", "error", err)
+		}
+		if err := metricsSrv.Shutdown(shutdownCtx); err != nil {
+			log.Error("metrics server shutdown", "error", err)
 		}
 		if err := queue.Stop(shutdownCtx); err != nil {
 			log.Error("river queue shutdown", "error", err)

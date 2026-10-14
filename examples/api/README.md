@@ -143,7 +143,22 @@ Todo bajo `/api/v1` exige `Authorization: Bearer <token>`.
 | `GET` | `/inbox` | read | `engine.Inbox` por elegibilidad |
 | `GET` | `/audit`, `/audit/{id}` | read | El handler de `audit/httpx` montado tal cual |
 
-Sin autenticación: `GET /healthz` y `GET /metrics` (Prometheus).
+Sin autenticación: `GET /healthz` (solo responde si la base contesta un
+ping). `GET /metrics` (Prometheus) **no** se sirve en el puerto de la API
+sino en un listener interno aparte, `METRICS_ADDR` (por defecto
+`127.0.0.1:9090`, solo loopback): `curl localhost:9090/metrics`. Dentro de un
+contenedor que Prometheus scrapea desde otra red, usar `METRICS_ADDR=:9090`
+y no publicar ese puerto hacia afuera.
+
+`router_test.go` recorre el router con `chi.Walk` y falla si alguna ruta
+bajo `/api/` responde sin pasar por `RequirePermission` o `RequireAccess`,
+o si aparece una ruta pública fuera de `/api/` que no esté declarada en
+`publicRoutes`.
+
+Este ejemplo no aplica rate limiting: `github.com/go-chi/httprate` no es
+dependencia del módulo raíz. En una aplicación real, montarlo por IP (con la
+IP resuelta por `vmw.RealIP` y proxies de confianza) como hace
+`examples/boilerplate`.
 
 ## Tres conjuntos de migraciones, tres tablas de versión
 

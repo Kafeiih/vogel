@@ -541,6 +541,12 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   el script y los estilos inline de swagger-ui. CORS pasa a
   `AllowCredentials: false`: la autenticación es un Bearer token, no una
   cookie.
+- **`examples/api`: `/metrics` sale del router público.** Se sirve en un
+  listener interno aparte (`METRICS_ADDR`, por defecto `127.0.0.1:9090`),
+  así que el puerto de la API ya no expone las métricas de Prometheus a
+  cualquier llamador; `/healthz` sigue público. Un test recorre el router
+  con `chi.Walk` y falla si alguna ruta bajo `/api/` se registra sin
+  `RequirePermission` o `RequireAccess`.
 
 ## [0.8.0] — 2026-09-30
 
