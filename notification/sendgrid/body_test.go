@@ -59,6 +59,12 @@ func TestSend_AcceptedDespiteBodyReadError(t *testing.T) {
 	if strings.Contains(out, to) {
 		t.Errorf("log contains the recipient; got %q", out)
 	}
+	// The Warn is the only signal for this path; asserting it also proves the
+	// truncated body really made the read fail, so the test exercises the
+	// read-error branch rather than a clean 202.
+	if !strings.Contains(out, `"level":"WARN"`) || !strings.Contains(out, "reading SendGrid response body failed after the email was accepted") {
+		t.Errorf("body-read failure Warn not emitted; got %q", out)
+	}
 }
 
 // TestSend_ErrorStatusWithBodyReadError_Fails proves the 2xx leniency does
