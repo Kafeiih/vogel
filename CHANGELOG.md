@@ -30,6 +30,10 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   aparecen con la IP del balanceador.
 - `httpx/response`: constante `CodeUnsupportedMediaType` (`UNSUPPORTED_MEDIA_TYPE`).
 - CI: nuevo job `govulncheck` que escanea la raíz y `examples/boilerplate`.
+- **`notification/sendgrid`, `storage/s3`, `auth/zitadel`: campo opcional
+  `Config.HTTPTimeout` y constante `DefaultHTTPTimeout`** en cada paquete
+  (30s, 60s y 10s respectivamente). Cero usa el valor por defecto; un valor
+  negativo hace fallar el constructor.
 
 ### Cambiado
 
@@ -272,6 +276,27 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   desarrollo del README la pone en `true` para el contenedor de
   `docker-compose.developer.yaml`, así que la experiencia local no cambia.
   `CERBOS_TLS` ya no se lee.
+- **Las llamadas HTTP salientes de `notification/sendgrid`, `storage/s3` y
+  `auth/zitadel` tienen un timeout acotado por defecto.** Antes ninguna lo
+  tenía: un proveedor que dejaba de responder colgaba la goroutine para
+  siempre si el contexto del llamador no traía deadline.
+  - `notification/sendgrid`: cada envío usa un `http.Client` propio con
+    `Timeout` de 30s (`Config.HTTPTimeout`). El SDK solo arma la plantilla de
+    la request; ya no se envía por `rest.DefaultClient` (un `http.Client` sin
+    timeout y global), y como cada `Send` construye su propia request, los
+    envíos concurrentes tampoco comparten el cuerpo que el SDK mutaba en el
+    cliente. La respuesta se lee hasta 64 KiB.
+  - `storage/s3`: `s3.Options.HTTPClient` es un `awshttp.BuildableClient`
+    con timeout de 60s por request (`Config.HTTPTimeout`), que conserva los
+    valores de transporte del SDK. El timeout incluye la transferencia del
+    cuerpo: **cambio de comportamiento para quien sube o descarga objetos que
+    tardan más de 60s**; subir `HTTPTimeout` en ese caso. El presign no hace
+    I/O y no cambia.
+  - `auth/zitadel`: el discovery OIDC y la descarga de JWKS (al construir y
+    al refrescar ante un `kid` desconocido) usaban `http.DefaultClient`
+    porque `oauth.DefaultJWTAuthorization` le pasa `nil` a `oauth.WithJWT`;
+    ahora `New` llama a `oauth.WithJWT` con un cliente de timeout 10s
+    (`Config.HTTPTimeout`).
 
 ## [0.8.0] — 2026-09-30
 
