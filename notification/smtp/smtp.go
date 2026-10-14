@@ -117,10 +117,10 @@ func (n *SMTPNotifier) Send(ctx context.Context, msg *notification.Message) erro
 		return fmt.Errorf("notification/smtp: sending: %w", err)
 	}
 
-	n.logger.InfoContext(ctx, "email sent via SMTP",
-		"to", msg.To,
-		"subject", msg.Subject,
-	)
+	// Neither the recipient nor the subject is logged: an address is
+	// personal data, and a subject often names the person or their case.
+	// The SendGrid adapter follows the same rule (and tests it).
+	n.logger.InfoContext(ctx, "email sent via SMTP")
 	return nil
 }
 

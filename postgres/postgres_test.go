@@ -17,12 +17,12 @@ import (
 // validation because Go cannot match the cert CN against the connection host.
 func TestApplyTLSConfig_PreservesServerName(t *testing.T) {
 	const host = "psql.example.com"
-	dsn := "postgres://u:p@" + host + ":5432/db?sslmode=require"
+	dsn := "postgres://u:p@" + host + ":5432/db?sslmode=verify-full"
 
 	cfg, err := pgxpool.ParseConfig(dsn)
 	require.NoError(t, err)
 	require.NotNil(t, cfg.ConnConfig.TLSConfig,
-		"ParseConfig must set TLSConfig when DSN has sslmode=require")
+		"ParseConfig must set TLSConfig when DSN has sslmode=verify-full")
 
 	originalServerName := cfg.ConnConfig.TLSConfig.ServerName
 	require.Equal(t, host, originalServerName,

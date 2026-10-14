@@ -907,8 +907,10 @@ import (
 // Antes: NewCerbosChecker(host string, useTLS bool) (*CerbosChecker, error)
 checker, err := NewCerbosChecker(cerbosHost, useTLS)
 
-// Ahora: New(cfg Config) (*Checker, error), con Config{Host, UseTLS}
-checker, err := cerbos.New(cerbos.Config{Host: cerbosHost, UseTLS: useTLS})
+// Ahora: New(cfg Config) (*Checker, error), con Config{Host, Plaintext}.
+// TLS es el valor por defecto; Plaintext: true lo desactiva (solo para un
+// Cerbos local). Antes de la versión sin UseTLS: UseTLS: useTLS.
+checker, err := cerbos.New(cerbos.Config{Host: cerbosHost, Plaintext: !useTLS})
 
 router.With(middleware.RequirePermission(checker, "invoices:invoice", "read", logger.Logger, authMessages))
 ```

@@ -33,7 +33,10 @@ docker logs postgres --tail 50
 
 1. Verificar que `DB_URL` es correcto en las variables de entorno
 2. Verificar que el firewall/security group permite el puerto 5432
-3. Verificar SSL: en staging/produccion `sslmode=require` es obligatorio
+3. Verificar SSL: en staging/produccion `sslmode=verify-full` (o
+   `verify-ca`) es obligatorio. `RequireTLS` rechaza `sslmode=require` porque
+   cifra sin verificar el certificado del servidor; si el arranque falla con
+   ese error, ajustar el DSN y, si hace falta, `sslrootcert`
 4. Revisar logs de la app: `docker logs api --tail 100 | grep "database"`
 
 **Prevencion:** Configurar alerta en Prometheus cuando `db_pool_connections_acquired == db_pool_connections_max` por mas de 1 minuto.
