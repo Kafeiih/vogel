@@ -18,6 +18,7 @@ AWS SDK, SendGrid o go-mail.
 | [`docs/WIRING.md`](docs/WIRING.md) | Cómo se componen los paquetes entre sí: quién escribe en `reqctx`, el orden de los middlewares, transacción y auditoría juntas, y los errores de montaje que el compilador no detecta. |
 | [`SECURITY.md`](SECURITY.md) | Cómo reportar una vulnerabilidad en privado, versiones con soporte, plazos de respuesta y alcance. |
 | [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) | Límites de confianza, flujos y clasificación de datos, superficie de ataque con lo que cubre `vogel` y lo que queda a cargo de cada servicio, casos de abuso y riesgos residuales. |
+| [`docs/security/OWASP_CHECKLIST.md`](docs/security/OWASP_CHECKLIST.md) | Auditoría contra la lista de verificación de OWASP: estado y evidencia de cada ítem, qué queda a cargo del consumidor y brechas pendientes. |
 | [`examples/api/`](examples/api/) | Una API ejecutable que monta el módulo completo en un solo proceso. La referencia más confiable sobre cómo encajan las piezas. |
 
 Este README es el inventario: qué contiene cada paquete y por qué. Los

@@ -8,6 +8,12 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ### Agregado
 
+- **`docs/security/OWASP_CHECKLIST.md`.** Registro de la auditoría de
+  `vogel` y sus ejemplos contra la lista de verificación de OWASP: estado de
+  cada ítem (PASS, PARTIAL, CONSUMER o N/A) con su evidencia en el código y
+  los tests, y las brechas pendientes. Enlazado desde `docs/THREAT_MODEL.md`,
+  `SECURITY.md` y el README.
+
 - **`postgres.CheckTLS(dsn)`.** Aplica a un DSN la misma regla de
   `RequireTLS` que `NewPool`, sin conectar, para código que entrega el DSN a
   otra herramienta (p. ej. migraciones). `examples/boilerplate` lo usa en

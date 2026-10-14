@@ -66,4 +66,5 @@ alcanzable, también puede reportarse por esta vía.
 
 El modelo de amenazas de la librería, con lo que `vogel` controla y lo que
 queda a cargo de cada servicio, está en
-[`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md).
+[`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md); la auditoría contra la lista de
+OWASP, en [`docs/security/OWASP_CHECKLIST.md`](docs/security/OWASP_CHECKLIST.md).

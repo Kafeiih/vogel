@@ -14,6 +14,9 @@ que un servicio nuevo sepa qué le falta configurar.
    con el control de `vogel` y la tarea del consumidor.
 3. [Riesgos residuales](#7-riesgos-residuales): lo que se acepta a sabiendas.
 
+La auditoría ítem por ítem contra la lista de OWASP, con su evidencia, está
+en [`docs/security/OWASP_CHECKLIST.md`](security/OWASP_CHECKLIST.md).
+
 Revisión: actualizar este documento en el mismo PR que agregue un punto de
 entrada, una dependencia externa o un dato personal nuevo.
 
