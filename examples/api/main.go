@@ -263,9 +263,9 @@ func run() error {
 	// or invalid address fail the boot instead of silently losing metrics.
 	// A later failure of this listener is logged but does not stop the API.
 	metricsSrv := newMetricsServer(cfg.MetricsAddr, reg)
-	metricsLn, err := net.Listen("tcp", metricsSrv.Addr)
+	metricsLn, err := listenMetrics(metricsSrv.Addr)
 	if err != nil {
-		return fmt.Errorf("listen metrics on %s: %w", cfg.MetricsAddr, err)
+		return err
 	}
 	defer func() { _ = metricsSrv.Close() }()
 	go func() {
@@ -317,4 +317,16 @@ func run() error {
 		}
 		return nil
 	}
+}
+
+// listenMetrics binds the internal metrics listener on addr (METRICS_ADDR).
+// run calls it before serving anything, so an address already in use (for
+// example by a Prometheus on the same host) or an invalid one stops the
+// boot with an error naming the address.
+func listenMetrics(addr string) (net.Listener, error) {
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, fmt.Errorf("listen metrics on %s: %w", addr, err)
+	}
+	return ln, nil
 }

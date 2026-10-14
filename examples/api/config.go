@@ -19,11 +19,12 @@ type Config struct {
 	NotifyFrom      string
 	ShutdownTimeout time.Duration
 
-	// MetricsAddr (METRICS_ADDR, default 127.0.0.1:9090) is where the
+	// MetricsAddr (METRICS_ADDR, default 127.0.0.1:2112) is where the
 	// internal listener serves /metrics. It is separate from the public
 	// PORT so Prometheus data is never exposed on the API port; the
 	// loopback default keeps it off the network until an operator opts
-	// in (for example ":9090" inside a container scraped by Prometheus).
+	// in (for example ":2112" inside a container scraped by Prometheus).
+	// 2112 rather than 9090, which is Prometheus's own default port.
 	MetricsAddr string
 }
 
@@ -51,7 +52,7 @@ func LoadConfig() (Config, error) {
 
 	riverSchema := config.String("RIVER_SCHEMA", "river")
 	notifyFrom := config.String("NOTIFY_FROM", "noreply@example.com")
-	metricsAddr := config.String("METRICS_ADDR", "127.0.0.1:9090")
+	metricsAddr := config.String("METRICS_ADDR", "127.0.0.1:2112")
 	if strings.TrimSpace(metricsAddr) == "" {
 		errs.Addf("METRICS_ADDR: must not be empty")
 	}

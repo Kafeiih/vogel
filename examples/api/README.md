@@ -143,12 +143,15 @@ Todo bajo `/api/v1` exige `Authorization: Bearer <token>`.
 | `GET` | `/inbox` | read | `engine.Inbox` por elegibilidad |
 | `GET` | `/audit`, `/audit/{id}` | read | El handler de `audit/httpx` montado tal cual |
 
-Sin autenticación: `GET /healthz` (solo responde si la base contesta un
-ping). `GET /metrics` (Prometheus) **no** se sirve en el puerto de la API
-sino en un listener interno aparte, `METRICS_ADDR` (por defecto
-`127.0.0.1:9090`, solo loopback): `curl localhost:9090/metrics`. Dentro de un
-contenedor que Prometheus scrapea desde otra red, usar `METRICS_ADDR=:9090`
-y no publicar ese puerto hacia afuera.
+Sin autenticación: `GET /healthz`, que siempre responde: `200` con `"ok"`
+si la base contesta un ping y `503` con `"database unavailable"` si no.
+`GET /metrics` (Prometheus) **no** se sirve en el puerto de la API sino en un
+listener interno aparte, `METRICS_ADDR` (por defecto `127.0.0.1:2112`, solo
+loopback; no `9090`, que es el puerto por defecto del propio Prometheus):
+`curl localhost:2112/metrics`. Dentro de un contenedor que Prometheus scrapea
+desde otra red, usar `METRICS_ADDR=:2112` y no publicar ese puerto hacia
+afuera. Si la dirección está ocupada o es inválida, el arranque falla con un
+error que la nombra.
 
 `router_test.go` recorre el router con `chi.Walk` y falla si alguna ruta
 bajo `/api/` responde sin pasar por `RequirePermission` o `RequireAccess`,
