@@ -51,7 +51,8 @@ lint:
 
 # Docker
 docker-build:
-	docker build -t api:$(shell git rev-parse --short HEAD) .
+	docker build -f Dockerfile --target api -t api:$(shell git rev-parse --short HEAD) ../..
+	docker build -f Dockerfile --target worker -t worker:$(shell git rev-parse --short HEAD) ../..
 
 docker-run:
 	docker compose -f deploy/docker-compose.yaml up -d
