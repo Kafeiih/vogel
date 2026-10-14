@@ -57,6 +57,26 @@ func TestDocumentHandlerCreate_RejectsBeforeTheTransaction(t *testing.T) {
 			wantNotFound: "VALIDATION_ERROR",
 		},
 		{
+			name:       "title longer than maxTitleLength is rejected",
+			principal:  &auth.Principal{UserID: "user-1"},
+			body:       `{"title":"` + strings.Repeat("a", maxTitleLength+1) + `","kind":"contract","issued_at":"2026-01-02"}`,
+			wantStatus: http.StatusBadRequest,
+			wantInBody: "title",
+		},
+		{
+			// maxTitleLength counts characters, not bytes: a title of exactly
+			// maxTitleLength multi-byte runes still passes validation and
+			// would reach the transaction, so it is pinned with one rune
+			// over the limit and an invalid kind to stop before it.
+			name:       "title length is counted in characters",
+			principal:  &auth.Principal{UserID: "user-1"},
+			body:       `{"title":"` + strings.Repeat("ñ", maxTitleLength) + `","kind":"nope","issued_at":"2026-01-02"}`,
+			wantStatus: http.StatusBadRequest,
+			wantInBody: "kind",
+			// Only kind is invalid; the title must not be reported.
+			wantNotFound: `"title"`,
+		},
+		{
 			name:       "authenticated caller reaches field validation",
 			principal:  &auth.Principal{UserID: "user-1"},
 			body:       `{"title":"","kind":"contract","issued_at":"2026-01-02"}`,
@@ -101,6 +121,26 @@ func TestDocumentHandlerInbox_OffsetAboveMaxIs400(t *testing.T) {
 	rec := httptest.NewRecorder()
 
 	h.Inbox(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d (body %s)", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "offset") {
+		t.Errorf("body = %s, want it to name the offset field", rec.Body.String())
+	}
+}
+
+// List bounds offset the same way Inbox does: an unbounded OFFSET makes
+// Postgres walk and discard every skipped row, so one request could make the
+// database scan the whole table. The handler has no store or pool: reaching
+// either would panic and fail the test.
+func TestDocumentHandlerList_OffsetAboveMaxIs400(t *testing.T) {
+	h := &DocumentHandler{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+
+	req := httptest.NewRequest(http.MethodGet, "/documents?offset=100001", nil)
+	rec := httptest.NewRecorder()
+
+	h.List(rec, req)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d (body %s)", rec.Code, http.StatusBadRequest, rec.Body.String())
