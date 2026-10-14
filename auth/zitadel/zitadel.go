@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"time"
 
 	"github.com/zitadel/oidc/v3/pkg/oidc"
 	"github.com/zitadel/zitadel-go/v3/pkg/authorization"
@@ -19,6 +21,26 @@ import (
 type Config struct {
 	Issuer   string // Zitadel instance issuer URL, e.g. "https://my-instance.zitadel.cloud"
 	ClientID string // OIDC client/application ID used for audience validation
+
+	// HTTPTimeout bounds each request of OIDC discovery and of the JWKS
+	// downloads (on construction and whenever an unknown key ID forces a
+	// refresh). Zero means DefaultHTTPTimeout; negative is a construction
+	// error. Without it the SDK falls back to http.DefaultClient, which has
+	// no timeout, so a stalled issuer could hang token validation.
+	HTTPTimeout time.Duration
+}
+
+// DefaultHTTPTimeout is the per-request timeout for discovery and JWKS
+// fetches used when Config.HTTPTimeout is zero.
+const DefaultHTTPTimeout = 10 * time.Second
+
+// jwksHTTPClient returns the client used for OIDC discovery and JWKS fetches.
+func jwksHTTPClient(cfg Config) *http.Client {
+	timeout := cfg.HTTPTimeout
+	if timeout == 0 {
+		timeout = DefaultHTTPTimeout
+	}
+	return &http.Client{Timeout: timeout}
 }
 
 // Authenticator implements auth.Authenticator using Zitadel's local JWT
@@ -43,9 +65,14 @@ func New(ctx context.Context, cfg Config) (*Authenticator, error) {
 	if cfg.ClientID == "" {
 		return nil, fmt.Errorf("auth/zitadel: client ID is required")
 	}
+	if cfg.HTTPTimeout < 0 {
+		return nil, fmt.Errorf("auth/zitadel: HTTP timeout must not be negative")
+	}
 
 	z := zitadel.New(cfg.Issuer)
-	authorizer, err := authorization.New(ctx, z, oauth.DefaultJWTAuthorization(cfg.ClientID))
+	// oauth.WithJWT is what DefaultJWTAuthorization wraps, with a nil client
+	// that it replaces by http.DefaultClient; pass a bounded one instead.
+	authorizer, err := authorization.New(ctx, z, oauth.WithJWT(cfg.ClientID, jwksHTTPClient(cfg)))
 	if err != nil {
 		return nil, fmt.Errorf("auth/zitadel: creating authorizer: %w", err)
 	}

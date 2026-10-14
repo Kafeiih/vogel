@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 
@@ -26,7 +27,19 @@ type Config struct {
 	SecretKey     string        // Static secret key
 	PathStyle     bool          // Use path-style access (required for MinIO)
 	PresignExpiry time.Duration // Default presigned URL expiry when a call passes expiry <= 0 (default: 15m)
+
+	// HTTPTimeout bounds each HTTP request to the S3 endpoint, including the
+	// transfer of the object body, so a stalled endpoint cannot hang an
+	// Upload or Download whose context has no deadline. Zero means
+	// DefaultHTTPTimeout; negative is a construction error. Raise it for
+	// objects too large to transfer within the default. Presigning does no
+	// I/O and is unaffected.
+	HTTPTimeout time.Duration
 }
+
+// DefaultHTTPTimeout is the per-request timeout used when
+// Config.HTTPTimeout is zero.
+const DefaultHTTPTimeout = 60 * time.Second
 
 // DefaultPresignExpiry is the presigned URL lifetime used when
 // Config.PresignExpiry is zero and a call passes a non-positive expiry.
@@ -52,10 +65,22 @@ func NewS3Storage(cfg Config, logger *slog.Logger) (*S3Storage, error) {
 	if logger == nil {
 		return nil, fmt.Errorf("storage: logger is required")
 	}
+	if cfg.HTTPTimeout < 0 {
+		return nil, fmt.Errorf("storage: HTTP timeout must not be negative")
+	}
+
+	httpTimeout := cfg.HTTPTimeout
+	if httpTimeout == 0 {
+		httpTimeout = DefaultHTTPTimeout
+	}
 
 	opts := []func(*s3.Options){
 		func(o *s3.Options) {
 			o.Region = cfg.Region
+			// A BuildableClient keeps the SDK's transport defaults (the
+			// client resolves its dialer settings from it) and only adds
+			// the overall request timeout.
+			o.HTTPClient = awshttp.NewBuildableClient().WithTimeout(httpTimeout)
 		},
 	}
 
