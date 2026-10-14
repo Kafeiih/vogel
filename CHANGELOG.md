@@ -8,6 +8,18 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ### Agregado
 
+- **`examples/boilerplate`: endurecimiento del ejemplo.** Nuevas variables
+  de validación de tokens que llenan `zitadel.Config`:
+  `ZITADEL_HTTP_TIMEOUT` (10s), `ZITADEL_MAX_TOKEN_LIFETIME` (12h; `0`
+  desactiva), `ZITADEL_ALLOWED_AUTHORIZED_PARTIES` y `ZITADEL_INTROSPECTION`
+  con `ZITADEL_INTROSPECTION_KEY_FILE` o `_CLIENT_SECRET` y el tamaño y TTL
+  de su caché; las combinaciones inválidas hacen fallar el arranque nombrando
+  la variable. `vmw.SecurityHeaders` pasa a ser el primer middleware, así los
+  401/403/404/429/500/504 también llevan las cabeceras. `GET /v1/audit`
+  responde 400 (no 500) a un `offset` mayor que `audit.MaxListOffset`. Los
+  probes de salud registran un fallo de la base una vez por causa distinta y
+  no cuentan como caída un ping cortado porque el cliente se fue.
+  `rolematrix_test.go` fija la matriz ruta × rol.
 - **`examples/api`: endurecimiento del ejemplo.** `GET /documents` rechaza con
   400 un `offset` mayor que `workflow.MaxListOffset`; `POST /documents` valida
   `title` con `MaxLen(200)` (en caracteres). El `http.Server` fija
@@ -181,6 +193,15 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ### Cambiado
 
+- **`examples/boilerplate`: `DB_REQUIRE_TLS` decide el TLS hacia la base, no
+  `APP_ENV`.** Vale `true` por defecto en cualquier entorno (antes solo fuera
+  de `APP_ENV=development`); el compose de despliegue y el `.env` local la
+  ponen en `false` para su Postgres sin TLS. Cambio de comportamiento: un
+  despliegue propio con `APP_ENV=development` y `sslmode=disable` debe definir
+  `DB_REQUIRE_TLS=false` o deja de arrancar. `SWAGGER_ENABLED` y las nuevas
+  variables booleanas rechazan un valor que no sea `true`/`false` en vez de
+  usar el default, y el rechazo de Swagger en producción usa
+  `Config.IsProduction`.
 - Dependencias: `google.golang.org/grpc` v1.83.1 → v1.83.2 (CVE-2026-84445,
   HIGH, detectada por el escaneo de Trivy sobre los binarios del boilerplate),
   en el módulo raíz y en `examples/boilerplate`.
