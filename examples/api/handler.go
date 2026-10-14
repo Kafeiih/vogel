@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -530,6 +531,10 @@ const maxUploadBytes = 25 << 20 // 25 MiB
 // client's Content-Type header: the document kinds this example stores.
 var allowedUploadTypes = []string{"application/pdf", "image/png", "image/jpeg", "text/plain"}
 
+// disallowedUploadMessage is the 415 message, built from allowedUploadTypes
+// so the list it gives the client cannot drift from what is accepted.
+var disallowedUploadMessage = "file type not allowed: accepted types are " + strings.Join(allowedUploadTypes, ", ")
+
 // UploadFile attaches the raw request body to an existing document through
 // the storage port, then records the attachment in the audit trail.
 //
@@ -562,8 +567,7 @@ func (h *DocumentHandler) UploadFile(w http.ResponseWriter, r *http.Request) {
 	// not 404.
 	contentType, body, err := storage.SniffContentType(limited, allowedUploadTypes...)
 	if errors.Is(err, storage.ErrContentTypeNotAllowed) {
-		response.Error(w, r, http.StatusUnsupportedMediaType, response.CodeUnsupportedMediaType,
-			"file type not allowed: upload a PDF, PNG, JPEG or plain-text file")
+		response.Error(w, r, http.StatusUnsupportedMediaType, response.CodeUnsupportedMediaType, disallowedUploadMessage)
 		return
 	}
 	if err != nil {

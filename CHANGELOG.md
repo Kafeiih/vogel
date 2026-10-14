@@ -38,7 +38,8 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   `Upload`; si el tipo no está permitido, el error envuelve
   `ErrContentTypeNotAllowed`. `examples/api` lo usa en la subida de archivos:
   acepta `application/pdf`, `image/png`, `image/jpeg` y `text/plain`, guarda
-  el tipo detectado y responde 415 a cualquier otro contenido.
+  el tipo detectado y responde 415 a cualquier otro contenido, con un mensaje
+  que lista los tipos aceptados (armado desde la misma lista que se valida).
 - `httpx/response`: constante `CodeUnsupportedMediaType` (`UNSUPPORTED_MEDIA_TYPE`).
 - CI: nuevo job `govulncheck` que escanea la raíz y `examples/boilerplate`.
 - **`notification/sendgrid` y `auth/zitadel`: campo opcional
@@ -79,6 +80,11 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ### Cambiado
 
+- **`httpx/middleware.StructuredLogger` registra el ID de correlación del
+  cliente.** Si la request trae uno (`reqctx.ClientRequestIDFromContext`, que
+  `RequestID` guarda saneado), el log de acceso lo incluye bajo
+  `client_request_id`, separado del `request_id` generado por el servidor; sin
+  él, la clave se omite.
 - **`examples/boilerplate`: el arranque de la API falla si el PDP de Cerbos
   no responde.** Tras construir el checker se hace un `Ping` acotado a 5s; si
   falla, el arranque termina con un error que nombra el host, el modo (TLS o

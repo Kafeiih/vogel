@@ -34,13 +34,15 @@ const DefaultHTTPTimeout = 30 * time.Second
 
 // SendGridNotifier implements notification.Notifier via SendGrid HTTP API.
 type SendGridNotifier struct {
-	// client is the SDK's request template (endpoint, method, auth headers).
-	// It is never sent through the SDK, which would use rest.DefaultClient
-	// (an http.Client with no timeout) and mutate the shared template.
-	client      *sendgrid.Client
-	httpClient  *http.Client
-	defaultFrom string
-	logger      *slog.Logger
+	// requestTemplate is the SDK's request template (endpoint, method, auth
+	// headers), read by post to build each request. Never call
+	// sendgrid.SendWithContext/Send on it: the SDK would send through
+	// rest.DefaultClient (an http.Client with no timeout) and mutate the
+	// shared template; every request goes through httpClient instead.
+	requestTemplate *sendgrid.Client
+	httpClient      *http.Client
+	defaultFrom     string
+	logger          *slog.Logger
 }
 
 // NewSendGridNotifier creates a SendGrid-backed notifier.
@@ -71,10 +73,10 @@ func NewSendGridNotifier(cfg Config, defaultFrom string, logger *slog.Logger) (*
 	}
 
 	return &SendGridNotifier{
-		client:      sendgrid.NewSendClient(cfg.APIKey),
-		httpClient:  &http.Client{Timeout: timeout},
-		defaultFrom: defaultFrom,
-		logger:      logger,
+		requestTemplate: sendgrid.NewSendClient(cfg.APIKey),
+		httpClient:      &http.Client{Timeout: timeout},
+		defaultFrom:     defaultFrom,
+		logger:          logger,
 	}, nil
 }
 
@@ -141,7 +143,7 @@ type sendResponse struct {
 // ignored, since the email was already accepted. It builds a fresh request from the SDK template on
 // every call, so concurrent Sends share nothing mutable.
 func (n *SendGridNotifier) post(ctx context.Context, body []byte) (sendResponse, error) {
-	tmpl := n.client.Request
+	tmpl := n.requestTemplate.Request
 	req, err := http.NewRequestWithContext(ctx, string(tmpl.Method), tmpl.BaseURL, bytes.NewReader(body))
 	if err != nil {
 		return sendResponse{}, err

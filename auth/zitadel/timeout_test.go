@@ -2,7 +2,9 @@ package zitadel
 
 import (
 	"context"
+	"net"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 )
@@ -36,5 +38,60 @@ func TestNew_NegativeHTTPTimeout_ReturnsError(t *testing.T) {
 	_, err := New(context.Background(), Config{Issuer: "auth.example.invalid", ClientID: "c", HTTPTimeout: -time.Second})
 	if err == nil {
 		t.Fatal("expected an error for a negative HTTPTimeout, got nil")
+	}
+}
+
+// TestNew_StalledIssuer_FailsWithinHTTPTimeout proves New's OIDC discovery
+// goes through the bounded client end to end. The issuer accepts TCP
+// connections and never answers, so the TLS handshake of the discovery
+// request stalls; with a context that has no deadline only
+// Config.HTTPTimeout can end it. http.DefaultClient would wait for the
+// default transport's 10s TLS handshake timeout instead.
+func TestNew_StalledIssuer_FailsWithinHTTPTimeout(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	var (
+		mu    sync.Mutex
+		conns []net.Conn
+	)
+	t.Cleanup(func() {
+		_ = ln.Close()
+		mu.Lock()
+		defer mu.Unlock()
+		for _, c := range conns {
+			_ = c.Close()
+		}
+	})
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			conns = append(conns, c) // held open, never written to
+			mu.Unlock()
+		}
+	}()
+
+	done := make(chan error, 1)
+	start := time.Now()
+	go func() {
+		_, err := New(context.Background(), Config{Issuer: ln.Addr().String(), ClientID: "c", HTTPTimeout: 200 * time.Millisecond})
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("New = nil against a stalled issuer, want a discovery error")
+		}
+		if elapsed := time.Since(start); elapsed > 3*time.Second {
+			t.Errorf("New took %v, want it bounded by the 200ms HTTPTimeout", elapsed)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("New did not return within 5s: discovery is not using the bounded client")
 	}
 }

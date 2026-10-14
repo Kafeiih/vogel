@@ -75,7 +75,8 @@ func extractBearerToken(r *http.Request) (token string, ok bool) {
 // The underlying error is always logged server-side at error level, with the
 // request method, path, client IP and request ID (the last two from reqctx,
 // empty when RequestContext is not mounted upstream); the token is never
-// logged, and the error detail is never included in the response body.
+// logged, and the error detail is never included in the response body. Mount
+// RequestContext before this middleware so those fields are filled in.
 func Authenticate(a auth.Authenticator, logger *slog.Logger, opts ...AuthOption) func(http.Handler) http.Handler {
 	msgs := DefaultAuthMessages()
 	for _, opt := range opts {

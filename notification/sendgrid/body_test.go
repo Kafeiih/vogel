@@ -45,7 +45,7 @@ func TestSend_AcceptedDespiteBodyReadError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSendGridNotifier: %v", err)
 	}
-	n.client.BaseURL = srv.URL + "/v3/mail/send"
+	n.requestTemplate.BaseURL = srv.URL + "/v3/mail/send"
 
 	const to = "juana.perez@example.com"
 	if err := n.Send(context.Background(), &notification.Message{To: to, Subject: "s", Text: "t"}); err != nil {
@@ -70,7 +70,7 @@ func TestSend_ErrorStatusWithBodyReadError_Fails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSendGridNotifier: %v", err)
 	}
-	n.client.BaseURL = srv.URL + "/v3/mail/send"
+	n.requestTemplate.BaseURL = srv.URL + "/v3/mail/send"
 
 	if err := n.Send(context.Background(), &notification.Message{To: "user@example.com", Subject: "s", Text: "t"}); err == nil {
 		t.Fatal("Send = nil after a 400, want an error")

@@ -728,6 +728,10 @@ type InboxFilter struct {
 // so an unbounded offset lets one request force a scan of the whole table.
 // Callers that page deeper than MaxListOffset rows should filter (for
 // example by time range) instead.
+//
+// Twin: audit.Filters.Page and the audit paging constants (audit/audit.go)
+// apply the same rules with the same values. The packages do not import each
+// other, so the code is duplicated; change both together.
 const (
 	DefaultListLimit = 20
 	MaxListLimit     = 1000

@@ -165,6 +165,13 @@ func TestDocumentHandlerUploadFile_RejectsDisallowedContent(t *testing.T) {
 			if !strings.Contains(rec.Body.String(), tt.wantInBody) {
 				t.Errorf("body = %s, want it to contain %q", rec.Body.String(), tt.wantInBody)
 			}
+			// The message lists the accepted types from allowedUploadTypes
+			// itself, so it cannot drift from what SniffContentType allows.
+			for _, allowed := range allowedUploadTypes {
+				if !strings.Contains(rec.Body.String(), allowed) {
+					t.Errorf("body = %s, want it to name the accepted type %s", rec.Body.String(), allowed)
+				}
+			}
 		})
 	}
 }

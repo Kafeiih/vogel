@@ -58,3 +58,41 @@ func TestStructuredLogger_NoRequestID_LogsEmpty(t *testing.T) {
 		t.Errorf("request_id = %v, want empty", got["request_id"])
 	}
 }
+
+// The client-supplied correlation ID is logged under its own key, so a
+// client's value can never be mistaken for the server-generated request_id;
+// without one the key is left out.
+func TestStructuredLogger_ClientRequestID(t *testing.T) {
+	tests := []struct {
+		name     string
+		clientID string
+		want     any // nil means the key must be absent
+	}{
+		{name: "client ID present", clientID: "client-xyz", want: "client-xyz"},
+		{name: "client ID absent", clientID: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodGet, "/things", nil)
+			ctx := reqctx.WithRequestID(r.Context(), "req-abc-123")
+			if tt.clientID != "" {
+				ctx = reqctx.WithClientRequestID(ctx, tt.clientID)
+			}
+			got := logLine(t, r.WithContext(ctx))
+
+			v, ok := got["client_request_id"]
+			if tt.want == nil {
+				if ok {
+					t.Errorf("client_request_id = %v, want the key absent", v)
+				}
+				return
+			}
+			if v != tt.want {
+				t.Errorf("client_request_id = %v, want %v", v, tt.want)
+			}
+			if got["request_id"] != "req-abc-123" {
+				t.Errorf("request_id = %v, want the server ID req-abc-123", got["request_id"])
+			}
+		})
+	}
+}
