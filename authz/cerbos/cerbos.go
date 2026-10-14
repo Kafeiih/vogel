@@ -12,9 +12,18 @@ import (
 )
 
 // Config holds the settings needed to connect to a Cerbos PDP.
+//
+// The connection uses TLS unless Plaintext is set: the zero value is the
+// secure one, so a consumer cannot send authorization decisions in cleartext
+// by forgetting a field.
 type Config struct {
-	Host   string // gRPC address of the Cerbos PDP, e.g. "localhost:3593"
-	UseTLS bool   // whether to use TLS for the gRPC connection
+	// Host is the gRPC address of the Cerbos PDP, e.g. "localhost:3593".
+	Host string
+	// Plaintext disables TLS and connects over h2c. Only for a PDP reachable
+	// on a trusted local network, such as a development container; never in
+	// production, where principals, roles and decisions would travel in
+	// cleartext.
+	Plaintext bool
 }
 
 // Checker implements authz.Checker using the Cerbos PDP via gRPC.
@@ -28,17 +37,22 @@ func New(cfg Config) (*Checker, error) {
 		return nil, fmt.Errorf("authz/cerbos: host is required")
 	}
 
-	var opts []cerbos.Opt
-	if !cfg.UseTLS {
-		opts = append(opts, cerbos.WithPlaintext())
-	}
-
-	client, err := cerbos.New(cfg.Host, opts...)
+	client, err := cerbos.New(cfg.Host, clientOptions(cfg)...)
 	if err != nil {
 		return nil, fmt.Errorf("authz/cerbos: connecting to %s: %w", cfg.Host, err)
 	}
 
 	return &Checker{client: client}, nil
+}
+
+// clientOptions builds the cerbos-sdk-go options for cfg. TLS is the SDK
+// default, so the plaintext option is added only on explicit opt-out.
+func clientOptions(cfg Config) []cerbos.Opt {
+	var opts []cerbos.Opt
+	if cfg.Plaintext {
+		opts = append(opts, cerbos.WithPlaintext())
+	}
+	return opts
 }
 
 // IsAllowed implements authz.Checker. A non-nil error means Cerbos could not
