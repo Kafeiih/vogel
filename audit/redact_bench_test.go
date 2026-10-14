@@ -42,10 +42,13 @@ func benchPayload(depth, width int) map[string]any {
 }
 
 // BenchmarkRecord_Redaction measures Record's redaction pass over payloads of
-// growing width and depth, with and without WithRedactor hooks. It is the
-// measurement behind the review advisory that re-walking a hook's result
-// (normalized through encoding/json when it has no plain JSON form) may cost
-// roughly payload size times nesting depth.
+// growing width and depth, with and without WithRedactor hooks. Record walks
+// every hook result again with the denylist, and a result with no plain JSON
+// form (a named map type, a struct) is first normalized through
+// encoding/json; the hypothesis it measures is that this re-walk can cost
+// roughly payload size times nesting depth. Measured: a hook returning plain
+// map[string]any values adds no cost, while one returning typed values grows
+// with about the square of the depth.
 func BenchmarkRecord_Redaction(b *testing.B) {
 	hooks := []struct {
 		name  string
@@ -64,8 +67,8 @@ func BenchmarkRecord_Redaction(b *testing.B) {
 			}
 			return nil, false
 		})}},
-		// Not one of the review's cases, but the costliest shape of the same
-		// path: every map the hook returns must be re-encoded through
+		// The costliest shape of the same path: every map the hook returns
+		// is a typed value, so it must be re-encoded through
 		// encoding/json before it is walked again, at every level.
 		{"hook_returns_typed_copy_every_key", []RecorderOption{WithRedactor(func(_ string, v any) (any, bool) {
 			if m, ok := v.(map[string]any); ok {

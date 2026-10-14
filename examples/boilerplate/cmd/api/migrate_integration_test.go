@@ -5,6 +5,9 @@ package main
 import (
 	"context"
 	"io/fs"
+	"sort"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -24,6 +27,25 @@ import (
 // (migrationSets gives it no TableName).
 const appVersionTable = "goose_db_version"
 
+// testDeadline bounds the whole test, including each runMigrate call, so a
+// hung migration or query (for example one waiting on the advisory lock)
+// fails within minutes with a clear message instead of running into go
+// test's default 10-minute timeout.
+const testDeadline = 2 * time.Minute
+
+// revertEffects proves, for the app set's latest migration, that "migrate
+// down" actually ran its down SQL and not just moved goose's version row.
+// Each entry checks that the migration's effect is present (applied=true)
+// or gone (applied=false). When a new app migration becomes the latest, the
+// test fails until an entry for it is added here.
+var revertEffects = map[string]func(ctx context.Context, t *testing.T, pool *pgxpool.Pool, applied bool){
+	"001_enable_pgcrypto.sql": func(ctx context.Context, t *testing.T, pool *pgxpool.Pool, applied bool) {
+		if got := extensionExists(ctx, t, pool, "pgcrypto"); got != applied {
+			t.Errorf("pgcrypto installed = %t, want %t", got, applied)
+		}
+	},
+}
+
 // TestMigrateDown_RevertsOnlyTheAppSet backs the claims the RUNBOOK rollback
 // step makes about "./api migrate down": it reverts only the latest migration
 // of this service's own set and never touches audit_log nor River. It drives
@@ -34,7 +56,8 @@ const appVersionTable = "goose_db_version"
 // here: vogel/migrate takes it on every operation, and
 // migrate/runner_integration_test.go in the vogel module proves it.
 func TestMigrateDown_RevertsOnlyTheAppSet(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), testDeadline)
+	defer cancel()
 	dbURL := startTestPostgres(t)
 	t.Setenv("DB_URL", dbURL)
 
@@ -45,12 +68,15 @@ func TestMigrateDown_RevertsOnlyTheAppSet(t *testing.T) {
 	t.Cleanup(pool.Close)
 
 	riverSchema := config.WorkerSchema()
-	appLatest := latestVersion(t, migrations.FS)
-	auditLatest := latestVersion(t, auditmigrations.FS())
-
-	if err := runMigrate([]string{"up"}); err != nil {
-		t.Fatalf("migrate up: %v", err)
+	app := migrationVersions(t, migrations.FS)
+	appLatest, appPrevious := app.latest(), app.previous()
+	auditLatest := migrationVersions(t, auditmigrations.FS()).latest()
+	checkEffect, ok := revertEffects[app.latestFile()]
+	if !ok {
+		t.Fatalf("no revertEffects entry for the latest app migration %s: add one that checks its schema effect", app.latestFile())
 	}
+
+	runMigrateWithin(ctx, t, "up")
 
 	if got := gooseVersion(ctx, t, pool, appVersionTable); got != appLatest {
 		t.Fatalf("after up: app version = %d, want %d", got, appLatest)
@@ -64,22 +90,17 @@ func TestMigrateDown_RevertsOnlyTheAppSet(t *testing.T) {
 	if riverVersion == 0 {
 		t.Fatalf("after up: no River migration recorded in %s.river_migration", riverSchema)
 	}
-	// The app set currently holds a single migration (001, pgcrypto), so
-	// "down" takes it to zero; check its effect is applied before reverting.
-	if !extensionExists(ctx, t, pool, "pgcrypto") {
-		t.Fatal("after up: pgcrypto extension missing")
+	checkEffect(ctx, t, pool, true)
+	if t.Failed() {
+		t.FailNow()
 	}
 
-	if err := runMigrate([]string{"down"}); err != nil {
-		t.Fatalf("migrate down: %v", err)
-	}
+	runMigrateWithin(ctx, t, "down")
 
-	if got := gooseVersion(ctx, t, pool, appVersionTable); got != appLatest-1 {
-		t.Errorf("after down: app version = %d, want %d (exactly one reverted)", got, appLatest-1)
+	if got := gooseVersion(ctx, t, pool, appVersionTable); got != appPrevious {
+		t.Errorf("after down: app version = %d, want %d (exactly one reverted)", got, appPrevious)
 	}
-	if appLatest == 1 && extensionExists(ctx, t, pool, "pgcrypto") {
-		t.Error("after down: pgcrypto still installed; the app set's only migration was not reverted")
-	}
+	checkEffect(ctx, t, pool, false)
 	if got := gooseVersion(ctx, t, pool, auditmigrations.DefaultTableName); got != auditLatest {
 		t.Errorf("after down: audit version = %d, want %d (unchanged)", got, auditLatest)
 	}
@@ -119,19 +140,69 @@ func startTestPostgres(t *testing.T) string {
 	return connStr
 }
 
-// latestVersion returns the number of .sql migrations at the root of fsys.
-// Each set numbers its files 001, 002, ... without gaps, so the count is the
-// latest version.
-func latestVersion(t *testing.T, fsys fs.FS) int64 {
+// runMigrateWithin runs runMigrate (what main dispatches "api migrate ..."
+// to) and fails the test if it does not return before ctx's deadline.
+// runMigrate takes no context, so a hung call cannot be cancelled; this only
+// makes the test report it promptly instead of blocking until go test's
+// timeout.
+func runMigrateWithin(ctx context.Context, t *testing.T, sub string) {
 	t.Helper()
-	files, err := fs.Glob(fsys, "*.sql")
+	done := make(chan error, 1)
+	go func() { done <- runMigrate([]string{sub}) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("migrate %s: %v", sub, err)
+		}
+	case <-ctx.Done():
+		t.Fatalf("migrate %s did not finish within %s", sub, testDeadline)
+	}
+}
+
+// versionedFiles lists a migration set's files by goose version, ascending.
+type versionedFiles []migrationFile
+
+type migrationFile struct {
+	version int64
+	name    string
+}
+
+// migrationVersions reads the .sql files at the root of fsys and parses the
+// numeric prefix goose uses as each file's version (the digits before the
+// first "_"). It does not assume versions are contiguous or start at 1, so
+// gaps and timestamp-style versions work too.
+func migrationVersions(t *testing.T, fsys fs.FS) versionedFiles {
+	t.Helper()
+	names, err := fs.Glob(fsys, "*.sql")
 	if err != nil {
 		t.Fatalf("glob migrations: %v", err)
 	}
-	if len(files) == 0 {
+	if len(names) == 0 {
 		t.Fatal("migration set has no .sql files")
 	}
-	return int64(len(files))
+	set := make(versionedFiles, 0, len(names))
+	for _, name := range names {
+		prefix, _, found := strings.Cut(name, "_")
+		v, err := strconv.ParseInt(prefix, 10, 64)
+		if !found || err != nil {
+			t.Fatalf("migration %s has no numeric version prefix", name)
+		}
+		set = append(set, migrationFile{version: v, name: name})
+	}
+	sort.Slice(set, func(i, j int) bool { return set[i].version < set[j].version })
+	return set
+}
+
+func (s versionedFiles) latest() int64      { return s[len(s)-1].version }
+func (s versionedFiles) latestFile() string { return s[len(s)-1].name }
+
+// previous is the version goose is left at after one "down": the second
+// highest version, or 0 when the set holds a single migration.
+func (s versionedFiles) previous() int64 {
+	if len(s) < 2 {
+		return 0
+	}
+	return s[len(s)-2].version
 }
 
 // gooseVersion returns the highest applied version recorded in a goose
