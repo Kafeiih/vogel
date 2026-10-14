@@ -1,6 +1,16 @@
-# Keeps the SHA-pinned actions in .github/workflows current. Dependabot
-# rewrites both the commit SHA and the trailing "# vX.Y.Z" comment. Go
-# modules are not listed: govulncheck in CI already flags vulnerable ones.
+# Keeps the SHA-pinned actions in .github/workflows and the Go modules
+# current. Dependabot rewrites both the commit SHA and the trailing
+# "# vX.Y.Z" comment of each action.
+#
+# Go modules are listed too, for both modules in this repository (the root
+# library and examples/boilerplate, which has its own go.mod). govulncheck in
+# CI and Dependabot do different jobs: govulncheck fails only when the code
+# reaches a function with a KNOWN vulnerability, so it says nothing about a
+# dependency that is merely old, and it reacts only after an advisory is
+# published; Dependabot keeps dependencies current, so a fix is a small,
+# routine bump instead of a jump across many releases under pressure. Each
+# directory gets one grouped weekly PR, so the noise stays at one review per
+# module per week.
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -12,3 +22,23 @@ updates:
         patterns: ["*"]
     commit-message:
       prefix: ci
+
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      gomod-root:
+        patterns: ["*"]
+    commit-message:
+      prefix: build(deps)
+
+  - package-ecosystem: gomod
+    directory: /examples/boilerplate
+    schedule:
+      interval: weekly
+    groups:
+      gomod-boilerplate:
+        patterns: ["*"]
+    commit-message:
+      prefix: build(deps)

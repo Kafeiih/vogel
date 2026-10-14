@@ -82,6 +82,10 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   que lista los tipos aceptados (armado desde la misma lista que se valida).
 - `httpx/response`: constante `CodeUnsupportedMediaType` (`UNSUPPORTED_MEDIA_TYPE`).
 - CI: nuevo job `govulncheck` que escanea la raíz y `examples/boilerplate`.
+- CI: Dependabot también actualiza los módulos Go de la raíz y de
+  `examples/boilerplate` (semanal, un PR agrupado por directorio, prefijo
+  `build(deps)`). `govulncheck` solo avisa de vulnerabilidades conocidas y
+  alcanzables; Dependabot mantiene las dependencias al día.
 - **`notification/sendgrid` y `auth/zitadel`: campo opcional
   `Config.HTTPTimeout` y constante `DefaultHTTPTimeout`** en cada paquete
   (30s y 10s respectivamente). Cero usa el valor por defecto; un valor
