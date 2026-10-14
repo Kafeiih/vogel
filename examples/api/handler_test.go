@@ -14,9 +14,11 @@ import (
 // These tests cover only the rejections DocumentHandler.Create makes before
 // it opens its transaction: the success path runs tx.WithTx against a real
 // pgxpool.Pool, so proving that a created document's OwnerID equals the
-// principal's UserID needs a database and is not covered here. The handler is built with no store, engine or
-// pool on purpose: if any of these cases reached the transaction, the nil
-// pool would panic and fail the test.
+// principal's UserID needs a database: see
+// TestDocumentHandlerCreate_PersistsThePrincipalAsOwner in
+// handler_integration_test.go (build tag "integration"). The handler here is
+// built with no store, engine or pool on purpose: if any of these cases
+// reached the transaction, the nil pool would panic and fail the test.
 func TestDocumentHandlerCreate_RejectsBeforeTheTransaction(t *testing.T) {
 	const validBody = `{"title":"Contrato","kind":"contract","issued_at":"2026-01-02"}`
 
