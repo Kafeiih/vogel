@@ -218,8 +218,9 @@ func (s *S3Storage) Delete(ctx context.Context, key string) error {
 // A non-positive expiry uses Config.PresignExpiry. The options are folded with
 // storage.ApplyPresignGetOptions and mapped onto the S3 response-header
 // overrides (response-content-disposition, response-content-type), which S3
-// signs as part of the URL: the default "attachment" disposition cannot be
-// stripped by whoever holds the link.
+// signs as part of the URL: the default "attachment" disposition and
+// "application/octet-stream" type cannot be stripped by whoever holds the
+// link.
 func (s *S3Storage) PresignedGetURL(ctx context.Context, key string, expiry time.Duration, opts ...storage.PresignGetOption) (string, error) {
 	o := storage.ApplyPresignGetOptions(opts...)
 
@@ -227,9 +228,7 @@ func (s *S3Storage) PresignedGetURL(ctx context.Context, key string, expiry time
 		Bucket:                     aws.String(s.bucket),
 		Key:                        aws.String(key),
 		ResponseContentDisposition: aws.String(o.ContentDisposition),
-	}
-	if o.ContentType != "" {
-		input.ResponseContentType = aws.String(o.ContentType)
+		ResponseContentType:        aws.String(o.ContentType),
 	}
 
 	req, err := s.presignClient.PresignGetObject(ctx, input, func(po *s3.PresignOptions) {

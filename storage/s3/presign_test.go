@@ -143,22 +143,22 @@ func TestPresignedGetURL_ResponseHeaders(t *testing.T) {
 		wantContentType string
 	}{
 		{
-			name:            "no options default to attachment so uploads never render on the bucket origin",
+			name:            "no options default to an octet-stream attachment so uploads never render on the bucket origin",
 			opts:            nil,
 			wantDisposition: "attachment",
-			wantContentType: "",
+			wantContentType: "application/octet-stream",
 		},
 		{
 			name:            "AsAttachment carries the sanitized filename",
 			opts:            []storage.PresignGetOption{storage.AsAttachment("report\r\n.pdf")},
 			wantDisposition: `attachment; filename="report.pdf"`,
-			wantContentType: "",
+			wantContentType: "application/octet-stream",
 		},
 		{
 			name:            "WithContentDisposition inline is an explicit opt-in",
 			opts:            []storage.PresignGetOption{storage.WithContentDisposition("inline")},
 			wantDisposition: "inline",
-			wantContentType: "",
+			wantContentType: "application/octet-stream",
 		},
 		{
 			name:            "WithResponseContentType maps to response-content-type",
