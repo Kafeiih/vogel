@@ -152,7 +152,11 @@ type introspectionVerifier struct {
 var _ authorization.Verifier[*oauth.IntrospectionContext] = (*introspectionVerifier)(nil)
 
 // CheckAuthorization implements authorization.Verifier. authorizationToken
-// must carry the "Bearer " prefix.
+// must start with the "Bearer" scheme word; surrounding whitespace around
+// the token is trimmed. This is exactly the parsing the SDK's own verifiers
+// use (strings.CutPrefix with oidc.BearerToken, which has no trailing
+// space), so switching to introspection does not change which headers are
+// accepted. Authenticate always passes "Bearer <token>".
 func (v *introspectionVerifier) CheckAuthorization(ctx context.Context, authorizationToken string) (*oauth.IntrospectionContext, error) {
 	token, ok := strings.CutPrefix(authorizationToken, oidc.BearerToken)
 	if !ok {

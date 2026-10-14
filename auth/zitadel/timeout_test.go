@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-func TestJWKSHTTPClient_Timeout(t *testing.T) {
+func TestIssuerHTTPClient_Timeout(t *testing.T) {
 	tests := []struct {
 		name    string
 		timeout time.Duration
