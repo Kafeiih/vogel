@@ -142,3 +142,51 @@ func TestChecker_CallerDeadlineShorterThanCallTimeout_Wins(t *testing.T) {
 		t.Errorf("Ping took %v, want the caller's 200ms deadline to win", elapsed)
 	}
 }
+
+// Ping is a startup probe: a caller that sets its own deadline (e.g. "wait up
+// to 30s for the PDP to come up") is choosing how long to wait, so CallTimeout
+// must not cut that deadline short. It only bounds a Ping whose ctx has none.
+func TestChecker_PingHonorsLongerCallerDeadline(t *testing.T) {
+	const (
+		callTimeout    = 100 * time.Millisecond
+		callerDeadline = 800 * time.Millisecond
+	)
+	c, err := New(Config{Host: silentAddr(t), Plaintext: true, CallTimeout: callTimeout})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), callerDeadline)
+	defer cancel()
+
+	start := time.Now()
+	if err := c.Ping(ctx); err == nil {
+		t.Fatal("Ping = nil against a silent PDP, want an error")
+	}
+	if elapsed := time.Since(start); elapsed < callerDeadline/2 {
+		t.Errorf("Ping gave up after %v, want it to wait for the caller's %v deadline instead of CallTimeout %v",
+			elapsed, callerDeadline, callTimeout)
+	}
+}
+
+// IsAllowed runs on the request path, so CallTimeout keeps bounding it even
+// when the caller's deadline is longer: a slow PDP must not hold a request
+// for the whole server write timeout.
+func TestChecker_IsAllowedCapsLongerCallerDeadline(t *testing.T) {
+	const callTimeout = 100 * time.Millisecond
+	c, err := New(Config{Host: silentAddr(t), Plaintext: true, CallTimeout: callTimeout})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+
+	start := time.Now()
+	_, err = c.IsAllowed(ctx, authz.Principal{ID: "u1", Roles: []string{"user"}},
+		authz.Resource{Kind: "document", ID: "d1"}, "read")
+	if err == nil {
+		t.Fatal("IsAllowed = nil error against a silent PDP, want an error")
+	}
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Errorf("IsAllowed took %v, want it bounded near CallTimeout %v", elapsed, callTimeout)
+	}
+}
