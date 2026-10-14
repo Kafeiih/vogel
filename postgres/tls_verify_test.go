@@ -20,6 +20,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// clearPGTLSEnv blanks the libpq TLS environment variables pgx reads while
+// parsing a DSN, so an ambient PGSSLMODE or PGSSLROOTCERT on the machine
+// running the tests cannot change which sslmode or root CA a case sees.
+func clearPGTLSEnv(t *testing.T) {
+	t.Helper()
+	for _, key := range []string{"PGSSLMODE", "PGSSLROOTCERT", "PGSSLCERT", "PGSSLKEY"} {
+		t.Setenv(key, "")
+	}
+}
+
 // writeTestCA writes a throwaway self-signed CA certificate and returns its
 // path, so DSNs with sslrootcert parse without a real CA bundle.
 func writeTestCA(t *testing.T) string {
@@ -50,10 +60,11 @@ func writeTestCA(t *testing.T) string {
 // certificate, so a man in the middle could read the traffic.
 func TestApplyTLSConfig_RequireTLSDemandsServerVerification(t *testing.T) {
 	ca := url.QueryEscape(writeTestCA(t))
-	const base = "postgres://u:p@db.example.com:5432/db"
+	const singleHost = "db.example.com:5432"
 
 	tests := []struct {
 		name    string
+		hosts   string // host:port list of the DSN; empty means singleHost
 		query   string
 		wantErr bool
 	}{
@@ -66,16 +77,17 @@ func TestApplyTLSConfig_RequireTLSDemandsServerVerification(t *testing.T) {
 		{name: "verify-ca", query: "?sslmode=verify-ca&sslrootcert=" + ca, wantErr: false},
 		{name: "verify-full with system roots", query: "?sslmode=verify-full", wantErr: false},
 		{name: "verify-full with root cert", query: "?sslmode=verify-full&sslrootcert=" + ca, wantErr: false},
-		{name: "multi-host verify-full", query: "?sslmode=verify-full", wantErr: false},
+		{name: "multi-host verify-full", hosts: "db1.example.com:5432,db2.example.com:5432", query: "?sslmode=verify-full", wantErr: false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			dsn := base + tt.query
-			if tt.name == "multi-host verify-full" {
-				dsn = "postgres://u:p@db1.example.com:5432,db2.example.com:5432/db" + tt.query
+			hosts := tt.hosts
+			if hosts == "" {
+				hosts = singleHost
 			}
-			t.Setenv("PGSSLMODE", "")
+			dsn := "postgres://u:p@" + hosts + "/db" + tt.query
+			clearPGTLSEnv(t)
 
 			cfg, err := pgxpool.ParseConfig(dsn)
 			require.NoError(t, err)
@@ -103,6 +115,7 @@ func TestApplyTLSConfig_RequireTLSDemandsServerVerification(t *testing.T) {
 func TestApplyTLSConfig_RequireTLSFalseAcceptsAnySSLMode(t *testing.T) {
 	for _, mode := range []string{"disable", "allow", "prefer", "require", "verify-full"} {
 		t.Run(mode, func(t *testing.T) {
+			clearPGTLSEnv(t)
 			cfg, err := pgxpool.ParseConfig("postgres://u:p@db.example.com:5432/db?sslmode=" + mode)
 			require.NoError(t, err)
 			assert.NoError(t, applyTLSConfig(cfg, false))
