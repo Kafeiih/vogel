@@ -110,6 +110,25 @@ func TestDocumentHandlerInbox_OffsetAboveMaxIs400(t *testing.T) {
 	}
 }
 
+// A negative offset never reaches the repository either: request.Validator's
+// IntQuery rejects negatives, so the handler answers 400, not the 500 the
+// repository's ErrOffsetOutOfRange would otherwise become.
+func TestDocumentHandlerInbox_NegativeOffsetIs400(t *testing.T) {
+	h := &DocumentHandler{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+
+	req := httptest.NewRequest(http.MethodGet, "/documents/inbox?offset=-1", nil)
+	rec := httptest.NewRecorder()
+
+	h.Inbox(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d (body %s)", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "offset") {
+		t.Errorf("body = %s, want it to name the offset field", rec.Body.String())
+	}
+}
+
 // UploadFile decides the stored type from the content, not from the client's
 // Content-Type header: an HTML body declared as a PDF is rejected with 415
 // before the handler touches the store, the storage port or the database

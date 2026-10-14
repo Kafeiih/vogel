@@ -556,7 +556,10 @@ func (h *DocumentHandler) UploadFile(w http.ResponseWriter, r *http.Request) {
 	// The stored (and later served) type comes from the content, never from
 	// the client's Content-Type header, which anyone can set to
 	// application/pdf on an HTML file. Sniffing reads only the first bytes;
-	// body still yields the whole upload.
+	// body still yields the whole upload. It runs before the document lookup
+	// on purpose, so a disallowed body is refused without a database round
+	// trip: a disallowed upload to a missing document therefore answers 415,
+	// not 404.
 	contentType, body, err := storage.SniffContentType(limited, allowedUploadTypes...)
 	if errors.Is(err, storage.ErrContentTypeNotAllowed) {
 		response.Error(w, r, http.StatusUnsupportedMediaType, response.CodeUnsupportedMediaType,
