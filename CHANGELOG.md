@@ -8,6 +8,14 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ### Agregado
 
+- **`examples/api`: endurecimiento del ejemplo.** `GET /documents` rechaza con
+  400 un `offset` mayor que `workflow.MaxListOffset`; `POST /documents` valida
+  `title` con `MaxLen(200)` (en caracteres). El `http.Server` fija
+  `ReadHeaderTimeout`, `ReadTimeout`, `WriteTimeout` e `IdleTimeout`
+  (`HTTP_*_TIMEOUT`) y `MaxHeaderBytes` de 64 KiB. Un limitador por IP de
+  ventana fija (`RATE_LIMIT_REQUESTS`/`RATE_LIMIT_WINDOW`, 300 por minuto)
+  protege `/api/v1` y responde 429 con `Retry-After`; es por proceso y de
+  ejemplo. `rolematrix_test.go` fija la matriz ruta × rol.
 - **`user_id` del usuario autenticado en los logs.** `reqctx` agrega una
   ranura mutable por request (`WithUserSlot`, `SetUserID`,
   `UserIDFromContext`). `httpx/middleware.RequestContext` la instala,

@@ -235,8 +235,9 @@ Saber qué se dejó afuera vale tanto como lo que está adentro.
   el proceso de API construye la cola con `workers == nil` (modo sólo-inserción)
   y un binario aparte le pasa los workers reales. Esa es exactamente la razón de
   que `worker.NewRiverQueue` acepte `nil` ahí.
-- **No tiene tests.** Es una guía de lectura, no una referencia de testing. Los
-  tests de cada paquete viven junto a su paquete.
+- **Sus tests cubren el cableado, no la librería.** Prueban rutas, roles
+  (`rolematrix_test.go`), límites de entrada y configuración del ejemplo. Los
+  tests de cada paquete de vogel viven junto a su paquete.
 - **No valida la configuración de producción.** `RequireTLS` está en `false` para
   que el compose local funcione. En producción va en `true`, y `postgres.NewPool`
   falla en el arranque si el DSN deshabilita TLS.
