@@ -60,3 +60,59 @@ func TestClientRequestID_IsSeparateFromRequestID(t *testing.T) {
 		t.Errorf("RequestIDFromContext = %q, want %q (the client ID must never replace it)", got, "server-1")
 	}
 }
+
+func TestUserIDFromContext_NoSlot_ReturnsEmpty(t *testing.T) {
+	if got := UserIDFromContext(context.Background()); got != "" {
+		t.Errorf("UserIDFromContext = %q, want empty string", got)
+	}
+}
+
+// Authenticate may be mounted without RequestContext upstream, so there is no
+// slot to fill: SetUserID must then do nothing rather than panic.
+func TestSetUserID_NoSlot_IsANoOp(t *testing.T) {
+	ctx := context.Background()
+	SetUserID(ctx, "u-1")
+	if got := UserIDFromContext(ctx); got != "" {
+		t.Errorf("UserIDFromContext = %q, want empty string without a slot", got)
+	}
+}
+
+func TestWithUserSlot_EmptyUntilSet(t *testing.T) {
+	ctx := WithUserSlot(context.Background())
+	if got := UserIDFromContext(ctx); got != "" {
+		t.Errorf("UserIDFromContext = %q, want empty string before SetUserID", got)
+	}
+}
+
+// The slot exists so that a value written through a context derived further
+// down the chain is visible through the ancestor context an outer middleware
+// holds — the whole reason it is a slot rather than a plain context value.
+func TestUserSlot_WriteThroughDerivedContextIsVisibleUpstream(t *testing.T) {
+	type otherKey struct{}
+	outer := WithUserSlot(context.Background())
+	inner := context.WithValue(WithRequestID(outer, "req-1"), otherKey{}, "x")
+
+	SetUserID(inner, "u-42")
+
+	if got := UserIDFromContext(outer); got != "u-42" {
+		t.Errorf("UserIDFromContext(outer) = %q, want %q", got, "u-42")
+	}
+	if got := UserIDFromContext(inner); got != "u-42" {
+		t.Errorf("UserIDFromContext(inner) = %q, want %q", got, "u-42")
+	}
+}
+
+// A second WithUserSlot on a context that already carries one (e.g.
+// RequestContext mounted twice) must reuse it: a fresh inner slot would
+// shadow the outer one, and a middleware holding the outer context would
+// never see the user ID written through the inner one.
+func TestWithUserSlot_ReusesExistingSlot(t *testing.T) {
+	outer := WithUserSlot(context.Background())
+	inner := WithUserSlot(outer)
+
+	SetUserID(inner, "u-7")
+
+	if got := UserIDFromContext(outer); got != "u-7" {
+		t.Errorf("UserIDFromContext(outer) = %q, want %q", got, "u-7")
+	}
+}

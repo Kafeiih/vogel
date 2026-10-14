@@ -142,3 +142,19 @@ func TestRequestContext_NoInfo_ReturnsFalse(t *testing.T) {
 		t.Error("expected ok=false when RequestContext middleware has not run")
 	}
 }
+
+// RequestContext installs the user slot, so a SetUserID further down the
+// chain (Authenticate) lands somewhere StructuredLogger can read it.
+func TestRequestContext_InstallsUserSlot(t *testing.T) {
+	var got string
+	handler := RequestContext(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reqctx.SetUserID(r.Context(), "u-9")
+		got = reqctx.UserIDFromContext(r.Context())
+	}))
+
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+
+	if got != "u-9" {
+		t.Errorf("UserIDFromContext = %q, want %q (no slot installed?)", got, "u-9")
+	}
+}

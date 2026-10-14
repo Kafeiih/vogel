@@ -50,6 +50,14 @@ func extractBearerToken(r *http.Request) (token string, ok bool) {
 // later handler or middleware (e.g. RequirePermission) can read it via
 // auth.FromContext.
 //
+// On success it also records principal.UserID — only the opaque ID, never the
+// username, roles or token — in the reqctx user slot (reqctx.SetUserID), so
+// StructuredLogger, which wraps this middleware and therefore never sees the
+// derived request carrying the Principal, can log who made the request. The
+// slot is installed by RequestContext; without it the call is a no-op and
+// authentication works unchanged. A failed authentication leaves the slot
+// empty.
+//
 // Extraction (see extractBearerToken) happens before a.Authenticate is ever
 // called: a missing header, an empty header, a scheme other than "Bearer"
 // (checked case-insensitively per RFC 6750), or a "Bearer" scheme with no
@@ -107,6 +115,7 @@ func Authenticate(a auth.Authenticator, logger *slog.Logger, opts ...AuthOption)
 				return
 			}
 
+			reqctx.SetUserID(r.Context(), principal.UserID)
 			next.ServeHTTP(w, r.WithContext(auth.WithPrincipal(r.Context(), principal)))
 		})
 	}

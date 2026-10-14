@@ -6,8 +6,10 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
+	"github.com/kafeiih/vogel/auth"
 	"github.com/kafeiih/vogel/reqctx"
 )
 
@@ -94,5 +96,93 @@ func TestStructuredLogger_ClientRequestID(t *testing.T) {
 				t.Errorf("request_id = %v, want the server ID req-abc-123", got["request_id"])
 			}
 		})
+	}
+}
+
+// accessLogFor runs one request through the production order — RequestContext
+// (when withRequestContext), then StructuredLogger, then Authenticate — and
+// returns the access-log record StructuredLogger emitted plus the response
+// status.
+func accessLogFor(t *testing.T, fa *fakeAuthenticator, authHeader string, withRequestContext bool) (map[string]any, int) {
+	t.Helper()
+
+	var buf bytes.Buffer
+	accessLogger := slog.New(slog.NewJSONHandler(&buf, nil))
+	authLogger := slog.New(slog.DiscardHandler)
+
+	var h http.Handler = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	h = Authenticate(fa, authLogger)(h)
+	h = StructuredLogger(accessLogger)(h)
+	if withRequestContext {
+		h = RequestContext(h)
+	}
+
+	r := httptest.NewRequest(http.MethodGet, "/things", nil)
+	if authHeader != "" {
+		r.Header.Set("Authorization", authHeader)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+
+	var got map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &got); err != nil {
+		t.Fatalf("access log is not one JSON record: %v (%q)", err, buf.String())
+	}
+	return got, rec.Code
+}
+
+// StructuredLogger wraps Authenticate, and Authenticate stores the Principal
+// on a derived request the access logger never sees. The user slot
+// RequestContext installs is what carries the authenticated user's ID back
+// out to the access log — and only the ID: username and roles stay out.
+func TestStructuredLogger_LogsAuthenticatedUserID(t *testing.T) {
+	fa := &fakeAuthenticator{principal: &auth.Principal{UserID: "u-42", Username: "alice", Roles: []string{"admin"}}}
+
+	got, status := accessLogFor(t, fa, "Bearer sometoken", true)
+
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want %d", status, http.StatusOK)
+	}
+	if got["user_id"] != "u-42" {
+		t.Errorf("user_id = %v, want %q", got["user_id"], "u-42")
+	}
+	for _, key := range []string{"username", "roles"} {
+		if v, ok := got[key]; ok {
+			t.Errorf("access log carries %q = %v; only user_id may be logged", key, v)
+		}
+	}
+	line, _ := json.Marshal(got)
+	if strings.Contains(string(line), "alice") || strings.Contains(string(line), "sometoken") {
+		t.Errorf("access log leaks the username or the token: %s", line)
+	}
+}
+
+// A rejected request has no principal, so the key is left out rather than
+// logged empty, matching client_request_id.
+func TestStructuredLogger_UnauthenticatedRequest_OmitsUserID(t *testing.T) {
+	got, status := accessLogFor(t, &fakeAuthenticator{}, "", true)
+
+	if status != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", status, http.StatusUnauthorized)
+	}
+	if v, ok := got["user_id"]; ok {
+		t.Errorf("user_id = %v, want the key absent", v)
+	}
+}
+
+// Without RequestContext there is no slot: Authenticate must still succeed
+// and the access log simply has no user_id.
+func TestStructuredLogger_NoUserSlot_AuthenticateStillWorks(t *testing.T) {
+	fa := &fakeAuthenticator{principal: &auth.Principal{UserID: "u-42"}}
+
+	got, status := accessLogFor(t, fa, "Bearer sometoken", false)
+
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want %d", status, http.StatusOK)
+	}
+	if v, ok := got["user_id"]; ok {
+		t.Errorf("user_id = %v, want the key absent without a user slot", v)
 	}
 }
