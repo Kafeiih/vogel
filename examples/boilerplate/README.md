@@ -144,8 +144,15 @@ dos fases: un servicio `migrate` de una sola ejecución corre `migrate up` y
 `x-worker-schema`) y llega con el mismo valor a `migrate`, `api` y `worker`:
 se toma de `deploy/.env` o, si no está, vale `river`. `migrate` no carga
 `.env` completo, así que el rol migrador no recibe los secretos de la
-aplicación. La receta de roles y permisos está en la sección «Un rol para
-migrar, otro para servir» del README de `vogel`.
+aplicación. El compose ya aplica la receta de la sección «Un rol para
+migrar, otro para servir» del README de `vogel`: `deploy/initdb/10-roles.sh`
+crea `app_migrator` (dueño del esquema, lo usan `migrate` y `grants`) y
+`app_runtime` (el de `api` y `worker`) en el primer arranque del volumen, y
+el servicio `grants` aplica `deploy/initdb/runtime-grants.sql` después de
+cada `migrate up`. Las contraseñas salen de `deploy/.env`
+(`POSTGRES_PASSWORD`, `APP_MIGRATOR_PASSWORD`, `APP_RUNTIME_PASSWORD`,
+obligatorias) y Postgres no publica ningún puerto en el host. Detalle,
+incluido TLS en producción, en la sección 0 de `deploy/RUNBOOK.md`.
 Verificación:
 
 ```bash

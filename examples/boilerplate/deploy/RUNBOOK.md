@@ -4,6 +4,52 @@ Guia de respuesta a incidentes para el equipo de operaciones.
 
 ---
 
+## 0. Configuracion del compose de despliegue
+
+`deploy/docker-compose.yaml` lee `deploy/.env` (nunca se commitea; el
+`.gitignore` lo excluye). Ese archivo cumple dos funciones: compose lo usa
+para interpolar las variables `${...}` del propio compose y lo pasa como
+`env_file` a `api` y `worker`. Variables obligatorias (si falta alguna,
+`docker compose` falla antes de crear contenedores):
+
+| Variable | Uso |
+|---|---|
+| `POSTGRES_PASSWORD` | Superusuario `postgres`; solo lo usa el contenedor de Postgres |
+| `APP_MIGRATOR_PASSWORD` | Rol `app_migrator`, dueño del esquema y las tablas; solo lo usan `migrate` y `grants` |
+| `APP_RUNTIME_PASSWORD` | Rol `app_runtime` de `api` y `worker`: sin ser dueño de nada, `SELECT` e `INSERT` sobre `audit_log` |
+| `APP_ENV` | `development` con el Postgres del compose, que no sirve TLS (ver abajo) |
+| `ZITADEL_ISSUER`, `ZITADEL_CLIENT_ID`, `CERBOS_HOST`, ... | Configuracion de la aplicacion, igual que en el `.env` de desarrollo |
+
+Las tres contraseñas viajan dentro de URLs `postgres://`: generarlas sin
+caracteres especiales, p. ej. `openssl rand -hex 24`. `api` y `worker`
+reciben `POSTGRES_PASSWORD` y `APP_MIGRATOR_PASSWORD` vacias aunque esten en
+`.env`, para que el proceso que atiende requests no tenga credenciales capaces
+de alterar el esquema.
+
+Los roles los crea `deploy/initdb/10-roles.sh` en el **primer** arranque del
+volumen (`/docker-entrypoint-initdb.d`); cambiar una contraseña despues
+requiere `ALTER ROLE` a mano. Despues de cada `migrate up`, el servicio de una
+sola ejecucion `grants` aplica `deploy/initdb/runtime-grants.sql` como
+`app_migrator`: `SELECT`/`INSERT` sobre `audit_log`, `SELECT` sobre las
+tablas de version de goose y DML sobre las tablas de River. Las tablas
+propias de la aplicacion reciben DML de `app_runtime` por los privilegios por
+defecto que deja `10-roles.sh`.
+
+Postgres no publica puertos en el host: solo es accesible desde la red del
+compose. Para inspeccionarlo:
+`docker compose -f deploy/docker-compose.yaml exec postgres psql -U postgres boilerplate_db`.
+(`docker-compose.developer.yaml` si publica el 5433, solo para desarrollo.)
+
+**TLS:** dentro de la red del compose los DSN usan `sslmode=disable` porque
+el Postgres empaquetado no sirve certificado, y por eso `APP_ENV` debe ser
+`development` (con cualquier otro valor `RequireTLS` rechaza el DSN). Eso solo
+es aceptable en una red privada de compose. **En produccion** la base debe ser
+un PostgreSQL con TLS y los DSN deben usar `sslmode=verify-full` (con
+`sslrootcert` si la CA es privada), con `APP_ENV=production`: `RequireTLS`
+rechaza `disable`, `allow`, `prefer` y `require`.
+
+---
+
 ## 1. Base de datos no responde
 
 **Sintoma:** `/healthz` devuelve 503 con `"status": "degraded"`, `/readyz` devuelve 503.

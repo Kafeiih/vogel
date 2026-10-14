@@ -501,6 +501,24 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   `sslmode=verify-full` (con `sslrootcert` si la CA del servidor no está en
   el almacén del sistema, como la de RDS). Con `RequireTLS: false` nada
   cambia. El ejemplo del comentario de `Config.URL` usa `verify-full`.
+- **`examples/boilerplate`: el compose de despliegue separa los roles de la
+  base y deja de publicarla.** `migrate`, `api` y `worker` se conectaban con
+  el superusuario `postgres` y una contraseña fija en el archivo, y Postgres
+  se publicaba en el puerto 5433 del host. Ahora `deploy/initdb/10-roles.sh`
+  crea `app_migrator` (dueño del esquema; lo usan `migrate` y el nuevo paso
+  `grants`) y `app_runtime` (`api` y `worker`: `SELECT` e `INSERT` sobre
+  `audit_log`, `SELECT` sobre las tablas de versión, DML sobre las tablas de
+  la aplicación y de River, y `MAINTAIN` en River desde PostgreSQL 17 para su
+  reindexador), y `grants` aplica `deploy/initdb/runtime-grants.sql` después
+  de cada `migrate up`. Las contraseñas salen de `deploy/.env`
+  (`POSTGRES_PASSWORD`, `APP_MIGRATOR_PASSWORD` y `APP_RUNTIME_PASSWORD`,
+  obligatorias: si falta una, `docker compose` falla antes de arrancar) y
+  `api` y `worker` las reciben vacías salvo la propia. Postgres ya no publica
+  puertos; el compose de desarrollo sigue publicando el 5433. El runbook
+  documenta que en producción los DSN deben usar `sslmode=verify-full` contra
+  un PostgreSQL con TLS. Quien ya usaba este compose debe agregar las tres
+  variables a `deploy/.env` y recrear el volumen (los roles se crean solo en
+  el primer arranque).
 
 ## [0.8.0] — 2026-09-30
 
