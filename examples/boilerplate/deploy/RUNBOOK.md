@@ -209,7 +209,10 @@ encolados.
    uses el CLI de `goose` directo: se salta ese lock y no sabe de las tablas
    de version separadas de cada conjunto. `./api migrate status` muestra el
    estado antes y despues.
-   Este comportamiento lo cubre `cmd/api/migrate_integration_test.go`.
+   `cmd/api/migrate_integration_test.go` prueba que se revierte solo la
+   ultima migracion de este servicio (y que su SQL de bajada corre) y que
+   `audit_log` y River quedan intactos. El advisory lock no lo prueba ese
+   test: lo cubren los tests de integracion de `vogel/migrate`.
 3. Verificar que la version anterior funciona con el schema revertido
 4. Investigar la causa del fallo en la migracion
 
