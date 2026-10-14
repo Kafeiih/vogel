@@ -52,6 +52,17 @@ var defaultRedactedKeys = []string{
 // (one that contains itself, nests too deeply, or cannot be encoded) makes
 // Record fail with ErrUnredactable. A scalar replacement such as a masked
 // string is stored as is.
+//
+// Cost: a replacement that is already in the stored form (map[string]any,
+// []any, or a JSON scalar) is walked as it is, at no extra cost. Any other
+// replacement (a struct, a typed map or slice) is first encoded to JSON and
+// decoded back, which costs time and memory proportional to its size. Doing
+// that once is cheap; a hook that returns a typed value at every nesting
+// level re-encodes each subtree once per level above it, so its cost grows
+// with payload size times nesting depth (BenchmarkRecord_Redaction measures
+// it). Prefer returning map[string]any or []any from hooks that run on
+// nested keys. The re-walk itself is not optional: it is what stops a hook
+// from reintroducing a denylisted key.
 type Redactor func(key string, value any) (replacement any, ok bool)
 
 // RecorderOption customizes a Recorder at construction time.
