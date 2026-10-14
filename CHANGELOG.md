@@ -48,8 +48,24 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 - **`storage/s3`: campo opcional `Config.ResponseHeaderTimeout` y constante
   `DefaultResponseHeaderTimeout`** (60s). Cero usa el valor por defecto; un
   valor negativo hace fallar el constructor.
+- **`auth/zitadel`: campo opcional `Config.MaxTokenLifetime`.** Si es
+  positivo, se rechaza (401) todo token cuya vida (`exp - iat`) lo supere, y
+  también un token sin `iat` (o sin `exp`), porque su vida no se puede probar.
+  Cero (el valor por defecto) desactiva la comprobación; un valor negativo hace
+  fallar el constructor. Acota cuánto tiempo sirve un token filtrado aunque el
+  emisor esté configurado para emitir tokens de larga duración.
 
 ### Cambiado
+
+- **`auth/zitadel`: el autenticador comprueba `azp` y `nbf` además de lo que
+  verifica el SDK.** El verificador local de zitadel-go (`oauth.WithJWT`)
+  comprueba firma, `iss`, `aud` y `exp`, pero no `azp` ni `nbf`. Ahora, tras
+  aceptar el SDK el token, se rechaza (401, con el mismo mensaje genérico de
+  siempre) un token cuyo `azp` esté presente, no vacío y distinto de
+  `Config.ClientID` (o que no sea un string), y un token cuyo `nbf` sea
+  posterior al instante actual más un margen de un minuto para el desfase de
+  relojes. Cambio de comportamiento: un token emitido para otro cliente que
+  incluya a este en `aud` deja de aceptarse.
 
 - **`audit/postgres` y `workflow/postgres`: los listados acotan `Limit` y
   rechazan un `Offset` excesivo.** Antes `Repository.List` (audit) y
