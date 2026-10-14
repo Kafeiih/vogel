@@ -18,9 +18,21 @@ para interpolar las variables `${...}` del propio compose y lo pasa como
 | `POSTGRES_PASSWORD` | Superusuario `postgres`; solo lo usa el contenedor de Postgres |
 | `APP_MIGRATOR_PASSWORD` | Rol `app_migrator`, dueño del esquema y las tablas; solo lo usan `migrate` y `grants` |
 | `APP_RUNTIME_PASSWORD` | Rol `app_runtime` de `api` y `worker`: sin ser dueño de nada, `SELECT` e `INSERT` sobre `audit_log` |
-| `APP_ENV` | `development` con el Postgres del compose, que no sirve TLS (ver abajo) |
+| `APP_ENV` | `development` con este compose, `production` en produccion. Ya no decide el TLS hacia la base (eso es `DB_REQUIRE_TLS`, abajo); en `production` rechaza `SWAGGER_ENABLED=true` |
 | `APP_VERSION` | Tag de las imagenes `vogel-boilerplate` y `vogel-boilerplate-worker` (nunca `latest`); la API tambien lo informa como su version |
 | `ZITADEL_ISSUER`, `ZITADEL_CLIENT_ID`, `CERBOS_HOST`, ... | Configuracion de la aplicacion, igual que en el `.env` de desarrollo |
+
+Ajustes que no son obligatorios pero conviene conocer (los valores por
+defecto entre parentesis; un valor que no se puede interpretar hace fallar el
+arranque):
+
+| Variable | Uso |
+|---|---|
+| `DB_REQUIRE_TLS` | (`true`, con cualquier `APP_ENV`) exige `sslmode=verify-full` o `verify-ca` en `DB_URL`. El compose lo fija en `false` solo para `api` y `worker`, porque el Postgres empaquetado no sirve TLS (ver abajo); no definirlo en `deploy/.env` |
+| `ZITADEL_HTTP_TIMEOUT` | (`10s`, mayor que cero) tiempo maximo de cada request hacia el issuer (discovery, JWKS, introspeccion) |
+| `ZITADEL_MAX_TOKEN_LIFETIME` | (`12h`; `0` desactiva el control) vida maxima aceptada de un token (`exp - iat`) |
+| `ZITADEL_ALLOWED_AUTHORIZED_PARTIES` | (vacio: no se controla `azp`) client IDs aceptados como `azp`, separados por coma |
+| `ZITADEL_INTROSPECTION` | (`false`) valida cada token contra el endpoint de introspeccion, para que una revocacion tenga efecto antes de que expire; exige exactamente uno de `ZITADEL_INTROSPECTION_KEY_FILE` o `ZITADEL_INTROSPECTION_CLIENT_SECRET`, y acepta `ZITADEL_INTROSPECTION_CACHE_TTL` (`30s`) y `ZITADEL_INTROSPECTION_CACHE_MAX_ENTRIES` (`10000`) |
 
 Las tres contraseñas viajan dentro de URLs `postgres://`: generarlas sin
 caracteres especiales, p. ej. `openssl rand -hex 24`. `api` y `worker`
@@ -28,11 +40,22 @@ reciben `POSTGRES_PASSWORD` y `APP_MIGRATOR_PASSWORD` vacias aunque esten en
 `.env`, para que el proceso que atiende requests no tenga credenciales capaces
 de alterar el esquema.
 
-`migrate`, `api` y `worker` corren con el sistema de archivos raiz de solo
-lectura (`read_only: true`) y un `tmpfs` chico en `/tmp`: los binarios no
-escriben a disco (los logs van a stdout). La imagen de Postgres y las bases
-del `Dockerfile` estan fijadas por digest; para actualizarlas, `docker buildx
-imagetools inspect <imagen:tag>` y reemplazar el `sha256`.
+`migrate`, `grants`, `api` y `worker` corren con el sistema de archivos raiz
+de solo lectura (`read_only: true`) y un `tmpfs` chico en `/tmp`, sin
+ninguna capability de Linux (`cap_drop: [ALL]`) y con
+`no-new-privileges`: los binarios no escriben a disco (los logs van a stdout;
+el worker solo escribe su archivo de heartbeat en `/tmp`) ni necesitan
+privilegios. Postgres conserva solo las capabilities que usa su entrypoint
+para ajustar permisos del directorio de datos y bajar al usuario `postgres`
+(`CHOWN`, `DAC_OVERRIDE`, `FOWNER`, `SETGID`, `SETUID`), tambien con
+`no-new-privileges`. Las imagenes de los compose y las bases del `Dockerfile`
+estan fijadas por version exacta y digest; ver «Parches» abajo.
+
+Healthchecks: la imagen de la API consulta `/v1/healthz`; la del worker,
+que no expone puertos, corre `./worker healthcheck`, que falla si el worker
+no reescribio su archivo de heartbeat (`/tmp/vogel-worker.heartbeat`, cada
+10s mientras procesa trabajos) en los ultimos 30s. Un worker `unhealthy` esta
+colgado o deteniendose; no indica por si solo que la base este caida.
 
 Los roles los crea `deploy/initdb/10-roles.sh` en el **primer** arranque del
 volumen (`/docker-entrypoint-initdb.d`). El script es idempotente: correrlo
@@ -51,16 +74,56 @@ compose. Para inspeccionarlo:
 (`docker-compose.developer.yaml` si publica el 5433, solo para desarrollo.)
 
 **TLS:** dentro de la red del compose los DSN usan `sslmode=disable` porque
-el Postgres empaquetado no sirve certificado, y por eso `APP_ENV` debe ser
-`development` (con cualquier otro valor `RequireTLS` rechaza el DSN). Eso solo
-es aceptable en una red privada de compose. **En produccion** la base debe ser
-un PostgreSQL con TLS y los DSN deben usar `sslmode=verify-full` (con
-`sslrootcert` si la CA es privada), con `APP_ENV=production`: `RequireTLS`
-rechaza `disable`, `allow`, `prefer` y `require`.
+el Postgres empaquetado no sirve certificado, y por eso el compose fija
+`DB_REQUIRE_TLS=false` en `api` y `worker` (con su valor por defecto, `true`,
+el arranque rechaza ese DSN sea cual sea `APP_ENV`). Eso solo es aceptable en
+una red privada de compose. **En produccion** la base debe ser un PostgreSQL
+con TLS, los DSN deben usar `sslmode=verify-full` (con `sslrootcert` si la CA
+es privada) y hay que quitar ese `DB_REQUIRE_TLS=false` del compose: con
+`DB_REQUIRE_TLS=true` se rechazan `disable`, `allow`, `prefer` y `require`.
 
 **Swagger:** `APP_ENV=development` no lo activa. La UI y la spec solo se
 sirven con `SWAGGER_ENABLED=true`, que `deploy/.env` no debe definir; con
 `APP_ENV=production` esa combinacion hace fallar el arranque.
+
+### Parches
+
+Nada se actualiza solo: las imagenes y los modulos estan fijados para que
+cada build sea reproducible, asi que los parches llegan como PRs que alguien
+revisa y despliega.
+
+| Que | Cadencia | Mecanismo |
+|---|---|---|
+| Imagenes base del `Dockerfile` (`golang`, `alpine`) | Semanal | Dependabot (`docker`, `.github/dependabot.yml`) propone tag y digest nuevos en un PR agrupado |
+| Imagenes de los compose (`postgres`, `cerbos`) | Semanal | Dependabot (`docker-compose`) hace lo mismo en `deploy/` y `examples/api/` |
+| Modulos Go (vogel y este boilerplate) | Semanal | Dependabot (`gomod`), un PR agrupado por modulo; `govulncheck` en CI |
+| Vulnerabilidades conocidas en las imagenes construidas | Cada push o PR y cada lunes (06:17 UTC) | Workflow `Trivy` (`.github/workflows/trivy.yaml`): construye `api` y `worker` desde este `Dockerfile` y falla con hallazgos HIGH o CRITICAL que tengan version corregida |
+| Paquetes del sistema de la imagen (`apk`) | En cada rebuild | El runtime parte de `alpine` fijado por digest: un rebuild sin bump no trae parches, por eso importa mergear el PR semanal de Dependabot |
+
+Objetivo sugerido (ajustarlo a la politica del equipo): mergear y desplegar
+el PR semanal de Dependabot dentro de la misma semana (reconstruir con
+`docker compose -f deploy/docker-compose.yaml build` y desplegar con un
+`APP_VERSION` nuevo, ver seccion 5), y corregir un hallazgo CRITICAL de Trivy
+en produccion en 48 horas.
+
+**Si el workflow `Trivy` falla:**
+
+1. Abrir el log del paso que fallo: `Scan config` (configuracion del
+   `Dockerfile`) o `Scan images` (paquete del sistema o modulo Go con CVE).
+   La tabla indica paquete, version instalada y version corregida.
+2. Si es un modulo Go: subirlo a la version corregida en el `go.mod` que
+   corresponda (`go get <modulo>@<version> && go mod tidy`), en su propio PR.
+   Si el modulo llega por `vogel`, actualizar tambien el `go.mod` de la raiz.
+3. Si es un paquete de la imagen base: esperar o adelantar el bump de
+   Dependabot (`docker buildx imagetools inspect <imagen:tag>` da el digest
+   nuevo) y reconstruir.
+4. Si no hay version corregida, el workflow ya lo ignora
+   (`--ignore-unfixed`). Si se decide aceptar un hallazgo con correccion
+   disponible, registrarlo en `.trivyignore` en la raiz con el CVE, el
+   motivo y una fecha de revision; nunca desactivar el paso.
+5. Una falla en el cron del lunes sin cambios en el repositorio es una
+   advisory nueva contra lo que ya esta desplegado: tratarla como incidente
+   segun su severidad (seccion 12), no solo como CI en rojo.
 
 ### Actualizar un volumen existente
 
@@ -504,8 +567,8 @@ exposicion y, como minimo, una vez al año.
 
 | Secreto | Como rotarlo | Como verificar |
 |---|---|---|
-| `APP_RUNTIME_PASSWORD` | Cambiar el valor en `deploy/.env`, recrear Postgres para que reciba el valor (`docker compose -f deploy/docker-compose.yaml up -d postgres`) y correr `docker compose -f deploy/docker-compose.yaml exec postgres sh /docker-entrypoint-initdb.d/10-roles.sh`, que fija las dos contraseñas a los valores actuales; luego `docker compose -f deploy/docker-compose.yaml up -d api worker` | `/v1/healthz` responde 200 y el log no muestra `password authentication failed` |
-| `APP_MIGRATOR_PASSWORD` | Igual que la anterior (el mismo script); el valor nuevo lo usan `migrate` y `grants` en el proximo despliegue | `docker compose -f deploy/docker-compose.yaml run --rm migrate migrate status` |
+| `APP_RUNTIME_PASSWORD` | `ALTER ROLE` en el Postgres en marcha, sin recrear el contenedor ni el volumen: ver «Rotar las contraseñas de los roles» abajo | `/v1/healthz` responde 200, el worker queda `healthy` y el log no muestra `password authentication failed` |
+| `APP_MIGRATOR_PASSWORD` | Igual que la anterior; el valor nuevo lo usan `migrate` y `grants` en el proximo despliegue | `docker compose -f deploy/docker-compose.yaml run --rm migrate migrate status` |
 | `POSTGRES_PASSWORD` (superusuario) | `docker compose -f deploy/docker-compose.yaml exec postgres psql -U postgres -c "\password postgres"` y actualizar `deploy/.env` | `psql` con la contraseña nueva |
 | Zitadel (clave o secreto de la aplicacion API, si se usa introspeccion) | Crear una clave nueva en la consola de Zitadel (aplicacion API → Keys), desplegarla, reiniciar `api` y `worker` y recien entonces borrar la vieja. `ZITADEL_CLIENT_ID` no es secreto | Las requests autenticadas responden 200; el log no muestra `initializing zitadel` |
 | Cerbos (certificado TLS del PDP) | Renovar el certificado en el PDP; si es de una CA propia, desplegar primero la CA nueva en los clientes | Las rutas con `RequirePermission` responden 200 o 403, no 503 |
@@ -514,6 +577,46 @@ exposicion y, como minimo, una vez al año.
 
 Despues de rotar por una exposicion, revisar `audit_log` y los logs del
 proveedor afectado desde la fecha probable de la fuga.
+
+### Rotar las contraseñas de los roles sin recrear Postgres
+
+`deploy/initdb/10-roles.sh` (y el `POSTGRES_PASSWORD` de la imagen) solo
+corren cuando el volumen `pgdata` esta **vacio**: en un volumen existente,
+cambiar `APP_RUNTIME_PASSWORD` o `APP_MIGRATOR_PASSWORD` en `deploy/.env` no
+cambia nada en la base. La contraseña vive en el catalogo de PostgreSQL y se
+cambia con `ALTER ROLE` sobre la instancia en marcha; no hace falta recrear
+el contenedor ni, mucho menos, el volumen.
+
+1. Generar el valor nuevo (`openssl rand -hex 24`: viaja dentro de una URL
+   `postgres://`, sin caracteres especiales).
+2. Cambiarlo en la base. `\password` lo pide por teclado y envia solo el
+   hash SCRAM, asi que el valor no queda en el historial del shell, en la
+   lista de procesos ni en el log de Postgres:
+   ```bash
+   docker compose -f deploy/docker-compose.yaml exec postgres \
+     psql -U postgres -d boilerplate_db -c "\password app_runtime"
+   ```
+   (`app_migrator` para `APP_MIGRATOR_PASSWORD`.) Las conexiones ya abiertas
+   siguen funcionando; las nuevas exigen el valor nuevo.
+3. Actualizar `APP_RUNTIME_PASSWORD` en `deploy/.env` (o en el gestor de
+   secretos).
+4. Recrear solo los procesos que usan ese rol, **sin** tocar Postgres:
+   ```bash
+   docker compose -f deploy/docker-compose.yaml up -d --no-deps api worker
+   ```
+   `--no-deps` importa: el servicio `postgres` tambien recibe esas variables
+   (para `10-roles.sh`), asi que un `up -d` sin nombrar servicios lo
+   recrearia por cambio de configuracion. Para `app_migrator` no hay que
+   reiniciar nada: `migrate` y `grants` toman el valor en el proximo
+   despliegue.
+5. Verificar (tabla de arriba). Entre los pasos 2 y 4, una conexion nueva del
+   pool viejo falla con `password authentication failed`; hacer los pasos
+   seguidos, o en una ventana de bajo trafico.
+
+El contenedor de Postgres sigue con el valor viejo en su entorno hasta que se
+recree, lo que es inofensivo porque nadie lo lee en un volumen existente.
+Excepcion: no correr `10-roles.sh` a mano con ese contenedor sin recrearlo
+antes (`up -d postgres`), porque fijaria otra vez las contraseñas viejas.
 
 ---
 
