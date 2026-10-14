@@ -86,6 +86,12 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   `examples/boilerplate` (semanal, un PR agrupado por directorio, prefijo
   `build(deps)`). `govulncheck` solo avisa de vulnerabilidades conocidas y
   alcanzables; Dependabot mantiene las dependencias al día.
+- CI: nuevo workflow `release.yaml`. Con cada tag `v*` genera el SBOM
+  CycloneDX de la raíz y de `examples/boilerplate` (`cyclonedx-gomod`
+  v1.12.0) y lo adjunta, con un `SHA256SUMS`, al release de ese tag (lo crea
+  si no existe). Solo el job que publica tiene `contents: write`, y no hace
+  checkout ni corre el generador. El README explica cómo descargarlo y
+  verificarlo.
 - **`notification/sendgrid` y `auth/zitadel`: campo opcional
   `Config.HTTPTimeout` y constante `DefaultHTTPTimeout`** en cada paquete
   (30s y 10s respectivamente). Cero usa el valor por defecto; un valor
