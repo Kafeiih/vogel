@@ -149,10 +149,7 @@ func Load() (*Config, error) {
 			Issuer:   zitadelIssuer,
 			ClientID: zitadelClientID,
 		},
-		Cerbos: cerbos.Config{
-			Host:   config.String("CERBOS_HOST", "localhost:3593"),
-			UseTLS: config.Bool("CERBOS_TLS", false),
-		},
+		Cerbos: parseCerbosConfig(),
 		CORS: CORSConfig{
 			AllowedOrigins: parseSlice("CORS_ALLOWED_ORIGINS", ","),
 			AllowedMethods: []string{"GET", "POST", "PUT", "PATCH", "DELETE"},
@@ -301,6 +298,15 @@ func parseStorageConfigs() map[string]s3.Config {
 
 // parseMetricsConfig reads METRICS_* env vars and returns a MetricsConfig
 // with defaults.
+// parseCerbosConfig reads the Cerbos PDP connection. TLS is the default;
+// CERBOS_PLAINTEXT=true opts out, for the local development container only.
+func parseCerbosConfig() cerbos.Config {
+	return cerbos.Config{
+		Host:      config.String("CERBOS_HOST", "localhost:3593"),
+		Plaintext: config.Bool("CERBOS_PLAINTEXT", false),
+	}
+}
+
 func parseMetricsConfig() MetricsConfig {
 	return MetricsConfig{
 		ListenAddr: config.String("METRICS_LISTEN_ADDR", ":9090"),

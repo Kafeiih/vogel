@@ -257,6 +257,21 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   reemplazar TODOS los binarios viejos (o detener sus escrituras) antes de
   confiar en `ErrConflict`; mientras tanto se pueden seguir perdiendo
   actualizaciones concurrentes en silencio, igual que antes de este cambio.
+- **Cambio incompatible (breaking): `authz/cerbos` usa TLS por defecto.**
+  `cerbos.Config.UseTLS` desaparece y lo reemplaza `Plaintext bool`, una
+  exclusión explícita: el valor cero conecta por TLS. Antes `UseTLS` valía
+  `false` por defecto y eso significaba `cerbos.WithPlaintext()`, así que los
+  principales, sus roles y las decisiones de autorización viajaban en texto
+  plano salvo que el consumidor se acordara de activarlo. Migración:
+  `UseTLS: true` → quitar el campo; `UseTLS: false` (o no declararlo) →
+  `Plaintext: true`, solo si el PDP realmente escucha sin TLS (p. ej. el
+  contenedor local de desarrollo). Un consumidor que no declaraba `UseTLS` y
+  apunta a un PDP sin TLS deja de conectar hasta agregar `Plaintext: true`.
+- **`examples/boilerplate`: `CERBOS_TLS` se reemplaza por `CERBOS_PLAINTEXT`**
+  (`false` por defecto). Sin ella la conexión a Cerbos usa TLS; el `.env` de
+  desarrollo del README la pone en `true` para el contenedor de
+  `docker-compose.developer.yaml`, así que la experiencia local no cambia.
+  `CERBOS_TLS` ya no se lee.
 
 ## [0.8.0] — 2026-09-30
 
