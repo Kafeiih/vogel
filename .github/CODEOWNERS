@@ -19,3 +19,10 @@
 /migrate/    @Kafeiih
 /.github/    @Kafeiih
 /SECURITY.md @Kafeiih
+
+# Module files: a dependency change is a supply-chain change, in the library
+# and in the boilerplate consumers copy.
+/go.mod                      @Kafeiih
+/go.sum                      @Kafeiih
+/examples/boilerplate/go.mod @Kafeiih
+/examples/boilerplate/go.sum @Kafeiih

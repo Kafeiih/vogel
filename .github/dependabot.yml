@@ -11,6 +11,11 @@
 # routine bump instead of a jump across many releases under pressure. Each
 # directory gets one grouped weekly PR, so the noise stays at one review per
 # module per week.
+#
+# The boilerplate's Dockerfile and the compose files under examples/ are
+# covered too: Dependabot bumps image tags, and rewrites the digest together
+# with the tag where an image is pinned by digest, so the base images do not
+# quietly age into known-vulnerable ones.
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -39,6 +44,28 @@ updates:
       interval: weekly
     groups:
       gomod-boilerplate:
+        patterns: ["*"]
+    commit-message:
+      prefix: build(deps)
+
+  - package-ecosystem: docker
+    directory: /examples/boilerplate
+    schedule:
+      interval: weekly
+    groups:
+      docker-boilerplate:
+        patterns: ["*"]
+    commit-message:
+      prefix: build(deps)
+
+  - package-ecosystem: docker-compose
+    directories:
+      - /examples/api
+      - /examples/boilerplate/deploy
+    schedule:
+      interval: weekly
+    groups:
+      docker-compose:
         patterns: ["*"]
     commit-message:
       prefix: build(deps)

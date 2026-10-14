@@ -116,6 +116,17 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   si no existe). Solo el job que publica tiene `contents: write`, y no hace
   checkout ni corre el generador. El README explica cómo descargarlo y
   verificarlo.
+- CI: nuevo workflow `trivy.yaml` (push, pull request y semanal) con trivy
+  0.75.0 (binario verificado por SHA-256): `trivy config` sobre el repo y
+  `trivy image` sobre las imágenes `api` y `worker` construidas desde el
+  `Dockerfile` de `examples/boilerplate`; falla con HIGH/CRITICAL
+  (`--ignore-unfixed` en las imágenes).
+- CI: golangci-lint también corre sobre `examples/boilerplate`, con el
+  `.golangci.yml` de la raíz.
+- CI: Dependabot también actualiza las imágenes del `Dockerfile` del
+  boilerplate y de los compose de `examples/` (ecosistemas `docker` y
+  `docker-compose`). `.github/CODEOWNERS` cubre los `go.mod`/`go.sum` de la
+  raíz y del boilerplate.
 - Documentación de seguridad: `SECURITY.md` (reporte privado de
   vulnerabilidades, versiones con soporte, plazos y alcance),
   `docs/THREAT_MODEL.md` (límites de confianza, datos personales y terceros,
