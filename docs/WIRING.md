@@ -143,6 +143,48 @@ rechaza cualquier resource con ID vacío antes de evaluar la política):
 func RequirePermission(checker authz.Checker, resourceKind, action string, logger *slog.Logger, opts ...AuthOption) func(http.Handler) http.Handler
 ```
 
+### Revocación de tokens: introspección opcional en `auth/zitadel`
+
+Por defecto `auth/zitadel` verifica el access token localmente (firma con el
+JWKS de Zitadel, `iss`, `exp`, `aud`, más los chequeos propios de `nbf`,
+`MaxTokenLifetime` y `AllowedAuthorizedParties`). Es rápido y no depende de
+Zitadel en cada request, pero un token revocado o una sesión cerrada siguen
+valiendo hasta su `exp`.
+
+Si la aplicación necesita revocación (cerrar sesión en todos lados, dar de
+baja a un usuario o un cliente comprometido y que el corte sea inmediato),
+se activa la introspección (RFC 7662):
+
+```go
+authn, err := zitadel.New(ctx, zitadel.Config{
+	Issuer:   issuer,
+	ClientID: apiClientID,
+	Introspection: &zitadel.IntrospectionConfig{
+		KeyFile: "/run/secrets/zitadel-api-key.json", // o ClientSecret: ...
+	},
+})
+```
+
+- **Credencial:** el endpoint de introspección autentica a la API. Se usa
+  exactamente una: `KeyFile` (el `key.json` de la aplicación API, perfil
+  JWT) o `ClientSecret` (basic auth con `Config.ClientID`).
+- **Costo:** cada token no cacheado es un round trip a Zitadel, acotado por
+  `Config.HTTPTimeout`. Si Zitadel no responde, o rechaza las credenciales
+  de la API, la request recibe 503 (`auth.ErrServiceUnavailable`), no 401:
+  la caída del proveedor nunca se confunde con un token inválido.
+- **Caché:** los resultados activos se guardan en memoria durante
+  `CacheTTL` (30s por defecto), nunca más allá del `exp` del token, con a lo
+  sumo `CacheMaxEntries` entradas (10000 por defecto, desaloja la menos
+  usada). La clave es el SHA-256 del token, nunca el token. Los resultados
+  inactivos no se cachean. El compromiso: un token revocado puede seguir
+  aceptándose hasta `CacheTTL` después de la revocación; bajar el TTL acorta
+  esa ventana a cambio de más llamadas a Zitadel. La caché es por proceso:
+  cada réplica hace sus propias llamadas.
+- **Chequeos:** sobre el resultado de la introspección siguen corriendo
+  `nbf`, `MaxTokenLifetime` y `AllowedAuthorizedParties`, y además se exige
+  que `aud` incluya `Config.ClientID`, igual que en la verificación local.
+  Un token inactivo es el mismo 401 genérico que cualquier token inválido.
+
 ### El mapeo de códigos
 
 Ambos middlewares comparten la misma regla de tres vías, y la corrección 13

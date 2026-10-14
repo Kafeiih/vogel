@@ -8,6 +8,28 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ### Agregado
 
+- **`auth/zitadel`: introspección opcional de tokens (`Config.Introspection`
+  e `IntrospectionConfig`).** Si se configura, cada token se valida contra el
+  endpoint de introspección de Zitadel (RFC 7662, vía el `rs.ResourceServer`
+  y el `IntrospectionVerificationWithCache` del SDK) en lugar de verificar el
+  JWT localmente, de modo que un token revocado o una sesión cerrada dejan de
+  aceptarse antes de su `exp`. Sin configurar (el valor por defecto) nada
+  cambia: sigue la verificación local del JWT. La API se autentica con
+  exactamente una credencial: `KeyFile` (el `key.json` de la aplicación,
+  perfil JWT) o `ClientSecret` (basic auth con `Config.ClientID`); ninguna o
+  ambas hacen fallar el constructor. Discovery y cada introspección usan el
+  cliente acotado por `Config.HTTPTimeout`. Los resultados activos se
+  cachean en memoria durante `CacheTTL` (constante
+  `DefaultIntrospectionCacheTTL`, 30s, sin pasar del `exp` del token) con a
+  lo sumo `CacheMaxEntries` entradas (`DefaultIntrospectionCacheMaxEntries`,
+  10000, desalojo LRU); la clave es el SHA-256 del token y los resultados
+  inactivos no se cachean. Un valor negativo en cualquiera de los dos hace
+  fallar el constructor. Compromiso: un token revocado puede seguir
+  aceptándose hasta `CacheTTL`. Sobre el resultado corren los mismos
+  chequeos (`nbf`, `MaxTokenLifetime`, `AllowedAuthorizedParties`) más que
+  `aud` incluya `Config.ClientID`; un token inactivo es un 401 genérico, y
+  una introspección fallida (caída, timeout o credenciales de la API
+  rechazadas) es `auth.ErrServiceUnavailable` (503).
 - **`request`: `Validator.MaxLen(param, value, max)` y el mensaje
   `Messages.TooLong(field, max)`.** Registra un error de validación si el
   valor tiene más de `max` caracteres, contados en runas

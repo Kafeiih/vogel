@@ -23,11 +23,12 @@ type Config struct {
 	Issuer   string // Zitadel instance issuer URL, e.g. "https://my-instance.zitadel.cloud"
 	ClientID string // OIDC client/application ID used for audience validation
 
-	// HTTPTimeout bounds each request of OIDC discovery and of the JWKS
+	// HTTPTimeout bounds each request of OIDC discovery, of the JWKS
 	// downloads (on construction and whenever an unknown key ID forces a
-	// refresh). Zero means DefaultHTTPTimeout; negative is a construction
-	// error. Without it the SDK falls back to http.DefaultClient, which has
-	// no timeout, so a stalled issuer could hang token validation.
+	// refresh) and, with Introspection set, of every introspection call.
+	// Zero means DefaultHTTPTimeout; negative is a construction error.
+	// Without it the SDK falls back to http.DefaultClient, which has no
+	// timeout, so a stalled issuer could hang token validation.
 	HTTPTimeout time.Duration
 
 	// MaxTokenLifetime, when positive, rejects tokens whose lifetime
@@ -46,13 +47,22 @@ type Config struct {
 	// validation against ClientID applies either way. An empty entry is a
 	// construction error.
 	AllowedAuthorizedParties []string
+
+	// Introspection, when set, validates every token with Zitadel's OAuth2
+	// introspection endpoint (RFC 7662) instead of verifying the JWT locally,
+	// so a revoked token or a terminated session stops being accepted
+	// without waiting for its exp. Nil (the default) keeps local JWT
+	// verification. See IntrospectionConfig for the credential it needs and
+	// for the cache that bounds its cost.
+	Introspection *IntrospectionConfig
 }
 
 // DefaultHTTPTimeout is the per-request timeout for discovery and JWKS
 // fetches used when Config.HTTPTimeout is zero.
 const DefaultHTTPTimeout = 10 * time.Second
 
-// jwksHTTPClient returns the client used for OIDC discovery and JWKS fetches.
+// jwksHTTPClient returns the client used for OIDC discovery, JWKS fetches
+// and introspection calls.
 func jwksHTTPClient(cfg Config) *http.Client {
 	timeout := cfg.HTTPTimeout
 	if timeout == 0 {
@@ -61,9 +71,11 @@ func jwksHTTPClient(cfg Config) *http.Client {
 	return &http.Client{Timeout: timeout}
 }
 
-// Authenticator implements auth.Authenticator using Zitadel's local JWT
-// verification: the instance's public keys (JWKS) are downloaded once on
-// construction and cached in memory for subsequent requests.
+// Authenticator implements auth.Authenticator. By default it uses Zitadel's
+// local JWT verification: the instance's public keys (JWKS) are downloaded
+// once on construction and cached in memory for subsequent requests. With
+// Config.Introspection set it asks Zitadel's introspection endpoint instead
+// (with a short in-memory cache of active results).
 //
 // The concrete generic type authorization.Authorizer[*oauth.IntrospectionContext]
 // is deliberately kept private to this package: it must never appear in the
@@ -74,36 +86,79 @@ type Authenticator struct {
 	authorizer               *authorization.Authorizer[*oauth.IntrospectionContext]
 	allowedAuthorizedParties []string
 	maxTokenLifetime         time.Duration
+
+	// Introspection mode only: whether it is on, the audience every result
+	// must carry, and the result cache (nil with local JWT verification).
+	introspection bool
+	clientID      string
+	cache         *introspectionCache
 }
 
 // New creates an Authenticator that validates tokens issued by the Zitadel
 // instance at cfg.Issuer for the audience cfg.ClientID.
 func New(ctx context.Context, cfg Config) (*Authenticator, error) {
+	cfg, err := validateConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return build(ctx, zitadel.New(cfg.Issuer), cfg)
+}
+
+// validateConfig rejects an invalid cfg and returns it with the
+// introspection defaults applied, on a copy: the caller's
+// IntrospectionConfig is never modified.
+func validateConfig(cfg Config) (Config, error) {
 	if cfg.Issuer == "" {
-		return nil, fmt.Errorf("auth/zitadel: issuer is required")
+		return cfg, fmt.Errorf("auth/zitadel: issuer is required")
 	}
 	if cfg.ClientID == "" {
-		return nil, fmt.Errorf("auth/zitadel: client ID is required")
+		return cfg, fmt.Errorf("auth/zitadel: client ID is required")
 	}
 	if cfg.HTTPTimeout < 0 {
-		return nil, fmt.Errorf("auth/zitadel: HTTP timeout must not be negative")
+		return cfg, fmt.Errorf("auth/zitadel: HTTP timeout must not be negative")
 	}
 	if cfg.MaxTokenLifetime < 0 {
-		return nil, fmt.Errorf("auth/zitadel: max token lifetime must not be negative")
+		return cfg, fmt.Errorf("auth/zitadel: max token lifetime must not be negative")
 	}
 	if slices.Contains(cfg.AllowedAuthorizedParties, "") {
-		return nil, fmt.Errorf("auth/zitadel: allowed authorized parties must not contain an empty client ID")
+		return cfg, fmt.Errorf("auth/zitadel: allowed authorized parties must not contain an empty client ID")
 	}
+	if cfg.Introspection != nil {
+		ic, err := validateIntrospection(*cfg.Introspection)
+		if err != nil {
+			return cfg, err
+		}
+		cfg.Introspection = &ic
+	}
+	return cfg, nil
+}
 
-	z := zitadel.New(cfg.Issuer)
-	// oauth.WithJWT is what DefaultJWTAuthorization wraps, with a nil client
-	// that it replaces by http.DefaultClient; pass a bounded one instead.
-	authorizer, err := authorization.New(ctx, z, oauth.WithJWT(cfg.ClientID, jwksHTTPClient(cfg)))
+// build constructs the Authenticator for an already validated cfg against z.
+// New passes zitadel.New(cfg.Issuer); this package's tests pass a plain-HTTP
+// zitadel.Zitadel pointed at an httptest issuer.
+func build(ctx context.Context, z *zitadel.Zitadel, cfg Config) (*Authenticator, error) {
+	httpClient := jwksHTTPClient(cfg)
+	var (
+		initVerifier authorization.VerifierInitializer[*oauth.IntrospectionContext]
+		cache        *introspectionCache
+	)
+	if cfg.Introspection != nil {
+		cache = newIntrospectionCache(cfg.Introspection.CacheMaxEntries)
+		initVerifier = withIntrospection(*cfg.Introspection, cfg.ClientID, httpClient, cache)
+	} else {
+		// oauth.WithJWT is what DefaultJWTAuthorization wraps, with a nil
+		// client that it replaces by http.DefaultClient; pass a bounded one
+		// instead.
+		initVerifier = oauth.WithJWT(cfg.ClientID, httpClient)
+	}
+	authorizer, err := authorization.New(ctx, z, initVerifier)
 	if err != nil {
 		return nil, fmt.Errorf("auth/zitadel: creating authorizer: %w", err)
 	}
 
-	return newFromAuthorizer(authorizer, cfg), nil
+	a := newFromAuthorizer(authorizer, cfg)
+	a.cache = cache
+	return a, nil
 }
 
 // newFromAuthorizer builds an Authenticator around an already-constructed
@@ -118,6 +173,8 @@ func newFromAuthorizer(a *authorization.Authorizer[*oauth.IntrospectionContext],
 		authorizer:               a,
 		allowedAuthorizedParties: slices.Clone(cfg.AllowedAuthorizedParties),
 		maxTokenLifetime:         cfg.MaxTokenLifetime,
+		introspection:            cfg.Introspection != nil,
+		clientID:                 cfg.ClientID,
 	}
 }
 
@@ -138,7 +195,11 @@ func newFromAuthorizer(a *authorization.Authorizer[*oauth.IntrospectionContext],
 // After the SDK accepts the token, checkClaims rejects a non-string azp, an
 // azp outside Config.AllowedAuthorizedParties (when that list is set), a token whose nbf is still in the future, and (when
 // Config.MaxTokenLifetime is set) a token whose lifetime exceeds it; those
-// rejections wrap auth.ErrUnauthenticated like any other invalid token.
+// rejections wrap auth.ErrUnauthenticated like any other invalid token. In
+// introspection mode the same checks run on the introspection result, plus
+// an audience check (aud must include Config.ClientID) that local JWT
+// verification already performs inside the SDK; an inactive token is the
+// SDK's generic unauthorized error.
 func (a *Authenticator) Authenticate(ctx context.Context, token string) (*auth.Principal, error) {
 	authCtx, err := a.authorizer.CheckAuthorization(ctx, oidc.PrefixBearer+token)
 	if err != nil {
@@ -146,6 +207,11 @@ func (a *Authenticator) Authenticate(ctx context.Context, token string) (*auth.P
 	}
 	if err := checkClaims(claimsOf(authCtx), a.allowedAuthorizedParties, a.maxTokenLifetime, time.Now()); err != nil {
 		return nil, fmt.Errorf("auth/zitadel: %w: %w", auth.ErrUnauthenticated, err)
+	}
+	if a.introspection {
+		if err := checkAudience(authCtx, a.clientID); err != nil {
+			return nil, fmt.Errorf("auth/zitadel: %w: %w", auth.ErrUnauthenticated, err)
+		}
 	}
 
 	return &auth.Principal{
@@ -163,6 +229,15 @@ func mapError(err error) error {
 	if errors.As(err, &unavailable) {
 		// The identity provider is unreachable or failing (5xx) — this must
 		// never collapse into ErrUnauthenticated. See FIX 2 in the vogel README.
+		return fmt.Errorf("auth/zitadel: %w: %w", auth.ErrServiceUnavailable, err)
+	}
+
+	if errors.Is(err, oauth.ErrIntrospectionFailed) {
+		// The introspection call itself failed (transport error, timeout,
+		// or Zitadel rejecting this API's client credentials). An inactive
+		// token is a successful call with active=false, so this failure
+		// says nothing about the token: it is an outage or a
+		// misconfiguration, not a reason to answer 401.
 		return fmt.Errorf("auth/zitadel: %w: %w", auth.ErrServiceUnavailable, err)
 	}
 
