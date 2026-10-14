@@ -72,9 +72,19 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 - **`reqctx`: `WithClientRequestID` y `ClientRequestIDFromContext`**, para el
   ID de correlación enviado por el cliente, separado del ID de request del
   servidor.
+- **`authz/cerbos`: `(*Checker).Ping(ctx)`.** Pide `ServerInfo` al PDP (una
+  RPC barata que no evalúa políticas) y devuelve un error que nombra el host si
+  falla. Como la conexión gRPC es perezosa, `New` no detecta un host erróneo ni
+  un modo de transporte que no coincide; `Ping` permite detectarlo al arrancar.
 
 ### Cambiado
 
+- **`examples/boilerplate`: el arranque de la API falla si el PDP de Cerbos
+  no responde.** Tras construir el checker se hace un `Ping` acotado a 5s; si
+  falla, el arranque termina con un error que nombra el host, el modo (TLS o
+  plaintext) y `CERBOS_PLAINTEXT`. Antes un despliegue que nunca definió
+  `CERBOS_TLS` (y por eso usaba plaintext) arrancaba bien con el nuevo
+  default TLS y respondía 503 en cada autorización.
 - **`httpx/middleware.RequestContext` prefiere el ID de `RequestID`.** Toma
   el ID de request ya guardado en `reqctx` y solo si no hay ninguno recurre
   al `GetReqID` de chi, de modo que quien siga montando el
