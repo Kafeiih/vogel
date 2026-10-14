@@ -278,7 +278,10 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   (`false` por defecto). Sin ella la conexión a Cerbos usa TLS; el `.env` de
   desarrollo del README la pone en `true` para el contenedor de
   `docker-compose.developer.yaml`, así que la experiencia local no cambia.
-  `CERBOS_TLS` ya no se lee.
+  `CERBOS_TLS` ya no se lee, y si sigue definida (con cualquier valor, incluso
+  vacía) el arranque falla con un error que nombra `CERBOS_PLAINTEXT` como
+  reemplazo, en lugar de pasar a TLS en silencio y responder 503 en cada
+  autorización contra un PDP sin TLS.
 - **Las llamadas HTTP salientes de `notification/sendgrid`, `storage/s3` y
   `auth/zitadel` tienen un timeout acotado por defecto.** Antes ninguna lo
   tenía: un proveedor que dejaba de responder colgaba la goroutine para
