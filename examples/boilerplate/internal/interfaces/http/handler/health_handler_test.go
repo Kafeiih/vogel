@@ -250,3 +250,105 @@ func TestHealth_LogsOnlyOnStateTransitions(t *testing.T) {
 	probe(h.Ready, "/readyz", http.StatusServiceUnavailable)
 	expect("second outage", slog.LevelError)
 }
+
+// While the database stays down, a different failure cause (the network is
+// back but the password was rotated, say) is new information and is logged
+// once; repeating the same cause is not.
+func TestHealth_LogsWhenTheFailureCauseChanges(t *testing.T) {
+	pinger := &fakePinger{err: errors.New("connection refused")}
+	rec := &recordingHandler{}
+	h := NewHealthHandler(pinger, slog.New(rec))
+
+	probe := func() {
+		t.Helper()
+		w := httptest.NewRecorder()
+		h.Ready(w, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+		if w.Code != http.StatusServiceUnavailable {
+			t.Fatalf("GET /readyz = %d, want %d", w.Code, http.StatusServiceUnavailable)
+		}
+	}
+
+	probe()
+	probe()
+	if got := rec.take(); len(got) != 1 || got[0] != slog.LevelError {
+		t.Fatalf("first cause: logged levels %v, want [ERROR]", got)
+	}
+
+	pinger.err = errors.New("password authentication failed")
+	probe()
+	probe()
+	if got := rec.take(); len(got) != 1 || got[0] != slog.LevelError {
+		t.Fatalf("changed cause: logged levels %v, want [ERROR]", got)
+	}
+
+	pinger.err = nil
+	w := httptest.NewRecorder()
+	h.Ready(w, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if got := rec.take(); len(got) != 1 || got[0] != slog.LevelInfo {
+		t.Fatalf("recovery: logged levels %v, want [INFO]", got)
+	}
+}
+
+// ctxPinger fails with the context's error once it is done, like pgx does
+// when the caller goes away mid-ping.
+type ctxPinger struct{ err error }
+
+func (p *ctxPinger) Ping(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return p.err
+}
+
+// A ping cut short because the caller hung up says nothing about the
+// database: it is neither logged nor recorded as a state change, so it
+// cannot open (or close) an outage in the log.
+func TestHealth_CallerCancellationIsNotADatabaseFailure(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		probe func(*HealthHandler) http.HandlerFunc
+	}{
+		{"healthz", func(h *HealthHandler) http.HandlerFunc { return h.Check }},
+		{"readyz", func(h *HealthHandler) http.HandlerFunc { return h.Ready }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			pinger := &ctxPinger{}
+			rec := &recordingHandler{}
+			h := NewHealthHandler(pinger, slog.New(rec))
+
+			canceled, cancel := context.WithCancel(context.Background())
+			cancel()
+			req := httptest.NewRequest(http.MethodGet, "/"+tt.name, nil).WithContext(canceled)
+			w := httptest.NewRecorder()
+			tt.probe(h)(w, req)
+
+			if got := rec.take(); len(got) != 0 {
+				t.Fatalf("canceled caller: logged levels %v, want none", got)
+			}
+			if w.Code == http.StatusServiceUnavailable {
+				t.Errorf("canceled caller answered 503: the database was reported down")
+			}
+
+			// The database was never marked down, so a healthy probe now has
+			// no recovery to log...
+			w = httptest.NewRecorder()
+			tt.probe(h)(w, httptest.NewRequest(http.MethodGet, "/"+tt.name, nil))
+			if w.Code != http.StatusOK {
+				t.Fatalf("healthy probe = %d, want %d", w.Code, http.StatusOK)
+			}
+			if got := rec.take(); len(got) != 0 {
+				t.Fatalf("healthy probe after a canceled one: logged levels %v, want none", got)
+			}
+
+			// ...and during a real outage a canceled probe does not end it.
+			pinger.err = errors.New("connection refused")
+			tt.probe(h)(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/"+tt.name, nil))
+			rec.take()
+			tt.probe(h)(httptest.NewRecorder(), req)
+			tt.probe(h)(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/"+tt.name, nil))
+			if got := rec.take(); len(got) != 0 {
+				t.Fatalf("outage with a canceled probe in between: logged levels %v, want none", got)
+			}
+		})
+	}
+}
