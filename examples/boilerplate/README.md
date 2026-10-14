@@ -102,8 +102,10 @@ go run ./cmd/api start-from-migrate   # o: make dev
 > PDP de Cerbos. Sin ella la conexión gRPC usa TLS; el contenedor de
 > `docker-compose.developer.yaml` escucha sin TLS, por eso el `.env` local la
 > pone en `true`. Nunca la active en staging ni en producción: las decisiones
-> de autorización viajarían en texto plano. Reemplaza a `CERBOS_TLS`, que ya
-> no se lee.
+> de autorización viajarían en texto plano. Reemplaza a `CERBOS_TLS`: si esa
+> variable sigue definida (con cualquier valor), el arranque falla con un
+> error que indica usar `CERBOS_PLAINTEXT`, para que la migración no pase
+> inadvertida.
 >
 > `TRUSTED_PROXIES` (opcional, vacía por defecto) lista, separados por comas,
 > los CIDR o IP de los proxies inversos o balanceadores cuyas cabeceras

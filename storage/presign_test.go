@@ -102,19 +102,24 @@ func TestApplyPresignGetOptions(t *testing.T) {
 		want PresignGetOptions
 	}{
 		{
-			name: "no options default to attachment and no content type override",
+			name: "no options default to an octet-stream attachment",
 			opts: nil,
-			want: PresignGetOptions{ContentDisposition: DefaultContentDisposition},
+			want: PresignGetOptions{ContentDisposition: DefaultContentDisposition, ContentType: DefaultResponseContentType},
 		},
 		{
 			name: "WithContentDisposition overrides the default",
 			opts: []PresignGetOption{WithContentDisposition("inline")},
-			want: PresignGetOptions{ContentDisposition: "inline"},
+			want: PresignGetOptions{ContentDisposition: "inline", ContentType: DefaultResponseContentType},
 		},
 		{
 			name: "WithContentDisposition with an empty value keeps the secure default",
 			opts: []PresignGetOption{WithContentDisposition("")},
-			want: PresignGetOptions{ContentDisposition: DefaultContentDisposition},
+			want: PresignGetOptions{ContentDisposition: DefaultContentDisposition, ContentType: DefaultResponseContentType},
+		},
+		{
+			name: "an empty WithResponseContentType keeps the octet-stream default",
+			opts: []PresignGetOption{WithResponseContentType("")},
+			want: PresignGetOptions{ContentDisposition: DefaultContentDisposition, ContentType: DefaultResponseContentType},
 		},
 		{
 			name: "WithResponseContentType is kept alongside the default disposition",
@@ -124,7 +129,7 @@ func TestApplyPresignGetOptions(t *testing.T) {
 		{
 			name: "last disposition option wins",
 			opts: []PresignGetOption{AsAttachment("a.pdf"), WithContentDisposition("inline")},
-			want: PresignGetOptions{ContentDisposition: "inline"},
+			want: PresignGetOptions{ContentDisposition: "inline", ContentType: DefaultResponseContentType},
 		},
 		{
 			name: "nil option is ignored",

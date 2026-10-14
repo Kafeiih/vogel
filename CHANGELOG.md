@@ -28,6 +28,17 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   hace fallar el arranque. Cambio de comportamiento: detrás de un balanceador,
   hay que declarar sus direcciones en `TRUSTED_PROXIES` o todas las requests
   aparecen con la IP del balanceador.
+- **`storage`: `SniffContentType(r, allowed...)` y `ErrContentTypeNotAllowed`.**
+  Detecta el tipo de un archivo subido a partir de su contenido (los primeros
+  512 bytes, con `http.DetectContentType`) en lugar de confiar en el
+  `Content-Type` que declara el cliente, y lo compara con una lista permitida.
+  La comparación usa solo el tipo de medio (ignora parámetros como `charset`
+  y mayúsculas, vía `mime.ParseMediaType`). Devuelve el tipo detectado y un
+  lector con el contenido completo (los bytes leídos incluidos) para pasarlo a
+  `Upload`; si el tipo no está permitido, el error envuelve
+  `ErrContentTypeNotAllowed`. `examples/api` lo usa en la subida de archivos:
+  acepta `application/pdf`, `image/png`, `image/jpeg` y `text/plain`, guarda
+  el tipo detectado y responde 415 a cualquier otro contenido.
 - `httpx/response`: constante `CodeUnsupportedMediaType` (`UNSUPPORTED_MEDIA_TYPE`).
 - CI: nuevo job `govulncheck` que escanea la raíz y `examples/boilerplate`.
 - **`notification/sendgrid` y `auth/zitadel`: campo opcional
@@ -200,6 +211,18 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   navegador renderizaba un HTML o SVG subido en el origen del bucket. Cambio de
   comportamiento: quien necesite renderizado en línea pasa
   `storage.WithContentDisposition("inline")` explícitamente.
+- **`storage`: las URL de descarga prefirmadas sirven
+  `application/octet-stream` por defecto.** `ApplyPresignGetOptions` fija
+  `ContentType` en la nueva constante `storage.DefaultResponseContentType`
+  salvo que se pase `WithResponseContentType` con un valor no vacío, y
+  `storage/s3` siempre firma `response-content-type`. Antes, sin esa opción,
+  se servía el tipo guardado, que normalmente venía del cliente que subió el
+  archivo. Junto con `attachment` por defecto, el navegador nunca renderiza
+  en línea un objeto subido salvo que el consumidor lo pida. **Cambio de
+  comportamiento**: quien dependía del tipo guardado pasa
+  `WithResponseContentType` con un tipo verificado (p. ej. el que detectó
+  `SniffContentType` al subir). `PresignGetOptions.ContentType` ya no queda
+  vacío tras `ApplyPresignGetOptions`.
 - **`storage/s3`: `Config.PresignExpiry` se respeta.** Se declaraba pero nada lo
   leía. Ahora `PresignedGetURL` y `PresignedPutURL` lo usan cuando el `expiry`
   de la llamada es `<= 0` (nueva constante `DefaultPresignExpiry` = 15m cuando

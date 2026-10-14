@@ -525,6 +525,11 @@ func (h *DocumentHandler) Inbox(w http.ResponseWriter, r *http.Request) {
 // streaming an unbounded body.
 const maxUploadBytes = 25 << 20 // 25 MiB
 
+// allowedUploadTypes are the media types UploadFile accepts, detected from
+// the content by storage.SniffContentType rather than taken from the
+// client's Content-Type header: the document kinds this example stores.
+var allowedUploadTypes = []string{"application/pdf", "image/png", "image/jpeg", "text/plain"}
+
 // UploadFile attaches the raw request body to an existing document through
 // the storage port, then records the attachment in the audit trail.
 //
@@ -545,6 +550,28 @@ func (h *DocumentHandler) UploadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	limited := http.MaxBytesReader(w, r.Body, maxUploadBytes)
+	defer func() { _ = limited.Close() }()
+
+	// The stored (and later served) type comes from the content, never from
+	// the client's Content-Type header, which anyone can set to
+	// application/pdf on an HTML file. Sniffing reads only the first bytes;
+	// body still yields the whole upload. It runs before the document lookup
+	// on purpose, so a disallowed body is refused without a database round
+	// trip: a disallowed upload to a missing document therefore answers 415,
+	// not 404.
+	contentType, body, err := storage.SniffContentType(limited, allowedUploadTypes...)
+	if errors.Is(err, storage.ErrContentTypeNotAllowed) {
+		response.Error(w, r, http.StatusUnsupportedMediaType, response.CodeUnsupportedMediaType,
+			"file type not allowed: upload a PDF, PNG, JPEG or plain-text file")
+		return
+	}
+	if err != nil {
+		h.logger.ErrorContext(r.Context(), "upload file: read body", "error", err)
+		response.Error(w, r, http.StatusBadRequest, response.CodeValidationError, "failed to read the uploaded file")
+		return
+	}
+
 	db := pgxtx.DBFromContext(r.Context(), h.pool)
 
 	before, err := h.store.GetByID(r.Context(), db, id)
@@ -557,14 +584,6 @@ func (h *DocumentHandler) UploadFile(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, r, http.StatusInternalServerError, response.CodeInternalError, "failed to get document")
 		return
 	}
-
-	contentType := r.Header.Get("Content-Type")
-	if contentType == "" {
-		contentType = "application/octet-stream"
-	}
-
-	body := http.MaxBytesReader(w, r.Body, maxUploadBytes)
-	defer func() { _ = body.Close() }()
 
 	key := StorageKeyFor(before.ID)
 
