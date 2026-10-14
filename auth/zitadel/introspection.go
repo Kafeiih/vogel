@@ -140,8 +140,11 @@ func withIntrospection(ic IntrospectionConfig, clientID string, httpClient *http
 // at once, wrapped in oauth.ErrIntrospectionFailed (an aborted check says
 // nothing about the token), while the shared call carries on.
 //
-// Every caller gets its own copy of the result, because the SDK's
-// Authorizer calls SetToken on the context it returns.
+// Every caller gets its own shallow copy of the result, because the SDK's
+// Authorizer calls SetToken on the context it returns. The copy is shallow:
+// reference-typed fields of the introspection response (the audience slice,
+// the claims map) stay shared between callers and the cached entry, so code
+// on this path must only read them, as checkAudience and claimsOf do.
 type introspectionVerifier struct {
 	server rs.ResourceServer
 	cache  *introspectionCache

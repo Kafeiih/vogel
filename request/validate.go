@@ -241,9 +241,9 @@ func (v *Validator) Enum(param, value string, allowed []string) string {
 // character counts once. It records a TooLong error when the value is longer
 // and returns the value as-is either way; an empty value always passes, so
 // combine it with a required check when the field is mandatory.
-func (v *Validator) MaxLen(param, value string, max int) string {
-	if utf8.RuneCountInString(value) > max {
-		v.AddError(param, v.messages.TooLong(param, max))
+func (v *Validator) MaxLen(param, value string, maxRunes int) string {
+	if utf8.RuneCountInString(value) > maxRunes {
+		v.AddError(param, v.messages.TooLong(param, maxRunes))
 	}
 	return value
 }
