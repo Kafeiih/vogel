@@ -86,9 +86,12 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   `client_request_id`, separado del `request_id` generado por el servidor; sin
   él, la clave se omite.
 - **`examples/boilerplate`: el arranque de la API falla si el PDP de Cerbos
-  no responde.** Tras construir el checker se hace un `Ping` acotado a 5s; si
-  falla, el arranque termina con un error que nombra el host, el modo (TLS o
-  plaintext) y `CERBOS_PLAINTEXT`. Antes un despliegue que nunca definió
+  no responde.** Tras construir el checker se hace un `Ping` (cada intento
+  acotado a 5s) que se reintenta con backoff exponencial (desde 500ms, máximo
+  4s entre intentos) durante hasta 30s, para tolerar un PDP que tarda en
+  levantar (orden de arranque de contenedores, un rollout de Cerbos). Si
+  sigue sin responder, el arranque termina con un error que nombra el host,
+  el modo (TLS o plaintext) y `CERBOS_PLAINTEXT`. Antes un despliegue que nunca definió
   `CERBOS_TLS` (y por eso usaba plaintext) arrancaba bien con el nuevo
   default TLS y respondía 503 en cada autorización.
 - **`httpx/middleware.RequestContext` prefiere el ID de `RequestID`.** Toma
