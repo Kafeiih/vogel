@@ -359,27 +359,56 @@ func runServer(migrateFirst bool) error {
 }
 
 // cerbosProbeTimeout bounds the startup reachability probe of the Cerbos PDP.
-const cerbosProbeTimeout = 5 * time.Second
+// cerbosProbeTimeout bounds each startup probe attempt; cerbosProbeBudget
+// bounds all of them, so a PDP that is briefly down at boot (container start
+// order, a Cerbos rollout) is waited for instead of killing the API, while a
+// wrong host or TLS mode still fails the boot within seconds of the budget.
+// Between attempts the wait starts at cerbosProbeBackoff and doubles, capped
+// at cerbosProbeMaxBackoff. They are variables only so tests can shrink them.
+var (
+	cerbosProbeTimeout    = 5 * time.Second
+	cerbosProbeBudget     = 30 * time.Second
+	cerbosProbeBackoff    = 500 * time.Millisecond
+	cerbosProbeMaxBackoff = 4 * time.Second
+)
 
 // pinger is the part of *cerbos.Checker the startup probe needs.
 type pinger interface {
 	Ping(ctx context.Context) error
 }
 
-// probeCerbos makes one bounded call to the PDP so a wrong host or a TLS
-// mismatch fails the boot instead of turning every authorization into a 503.
+// probeCerbos calls the PDP until it answers or cerbosProbeBudget is spent, so
+// a wrong host or a TLS mismatch fails the boot instead of turning every
+// authorization into a 503, and a PDP that is only briefly down is waited for.
 // The gRPC connection is lazy, so cerbos.New alone proves nothing. The usual
 // mismatch is a deployment written when plaintext was the default: Cerbos now
 // uses TLS unless CERBOS_PLAINTEXT=true, which the error names.
 func probeCerbos(ctx context.Context, p pinger, cfg cerbos.Config) error {
+	deadline := time.Now().Add(cerbosProbeBudget)
+	backoff := cerbosProbeBackoff
+	for {
+		err := pingOnce(ctx, p)
+		if err == nil {
+			return nil
+		}
+		if ctx.Err() != nil || time.Now().Add(backoff).After(deadline) {
+			mode := "TLS"
+			if cfg.Plaintext {
+				mode = "plaintext"
+			}
+			return fmt.Errorf("cerbos PDP at %s is unreachable over %s after retrying for %s (TLS is the default; set CERBOS_PLAINTEXT=true only for a PDP without TLS): %w", cfg.Host, mode, cerbosProbeBudget, err)
+		}
+		select {
+		case <-ctx.Done():
+		case <-time.After(backoff):
+		}
+		backoff = min(backoff*2, cerbosProbeMaxBackoff)
+	}
+}
+
+// pingOnce runs one probe attempt bounded by cerbosProbeTimeout.
+func pingOnce(ctx context.Context, p pinger) error {
 	ctx, cancel := context.WithTimeout(ctx, cerbosProbeTimeout)
 	defer cancel()
-	if err := p.Ping(ctx); err != nil {
-		mode := "TLS"
-		if cfg.Plaintext {
-			mode = "plaintext"
-		}
-		return fmt.Errorf("cerbos PDP at %s is unreachable over %s (TLS is the default; set CERBOS_PLAINTEXT=true only for a PDP without TLS): %w", cfg.Host, mode, err)
-	}
-	return nil
+	return p.Ping(ctx)
 }

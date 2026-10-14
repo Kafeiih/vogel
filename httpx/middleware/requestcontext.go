@@ -29,6 +29,12 @@ import (
 // unchanged. Prefer vogel's RequestID: chi's honors a client-supplied
 // X-Request-Id header verbatim, so with it a client chooses the request_id
 // that reaches logs, audit_log rows and error responses.
+//
+// Mount it before Authenticate: the auth-failure log reads the client IP and
+// request ID from reqctx, so with RequestContext mounted after it a rejected
+// request is logged with an empty ip and request_id (RequirePermission and
+// RequireAccess read the request ID the same way). docs/WIRING.md gives the
+// full middleware order.
 func RequestContext(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id := reqctx.RequestIDFromContext(r.Context())

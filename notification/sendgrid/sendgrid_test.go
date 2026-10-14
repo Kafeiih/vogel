@@ -156,7 +156,7 @@ func TestSend_SplitsNameAndAddress(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	n.client.BaseURL = srv.URL + "/v3/mail/send"
+	n.requestTemplate.BaseURL = srv.URL + "/v3/mail/send"
 
 	tests := []struct {
 		name     string

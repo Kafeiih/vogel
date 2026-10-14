@@ -29,7 +29,7 @@ func TestSend_DoesNotLogPersonalData(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSendGridNotifier: %v", err)
 	}
-	n.client.BaseURL = srv.URL + "/v3/mail/send"
+	n.requestTemplate.BaseURL = srv.URL + "/v3/mail/send"
 
 	const (
 		to      = "Juana Perez <juana.perez@example.com>"

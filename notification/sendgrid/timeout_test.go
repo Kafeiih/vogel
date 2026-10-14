@@ -63,7 +63,7 @@ func TestSend_HonoursHTTPTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSendGridNotifier: %v", err)
 	}
-	n.client.BaseURL = srv.URL + "/v3/mail/send"
+	n.requestTemplate.BaseURL = srv.URL + "/v3/mail/send"
 
 	done := make(chan error, 1)
 	go func() {
