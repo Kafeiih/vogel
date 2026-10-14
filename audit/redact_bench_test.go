@@ -46,9 +46,13 @@ func benchPayload(depth, width int) map[string]any {
 // every hook result again with the denylist, and a result with no plain JSON
 // form (a named map type, a struct) is first normalized through
 // encoding/json; the hypothesis it measures is that this re-walk can cost
-// roughly payload size times nesting depth. Measured: a hook returning plain
-// map[string]any values adds no cost, while one returning typed values grows
-// with about the square of the depth.
+// roughly payload size times nesting depth.
+//
+// Point-in-time observation (2026-10-14, go1.27.1 windows/amd64; CI does not
+// run benchmarks, so re-measure before relying on it): a hook returning plain
+// map[string]any values added no measurable cost, while one returning a named
+// map type grew with about the square of the depth (~155x the no-hook case at
+// depth 128, width 100).
 func BenchmarkRecord_Redaction(b *testing.B) {
 	hooks := []struct {
 		name  string
@@ -67,10 +71,11 @@ func BenchmarkRecord_Redaction(b *testing.B) {
 			}
 			return nil, false
 		})}},
-		// The costliest shape of the same path: every map the hook returns
-		// is a typed value, so it must be re-encoded through
+		// The costliest shape of the same path: the hook returns each map
+		// converted to the named type typedObject (a conversion, not a copy:
+		// it shares the input map), so it must be re-encoded through
 		// encoding/json before it is walked again, at every level.
-		{"hook_returns_typed_copy_every_key", []RecorderOption{WithRedactor(func(_ string, v any) (any, bool) {
+		{"hook_returns_named_map_every_key", []RecorderOption{WithRedactor(func(_ string, v any) (any, bool) {
 			if m, ok := v.(map[string]any); ok {
 				return typedObject(m), true
 			}

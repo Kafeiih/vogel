@@ -27,10 +27,11 @@ import (
 // (migrationSets gives it no TableName).
 const appVersionTable = "goose_db_version"
 
-// testDeadline bounds the whole test, including each runMigrate call, so a
-// hung migration or query (for example one waiting on the advisory lock)
-// fails within minutes with a clear message instead of running into go
-// test's default 10-minute timeout.
+// testDeadline bounds the whole test from one shared context: the container
+// start (image pull included), every query and each runMigrate call draw on
+// the same budget. A slow pull, or a hung migration or query (for example one
+// waiting on the advisory lock), fails within minutes with a clear message
+// instead of running into go test's default 10-minute timeout.
 const testDeadline = 2 * time.Minute
 
 // revertEffects proves, for the app set's latest migration, that "migrate
@@ -58,7 +59,7 @@ var revertEffects = map[string]func(ctx context.Context, t *testing.T, pool *pgx
 func TestMigrateDown_RevertsOnlyTheAppSet(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), testDeadline)
 	defer cancel()
-	dbURL := startTestPostgres(t)
+	dbURL := startTestPostgres(ctx, t)
 	t.Setenv("DB_URL", dbURL)
 
 	pool, err := pgxpool.New(ctx, dbURL)
@@ -113,10 +114,11 @@ func TestMigrateDown_RevertsOnlyTheAppSet(t *testing.T) {
 
 // startTestPostgres spins up a postgres:17-alpine testcontainer and returns
 // its connection string, the same way vogel's own integration tests do
-// (workflow/postgres/repository_integration_test.go).
-func startTestPostgres(t *testing.T) string {
+// (workflow/postgres/repository_integration_test.go). ctx bounds the image
+// pull and the container start; termination uses a fresh context so cleanup
+// still runs after the test deadline has passed.
+func startTestPostgres(ctx context.Context, t *testing.T) string {
 	t.Helper()
-	ctx := context.Background()
 
 	pgContainer, err := tcpostgres.Run(ctx, "postgres:17-alpine",
 		tcpostgres.WithDatabase("test_db"),
@@ -155,7 +157,7 @@ func runMigrateWithin(ctx context.Context, t *testing.T, sub string) {
 			t.Fatalf("migrate %s: %v", sub, err)
 		}
 	case <-ctx.Done():
-		t.Fatalf("migrate %s did not finish within %s", sub, testDeadline)
+		t.Fatalf("migrate %s did not finish before the test deadline (%s for the whole test): %v", sub, testDeadline, ctx.Err())
 	}
 }
 
