@@ -80,6 +80,18 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ### Cambiado
 
+- **`httpx/middleware.SecurityHeaders` agrega aislamiento entre orígenes y
+  `Cache-Control: private, no-store`.** Ahora envía
+  `Cross-Origin-Opener-Policy: same-origin` y
+  `Cross-Origin-Resource-Policy: same-origin`, y `Cache-Control` pasa de
+  `no-store` a `private, no-store` para que ninguna caché compartida conserve
+  la respuesta. Cambio de comportamiento: CORP `same-origin` hace que el
+  navegador bloquee el uso embebido de las respuestas desde otro origen
+  (`<img>`, `<script>`, `fetch` en modo `no-cors`); quien sirva recursos
+  públicos a otros orígenes puede cambiar `Cross-Origin-Resource-Policy` (por
+  ejemplo a `cross-origin`) en ese handler, igual que ya podía cambiar
+  `Cache-Control`, porque todas las cabeceras se fijan antes de llamar al
+  handler.
 - **`httpx/middleware.StructuredLogger` registra el ID de correlación del
   cliente.** Si la request trae uno (`reqctx.ClientRequestIDFromContext`, que
   `RequestID` guarda saneado), el log de acceso lo incluye bajo

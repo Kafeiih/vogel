@@ -16,15 +16,17 @@ func TestSecurityHeaders_SetsAllHeaders(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 
 	expected := map[string]string{
-		"X-Content-Type-Options":    "nosniff",
-		"X-Frame-Options":           "DENY",
-		"X-XSS-Protection":          "0",
-		"Referrer-Policy":           "strict-origin-when-cross-origin",
-		"Content-Security-Policy":   "default-src 'none'",
-		"Strict-Transport-Security": "max-age=63072000; includeSubDomains",
-		"Permissions-Policy":        "camera=(), microphone=(), geolocation=()",
-		"Cache-Control":             "no-store",
-		"Pragma":                    "no-cache",
+		"X-Content-Type-Options":       "nosniff",
+		"X-Frame-Options":              "DENY",
+		"X-XSS-Protection":             "0",
+		"Referrer-Policy":              "strict-origin-when-cross-origin",
+		"Content-Security-Policy":      "default-src 'none'",
+		"Strict-Transport-Security":    "max-age=63072000; includeSubDomains",
+		"Permissions-Policy":           "camera=(), microphone=(), geolocation=()",
+		"Cache-Control":                "private, no-store",
+		"Pragma":                       "no-cache",
+		"Cross-Origin-Opener-Policy":   "same-origin",
+		"Cross-Origin-Resource-Policy": "same-origin",
 	}
 
 	for header, want := range expected {
@@ -57,6 +59,26 @@ func TestSecurityHeaders_DownstreamHandlerCanOverrideCacheControl(t *testing.T) 
 	// Overriding caching must not disturb the headers the handler left alone.
 	if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
 		t.Errorf("X-Content-Type-Options = %q, want %q", got, "nosniff")
+	}
+}
+
+func TestSecurityHeaders_DownstreamHandlerCanRelaxResourcePolicy(t *testing.T) {
+	handler := SecurityHeaders(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// A handler serving a public asset meant to be embedded cross-origin
+		// relaxes CORP the same way it overrides Cache-Control.
+		w.Header().Set("Cross-Origin-Resource-Policy", "cross-origin")
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if got := rec.Header().Get("Cross-Origin-Resource-Policy"); got != "cross-origin" {
+		t.Errorf("Cross-Origin-Resource-Policy = %q, want the handler's override %q", got, "cross-origin")
+	}
+	if got := rec.Header().Get("Cross-Origin-Opener-Policy"); got != "same-origin" {
+		t.Errorf("Cross-Origin-Opener-Policy = %q, want %q", got, "same-origin")
 	}
 }
 
