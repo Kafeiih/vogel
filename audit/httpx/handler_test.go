@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/kafeiih/vogel/audit"
+	"github.com/kafeiih/vogel/httpx/response"
 	"github.com/kafeiih/vogel/pgxtx"
 )
 
@@ -278,5 +280,30 @@ func TestHandler_GetByID_InvalidUUIDReturns400(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+}
+
+// A repository enforces audit.MaxListOffset; an offset beyond it is a client
+// error, not a server failure.
+func TestHandler_List_OffsetOutOfRangeReturns400(t *testing.T) {
+	repo := &fakeRepository{listErr: fmt.Errorf("list audit_log: %w", audit.ErrOffsetOutOfRange)}
+	h, err := NewHandler(repo, discardLogger())
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+
+	r := httptest.NewRequest(http.MethodGet, "/audit?offset=100001", nil)
+	rec := httptest.NewRecorder()
+	h.List(rec, r)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	body := decodeSuccess(t, rec)
+	if body["code"] != response.CodeValidationError {
+		t.Errorf("code = %v, want %q", body["code"], response.CodeValidationError)
+	}
+	if body["message"] != DefaultMessages().InvalidOffset {
+		t.Errorf("message = %v, want default %q", body["message"], DefaultMessages().InvalidOffset)
 	}
 }

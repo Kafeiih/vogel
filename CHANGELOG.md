@@ -40,6 +40,24 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ### Cambiado
 
+- **`audit/postgres` y `workflow/postgres`: los listados acotan `Limit` y
+  rechazan un `Offset` excesivo.** Antes `Repository.List` (audit) y
+  `Repository.ListByEligibility` (workflow) pasaban cualquier `Limit` y
+  `Offset` a Postgres (solo `audit/httpx` topaba `limit` en 100), y como
+  Postgres lee y descarta cada fila saltada, un `offset` enorme forzaba un
+  recorrido de toda la tabla. Ahora ambos paquetes de dominio exportan
+  `DefaultListLimit` (20), `MaxListLimit` (1000), `MaxListOffset` (100000),
+  `ErrOffsetOutOfRange` y el método `Page()` en `audit.Filters` y
+  `workflow.InboxFilter`, que los repositorios usan: un `Limit` `<= 0` usa
+  20, uno mayor que 1000 se recorta a 1000, y un `Offset` negativo o mayor
+  que 100000 devuelve un error que envuelve `ErrOffsetOutOfRange` sin
+  consultar la base. **Cambio de comportamiento** para quien pedía más de
+  1000 filas por página (recibe 1000) o paginaba más allá de 100000 filas
+  (recibe el error; conviene acotar por filtros, p. ej. rango de fechas).
+  `audit/httpx`: `Handler.List` responde 400 `VALIDATION_ERROR` con
+  `field: "offset"` ante ese error, con el nuevo mensaje configurable
+  `Messages.InvalidOffset`. `examples/api` rechaza con 400 un `offset` mayor
+  que `workflow.MaxListOffset` en el inbox antes de consultar.
 - **`request`: `JSON`, `JSONWithLimit` y `JSONOptional` exigen un `Content-Type`
   JSON.** Antes decodificaban cualquier cuerpo sin mirar la cabecera. Ahora
   aceptan `application/json` y cualquier `application/*+json` (con parámetros

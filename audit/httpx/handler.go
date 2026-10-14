@@ -43,8 +43,9 @@ func NewHandler(repo audit.Repository, logger *slog.Logger, opts ...Option) (*Ha
 
 // List handles a request to list audit log entries, filtered and paginated
 // via FiltersFromRequest. It responds with a response.JSONList envelope on
-// success, a 400 with per-field errors on invalid filters, and a 500 on any
-// repository failure.
+// success, a 400 with per-field errors on invalid filters, a 400
+// VALIDATION_ERROR on an offset the repository rejects as out of range
+// (audit.ErrOffsetOutOfRange), and a 500 on any other repository failure.
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	v := request.NewValidator()
 	filters := FiltersFromRequest(v, r)
@@ -55,6 +56,10 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	}
 
 	entries, total, err := h.repo.List(r.Context(), filters)
+	if errors.Is(err, audit.ErrOffsetOutOfRange) {
+		response.ErrorWith(w, r, http.StatusBadRequest, response.CodeValidationError, h.messages.InvalidOffset, response.WithField("offset"))
+		return
+	}
 	if err != nil {
 		h.logger.Error("listing audit entries", "error", err, "path", r.URL.Path, "query", r.URL.RawQuery)
 		response.Error(w, r, http.StatusInternalServerError, response.CodeInternalError, h.messages.ListFailed)

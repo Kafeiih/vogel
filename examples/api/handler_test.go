@@ -86,3 +86,23 @@ func TestDocumentHandlerCreate_RejectsBeforeTheTransaction(t *testing.T) {
 		})
 	}
 }
+
+// An offset beyond workflow.MaxListOffset would be rejected by the repository
+// anyway; the handler rejects it up front as a 400 instead of reporting the
+// repository error as a 500. The handler has no engine or pool: reaching
+// either would panic and fail the test.
+func TestDocumentHandlerInbox_OffsetAboveMaxIs400(t *testing.T) {
+	h := &DocumentHandler{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+
+	req := httptest.NewRequest(http.MethodGet, "/documents/inbox?offset=100001", nil)
+	rec := httptest.NewRecorder()
+
+	h.Inbox(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d (body %s)", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "offset") {
+		t.Errorf("body = %s, want it to name the offset field", rec.Body.String())
+	}
+}

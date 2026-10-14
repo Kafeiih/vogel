@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
@@ -492,6 +493,12 @@ func (h *DocumentHandler) Inbox(w http.ResponseWriter, r *http.Request) {
 	limit := v.IntQuery(r, "limit", 20)
 	limit = v.MaxInt("limit", limit, 100)
 	offset := v.IntQuery(r, "offset", 0)
+	// The repository rejects an offset above workflow.MaxListOffset with
+	// workflow.ErrOffsetOutOfRange; checking it here answers 400 instead of
+	// surfacing that as a 500.
+	if offset > workflow.MaxListOffset {
+		v.AddError("offset", fmt.Sprintf("offset must not exceed %d", workflow.MaxListOffset))
+	}
 	if v.HasErrors() {
 		v.WriteErrors(w, r)
 		return

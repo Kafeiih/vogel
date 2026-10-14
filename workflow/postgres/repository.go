@@ -191,9 +191,9 @@ func (r *Repository) ListEvents(ctx context.Context, db pgxtx.DBTX, caseID uuid.
 // mapping from Position/Unit to that set of node IDs is resolved by the
 // caller (see workflow.Engine.EligibilityFor), not by this query.
 func (r *Repository) ListByEligibility(ctx context.Context, db pgxtx.DBTX, f workflow.InboxFilter) ([]workflow.Case, error) {
-	limit := f.Limit
-	if limit <= 0 {
-		limit = 20
+	limit, offset, err := f.Page()
+	if err != nil {
+		return nil, fmt.Errorf("workflow: list by eligibility: %w", err)
 	}
 
 	const q = `
@@ -215,7 +215,7 @@ func (r *Repository) ListByEligibility(ctx context.Context, db pgxtx.DBTX, f wor
 		f.Unassigned,
 		f.Overdue,
 		limit,
-		f.Offset,
+		offset,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("workflow: list by eligibility: %w", err)

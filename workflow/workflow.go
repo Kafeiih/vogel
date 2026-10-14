@@ -715,6 +715,41 @@ type InboxFilter struct {
 	AssignedTo string // empty = any
 	Unassigned bool   // true = only unclaimed
 	Overdue    bool   // true = only past DeadlineAt
-	Limit      int
-	Offset     int
+	Limit      int    // <= 0 means DefaultListLimit; clamped to MaxListLimit
+	Offset     int    // must be within [0, MaxListOffset]
+}
+
+// List paging bounds. A repository list query applies them through InboxFilter.Page:
+// DefaultListLimit replaces a non-positive Limit, a Limit above MaxListLimit
+// is clamped to it, and an Offset outside [0, MaxListOffset] is rejected
+// with ErrOffsetOutOfRange. Offset is rejected rather than clamped because a
+// clamped offset would silently return a different page than the one asked
+// for; the cap exists because Postgres reads and discards every skipped row,
+// so an unbounded offset lets one request force a scan of the whole table.
+// Callers that page deeper than MaxListOffset rows should filter (for
+// example by time range) instead.
+const (
+	DefaultListLimit = 20
+	MaxListLimit     = 1000
+	MaxListOffset    = 100_000
+)
+
+// ErrOffsetOutOfRange is returned (wrapped) by a list query whose Offset is
+// negative or above MaxListOffset. HTTP adapters map it to 400.
+var ErrOffsetOutOfRange = errors.New("workflow: list offset out of range")
+
+// Page returns the LIMIT and OFFSET a repository list query must use for f:
+// see DefaultListLimit, MaxListLimit and MaxListOffset.
+func (f InboxFilter) Page() (limit, offset int, err error) {
+	if f.Offset < 0 || f.Offset > MaxListOffset {
+		return 0, 0, fmt.Errorf("%w: %d (allowed 0..%d)", ErrOffsetOutOfRange, f.Offset, MaxListOffset)
+	}
+	limit = f.Limit
+	switch {
+	case limit <= 0:
+		limit = DefaultListLimit
+	case limit > MaxListLimit:
+		limit = MaxListLimit
+	}
+	return limit, f.Offset, nil
 }
