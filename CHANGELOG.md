@@ -8,6 +8,20 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ### Agregado
 
+- **`examples/boilerplate`: despliegue endurecido.** El worker tiene
+  `HEALTHCHECK`: `worker server` reescribe un archivo de heartbeat en `/tmp`
+  cada 10s y el subcomando `worker healthcheck` falla si falta o tiene más de
+  30s. En `deploy/docker-compose.yaml`, `migrate`, `grants`, `api` y `worker`
+  suman `cap_drop: [ALL]` y `no-new-privileges` al sistema de archivos de solo
+  lectura; Postgres conserva solo las capabilities de su entrypoint. Todas las
+  imágenes de los compose quedan fijadas por versión exacta y digest
+  (`postgres:17.11-alpine3.24`, `cerbos:0.56.0` en lugar de `:latest`).
+  `deploy/RUNBOOK.md` documenta la cadencia de parches (Dependabot y Trivy
+  semanales) y qué hacer si Trivy falla, y rota las contraseñas de
+  `app_migrator`/`app_runtime` con `ALTER ROLE` sin recrear Postgres.
+  `docs/THREAT_MODEL.md` §6 lista lo que el servicio consumidor debe
+  resolver porque `vogel` no puede imponerlo; `docs/WIRING.md` documenta la
+  ranura de usuario de `reqctx`.
 - **`examples/boilerplate`: endurecimiento del ejemplo.** Nuevas variables
   de validación de tokens que llenan `zitadel.Config`:
   `ZITADEL_HTTP_TIMEOUT` (10s), `ZITADEL_MAX_TOKEN_LIFETIME` (12h; `0`
@@ -193,6 +207,14 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ### Cambiado
 
+- **`examples/boilerplate`: el `Dockerfile` se construye desde la raíz del
+  repositorio** (`docker build -f examples/boilerplate/Dockerfile .`), porque
+  el `replace` del `go.mod` apunta a `../..`; el compose de despliegue y el
+  workflow de Trivy lo construyen así, sin el parche que quitaba
+  `go mod download`. El filtro del contexto pasa a un `.dockerignore` en la
+  raíz. Una copia del boilerplate sin `replace` construye con
+  `--build-arg APP_DIR=.`. `docker-compose.developer.yaml` ya no incluye
+  MinIO: `minio/minio` dejó de publicarse en Docker Hub.
 - **`examples/boilerplate`: `DB_REQUIRE_TLS` decide el TLS hacia la base, no
   `APP_ENV`.** Vale `true` por defecto en cualquier entorno (antes solo fuera
   de `APP_ENV=development`); el compose de despliegue y el `.env` local la
