@@ -20,7 +20,7 @@ func TestJWKSHTTPClient_Timeout(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			c := jwksHTTPClient(Config{HTTPTimeout: tt.timeout})
+			c := issuerHTTPClient(Config{HTTPTimeout: tt.timeout})
 			if c == nil || c == http.DefaultClient {
 				t.Fatalf("client = %v, want a dedicated client (http.DefaultClient has no timeout)", c)
 			}

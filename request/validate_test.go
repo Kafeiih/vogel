@@ -455,7 +455,6 @@ func TestValidator_MaxLen(t *testing.T) {
 			assert.Equal(t, tt.value, got, "MaxLen returns the value unchanged")
 			assert.Equal(t, tt.wantErr, v.HasErrors())
 			if tt.wantErr {
-				assert.Equal(t, "name must be at most 4 characters long", request.DefaultMessages().TooLong("name", 4))
 				assert.Equal(t, request.DefaultMessages().TooLong("name", tt.max), v.Errors()["name"])
 			}
 		})

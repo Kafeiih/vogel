@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 
@@ -245,5 +246,42 @@ func TestFiltersFromRequest_FreeTextFilterAtMaxLengthIsAccepted(t *testing.T) {
 	}
 	if len(f.ActorID) != MaxFilterLength {
 		t.Errorf("len(ActorID) = %d, want %d", len(f.ActorID), MaxFilterLength)
+	}
+}
+
+// TestFiltersFromRequest_FreeTextFilterLengthCountsRunes pins that the limit
+// is in characters, not bytes: MaxFilterLength two-byte runes (more than
+// MaxFilterLength bytes) are accepted, one more rune is rejected.
+func TestFiltersFromRequest_FreeTextFilterLengthCountsRunes(t *testing.T) {
+	enye := string(rune(0x00F1)) // two bytes in UTF-8
+	atMax := strings.Repeat(enye, MaxFilterLength)
+	if len(atMax) <= MaxFilterLength {
+		t.Fatalf("test value has %d bytes, want more than %d", len(atMax), MaxFilterLength)
+	}
+	tests := []struct {
+		name    string
+		value   string
+		wantErr bool
+	}{
+		{name: "MaxFilterLength multi-byte runes", value: atMax},
+		{name: "MaxFilterLength+1 multi-byte runes", value: atMax + enye, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			q := url.Values{}
+			q.Set("actor_id", tt.value)
+			r := httptest.NewRequest(http.MethodGet, "/audit?"+q.Encode(), nil)
+			v := request.NewValidator()
+
+			f := FiltersFromRequest(v, r)
+
+			_, gotErr := v.Errors()["actor_id"]
+			if gotErr != tt.wantErr {
+				t.Fatalf("actor_id error = %v, want %v (errors: %v)", gotErr, tt.wantErr, v.Errors())
+			}
+			if !tt.wantErr && utf8.RuneCountInString(f.ActorID) != MaxFilterLength {
+				t.Errorf("runes(ActorID) = %d, want %d", utf8.RuneCountInString(f.ActorID), MaxFilterLength)
+			}
+		})
 	}
 }
