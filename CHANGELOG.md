@@ -8,6 +8,13 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ### Agregado
 
+- **`postgres.CheckTLS(dsn)`.** Aplica a un DSN la misma regla de
+  `RequireTLS` que `NewPool`, sin conectar, para código que entrega el DSN a
+  otra herramienta (p. ej. migraciones). `examples/boilerplate` lo usa en
+  `api migrate`, que ahora también respeta `DB_REQUIRE_TLS` (por defecto
+  `true`); el compose de despliegue lo fija en `false` también para
+  `migrate`, porque el Postgres empaquetado no sirve TLS.
+
 - **`examples/boilerplate`: despliegue endurecido.** El worker tiene
   `HEALTHCHECK`: `worker server` reescribe un archivo de heartbeat en `/tmp`
   cada 10s y el subcomando `worker healthcheck` falla si falta o tiene más de
@@ -32,7 +39,10 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   401/403/404/429/500/504 también llevan las cabeceras. `GET /v1/audit`
   responde 400 (no 500) a un `offset` mayor que `audit.MaxListOffset`. Los
   probes de salud registran un fallo de la base una vez por causa distinta y
-  no cuentan como caída un ping cortado porque el cliente se fue.
+  no cuentan como caída un ping cortado porque el cliente canceló la
+  request. Un plazo del llamador que vence con la base colgada (timeout del
+  probe del kubelet o de un middleware) sí cuenta: se registra y responde
+  503, para que una base colgada no quede oculta.
   `rolematrix_test.go` fija la matriz ruta × rol.
 - **`examples/api`: endurecimiento del ejemplo.** `GET /documents` rechaza con
   400 un `offset` mayor que `workflow.MaxListOffset`; `POST /documents` valida
