@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 type fakePinger struct {
@@ -348,6 +349,47 @@ func TestHealth_CallerCancellationIsNotADatabaseFailure(t *testing.T) {
 			tt.probe(h)(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/"+tt.name, nil))
 			if got := rec.take(); len(got) != 0 {
 				t.Fatalf("outage with a canceled probe in between: logged levels %v, want none", got)
+			}
+		})
+	}
+}
+
+// hangingPinger never answers on its own; it returns only when ctx is done,
+// like a database that accepts the connection and then stalls.
+type hangingPinger struct{}
+
+func (hangingPinger) Ping(ctx context.Context) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+// A caller deadline (a kubelet probe timeout, an upstream timeout middleware)
+// expiring while the database stalls is the outage itself, not a client that
+// went away: it is logged and answered 503, so a hung database is never
+// hidden behind the caller's shorter deadline.
+func TestHealth_CallerDeadlineOnAHungDatabaseIsAFailure(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		probe func(*HealthHandler) http.HandlerFunc
+	}{
+		{"healthz", func(h *HealthHandler) http.HandlerFunc { return h.Check }},
+		{"readyz", func(h *HealthHandler) http.HandlerFunc { return h.Ready }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := &recordingHandler{}
+			h := NewHealthHandler(hangingPinger{}, slog.New(rec))
+
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+			defer cancel()
+			req := httptest.NewRequest(http.MethodGet, "/"+tt.name, nil).WithContext(ctx)
+			w := httptest.NewRecorder()
+			tt.probe(h)(w, req)
+
+			if w.Code != http.StatusServiceUnavailable {
+				t.Errorf("hung database under a caller deadline = %d, want %d", w.Code, http.StatusServiceUnavailable)
+			}
+			if got := rec.take(); len(got) != 1 || got[0] != slog.LevelError {
+				t.Errorf("hung database under a caller deadline: logged levels %v, want [ERROR]", got)
 			}
 		})
 	}

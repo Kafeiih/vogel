@@ -29,9 +29,9 @@ type HealthHandler struct {
 	dbCause string
 }
 
-// errCallerGone is returned by ping when the probe's own caller went away
-// before the database answered: the outcome says nothing about the
-// database.
+// errCallerGone is returned by ping when the probe's own caller was
+// canceled before the database answered: the outcome says nothing about the
+// database. A caller deadline expiring is not this case; see ping.
 var errCallerGone = errors.New("health probe: caller went away")
 
 // NewHealthHandler builds the probe handlers. logger receives the cause of a
@@ -129,19 +129,24 @@ func (h *HealthHandler) Live(w http.ResponseWriter, r *http.Request) {
 // healthy state) at Error, the first success after a failure at Info. probe
 // names the endpoint that observed the change.
 //
-// A ping that fails because caller itself is done (the client hung up, or
-// an upstream deadline expired) returns errCallerGone without logging or
-// touching the recorded state: the database may be perfectly healthy, and
-// treating it as an outage would let any client that disconnects early
-// write ERROR lines. The handlers then write nothing; the client is gone,
-// and an upstream timeout middleware answers its own deadline. The probe's
-// own timeout expiring is still a database failure.
+// A ping that fails because the caller was canceled (the client hung up)
+// returns errCallerGone without logging or touching the recorded state: the
+// database may be perfectly healthy, and treating it as an outage would let
+// any client that disconnects early write ERROR lines. The handlers then
+// write nothing, since the client is gone.
+//
+// A caller deadline expiring is different: a kubelet probe timeout or an
+// upstream timeout middleware shorter than the probe's own timeout means the
+// database did not answer within the time anyone was willing to wait, which
+// is exactly what a hung database looks like. Treating that as "caller gone"
+// would hide the outage, so it is recorded, logged and answered 503 like the
+// probe's own timeout expiring.
 func (h *HealthHandler) ping(caller context.Context, timeout time.Duration, probe string) error {
 	ctx, cancel := context.WithTimeout(caller, timeout)
 	defer cancel()
 
 	err := h.db.Ping(ctx)
-	if err != nil && caller.Err() != nil {
+	if err != nil && errors.Is(caller.Err(), context.Canceled) {
 		return errCallerGone
 	}
 
