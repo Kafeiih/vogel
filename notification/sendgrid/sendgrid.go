@@ -137,7 +137,8 @@ type sendResponse struct {
 
 // post sends body to the mail send endpoint through the notifier's bounded
 // HTTP client and returns the status code, SendGrid's X-Message-Id and the
-// (capped) response body. It builds a fresh request from the SDK template on
+// (capped) response body. On a 2xx a failed body read is logged and
+// ignored, since the email was already accepted. It builds a fresh request from the SDK template on
 // every call, so concurrent Sends share nothing mutable.
 func (n *SendGridNotifier) post(ctx context.Context, body []byte) (sendResponse, error) {
 	tmpl := n.client.Request
@@ -156,15 +157,28 @@ func (n *SendGridNotifier) post(ctx context.Context, body []byte) (sendResponse,
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBody))
-	if err != nil {
-		return sendResponse{}, fmt.Errorf("reading response: %w", err)
-	}
-	return sendResponse{
+	sr := sendResponse{
 		status:    resp.StatusCode,
 		messageID: resp.Header.Get("X-Message-Id"),
-		body:      string(respBody),
-	}, nil
+	}
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBody))
+	if err != nil {
+		// A 2xx means SendGrid accepted the email; the body only describes
+		// API errors. Failing here would make a retrying caller send the
+		// email twice, so the read error is logged (it is a transport error,
+		// with no personal data) and the send is reported as accepted.
+		if sr.status >= http.StatusOK && sr.status < http.StatusMultipleChoices {
+			n.logger.WarnContext(ctx, "reading SendGrid response body failed after the email was accepted",
+				"status", sr.status,
+				"message_id", sr.messageID,
+				"error", err,
+			)
+			return sr, nil
+		}
+		return sendResponse{}, fmt.Errorf("reading response: %w", err)
+	}
+	sr.body = string(respBody)
+	return sr, nil
 }
 
 // sgEmail parses an RFC 5322 address into SendGrid's name/address pair. The
