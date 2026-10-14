@@ -72,9 +72,19 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 - **`reqctx`: `WithClientRequestID` y `ClientRequestIDFromContext`**, para el
   ID de correlación enviado por el cliente, separado del ID de request del
   servidor.
+- **`authz/cerbos`: `(*Checker).Ping(ctx)`.** Pide `ServerInfo` al PDP (una
+  RPC barata que no evalúa políticas) y devuelve un error que nombra el host si
+  falla. Como la conexión gRPC es perezosa, `New` no detecta un host erróneo ni
+  un modo de transporte que no coincide; `Ping` permite detectarlo al arrancar.
 
 ### Cambiado
 
+- **`examples/boilerplate`: el arranque de la API falla si el PDP de Cerbos
+  no responde.** Tras construir el checker se hace un `Ping` acotado a 5s; si
+  falla, el arranque termina con un error que nombra el host, el modo (TLS o
+  plaintext) y `CERBOS_PLAINTEXT`. Antes un despliegue que nunca definió
+  `CERBOS_TLS` (y por eso usaba plaintext) arrancaba bien con el nuevo
+  default TLS y respondía 503 en cada autorización.
 - **`httpx/middleware.RequestContext` prefiere el ID de `RequestID`.** Toma
   el ID de request ya guardado en `reqctx` y solo si no hay ninguno recurre
   al `GetReqID` de chi, de modo que quien siga montando el
@@ -380,7 +390,10 @@ Todos los cambios relevantes de `vogel`. El formato sigue
     la request; ya no se envía por `rest.DefaultClient` (un `http.Client` sin
     timeout y global), y como cada `Send` construye su propia request, los
     envíos concurrentes tampoco comparten el cuerpo que el SDK mutaba en el
-    cliente. La respuesta se lee hasta 64 KiB.
+    cliente. La respuesta se lee hasta 64 KiB. Si la lectura del cuerpo falla
+    tras un 2xx, el envío se informa como aceptado y el error se registra en
+    nivel Warn (sin datos personales): devolver error haría que un llamador
+    que reintenta enviara el correo dos veces.
   - `storage/s3`: `s3.Options.HTTPClient` es un `awshttp.BuildableClient`
     que conserva los valores de transporte del SDK y agrega
     `ResponseHeaderTimeout` de 60s (`Config.ResponseHeaderTimeout`): la espera

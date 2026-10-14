@@ -29,6 +29,7 @@ type Config struct {
 // Checker implements authz.Checker using the Cerbos PDP via gRPC.
 type Checker struct {
 	client *cerbos.GRPCClient
+	host   string
 }
 
 // New creates a new Cerbos-backed authorization checker.
@@ -42,7 +43,7 @@ func New(cfg Config) (*Checker, error) {
 		return nil, fmt.Errorf("authz/cerbos: connecting to %s: %w", cfg.Host, err)
 	}
 
-	return &Checker{client: client}, nil
+	return &Checker{client: client, host: cfg.Host}, nil
 }
 
 // clientOptions builds the cerbos-sdk-go options for cfg. TLS is the SDK
@@ -75,6 +76,20 @@ func (c *Checker) IsAllowed(ctx context.Context, p authz.Principal, res authz.Re
 	}
 
 	return allowed, nil
+}
+
+// Ping asks the PDP for its server info, a cheap RPC that needs no policy,
+// and returns an error naming the host when the call fails. New does not
+// dial (the gRPC connection is lazy), so a wrong host or a transport mismatch
+// (TLS against a plaintext PDP, or the reverse) only shows up on the first
+// call; a consumer can call Ping at startup to fail fast instead of answering
+// 503 on every authorization. Bound ctx: the call waits for it when the PDP
+// accepts the connection but never answers.
+func (c *Checker) Ping(ctx context.Context) error {
+	if _, err := c.client.ServerInfo(ctx); err != nil {
+		return fmt.Errorf("authz/cerbos: pinging %s: %w", c.host, err)
+	}
+	return nil
 }
 
 // Close is a documented no-op. cerbos.GRPCClient in cerbos-sdk-go v0.3.17

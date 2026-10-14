@@ -290,6 +290,10 @@ func runServer(migrateFirst bool) error {
 	}
 	defer func() { _ = cerbosChecker.Close() }()
 
+	if err := probeCerbos(context.Background(), cerbosChecker, cfg.Cerbos); err != nil {
+		return err
+	}
+
 	appLogger.Info("cerbos checker initialized", "host", cfg.Cerbos.Host)
 
 	// Audit subsystem
@@ -352,4 +356,30 @@ func runServer(migrateFirst bool) error {
 	appLogger.Info("server ready to accept connections", "port", cfg.App.Port)
 
 	return server.Start(httpiface.MetricsDrainer(metricsSrv, appLogger.Logger))
+}
+
+// cerbosProbeTimeout bounds the startup reachability probe of the Cerbos PDP.
+const cerbosProbeTimeout = 5 * time.Second
+
+// pinger is the part of *cerbos.Checker the startup probe needs.
+type pinger interface {
+	Ping(ctx context.Context) error
+}
+
+// probeCerbos makes one bounded call to the PDP so a wrong host or a TLS
+// mismatch fails the boot instead of turning every authorization into a 503.
+// The gRPC connection is lazy, so cerbos.New alone proves nothing. The usual
+// mismatch is a deployment written when plaintext was the default: Cerbos now
+// uses TLS unless CERBOS_PLAINTEXT=true, which the error names.
+func probeCerbos(ctx context.Context, p pinger, cfg cerbos.Config) error {
+	ctx, cancel := context.WithTimeout(ctx, cerbosProbeTimeout)
+	defer cancel()
+	if err := p.Ping(ctx); err != nil {
+		mode := "TLS"
+		if cfg.Plaintext {
+			mode = "plaintext"
+		}
+		return fmt.Errorf("cerbos PDP at %s is unreachable over %s (TLS is the default; set CERBOS_PLAINTEXT=true only for a PDP without TLS): %w", cfg.Host, mode, err)
+	}
+	return nil
 }
