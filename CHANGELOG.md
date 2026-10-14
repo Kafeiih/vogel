@@ -304,6 +304,9 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   y `message_id` (la cabecera `X-Message-Id` de SendGrid, que permite cruzar
   el envío con su activity feed sin exponer datos). Quien filtraba o contaba
   envíos por `to` o `subject` en sus logs debe usar `message_id`.
+- **`notification/smtp`: el log de envío exitoso ya no incluye destinatario
+  ni asunto**, por la misma razón que en `notification/sendgrid`. `email
+  sent via SMTP` queda sin atributos.
 - **`postgres`: `RequireTLS` exige que pgx verifique el certificado del
   servidor.** Antes bastaba con que el DSN habilitara TLS, así que
   `sslmode=require` (y `prefer`, el valor por defecto sin `sslmode`) pasaba el
