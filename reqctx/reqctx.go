@@ -24,6 +24,11 @@ import "context"
 // request/correlation ID. It is unexported so only WithRequestID may set it.
 type requestIDKey struct{}
 
+// clientRequestIDKey is the context key for the client-supplied correlation
+// ID. It is separate from requestIDKey so a client value can never be read
+// back as the server request ID.
+type clientRequestIDKey struct{}
+
 // requestInfoKey is the context key this package owns for storing RequestInfo.
 // It is unexported so only WithRequestInfo may set it — no context key is
 // exported, so tests inject metadata via WithRequestInfo instead of reaching
@@ -50,6 +55,22 @@ func WithRequestID(ctx context.Context, id string) context.Context {
 // via WithRequestID, or "" if none is present.
 func RequestIDFromContext(ctx context.Context) string {
 	id, _ := ctx.Value(requestIDKey{}).(string)
+	return id
+}
+
+// WithClientRequestID returns a copy of ctx carrying id as the correlation ID
+// the client sent (e.g. its X-Request-Id header). It is untrusted input:
+// httpx/middleware.RequestID sanitizes and length-limits it before storing
+// it here, and it never replaces the server-generated request ID returned by
+// RequestIDFromContext.
+func WithClientRequestID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, clientRequestIDKey{}, id)
+}
+
+// ClientRequestIDFromContext returns the client-supplied correlation ID
+// previously stored via WithClientRequestID, or "" if none is present.
+func ClientRequestIDFromContext(ctx context.Context) string {
+	id, _ := ctx.Value(clientRequestIDKey{}).(string)
 	return id
 }
 

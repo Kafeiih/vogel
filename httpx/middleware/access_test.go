@@ -285,7 +285,7 @@ func TestRequireAccess_Forbidden_WithoutRouteID_LogsWildcardResourceID(t *testin
 	}
 }
 
-func TestRequireAccess_Unauthenticated_Returns401WithoutLogging(t *testing.T) {
+func TestRequireAccess_Unauthenticated_Returns401AndLogsWarn(t *testing.T) {
 	checker := &recordingChecker{allowed: true}
 	guard := access.New(checker)
 	captured := &capturingHandler{}
@@ -294,14 +294,41 @@ func TestRequireAccess_Unauthenticated_Returns401WithoutLogging(t *testing.T) {
 
 	// No principal on the context: guard.Check fails with ErrUnauthenticated.
 	req := httptest.NewRequest(http.MethodGet, "/documents/1", nil)
+	req.Header.Set("Authorization", "Bearer secret-token")
+	req = withRouteParam(req, "id", "1")
+	req = req.WithContext(reqctx.WithRequestID(req.Context(), "req-401"))
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
 	}
-	if n := len(captured.all()); n != 0 {
-		t.Errorf("logged %d records on the 401 path, want 0", n)
+	records := captured.all()
+	if len(records) != 1 {
+		t.Fatalf("logged %d records on the 401 path, want exactly 1", len(records))
+	}
+	if records[0].Level != slog.LevelWarn {
+		t.Errorf("level = %v, want %v", records[0].Level, slog.LevelWarn)
+	}
+	got := attrs(records[0])
+	want := map[string]any{
+		"user_id":       "",
+		"resource_kind": "documents",
+		"resource_id":   "1",
+		"action":        "read",
+		"method":        http.MethodGet,
+		"path":          "/documents/1",
+		"request_id":    "req-401",
+	}
+	for key, wantVal := range want {
+		if got[key] != wantVal {
+			t.Errorf("attr %q = %#v, want %#v", key, got[key], wantVal)
+		}
+	}
+	for key, val := range got {
+		if s, ok := val.(string); ok && strings.Contains(s, "secret-token") {
+			t.Errorf("attr %q = %q leaks the bearer token", key, s)
+		}
 	}
 }
 
@@ -337,13 +364,17 @@ func TestWriteAccessError_Unauthenticated_Returns401(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 
-	handled := WriteAccessError(rec, req, access.ErrUnauthenticated, slog.Default())
+	captured := &capturingHandler{}
+	handled := WriteAccessError(rec, req, access.ErrUnauthenticated, slog.New(captured))
 
 	if !handled {
 		t.Fatal("WriteAccessError() = false, want true")
 	}
 	if rec.Code != http.StatusUnauthorized {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+	if records := captured.all(); len(records) != 1 || records[0].Level != slog.LevelWarn {
+		t.Errorf("logged %d records, want exactly 1 at Warn", len(records))
 	}
 }
 

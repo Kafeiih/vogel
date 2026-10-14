@@ -1,15 +1,18 @@
 package middleware
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/kafeiih/vogel/auth"
+	"github.com/kafeiih/vogel/reqctx"
 )
 
 // fakeAuthenticator implements auth.Authenticator with a canned result, so
@@ -248,6 +251,53 @@ func TestAuthenticate_CredentialExtraction_ToleratesCaseAndWhitespace(t *testing
 			}
 			if rec.Code != http.StatusOK {
 				t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
+			}
+		})
+	}
+}
+
+func TestAuthenticate_FailureLog_CarriesRequestFieldsWithoutToken(t *testing.T) {
+	tests := []struct {
+		name   string
+		header string
+		err    error
+	}{
+		{name: "rejected token", header: "Bearer super-secret-token", err: auth.ErrUnauthenticated},
+		{name: "malformed header", header: "Basic super-secret-token"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			logger := slog.New(slog.NewJSONHandler(&buf, nil))
+			handler := Authenticate(&fakeAuthenticator{err: tt.err}, logger)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+
+			req := httptest.NewRequest(http.MethodPost, "/documents/7", nil)
+			req.Header.Set("Authorization", tt.header)
+			ctx := reqctx.WithRequestID(req.Context(), "req-auth-1")
+			ctx = reqctx.WithRequestInfo(ctx, reqctx.RequestInfo{IP: "203.0.113.9"})
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req.WithContext(ctx))
+
+			if rec.Code != http.StatusUnauthorized {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+			}
+			if strings.Contains(buf.String(), "super-secret-token") {
+				t.Fatalf("log leaks the token: %s", buf.String())
+			}
+			var entry map[string]any
+			if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+				t.Fatalf("log is not one JSON record: %v (%q)", err, buf.String())
+			}
+			want := map[string]any{
+				"method":     http.MethodPost,
+				"path":       "/documents/7",
+				"ip":         "203.0.113.9",
+				"request_id": "req-auth-1",
+			}
+			for key, wantVal := range want {
+				if entry[key] != wantVal {
+					t.Errorf("log field %q = %#v, want %#v", key, entry[key], wantVal)
+				}
 			}
 		})
 	}

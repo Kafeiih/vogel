@@ -54,9 +54,35 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   Cero (el valor por defecto) desactiva la comprobación; un valor negativo hace
   fallar el constructor. Acota cuánto tiempo sirve un token filtrado aunque el
   emisor esté configurado para emitir tokens de larga duración.
+- **`httpx/middleware`: `RequestID` y constante `RequestIDHeader`
+  (`X-Request-Id`).** Reemplazo del `middleware.RequestID` de chi, que adopta
+  tal cual el `X-Request-Id` que envíe el cliente (un cliente podía elegir el
+  `request_id` de los logs, de `audit_log` y del `trace_id` de los errores,
+  colisionar con el de otra request o inyectar contenido en los logs).
+  `RequestID` genera siempre el ID en el servidor (16 bytes de `crypto/rand`
+  en hexadecimal, 32 caracteres), lo guarda en `reqctx` y en la clave de
+  contexto de chi (así `GetReqID` devuelve el mismo valor) y lo escribe en la
+  cabecera de respuesta `X-Request-Id`. El valor que envíe el cliente solo se
+  conserva como ID de correlación aparte, sin espacios ni caracteres fuera del
+  ASCII visible y truncado a 128 bytes.
+- **`reqctx`: `WithClientRequestID` y `ClientRequestIDFromContext`**, para el
+  ID de correlación enviado por el cliente, separado del ID de request del
+  servidor.
 
 ### Cambiado
 
+- **`httpx/middleware.RequestContext` prefiere el ID de `RequestID`.** Toma
+  el ID de request ya guardado en `reqctx` y solo si no hay ninguno recurre
+  al `GetReqID` de chi, de modo que quien siga montando el
+  `middleware.RequestID` de chi no ve cambios.
+- **`httpx/middleware`: los logs de fallo de autenticación llevan contexto de
+  la request.** `Authenticate` registra ahora `method`, `path`, `ip` y
+  `request_id` (los dos últimos desde `reqctx`) junto al error, nunca el
+  token. `RequireAccess`/`WriteAccessError` registran en nivel Warn la rama
+  `access.ErrUnauthenticated` (antes respondía 401 sin dejar rastro) con los
+  mismos campos que la denegación 403.
+- **`examples/api` y `examples/boilerplate`: montan `vmw.RequestID`** en lugar
+  del `middleware.RequestID` de chi.
 - **`auth/zitadel`: el autenticador comprueba `azp` y `nbf` además de lo que
   verifica el SDK.** El verificador local de zitadel-go (`oauth.WithJWT`)
   comprueba firma, `iss`, `aud` y `exp`, pero no `azp` ni `nbf`. Ahora, tras
@@ -66,7 +92,6 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   posterior al instante actual más un margen de un minuto para el desfase de
   relojes. Cambio de comportamiento: un token emitido para otro cliente que
   incluya a este en `aud` deja de aceptarse.
-
 - **`audit/postgres` y `workflow/postgres`: los listados acotan `Limit` y
   rechazan un `Offset` excesivo.** Antes `Repository.List` (audit) y
   `Repository.ListByEligibility` (workflow) pasaban cualquier `Limit` y
