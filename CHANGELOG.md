@@ -8,6 +8,13 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ### Agregado
 
+- **`httpx/middleware.WriteAccessErrorFor`.** Variante de `WriteAccessError`
+  que recibe el `authz.Resource` y la acción del chequeo por instancia y los
+  registra (`resource_kind`, `resource_id`, `action`; nunca `Attr`) en la
+  línea de log del 401/403/503, que con `WriteAccessError` quedaban vacíos.
+  Mismo mapeo de estados y mismo `false` sin escribir nada para un error que
+  no es un centinela de `access`. `WriteAccessError` no cambia;
+  `examples/api` (`DocumentHandler.Delete`) usa la nueva variante.
 - **`auth/zitadel`: introspección opcional de tokens (`Config.Introspection`
   e `IntrospectionConfig`).** Si se configura, cada token se valida contra el
   endpoint de introspección de Zitadel (RFC 7662, vía el `rs.ResourceServer`

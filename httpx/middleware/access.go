@@ -91,7 +91,9 @@ func RequireAccess(guard *access.Guard, resourceKind, action string, logger *slo
 // This is the counterpart, inside a handler, of what RequireAccess does in
 // the router: a handler that calls guard.Check after loading an entity uses
 // WriteAccessError to get the exact same 401/403/503 mapping and logging the
-// middleware gives every route, without duplicating the switch itself.
+// middleware gives every route, without duplicating the switch itself. It
+// logs the denial with an empty resource and action; prefer
+// WriteAccessErrorFor, which carries the checked resource and action.
 //
 // Like RequireAccess, it logs every 403 at Warn with no sampling of its own;
 // see the "Log volume" paragraph on RequireAccess for how to bound that
@@ -109,13 +111,35 @@ func WriteAccessError(w http.ResponseWriter, r *http.Request, err error, logger 
 	return writeAccessStatus(w, r, err, logger, msgs, "", "", "")
 }
 
+// WriteAccessErrorFor is WriteAccessError for a handler that knows which
+// instance it checked: it maps err exactly as WriteAccessError does, and
+// carries res.Kind, res.ID and action into the 401/403/503 log line instead
+// of leaving them empty. Pass the same resource and action given to
+// guard.Check, so a per-instance denial is as traceable in the logs as one
+// made by RequireAccess. res.Attr (the entity data folded into the check) is
+// never logged.
+//
+// Like WriteAccessError, it writes nothing and returns false for nil or for
+// any error that is not one of the three access sentinels.
+func WriteAccessErrorFor(w http.ResponseWriter, r *http.Request, err error, logger *slog.Logger, res authz.Resource, action string, opts ...AuthOption) bool {
+	if err == nil {
+		return false
+	}
+
+	msgs := DefaultAuthMessages()
+	for _, opt := range opts {
+		opt(&msgs)
+	}
+
+	return writeAccessStatus(w, r, err, logger, msgs, res.Kind, res.ID, action)
+}
+
 // writeAccessStatus is the single status-mapping function shared by
-// RequireAccess and WriteAccessError, so the two call paths cannot drift
-// apart on which error maps to which status. resourceKind, resourceID and
-// action are used only for the log lines;
-// any of them may be empty (WriteAccessError, called from inside a handler
-// that already knows less about the route than the middleware did, does not
-// always have them). A nil logger falls back to slog.Default, so a caller
+// RequireAccess, WriteAccessError and WriteAccessErrorFor, so the call paths
+// cannot drift apart on which error maps to which status. resourceKind,
+// resourceID and action are used only for the log lines; any of them may be
+// empty (WriteAccessError passes none of them; WriteAccessErrorFor passes
+// the resource and action the handler checked). A nil logger falls back to slog.Default, so a caller
 // that never wired one still gets its 403 instead of a panic.
 //
 // Both log lines carry the same request fields: the actor, the resource and
