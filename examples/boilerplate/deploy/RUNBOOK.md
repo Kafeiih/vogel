@@ -18,6 +18,7 @@ para interpolar las variables `${...}` del propio compose y lo pasa como
 | `APP_MIGRATOR_PASSWORD` | Rol `app_migrator`, dueño del esquema y las tablas; solo lo usan `migrate` y `grants` |
 | `APP_RUNTIME_PASSWORD` | Rol `app_runtime` de `api` y `worker`: sin ser dueño de nada, `SELECT` e `INSERT` sobre `audit_log` |
 | `APP_ENV` | `development` con el Postgres del compose, que no sirve TLS (ver abajo) |
+| `APP_VERSION` | Tag de las imagenes `vogel-boilerplate` y `vogel-boilerplate-worker` (nunca `latest`); la API tambien lo informa como su version |
 | `ZITADEL_ISSUER`, `ZITADEL_CLIENT_ID`, `CERBOS_HOST`, ... | Configuracion de la aplicacion, igual que en el `.env` de desarrollo |
 
 Las tres contraseñas viajan dentro de URLs `postgres://`: generarlas sin
@@ -25,6 +26,12 @@ caracteres especiales, p. ej. `openssl rand -hex 24`. `api` y `worker`
 reciben `POSTGRES_PASSWORD` y `APP_MIGRATOR_PASSWORD` vacias aunque esten en
 `.env`, para que el proceso que atiende requests no tenga credenciales capaces
 de alterar el esquema.
+
+`migrate`, `api` y `worker` corren con el sistema de archivos raiz de solo
+lectura (`read_only: true`) y un `tmpfs` chico en `/tmp`: los binarios no
+escriben a disco (los logs van a stdout). La imagen de Postgres y las bases
+del `Dockerfile` estan fijadas por digest; para actualizarlas, `docker buildx
+imagetools inspect <imagen:tag>` y reemplazar el `sha256`.
 
 Los roles los crea `deploy/initdb/10-roles.sh` en el **primer** arranque del
 volumen (`/docker-entrypoint-initdb.d`); cambiar una contraseña despues
@@ -229,7 +236,7 @@ curl -s http://localhost:8080/metrics | grep 'http_requests_total.*429'
 # Volver a la version anterior
 docker compose -f deploy/docker-compose.yaml pull   # si hay imagen nueva
 docker compose -f deploy/docker-compose.yaml down
-# Cambiar la imagen al tag anterior en docker-compose.yaml o .env
+# Cambiar APP_VERSION en deploy/.env al tag anterior
 docker compose -f deploy/docker-compose.yaml up -d
 ```
 

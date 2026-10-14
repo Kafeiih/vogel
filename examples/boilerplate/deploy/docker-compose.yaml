@@ -37,6 +37,18 @@
 x-worker-schema: &worker-schema
   WORKER_SCHEMA: ${WORKER_SCHEMA:-river}
 
+# Images are referenced by an explicit version (APP_VERSION in deploy/.env,
+# required), never :latest, so a deploy and its rollback name exactly which
+# build runs. Postgres is pinned by digest for the same reason.
+#
+# The application containers run with a read-only root filesystem: the
+# binaries write nothing to disk (logs go to stdout), and /tmp is a small
+# tmpfs for anything the Go runtime or a library might spill there.
+x-hardened: &hardened
+  read_only: true
+  tmpfs:
+    - /tmp:size=16m,mode=1777
+
 # The serving processes get .env as env_file; these overrides take precedence
 # over it, so the passwords that can alter the schema never reach them.
 x-scrub-db-admin-secrets: &scrub-db-admin-secrets
@@ -45,7 +57,7 @@ x-scrub-db-admin-secrets: &scrub-db-admin-secrets
 
 services:
   postgres:
-    image: postgres:17-alpine
+    image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env}
@@ -73,7 +85,8 @@ services:
   # the tables; api and worker then run as app_runtime, which cannot alter
   # audit_log or create tables.
   migrate:
-    image: ghcr.io/kafeiih/vogel-boilerplate:latest
+    image: ghcr.io/kafeiih/vogel-boilerplate:${APP_VERSION:?set APP_VERSION in deploy/.env}
+    <<: *hardened
     build:
       context: ..
       target: api
@@ -90,7 +103,7 @@ services:
   # tables the migrations created (deploy/initdb/runtime-grants.sql). Runs as
   # app_migrator, the owner, so it needs no superuser either.
   grants:
-    image: postgres:17-alpine
+    image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
     command:
       - psql
       - -v
@@ -113,7 +126,8 @@ services:
     restart: "no"
 
   api:
-    image: ghcr.io/kafeiih/vogel-boilerplate:latest
+    image: ghcr.io/kafeiih/vogel-boilerplate:${APP_VERSION:?set APP_VERSION in deploy/.env}
+    <<: *hardened
     build:
       context: ..
       target: api
@@ -132,7 +146,8 @@ services:
       DB_URL: "postgres://app_runtime:${APP_RUNTIME_PASSWORD:?set APP_RUNTIME_PASSWORD in deploy/.env}@postgres:5432/boilerplate_db?sslmode=disable"
 
   worker:
-    image: ghcr.io/kafeiih/vogel-boilerplate-worker:latest
+    image: ghcr.io/kafeiih/vogel-boilerplate-worker:${APP_VERSION:?set APP_VERSION in deploy/.env}
+    <<: *hardened
     build:
       context: ..
       target: worker

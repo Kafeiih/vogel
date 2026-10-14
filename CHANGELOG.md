@@ -519,6 +519,16 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   un PostgreSQL con TLS. Quien ya usaba este compose debe agregar las tres
   variables a `deploy/.env` y recrear el volumen (los roles se crean solo en
   el primer arranque).
+- **`examples/boilerplate`: build de contenedores endurecido.** Nuevo
+  `.dockerignore` (el `Dockerfile` hace `COPY . .`) que excluye `.env*`,
+  claves y certificados, `.git`, `deploy/`, `bin/`, coverage y carpetas de
+  herramientas locales, para que ningún secreto quede en una capa de la
+  imagen. Las imágenes base (`golang:1.26-alpine3.23`, `alpine:3.23`) y la de
+  Postgres del compose de despliegue quedan fijadas por digest, con el tag a
+  la vista. Las imágenes de la aplicación ya no usan `:latest`: su tag sale
+  de `APP_VERSION` en `deploy/.env` (obligatoria), y `migrate`, `api` y
+  `worker` corren con el sistema de archivos raíz de solo lectura y un
+  `tmpfs` en `/tmp`. Quien ya usaba este compose debe definir `APP_VERSION`.
 
 ## [0.8.0] — 2026-09-30
 
