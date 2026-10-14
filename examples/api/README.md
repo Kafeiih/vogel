@@ -153,6 +153,14 @@ desde otra red, usar `METRICS_ADDR=:2112` y no publicar ese puerto hacia
 afuera. Si la dirección está ocupada o es inválida, el arranque falla con un
 error que la nombra.
 
+El servidor de la API (`newAPIServer` en `main.go`) fija todos sus timeouts
+desde la configuración: `HTTP_READ_HEADER_TIMEOUT` (5s), `HTTP_READ_TIMEOUT`
+(15s), `HTTP_WRITE_TIMEOUT` (30s) y `HTTP_IDLE_TIMEOUT` (60s). Un valor cero
+o negativo falla en el arranque, porque en `net/http` cero significa "sin
+timeout". Las cabeceras se limitan a 64 KiB (`maxHeaderBytes`).
+`HTTP_READ_TIMEOUT` también acota cuánto puede tardar en llegar el cuerpo de
+una subida.
+
 `router_test.go` recorre el router con `chi.Walk` y falla si alguna ruta
 bajo `/api/` responde sin pasar por `RequirePermission` o `RequireAccess`,
 o si aparece una ruta pública fuera de `/api/` que no esté declarada en
