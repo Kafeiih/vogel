@@ -131,9 +131,9 @@ func (r *Repository) List(ctx context.Context, f audit.Filters) ([]audit.Entry, 
 		resourceIDStr = &s
 	}
 
-	limit := f.Limit
-	if limit <= 0 {
-		limit = 20
+	limit, offset, err := f.Page()
+	if err != nil {
+		return nil, 0, fmt.Errorf("list audit_log: %w", err)
 	}
 
 	rows, err := r.pool.Query(ctx, q,
@@ -148,7 +148,7 @@ func (r *Repository) List(ctx context.Context, f audit.Filters) ([]audit.Entry, 
 		f.From,
 		f.To,
 		limit,
-		f.Offset,
+		offset,
 	)
 	if err != nil {
 		return nil, 0, fmt.Errorf("list audit_log: %w", err)

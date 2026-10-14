@@ -18,6 +18,11 @@ type Messages struct {
 	// GetFailed is returned on HTTP 500 when GetByID's repository call
 	// fails for a reason other than "not found".
 	GetFailed string
+
+	// InvalidOffset is returned on HTTP 400 when List's repository rejects
+	// the offset query parameter as out of range (audit.ErrOffsetOutOfRange,
+	// beyond audit.MaxListOffset).
+	InvalidOffset string
 }
 
 // DefaultMessages returns neutral English defaults for Messages.
@@ -26,6 +31,8 @@ func DefaultMessages() Messages {
 		ListFailed: "Failed to list audit log entries",
 		NotFound:   "Audit log entry not found",
 		GetFailed:  "Failed to get audit log entry",
+
+		InvalidOffset: "Offset is out of range; narrow the filters instead of paging further",
 	}
 }
 
@@ -44,6 +51,9 @@ func WithMessages(m Messages) Option {
 		}
 		if m.GetFailed != "" {
 			dst.GetFailed = m.GetFailed
+		}
+		if m.InvalidOffset != "" {
+			dst.InvalidOffset = m.InvalidOffset
 		}
 	}
 }
