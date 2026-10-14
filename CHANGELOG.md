@@ -529,6 +529,18 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   de `APP_VERSION` en `deploy/.env` (obligatoria), y `migrate`, `api` y
   `worker` corren con el sistema de archivos raíz de solo lectura y un
   `tmpfs` en `/tmp`. Quien ya usaba este compose debe definir `APP_VERSION`.
+- **`examples/boilerplate`: `/v1/healthz` ya no expone el error de la base,
+  Swagger solo fuera de producción y CORS sin credenciales.** El chequeo
+  profundo devolvía a cualquier llamador sin autenticar el texto del error
+  del ping (`checks.database.error`), que puede nombrar hosts, puertos, roles
+  y detalles de TLS; ahora responde solo `status: down` y el error queda en
+  el log del servidor (`NewHealthHandler` recibe un `*slog.Logger`; `/readyz`
+  también registra la causa). `/v1/swagger/*` se montaba siempre; ahora solo
+  si `RouterConfig.EnableSwagger` (que `main.go` activa cuando `APP_ENV` no
+  es `production`), bajo `SecurityHeaders` y con una CSP propia que permite
+  el script y los estilos inline de swagger-ui. CORS pasa a
+  `AllowCredentials: false`: la autenticación es un Bearer token, no una
+  cookie.
 
 ## [0.8.0] — 2026-09-30
 

@@ -284,4 +284,6 @@ patrón del lado del worker.
 - `docs/CERBOS_POLICIES.md` — cómo escribir políticas Cerbos para este boilerplate.
 - `deploy/RUNBOOK.md` — operación en producción.
 - `docs/swagger.json` / `docs/swagger.yaml` — spec generada por `swag init`;
-  regenerar con `make gen-docs` después de anotar un handler nuevo.
+  regenerar con `make gen-docs` después de anotar un handler nuevo. La UI y
+  la spec se sirven en `/v1/swagger/` solo cuando `APP_ENV` no es
+  `production`; en producción la ruta no existe (404).

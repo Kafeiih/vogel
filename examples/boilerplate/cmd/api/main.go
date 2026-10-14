@@ -324,7 +324,7 @@ func runServer(migrateFirst bool) error {
 	}
 
 	// HTTP handlers
-	healthHandler := handler.NewHealthHandler(pool)
+	healthHandler := handler.NewHealthHandler(pool, appLogger.Logger)
 	auditHandler := handler.NewAuditHandler(auditRepo, appLogger.Logger)
 
 	routerConfig := httpiface.RouterConfig{
@@ -333,6 +333,9 @@ func runServer(migrateFirst bool) error {
 		CORSOrigins: cfg.CORS.AllowedOrigins,
 
 		TrustedProxies: cfg.App.TrustedProxies,
+
+		// Swagger UI and spec only outside production (APP_ENV).
+		EnableSwagger: !cfg.IsProduction(),
 	}
 
 	deps := httpiface.Dependencies{

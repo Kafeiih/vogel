@@ -54,7 +54,7 @@ func newTestRouter(t *testing.T, trusted string) http.Handler {
 		AuthzChecker:  denyAll{},
 		Metrics:       metrics,
 		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
-		HealthHandler: handler.NewHealthHandler(okPinger{}),
+		HealthHandler: handler.NewHealthHandler(okPinger{}, nil),
 	})
 }
 
