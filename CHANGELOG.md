@@ -304,6 +304,22 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   y `message_id` (la cabecera `X-Message-Id` de SendGrid, que permite cruzar
   el envío con su activity feed sin exponer datos). Quien filtraba o contaba
   envíos por `to` o `subject` en sus logs debe usar `message_id`.
+- **`postgres`: `RequireTLS` exige que pgx verifique el certificado del
+  servidor.** Antes bastaba con que el DSN habilitara TLS, así que
+  `sslmode=require` (y `prefer`, el valor por defecto sin `sslmode`) pasaba el
+  chequeo aunque pgx aceptara cualquier certificado: el tráfico iba cifrado
+  pero un intermediario podía leerlo. Con `RequireTLS: true`, `NewPool` ahora
+  falla al arrancar con `sslmode` `disable`, `allow`, `prefer` (o ausente) y
+  `require` sin `sslrootcert`, y acepta `verify-full` (recomendado),
+  `verify-ca` y `require` con `sslrootcert` (que libpq y pgx tratan como
+  `verify-ca`). El chequeo lee la configuración ya parseada, por lo que cubre
+  también DSN clave/valor, `PGSSLMODE` y DSN con varios hosts; el mínimo de
+  TLS 1.2 se aplica ahora también a los hosts de respaldo (`Fallbacks`), que
+  antes quedaban sin él. **Cambio de comportamiento para quien usa
+  `RequireTLS` con `sslmode=require`:** cambiar el DSN a
+  `sslmode=verify-full` (con `sslrootcert` si la CA del servidor no está en
+  el almacén del sistema, como la de RDS). Con `RequireTLS: false` nada
+  cambia. El ejemplo del comentario de `Config.URL` usa `verify-full`.
 
 ## [0.8.0] — 2026-09-30
 
