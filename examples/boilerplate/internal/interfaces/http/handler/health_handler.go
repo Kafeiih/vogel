@@ -2,7 +2,6 @@ package handler
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -21,6 +20,11 @@ type HealthHandler struct {
 	db     Pinger
 	logger *slog.Logger
 
+	// checkTimeout and readyTimeout bound the database ping of /healthz and
+	// /readyz. They are fields only so tests can shorten them.
+	checkTimeout time.Duration
+	readyTimeout time.Duration
+
 	// mu guards dbCause, the error text of the last failed ping, or "" while
 	// the database answers. It is shared by every probe: logging only when
 	// it changes keeps a caller hammering the public probes during an
@@ -28,11 +32,6 @@ type HealthHandler struct {
 	mu      sync.Mutex
 	dbCause string
 }
-
-// errCallerGone is returned by ping when the probe's own caller was
-// canceled before the database answered: the outcome says nothing about the
-// database. A caller deadline expiring is not this case; see ping.
-var errCallerGone = errors.New("health probe: caller went away")
 
 // NewHealthHandler builds the probe handlers. logger receives the cause of a
 // failed database ping, which the response never carries, once per distinct
@@ -42,7 +41,7 @@ func NewHealthHandler(db Pinger, logger *slog.Logger) *HealthHandler {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &HealthHandler{db: db, logger: logger}
+	return &HealthHandler{db: db, logger: logger, checkTimeout: 5 * time.Second, readyTimeout: 3 * time.Second}
 }
 
 // healthcheckHandler godoc
@@ -58,10 +57,7 @@ func (h *HealthHandler) Check(w http.ResponseWriter, r *http.Request) {
 	dbStatus := "up"
 	dbCheck := map[string]any{"status": dbStatus}
 
-	err := h.ping(r.Context(), 5*time.Second, "health check")
-	if errors.Is(err, errCallerGone) {
-		return
-	}
+	err := h.ping(r.Context(), h.checkTimeout, "health check")
 	if err != nil {
 		// The endpoint is public: the driver's error names hosts, ports,
 		// roles and TLS details, so ping logs it and the caller only learns
@@ -96,10 +92,7 @@ func (h *HealthHandler) Check(w http.ResponseWriter, r *http.Request) {
 //	@Failure		503	{object}	map[string]any	"Service is not ready"
 //	@Router			/readyz [get]
 func (h *HealthHandler) Ready(w http.ResponseWriter, r *http.Request) {
-	err := h.ping(r.Context(), 3*time.Second, "readiness check")
-	if errors.Is(err, errCallerGone) {
-		return
-	}
+	err := h.ping(r.Context(), h.readyTimeout, "readiness check")
 	if err != nil {
 		result := map[string]any{
 			"status": "not_ready",
@@ -129,26 +122,21 @@ func (h *HealthHandler) Live(w http.ResponseWriter, r *http.Request) {
 // healthy state) at Error, the first success after a failure at Info. probe
 // names the endpoint that observed the change.
 //
-// A ping that fails because the caller was canceled (the client hung up)
-// returns errCallerGone without logging or touching the recorded state: the
-// database may be perfectly healthy, and treating it as an outage would let
-// any client that disconnects early write ERROR lines. The handlers then
-// write nothing, since the client is gone.
-//
-// A caller deadline expiring is different: a kubelet probe timeout or an
-// upstream timeout middleware shorter than the probe's own timeout means the
-// database did not answer within the time anyone was willing to wait, which
-// is exactly what a hung database looks like. Treating that as "caller gone"
-// would hide the outage, so it is recorded, logged and answered 503 like the
-// probe's own timeout expiring.
+// The ping runs on its own timeout, detached from the caller's cancellation
+// and deadline, so its outcome always describes the database and is always
+// recorded. Letting the caller cut it short would make the result ambiguous:
+// the kubelet enforces a probe's timeoutSeconds by closing the connection,
+// which the server sees as a canceled request, so a database that stalls
+// under kubelet probes would never be logged if a canceled caller were
+// treated as "nothing to report". Likewise a client that disconnects early
+// against a healthy database cannot open an outage in the log, because the
+// detached ping still succeeds. A ping abandoned by its caller costs at most
+// timeout, the same bound every probe already has.
 func (h *HealthHandler) ping(caller context.Context, timeout time.Duration, probe string) error {
-	ctx, cancel := context.WithTimeout(caller, timeout)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(caller), timeout)
 	defer cancel()
 
 	err := h.db.Ping(ctx)
-	if err != nil && errors.Is(caller.Err(), context.Canceled) {
-		return errCallerGone
-	}
 
 	cause := ""
 	if err != nil {

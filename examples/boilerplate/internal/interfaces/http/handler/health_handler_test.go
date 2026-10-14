@@ -301,9 +301,9 @@ func (p *ctxPinger) Ping(ctx context.Context) error {
 	return p.err
 }
 
-// A ping cut short because the caller hung up says nothing about the
-// database: it is neither logged nor recorded as a state change, so it
-// cannot open (or close) an outage in the log.
+// A caller that hung up says nothing about the database: the ping runs
+// detached from it, so against a healthy database nothing is logged or
+// recorded, and a canceled probe cannot open (or close) an outage in the log.
 func TestHealth_CallerCancellationIsNotADatabaseFailure(t *testing.T) {
 	for _, tt := range []struct {
 		name  string
@@ -378,6 +378,7 @@ func TestHealth_CallerDeadlineOnAHungDatabaseIsAFailure(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			rec := &recordingHandler{}
 			h := NewHealthHandler(hangingPinger{}, slog.New(rec))
+			h.checkTimeout, h.readyTimeout = 50*time.Millisecond, 50*time.Millisecond
 
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 			defer cancel()
@@ -390,6 +391,36 @@ func TestHealth_CallerDeadlineOnAHungDatabaseIsAFailure(t *testing.T) {
 			}
 			if got := rec.take(); len(got) != 1 || got[0] != slog.LevelError {
 				t.Errorf("hung database under a caller deadline: logged levels %v, want [ERROR]", got)
+			}
+		})
+	}
+}
+
+// The kubelet enforces its probe timeoutSeconds by closing the connection,
+// which the server sees as a canceled request, not an expired deadline. A
+// database that stalls under kubelet probes must still be logged: the ping
+// runs on its own timeout, detached from the caller, so the outcome is
+// always recorded.
+func TestHealth_CanceledCallerOnAHungDatabaseIsStillLogged(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		probe func(*HealthHandler) http.HandlerFunc
+	}{
+		{"healthz", func(h *HealthHandler) http.HandlerFunc { return h.Check }},
+		{"readyz", func(h *HealthHandler) http.HandlerFunc { return h.Ready }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := &recordingHandler{}
+			h := NewHealthHandler(hangingPinger{}, slog.New(rec))
+			h.checkTimeout, h.readyTimeout = 50*time.Millisecond, 50*time.Millisecond
+
+			ctx, cancel := context.WithCancel(context.Background())
+			time.AfterFunc(10*time.Millisecond, cancel)
+			req := httptest.NewRequest(http.MethodGet, "/"+tt.name, nil).WithContext(ctx)
+			tt.probe(h)(httptest.NewRecorder(), req)
+
+			if got := rec.take(); len(got) != 1 || got[0] != slog.LevelError {
+				t.Errorf("hung database under a canceled caller: logged levels %v, want [ERROR]", got)
 			}
 		})
 	}

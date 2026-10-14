@@ -44,11 +44,11 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   la variable. `vmw.SecurityHeaders` pasa a ser el primer middleware, así los
   401/403/404/429/500/504 también llevan las cabeceras. `GET /v1/audit`
   responde 400 (no 500) a un `offset` mayor que `audit.MaxListOffset`. Los
-  probes de salud registran un fallo de la base una vez por causa distinta y
-  no cuentan como caída un ping cortado porque el cliente canceló la
-  request. Un plazo del llamador que vence con la base colgada (timeout del
-  probe del kubelet o de un middleware) sí cuenta: se registra y responde
-  503, para que una base colgada no quede oculta.
+  probes de salud registran un fallo de la base una vez por causa distinta.
+  El ping corre con su propio timeout, desacoplado de la cancelación y del
+  plazo del llamador: un cliente que corta la conexión no abre una caída en
+  el log, y una base colgada se registra aunque el kubelet cierre la
+  conexión al vencer el `timeoutSeconds` del probe.
   `rolematrix_test.go` fija la matriz ruta × rol.
 - **`examples/api`: endurecimiento del ejemplo.** `GET /documents` rechaza con
   400 un `offset` mayor que `workflow.MaxListOffset`; `POST /documents` valida
