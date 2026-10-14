@@ -8,13 +8,16 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/zitadel/oidc/v3/pkg/client/rs"
+	"github.com/zitadel/oidc/v3/pkg/oidc"
 	"github.com/zitadel/zitadel-go/v3/pkg/authorization"
 	"github.com/zitadel/zitadel-go/v3/pkg/authorization/oauth"
 	"github.com/zitadel/zitadel-go/v3/pkg/zitadel"
+	"golang.org/x/sync/singleflight"
 )
 
 // IntrospectionConfig switches an Authenticator from local JWT verification
@@ -30,6 +33,14 @@ import (
 // are cached in memory for CacheTTL (never past the token's own exp). The
 // trade-off: a token revoked in Zitadel can still be accepted for at most
 // CacheTTL after the revocation.
+//
+// Concurrent cache misses for the same token share a single introspection
+// call, so a burst of requests carrying one new token costs one round trip.
+// Only active results are cached, though: every distinct unknown or inactive
+// token still costs one call, so an unauthenticated flood of random tokens
+// turns into one introspection call per request. Put rate limiting in front
+// of the authenticated routes (for example httprate keyed by the client's
+// real IP, as examples/boilerplate does) to bound that load on Zitadel.
 type IntrospectionConfig struct {
 	// KeyFile is the path to the API application's key.json (JWT profile
 	// authentication). Mutually exclusive with ClientSecret.
@@ -90,8 +101,9 @@ func validateIntrospection(ic IntrospectionConfig) (IntrospectionConfig, error) 
 // (same issuer, zitadel.Origin()), but builds the resource server with
 // rs.WithClient so discovery and every introspection call use the bounded
 // httpClient (the SDK's IntrospectionAuthentication helpers take no options
-// and fall back to the oidc package's 30s default client), and wraps it in
-// the SDK's caching verifier with this package's token cache.
+// and fall back to the oidc package's 30s default client), and verifies
+// tokens with introspectionVerifier, which adds this package's token cache
+// and merges concurrent misses.
 func withIntrospection(ic IntrospectionConfig, clientID string, httpClient *http.Client, cache *introspectionCache) authorization.VerifierInitializer[*oauth.IntrospectionContext] {
 	return func(ctx context.Context, z *zitadel.Zitadel) (authorization.Verifier[*oauth.IntrospectionContext], error) {
 		var (
@@ -109,7 +121,75 @@ func withIntrospection(ic IntrospectionConfig, clientID string, httpClient *http
 		if server.IntrospectionURL() == "" {
 			return nil, errors.New("introspection resource server: issuer discovery has no introspection_endpoint")
 		}
-		return oauth.NewIntrospectionVerificationWithCache[*oauth.IntrospectionContext](server, cache, ic.CacheTTL), nil
+		return &introspectionVerifier{server: server, cache: cache, ttl: ic.CacheTTL}, nil
+	}
+}
+
+// introspectionVerifier implements authorization.Verifier with OAuth2
+// introspection. It behaves like the SDK's
+// oauth.IntrospectionVerificationWithCache (same header parsing, same
+// oauth.ErrIntrospectionFailed wrapping, active results cached for ttl), and
+// additionally merges concurrent cache misses for the same token into one
+// introspection call (singleflight keyed by the token's SHA-256, never the
+// raw token).
+//
+// The shared call runs detached from any single caller's cancellation
+// (context.WithoutCancel; the bounded HTTP client still caps it), so one
+// caller giving up does not fail the others waiting on it. Each caller
+// waits with its own context: a cancelled caller returns its context error
+// at once, wrapped in oauth.ErrIntrospectionFailed (an aborted check says
+// nothing about the token), while the shared call carries on.
+//
+// Every caller gets its own copy of the result, because the SDK's
+// Authorizer calls SetToken on the context it returns.
+type introspectionVerifier struct {
+	server rs.ResourceServer
+	cache  *introspectionCache
+	ttl    time.Duration
+	group  singleflight.Group
+}
+
+var _ authorization.Verifier[*oauth.IntrospectionContext] = (*introspectionVerifier)(nil)
+
+// CheckAuthorization implements authorization.Verifier. authorizationToken
+// must carry the "Bearer " prefix.
+func (v *introspectionVerifier) CheckAuthorization(ctx context.Context, authorizationToken string) (*oauth.IntrospectionContext, error) {
+	token, ok := strings.CutPrefix(authorizationToken, oidc.BearerToken)
+	if !ok {
+		return nil, oauth.ErrInvalidAuthorizationHeader
+	}
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return nil, oauth.ErrInvalidAuthorizationHeader
+	}
+	if cached, found := v.cache.Get(token); found {
+		return cached, nil
+	}
+
+	key := cacheKey(token)
+	callCtx := context.WithoutCancel(ctx)
+	results := v.group.DoChan(string(key[:]), func() (any, error) {
+		// A caller that missed the cache just before a previous call for
+		// this token stored its result lands here after that call ended.
+		if cached, found := v.cache.Get(token); found {
+			return cached, nil
+		}
+		resp, err := rs.Introspect[*oauth.IntrospectionContext](callCtx, v.server, token)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", oauth.ErrIntrospectionFailed, err)
+		}
+		v.cache.Set(token, resp, v.ttl)
+		return resp, nil
+	})
+	select {
+	case <-ctx.Done():
+		return nil, fmt.Errorf("%w: %w", oauth.ErrIntrospectionFailed, ctx.Err())
+	case r := <-results:
+		if r.Err != nil {
+			return nil, r.Err
+		}
+		c := *r.Val.(*oauth.IntrospectionContext)
+		return &c, nil
 	}
 }
 

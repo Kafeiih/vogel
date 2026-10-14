@@ -11,7 +11,8 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 - **`auth/zitadel`: introspección opcional de tokens (`Config.Introspection`
   e `IntrospectionConfig`).** Si se configura, cada token se valida contra el
   endpoint de introspección de Zitadel (RFC 7662, vía el `rs.ResourceServer`
-  y el `IntrospectionVerificationWithCache` del SDK) en lugar de verificar el
+  del SDK y un verificador propio equivalente a su
+  `IntrospectionVerificationWithCache`) en lugar de verificar el
   JWT localmente, de modo que un token revocado o una sesión cerrada dejan de
   aceptarse antes de su `exp`. Sin configurar (el valor por defecto) nada
   cambia: sigue la verificación local del JWT. La API se autentica con
@@ -29,7 +30,15 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   chequeos (`nbf`, `MaxTokenLifetime`, `AllowedAuthorizedParties`) más que
   `aud` incluya `Config.ClientID`; un token inactivo es un 401 genérico, y
   una introspección fallida (caída, timeout o credenciales de la API
-  rechazadas) es `auth.ErrServiceUnavailable` (503).
+  rechazadas) es `auth.ErrServiceUnavailable` (503). Los misses
+  concurrentes del mismo token comparten una sola llamada (`singleflight`
+  de `golang.org/x/sync`, ahora dependencia directa, con el SHA-256 del
+  token como clave); cada llamador recibe su propia copia del resultado, y
+  uno cuyo `ctx` se cancela vuelve de inmediato con ese error (503) sin
+  abortar la llamada compartida. No hay caché negativa: cada token
+  desconocido distinto sigue costando una llamada, así que una avalancha de
+  tokens aleatorios sin autenticar necesita rate limiting delante (p. ej.
+  `httprate` por IP real, como el boilerplate).
 - **`request`: `Validator.MaxLen(param, value, max)` y el mensaje
   `Messages.TooLong(field, max)`.** Registra un error de validación si el
   valor tiene más de `max` caracteres, contados en runas

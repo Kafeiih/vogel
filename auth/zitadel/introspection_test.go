@@ -45,6 +45,7 @@ type testIntrospector struct {
 	status    int           // when non-zero, the introspection endpoint answers with it
 	stall     time.Duration // when non-zero, the introspection endpoint waits this long
 	gotAuth   []string      // "basic" or "jwt-profile", one per call
+	gate      chan struct{} // when non-nil, the introspection endpoint answers only after it is closed
 
 	done chan struct{} // closed on cleanup, before the server closes, to release stalled handlers
 }
@@ -63,8 +64,15 @@ func newTestIntrospector(t *testing.T) *testIntrospector {
 	mux.HandleFunc("/oauth/v2/introspect", func(w http.ResponseWriter, r *http.Request) {
 		ti.calls.Add(1)
 		ti.mu.Lock()
-		status, stall := ti.status, ti.stall
+		status, stall, gate := ti.status, ti.stall, ti.gate
 		ti.mu.Unlock()
+		if gate != nil {
+			select {
+			case <-gate:
+			case <-ti.done:
+				return
+			}
+		}
 		if stall > 0 {
 			select {
 			case <-r.Context().Done():
@@ -226,6 +234,165 @@ func TestIntrospection_CacheHitAvoidsSecondCall(t *testing.T) {
 	}
 	if got := ti.calls.Load(); got != 1 {
 		t.Errorf("introspection calls = %d, want 1 within the cache TTL", got)
+	}
+}
+
+// holdResponses makes the introspection endpoint wait until the returned
+// release function is called (idempotent).
+func (ti *testIntrospector) holdResponses() (release func()) {
+	gate := make(chan struct{})
+	ti.mu.Lock()
+	ti.gate = gate
+	ti.mu.Unlock()
+	var once sync.Once
+	return func() { once.Do(func() { close(gate) }) }
+}
+
+// waitForCalls blocks until the endpoint has received at least n calls.
+func (ti *testIntrospector) waitForCalls(t *testing.T, n int32) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for ti.calls.Load() < n {
+		if time.Now().After(deadline) {
+			t.Fatalf("introspection calls = %d, want at least %d", ti.calls.Load(), n)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestIntrospection_ConcurrentMissesShareOneCall(t *testing.T) {
+	ti := newTestIntrospector(t)
+	ti.set("tok-burst", activeResponse(nil))
+	a := ti.authenticator(t, Config{})
+	release := ti.holdResponses()
+	defer release()
+
+	const n = 20
+	var (
+		wg      sync.WaitGroup
+		mu      sync.Mutex
+		results []*auth.Principal
+		errs    []error
+	)
+	for range n {
+		wg.Go(func() {
+			p, err := a.Authenticate(context.Background(), "tok-burst")
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				errs = append(errs, err)
+				return
+			}
+			results = append(results, p)
+		})
+	}
+	ti.waitForCalls(t, 1)
+	// Give every goroutine time to reach the in-flight call before the
+	// endpoint answers; a late one hits the cache, so the count below holds
+	// either way.
+	time.Sleep(100 * time.Millisecond)
+	release()
+	wg.Wait()
+
+	if len(errs) != 0 {
+		t.Fatalf("Authenticate errors = %v, want none", errs)
+	}
+	if len(results) != n {
+		t.Fatalf("principals = %d, want %d", len(results), n)
+	}
+	for _, p := range results {
+		if p.UserID != "user-1" || p.Username != "alice" {
+			t.Fatalf("principal = %+v, want user-1/alice", p)
+		}
+	}
+	if got := ti.calls.Load(); got != 1 {
+		t.Errorf("introspection calls = %d, want 1 for %d concurrent misses of the same token", got, n)
+	}
+}
+
+func TestIntrospection_ConcurrentMissesReturnIndependentContexts(t *testing.T) {
+	ti := newTestIntrospector(t)
+	ti.set("tok-burst", activeResponse(nil))
+	a := ti.authenticator(t, Config{})
+	release := ti.holdResponses()
+	defer release()
+
+	const n = 8
+	ctxs := make([]*oauth.IntrospectionContext, n)
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Go(func() {
+			c, err := a.authorizer.CheckAuthorization(context.Background(), oidc.PrefixBearer+"tok-burst")
+			if err != nil {
+				t.Errorf("CheckAuthorization: %v", err)
+				return
+			}
+			ctxs[i] = c
+		})
+	}
+	ti.waitForCalls(t, 1)
+	time.Sleep(50 * time.Millisecond)
+	release()
+	wg.Wait()
+
+	for i := range n {
+		for j := i + 1; j < n; j++ {
+			if ctxs[i] != nil && ctxs[i] == ctxs[j] {
+				t.Fatalf("callers %d and %d share one *IntrospectionContext; each must get its own copy", i, j)
+			}
+		}
+	}
+}
+
+func TestIntrospection_CancelledCallerReturnsPromptly(t *testing.T) {
+	ti := newTestIntrospector(t)
+	ti.set("tok-slow", activeResponse(nil))
+	a := ti.authenticator(t, Config{})
+	release := ti.holdResponses()
+	defer release()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cancelledErr := make(chan error, 1)
+	go func() {
+		_, err := a.Authenticate(ctx, "tok-slow")
+		cancelledErr <- err
+	}()
+	ti.waitForCalls(t, 1)
+
+	// A second caller for the same token joins the call in flight; cancelling
+	// the first caller must not abort it.
+	otherErr := make(chan error, 1)
+	go func() {
+		_, err := a.Authenticate(context.Background(), "tok-slow")
+		otherErr <- err
+	}()
+	time.Sleep(50 * time.Millisecond)
+
+	cancel()
+	select {
+	case err := <-cancelledErr:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("cancelled caller error = %v, want context.Canceled", err)
+		}
+		if !errors.Is(err, auth.ErrServiceUnavailable) {
+			t.Errorf("cancelled caller error = %v, want auth.ErrServiceUnavailable (says nothing about the token)", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("cancelled caller did not return while the shared call was still in flight")
+	}
+
+	release()
+	select {
+	case err := <-otherErr:
+		if err != nil {
+			t.Errorf("other caller error = %v, want nil (the shared call must outlive a cancelled caller)", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("other caller did not return after the endpoint answered")
+	}
+	if got := ti.calls.Load(); got != 1 {
+		t.Errorf("introspection calls = %d, want 1", got)
 	}
 }
 
