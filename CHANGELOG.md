@@ -173,6 +173,9 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ### Cambiado
 
+- Dependencias: `google.golang.org/grpc` v1.83.1 → v1.83.2 (CVE-2026-84445,
+  HIGH, detectada por el escaneo de Trivy sobre los binarios del boilerplate),
+  en el módulo raíz y en `examples/boilerplate`.
 - **`logger.New` y `logger.NewDefault` emiten el timestamp en UTC.** Un
   `ReplaceAttr` convierte el atributo `time` de cada registro a UTC, sin
   importar la zona horaria del host, para que las líneas de servicios en zonas
