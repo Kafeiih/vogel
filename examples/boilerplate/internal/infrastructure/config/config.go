@@ -68,8 +68,8 @@ type AppConfig struct {
 	// SwaggerEnabled (SWAGGER_ENABLED, default false) serves the Swagger UI
 	// and spec under /v1/swagger/. It is an explicit opt-in rather than
 	// "APP_ENV is not production": the deploy compose runs with
-	// APP_ENV=development (its bundled Postgres serves no TLS) and must not
-	// publish the API description. See parseSwaggerEnabled.
+	// APP_ENV=development and must not publish the API description. Load
+	// refuses it when IsProduction. See parseSwaggerEnabled.
 	SwaggerEnabled bool
 }
 
@@ -114,8 +114,11 @@ func Load() (*Config, error) {
 	var errs config.Errors
 
 	dbURL := errs.Require("DB_URL")
-	zitadelIssuer := errs.Require("ZITADEL_ISSUER")
-	zitadelClientID := errs.Require("ZITADEL_CLIENT_ID")
+	// TLS to the database is required unless explicitly turned off: it is
+	// not derived from APP_ENV, so a deployment that forgets APP_ENV (or
+	// runs with APP_ENV=development) still rejects a DSN that is not
+	// sslmode=verify-ca or verify-full.
+	dbRequireTLS := parseBool(&errs, "DB_REQUIRE_TLS", true)
 
 	maxConns := errs.Int32("DB_MAX_CONNS", 25)
 	minConns := errs.Int32("DB_MIN_CONNS", 5)
@@ -127,17 +130,12 @@ func Load() (*Config, error) {
 
 	trustedProxies := parseTrustedProxies(&errs)
 	cerbosCfg := parseCerbosConfig(&errs)
-
-	env := config.String("APP_ENV", "development")
-	swaggerEnabled := parseSwaggerEnabled(&errs, env)
-
-	if err := errs.Err(); err != nil {
-		return nil, err
-	}
+	zitadelCfg := parseZitadelConfig(&errs)
+	swaggerEnabled := parseSwaggerEnabled(&errs)
 
 	cfg := &Config{
 		App: AppConfig{
-			Env:     env,
+			Env:     config.String("APP_ENV", "development"),
 			Port:    config.String("APP_PORT", ":8080"),
 			Url:     config.String("APP_URL", "localhost:8080"),
 			Version: config.String("APP_VERSION", "0.1.0"),
@@ -153,13 +151,10 @@ func Load() (*Config, error) {
 			MaxConnLifetime: maxConnLifetime,
 			MaxConnIdleTime: maxConnIdleTime,
 			ConnectTimeout:  connectTimeout,
-			RequireTLS:      env != "development",
+			RequireTLS:      dbRequireTLS,
 		},
-		Zitadel: zitadel.Config{
-			Issuer:   zitadelIssuer,
-			ClientID: zitadelClientID,
-		},
-		Cerbos: cerbosCfg,
+		Zitadel: zitadelCfg,
+		Cerbos:  cerbosCfg,
 		CORS: CORSConfig{
 			AllowedOrigins: parseSlice("CORS_ALLOWED_ORIGINS", ","),
 			AllowedMethods: []string{"GET", "POST", "PUT", "PATCH", "DELETE"},
@@ -171,7 +166,23 @@ func Load() (*Config, error) {
 		Metrics:      parseMetricsConfig(),
 	}
 
+	cfg.validate(&errs)
+	if err := errs.Err(); err != nil {
+		return nil, err
+	}
 	return cfg, nil
+}
+
+// validate records the rules that depend on more than one setting.
+// Production is decided by IsProduction alone, so these rules cannot drift
+// from it.
+func (c *Config) validate(errs *config.Errors) {
+	// The API description maps every route for an unauthenticated caller;
+	// an operator who set SWAGGER_ENABLED=true in production learns at boot
+	// that it is refused there instead of having it silently ignored.
+	if c.App.SwaggerEnabled && c.IsProduction() {
+		errs.Addf("SWAGGER_ENABLED: must not be true with APP_ENV=production")
+	}
 }
 
 // IsProduction reports whether we are running in production.
@@ -211,19 +222,99 @@ func parseTrustedProxies(errs *config.Errors) []netip.Prefix {
 	return prefixes
 }
 
-// parseSwaggerEnabled reads SWAGGER_ENABLED (default false). Any value other
-// than a strconv.ParseBool true leaves Swagger off, so a typo fails closed.
-// In production a true value is a config error rather than silently
-// ignored: the API description maps every route for an unauthenticated
-// caller, and an operator who set it should learn at boot that it is
-// refused there.
-func parseSwaggerEnabled(errs *config.Errors, env string) bool {
-	enabled := config.Bool("SWAGGER_ENABLED", false)
-	if enabled && env == "production" {
-		errs.Addf("SWAGGER_ENABLED: must not be true with APP_ENV=production")
-		return false
+// parseSwaggerEnabled reads SWAGGER_ENABLED (default false). A value
+// strconv.ParseBool cannot read is a config error, not "off": the operator
+// meant something, and guessing which way is how a typo ends up publishing
+// the API description. Load refuses true in production (see validate).
+func parseSwaggerEnabled(errs *config.Errors) bool {
+	return parseBool(errs, "SWAGGER_ENABLED", false)
+}
+
+// parseBool reads key as a strconv.ParseBool boolean, returning def when it
+// is unset or empty. Unlike vogel/config.Bool, an unparsable value is
+// recorded in errs instead of falling back to def: every flag read this way
+// switches a security control, and a typo must fail the boot rather than
+// flip it to whichever value the default happens to be.
+func parseBool(errs *config.Errors, key string, def bool) bool {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return def
 	}
-	return enabled
+	v, err := strconv.ParseBool(raw)
+	if err != nil {
+		errs.Addf("%s: must be true or false, got %q", key, raw)
+		return def
+	}
+	return v
+}
+
+// defaultMaxTokenLifetime is ZITADEL_MAX_TOKEN_LIFETIME's default: Zitadel's
+// own default access-token lifetime, so tokens minted with the issuer's
+// defaults pass and anything configured to live longer is rejected.
+const defaultMaxTokenLifetime = 12 * time.Hour
+
+// parseZitadelConfig reads the Zitadel token validation settings:
+//
+//	ZITADEL_ISSUER, ZITADEL_CLIENT_ID       required
+//	ZITADEL_HTTP_TIMEOUT                    per-request timeout towards the issuer (default 10s, > 0)
+//	ZITADEL_MAX_TOKEN_LIFETIME              longest accepted exp - iat (default 12h; 0 disables the check)
+//	ZITADEL_ALLOWED_AUTHORIZED_PARTIES      comma-separated client IDs accepted as azp (default: any)
+//	ZITADEL_INTROSPECTION                   true validates every token with the introspection endpoint (default false)
+//	ZITADEL_INTROSPECTION_KEY_FILE          API application key.json, or
+//	ZITADEL_INTROSPECTION_CLIENT_SECRET     its client secret (exactly one, only with introspection)
+//	ZITADEL_INTROSPECTION_CACHE_TTL         how long an active result is reused (default 30s)
+//	ZITADEL_INTROSPECTION_CACHE_MAX_ENTRIES cached results (default 10000)
+//
+// It checks here what zitadel.New would only reject after the process
+// started connecting, so every invalid setting is reported at once and
+// names its variable. See zitadel.Config for what each knob protects.
+func parseZitadelConfig(errs *config.Errors) zitadel.Config {
+	cfg := zitadel.Config{
+		Issuer:   errs.Require("ZITADEL_ISSUER"),
+		ClientID: errs.Require("ZITADEL_CLIENT_ID"),
+
+		HTTPTimeout:      errs.Duration("ZITADEL_HTTP_TIMEOUT", zitadel.DefaultHTTPTimeout),
+		MaxTokenLifetime: errs.Duration("ZITADEL_MAX_TOKEN_LIFETIME", defaultMaxTokenLifetime),
+
+		AllowedAuthorizedParties: parseSlice("ZITADEL_ALLOWED_AUTHORIZED_PARTIES", ","),
+	}
+	if cfg.HTTPTimeout <= 0 {
+		errs.Addf("ZITADEL_HTTP_TIMEOUT: must be greater than zero")
+		cfg.HTTPTimeout = zitadel.DefaultHTTPTimeout
+	}
+	if cfg.MaxTokenLifetime < 0 {
+		errs.Addf("ZITADEL_MAX_TOKEN_LIFETIME: must not be negative")
+		cfg.MaxTokenLifetime = defaultMaxTokenLifetime
+	}
+
+	introspection := parseBool(errs, "ZITADEL_INTROSPECTION", false)
+	ic := zitadel.IntrospectionConfig{
+		KeyFile:         os.Getenv("ZITADEL_INTROSPECTION_KEY_FILE"),
+		ClientSecret:    os.Getenv("ZITADEL_INTROSPECTION_CLIENT_SECRET"),
+		CacheTTL:        errs.Duration("ZITADEL_INTROSPECTION_CACHE_TTL", 0),
+		CacheMaxEntries: errs.Int("ZITADEL_INTROSPECTION_CACHE_MAX_ENTRIES", 0),
+	}
+	hasCredential := ic.KeyFile != "" || ic.ClientSecret != ""
+	switch {
+	case !introspection:
+		// A credential without the switch most likely means the operator
+		// believes revoked tokens stop working, while they are still
+		// verified locally until exp.
+		if hasCredential {
+			errs.Addf("ZITADEL_INTROSPECTION: a ZITADEL_INTROSPECTION_* credential is set but introspection is off; set ZITADEL_INTROSPECTION=true or remove it")
+		}
+		return cfg
+	case (ic.KeyFile == "") == (ic.ClientSecret == ""):
+		errs.Addf("ZITADEL_INTROSPECTION: needs exactly one of ZITADEL_INTROSPECTION_KEY_FILE or ZITADEL_INTROSPECTION_CLIENT_SECRET")
+	}
+	if ic.CacheTTL < 0 {
+		errs.Addf("ZITADEL_INTROSPECTION_CACHE_TTL: must not be negative")
+	}
+	if ic.CacheMaxEntries < 0 {
+		errs.Addf("ZITADEL_INTROSPECTION_CACHE_MAX_ENTRIES: must not be negative")
+	}
+	cfg.Introspection = &ic
+	return cfg
 }
 
 // WorkerSchema returns the PostgreSQL schema River's tables live in

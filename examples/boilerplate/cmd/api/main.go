@@ -281,7 +281,10 @@ func runServer(migrateFirst bool) error {
 		return fmt.Errorf("initializing zitadel: %w", err)
 	}
 
-	appLogger.Info("zitadel authenticator initialized")
+	appLogger.Info("zitadel authenticator initialized",
+		"introspection", cfg.Zitadel.Introspection != nil,
+		"max_token_lifetime", cfg.Zitadel.MaxTokenLifetime,
+		"azp_restricted", len(cfg.Zitadel.AllowedAuthorizedParties) > 0)
 
 	// Cerbos authorization (PDP via gRPC)
 	cerbosChecker, err := cerbos.New(cfg.Cerbos)

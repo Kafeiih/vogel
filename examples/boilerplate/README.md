@@ -81,6 +81,7 @@ go run ./cmd/api start-from-migrate   # o: make dev
 > DB_MAX_CONN_LIFETIME=1h
 > DB_MAX_CONN_IDLE_TIME=30m
 > DB_CONNECT_TIMEOUT=10s
+> DB_REQUIRE_TLS=false   # solo para el Postgres local, que no sirve TLS
 >
 > ZITADEL_ISSUER=https://auth.institucion.gob
 > ZITADEL_CLIENT_ID=your-client-id-here
@@ -102,9 +103,28 @@ go run ./cmd/api start-from-migrate   # o: make dev
 >
 > `SWAGGER_ENABLED` (opcional, `false` por defecto) sirve la UI y la spec de
 > Swagger en `/v1/swagger/`. Es un opt-in explícito, independiente de
-> `APP_ENV`: el compose de despliegue corre con `APP_ENV=development` (su
-> Postgres no sirve TLS) y no debe publicar la descripción de la API. Con
-> `APP_ENV=production` y `SWAGGER_ENABLED=true` el arranque falla.
+> `APP_ENV`: el compose de despliegue corre con `APP_ENV=development` y no
+> debe publicar la descripción de la API. Con `APP_ENV=production` y
+> `SWAGGER_ENABLED=true` el arranque falla, y un valor que no sea `true` o
+> `false` también (un error de tipeo no se interpreta en silencio).
+>
+> `DB_REQUIRE_TLS` (opcional, `true` por defecto, en cualquier `APP_ENV`)
+> exige que `DB_URL` use `sslmode=verify-ca` o `verify-full`. Solo el `.env`
+> local y el compose de despliegue, cuyo Postgres no sirve TLS, la ponen en
+> `false`. Un valor que no sea `true` o `false` hace fallar el arranque.
+>
+> Validación de tokens de Zitadel (todas opcionales; el arranque falla con un
+> valor inválido o una combinación incoherente, nombrando la variable):
+>
+> | Variable | Default | Efecto |
+> |---|---|---|
+> | `ZITADEL_HTTP_TIMEOUT` | `10s` | Timeout de cada request al issuer (discovery, JWKS, introspección). Debe ser mayor que cero. |
+> | `ZITADEL_MAX_TOKEN_LIFETIME` | `12h` | Rechaza tokens cuyo `exp - iat` lo supera, y los que no traen `iat`. `0` desactiva el control. |
+> | `ZITADEL_ALLOWED_AUTHORIZED_PARTIES` | vacía | Client IDs (separados por comas) aceptados como `azp`, normalmente las apps frontend. Vacía no valida `azp`; la audiencia (`ZITADEL_CLIENT_ID`) se valida siempre. |
+> | `ZITADEL_INTROSPECTION` | `false` | `true` valida cada token contra el endpoint de introspección, así un token revocado deja de valer sin esperar su `exp`. Necesita exactamente una credencial: |
+> | `ZITADEL_INTROSPECTION_KEY_FILE` / `ZITADEL_INTROSPECTION_CLIENT_SECRET` | — | `key.json` de la app API, o su client secret. Definir una sin `ZITADEL_INTROSPECTION=true` es un error. |
+> | `ZITADEL_INTROSPECTION_CACHE_TTL` | `30s` | Cuánto se reutiliza un resultado activo; es también lo máximo que un token revocado sigue aceptado. |
+> | `ZITADEL_INTROSPECTION_CACHE_MAX_ENTRIES` | `10000` | Resultados en caché. |
 >
 > `CERBOS_PLAINTEXT` (opcional, `false` por defecto) desactiva TLS hacia el
 > PDP de Cerbos. Sin ella la conexión gRPC usa TLS; el contenedor de
