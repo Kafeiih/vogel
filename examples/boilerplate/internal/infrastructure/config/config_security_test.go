@@ -179,3 +179,31 @@ func TestLoad_ZitadelInvalidSettings(t *testing.T) {
 		})
 	}
 }
+
+// "api migrate" reads DB_REQUIRE_TLS on its own, without Load, and gets the
+// same secure default: the migrator role is the most privileged one.
+func TestMigrateRequiresTLS(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		want    bool
+		wantErr bool
+	}{
+		{name: "unset defaults to true", value: "", want: true},
+		{name: "explicit false", value: "false", want: false},
+		{name: "explicit true", value: "true", want: true},
+		{name: "unparsable is an error", value: "maybe", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("DB_REQUIRE_TLS", tt.value)
+			got, err := MigrateRequiresTLS()
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("MigrateRequiresTLS() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if err == nil && got != tt.want {
+				t.Errorf("MigrateRequiresTLS() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

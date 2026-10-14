@@ -28,7 +28,7 @@ arranque):
 
 | Variable | Uso |
 |---|---|
-| `DB_REQUIRE_TLS` | (`true`, con cualquier `APP_ENV`) exige `sslmode=verify-full` o `verify-ca` en `DB_URL`. El compose lo fija en `false` solo para `api` y `worker`, porque el Postgres empaquetado no sirve TLS (ver abajo); no definirlo en `deploy/.env` |
+| `DB_REQUIRE_TLS` | (`true`, con cualquier `APP_ENV`) exige `sslmode=verify-full` o `verify-ca` en `DB_URL`. Rige también `api migrate`. El compose lo fija en `false` solo para `migrate`, `api` y `worker`, porque el Postgres empaquetado no sirve TLS (ver abajo); no definirlo en `deploy/.env` |
 | `ZITADEL_HTTP_TIMEOUT` | (`10s`, mayor que cero) tiempo maximo de cada request hacia el issuer (discovery, JWKS, introspeccion) |
 | `ZITADEL_MAX_TOKEN_LIFETIME` | (`12h`; `0` desactiva el control) vida maxima aceptada de un token (`exp - iat`) |
 | `ZITADEL_ALLOWED_AUTHORIZED_PARTIES` | (vacio: no se controla `azp`) client IDs aceptados como `azp`, separados por coma |

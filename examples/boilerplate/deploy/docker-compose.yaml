@@ -124,6 +124,8 @@ services:
     environment:
       <<: *worker-schema
       DB_URL: "postgres://app_migrator:${APP_MIGRATOR_PASSWORD:?set APP_MIGRATOR_PASSWORD in deploy/.env}@postgres:5432/boilerplate_db?sslmode=disable"
+      # The bundled Postgres serves no TLS; see "TLS" above.
+      DB_REQUIRE_TLS: "false"
     restart: "no"
 
   # One-shot step after migrate: grants app_runtime what it needs on the

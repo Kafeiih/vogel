@@ -326,6 +326,16 @@ func WorkerSchema() string {
 	return config.String("WORKER_SCHEMA", "river")
 }
 
+// MigrateRequiresTLS reads DB_REQUIRE_TLS (default true) for "api migrate",
+// which connects with DB_URL directly instead of going through Load. The
+// migrator role owns the schema, so it gets the same TLS policy as the
+// serving process. An unparsable value is an error, as it is for Load.
+func MigrateRequiresTLS() (bool, error) {
+	var errs config.Errors
+	v := parseBool(&errs, "DB_REQUIRE_TLS", true)
+	return v, errs.Err()
+}
+
 // parseWorkerConfig reads WORKER_* env vars and returns a worker.Config with
 // defaults.
 func parseWorkerConfig() worker.Config {
