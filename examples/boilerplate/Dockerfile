@@ -79,4 +79,10 @@ COPY --from=builder /out/worker .
 
 USER appuser
 
+# The worker serves no port: "worker server" refreshes a heartbeat file in
+# the temp directory while its job queue runs, and "worker healthcheck"
+# fails when that file is missing or stale (see cmd/worker/heartbeat.go).
+HEALTHCHECK --interval=30s --timeout=3s --start-period=20s --retries=3 \
+    CMD ["./worker", "healthcheck"]
+
 ENTRYPOINT ["./worker"]
