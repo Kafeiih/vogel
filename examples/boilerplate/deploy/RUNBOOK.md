@@ -7,7 +7,8 @@ Guia de respuesta a incidentes para el equipo de operaciones.
 ## 0. Configuracion del compose de despliegue
 
 `deploy/docker-compose.yaml` lee `deploy/.env` (nunca se commitea; el
-`.gitignore` lo excluye). Ese archivo cumple dos funciones: compose lo usa
+`.gitignore` lo excluye). La plantilla es `deploy/env.example`: copiarla a
+`deploy/.env` y completarla. Ese archivo cumple dos funciones: compose lo usa
 para interpolar las variables `${...}` del propio compose y lo pasa como
 `env_file` a `api` y `worker`. Variables obligatorias (si falta alguna,
 `docker compose` falla antes de crear contenedores):
