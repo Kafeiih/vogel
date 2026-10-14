@@ -33,7 +33,7 @@ func TestSend_DoesNotLogPersonalData(t *testing.T) {
 
 	const (
 		to      = "Juana Perez <juana.perez@example.com>"
-		subject = "Resolucion del caso de Juana Perez"
+		subject = "Decision on the case of Juana Perez"
 	)
 	if err := n.Send(context.Background(), &notification.Message{To: to, Subject: subject, Text: "Hola"}); err != nil {
 		t.Fatalf("Send: %v", err)
