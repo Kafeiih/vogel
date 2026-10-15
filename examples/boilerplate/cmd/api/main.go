@@ -5,14 +5,24 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
-	"log/slog"
 	"os"
 	"strings"
 	"time"
 
+	// vogel:component worker begin
+	"log/slog"
+
+	// vogel:component worker end
+	// vogel:component worker begin
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	// vogel:component worker end
 	"github.com/prometheus/client_golang/prometheus"
 
+	// vogel:component storage begin
+	"github.com/kafeiih/vogel/storage/s3"
+
+	// vogel:component storage end
 	auditpkg "github.com/kafeiih/vogel/audit"
 	auditmigrations "github.com/kafeiih/vogel/audit/migrations"
 	auditpg "github.com/kafeiih/vogel/audit/postgres"
@@ -22,13 +32,15 @@ import (
 	"github.com/kafeiih/vogel/logger"
 	"github.com/kafeiih/vogel/migrate"
 	"github.com/kafeiih/vogel/postgres"
-	"github.com/kafeiih/vogel/storage/s3"
 
+	// vogel:component worker begin
+	"github.com/kafeiih/vogel/examples/boilerplate/internal/infrastructure/riverschema"
+
+	// vogel:component worker end
 	"github.com/kafeiih/vogel/examples/boilerplate/docs"
 	"github.com/kafeiih/vogel/examples/boilerplate/internal/infrastructure/config"
 	appmigrate "github.com/kafeiih/vogel/examples/boilerplate/internal/infrastructure/database/migrate"
 	"github.com/kafeiih/vogel/examples/boilerplate/internal/infrastructure/database/migrations"
-	"github.com/kafeiih/vogel/examples/boilerplate/internal/infrastructure/riverschema"
 	httpiface "github.com/kafeiih/vogel/examples/boilerplate/internal/interfaces/http"
 	"github.com/kafeiih/vogel/examples/boilerplate/internal/interfaces/http/handler"
 )
@@ -84,9 +96,11 @@ const (
 	// cmdServer serves only and never touches the schema. A bare "api" is
 	// an alias for "api server".
 	cmdServer command = iota
-	// cmdStartFromMigrate applies every migration set (River included) and
-	// then serves. It is a development convenience: the serving role must
-	// own the tables.
+	// cmdStartFromMigrate applies every migration set and then serves.
+	// vogel:component worker begin
+	// River's schema is applied too, as "migrate up" does.
+	// vogel:component worker end
+	// It is a development convenience: the serving role must own the tables.
 	cmdStartFromMigrate
 	// cmdMigrate runs the migrate subcommands (up, down, status, create).
 	cmdMigrate
@@ -146,21 +160,31 @@ func runMigrate(args []string) error {
 				return fmt.Errorf("running %s migrations: %w", set.name, err)
 			}
 		}
-		return migrateRiver(ctx, dbURL)
+		// vogel:component worker begin
+		if err := migrateRiver(ctx, dbURL); err != nil {
+			return err
+		}
+		// vogel:component worker end
+		return nil
 	case "down":
 		// Only this service's own set is rolled back. migrate.Down reverts the
 		// latest migration of the set it is given: on the audit set that would
 		// first remove audit_log's append-only triggers (002) and, on a second
 		// "migrate down", drop audit_log and the audit trail with it (001).
-		// cmd/api/migrate_integration_test.go proves the audit set and River
-		// are left untouched. River's schema is never rolled back
-		// either: its down migrations drop the job tables and every queued
+		// cmd/api/migrate_integration_test.go proves the audit set is left
+		// untouched.
+		// vogel:component worker begin
+		// River's schema is never rolled back either, and the same test
+		// proves it: its down migrations drop the job tables and every queued
 		// job with them.
+		// vogel:component worker end
 		return migrate.Down(ctx, dbURL, migrations.FS)
 	case "status":
-		// Lists the goose sets only. River's migrations are not goose
-		// migrations; "migrate up" applies them idempotently and logs each
-		// version it applies.
+		// Lists the goose sets only.
+		// vogel:component worker begin
+		// River's migrations are not goose migrations; "migrate up" applies
+		// them idempotently and logs each version it applies.
+		// vogel:component worker end
 		for i, set := range migrationSets() {
 			if i > 0 {
 				fmt.Println()
@@ -179,6 +203,7 @@ func runMigrate(args []string) error {
 	}
 }
 
+// vogel:component worker begin
 // migrateRiver ensures the worker's River schema (WORKER_SCHEMA, the same
 // variable the worker reads) and applies River's migrations, so "worker
 // server" can start with a role that cannot create tables.
@@ -192,6 +217,7 @@ func migrateRiver(ctx context.Context, dbURL string) error {
 	return riverschema.Migrate(ctx, pool, config.WorkerSchema(), slog.Default())
 }
 
+// vogel:component worker end
 // migrationSet is one embedded set of goose migrations and the options it
 // runs with.
 type migrationSet struct {
@@ -212,8 +238,11 @@ func migrationSets() []migrationSet {
 }
 
 // runServer serves the API. With migrateFirst ("start-from-migrate") it first
-// applies every migration set and River's schema against cfg.Database.URL;
-// without it ("server") the schema must already be current, applied by
+// applies every migration set against cfg.Database.URL.
+// vogel:component worker begin
+// River's schema is applied the same way.
+// vogel:component worker end
+// Without it ("server") the schema must already be current, applied by
 // "migrate up" with a migrator role.
 func runServer(migrateFirst bool) error {
 	cfg, err := config.Load()
@@ -255,10 +284,12 @@ func runServer(migrateFirst bool) error {
 				return fmt.Errorf("running %s migrations: %w", set.name, err)
 			}
 		}
+		// vogel:component worker begin
 		// Same River step as "migrate up", so both leave the database alike.
 		if err := riverschema.Migrate(ctx, pool, cfg.Worker.Schema, appLogger.Logger); err != nil {
 			return err
 		}
+		// vogel:component worker end
 	}
 
 	// Database pool metrics for Prometheus, registered on the default
@@ -317,6 +348,7 @@ func runServer(migrateFirst bool) error {
 	auditRecorder := auditpkg.NewRecorder(auditRepo)
 	_ = auditRecorder // remove underscore when Commands are added
 
+	// vogel:component storage begin
 	// S3-compatible storage (optional — only if STORAGE_CONFIGS is set).
 	//
 	// Usage in handlers:
@@ -335,6 +367,7 @@ func runServer(migrateFirst bool) error {
 		appLogger.Info("storage initialized", "backends", storageReg.Names())
 	}
 
+	// vogel:component storage end
 	// HTTP handlers
 	healthHandler := handler.NewHealthHandler(pool, appLogger.Logger)
 	auditHandler := handler.NewAuditHandler(auditRepo, appLogger.Logger)

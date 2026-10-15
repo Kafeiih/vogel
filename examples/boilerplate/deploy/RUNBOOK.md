@@ -10,16 +10,16 @@ Guia de respuesta a incidentes para el equipo de operaciones.
 `.gitignore` lo excluye). La plantilla es `deploy/env.example`: copiarla a
 `deploy/.env` y completarla. Ese archivo cumple dos funciones: compose lo usa
 para interpolar las variables `${...}` del propio compose y lo pasa como
-`env_file` a `api` y `worker`. Variables obligatorias (si falta alguna,
+`env_file` a los procesos que sirven (`api`, y `worker` si existe). Variables obligatorias (si falta alguna,
 `docker compose` falla antes de crear contenedores):
 
 | Variable | Uso |
 |---|---|
 | `POSTGRES_PASSWORD` | Superusuario `postgres`; solo lo usa el contenedor de Postgres |
 | `APP_MIGRATOR_PASSWORD` | Rol `app_migrator`, dueño del esquema y las tablas; solo lo usan `migrate` y `grants` |
-| `APP_RUNTIME_PASSWORD` | Rol `app_runtime` de `api` y `worker`: sin ser dueño de nada, `SELECT` e `INSERT` sobre `audit_log` |
+| `APP_RUNTIME_PASSWORD` | Rol `app_runtime` de `api` (y `worker`, si existe): sin ser dueño de nada, `SELECT` e `INSERT` sobre `audit_log` |
 | `APP_ENV` | `development` con este compose, `production` en produccion. Ya no decide el TLS hacia la base (eso es `DB_REQUIRE_TLS`, abajo); en `production` rechaza `SWAGGER_ENABLED=true` |
-| `APP_VERSION` | Tag de las imagenes `vogel-boilerplate` y `vogel-boilerplate-worker` (nunca `latest`); la API tambien lo informa como su version |
+| `APP_VERSION` | Tag de las imagenes `ghcr.io/kafeiih/vogel-boilerplate*` del servicio (nunca `latest`); la API tambien lo informa como su version |
 | `ZITADEL_ISSUER`, `ZITADEL_CLIENT_ID`, `CERBOS_HOST`, ... | Configuracion de la aplicacion, igual que en el `.env` de desarrollo |
 
 Ajustes que no son obligatorios pero conviene conocer (los valores por
@@ -28,34 +28,37 @@ arranque):
 
 | Variable | Uso |
 |---|---|
-| `DB_REQUIRE_TLS` | (`true`, con cualquier `APP_ENV`) exige `sslmode=verify-full` o `verify-ca` en `DB_URL`. Rige también `api migrate`. El compose lo fija en `false` solo para `migrate`, `api` y `worker`, porque el Postgres empaquetado no sirve TLS (ver abajo); no definirlo en `deploy/.env` |
+| `DB_REQUIRE_TLS` | (`true`, con cualquier `APP_ENV`) exige `sslmode=verify-full` o `verify-ca` en `DB_URL`. Rige también `api migrate`. El compose lo fija en `false` solo para `migrate` y los procesos que sirven, porque el Postgres empaquetado no sirve TLS (ver abajo); no definirlo en `deploy/.env` |
 | `ZITADEL_HTTP_TIMEOUT` | (`10s`, mayor que cero) tiempo maximo de cada request hacia el issuer (discovery, JWKS, introspeccion) |
 | `ZITADEL_MAX_TOKEN_LIFETIME` | (`12h`; `0` desactiva el control) vida maxima aceptada de un token (`exp - iat`) |
 | `ZITADEL_ALLOWED_AUTHORIZED_PARTIES` | (vacio: no se controla `azp`) client IDs aceptados como `azp`, separados por coma |
 | `ZITADEL_INTROSPECTION` | (`false`) valida cada token contra el endpoint de introspeccion, para que una revocacion tenga efecto antes de que expire; exige exactamente uno de `ZITADEL_INTROSPECTION_KEY_FILE` o `ZITADEL_INTROSPECTION_CLIENT_SECRET`, y acepta `ZITADEL_INTROSPECTION_CACHE_TTL` (`30s`) y `ZITADEL_INTROSPECTION_CACHE_MAX_ENTRIES` (`10000`) |
 
 Las tres contraseñas viajan dentro de URLs `postgres://`: generarlas sin
-caracteres especiales, p. ej. `openssl rand -hex 24`. `api` y `worker`
+caracteres especiales, p. ej. `openssl rand -hex 24`. Los procesos que sirven
 reciben `POSTGRES_PASSWORD` y `APP_MIGRATOR_PASSWORD` vacias aunque esten en
 `.env`, para que el proceso que atiende requests no tenga credenciales capaces
 de alterar el esquema.
 
-`migrate`, `grants`, `api` y `worker` corren con el sistema de archivos raiz
-de solo lectura (`read_only: true`) y un `tmpfs` chico en `/tmp`, sin
-ninguna capability de Linux (`cap_drop: [ALL]`) y con
+`migrate`, `grants` y los procesos que sirven corren con el sistema de
+archivos raiz de solo lectura (`read_only: true`) y un `tmpfs` chico en
+`/tmp`, sin ninguna capability de Linux (`cap_drop: [ALL]`) y con
 `no-new-privileges`: los binarios no escriben a disco (los logs van a stdout;
-el worker solo escribe su archivo de heartbeat en `/tmp`) ni necesitan
-privilegios. Postgres conserva solo las capabilities que usa su entrypoint
+el worker, si existe, solo escribe su archivo de heartbeat en `/tmp`) ni
+necesitan privilegios. Postgres conserva solo las capabilities que usa su entrypoint
 para ajustar permisos del directorio de datos y bajar al usuario `postgres`
 (`CHOWN`, `DAC_OVERRIDE`, `FOWNER`, `SETGID`, `SETUID`), tambien con
 `no-new-privileges`. Las imagenes de los compose y las bases del `Dockerfile`
 estan fijadas por version exacta y digest; ver «Parches» abajo.
 
-Healthchecks: la imagen de la API consulta `/v1/healthz`; la del worker,
+Healthchecks: la imagen de la API consulta `/v1/healthz`.
+<!-- vogel:component worker begin -->
+La del worker,
 que no expone puertos, corre `./worker healthcheck`, que falla si el worker
-no reescribio su archivo de heartbeat (`/tmp/vogel-worker.heartbeat`, cada
-10s mientras procesa trabajos) en los ultimos 30s. Un worker `unhealthy` esta
+no reescribio su archivo de heartbeat (en `/tmp`, cada 10s mientras procesa
+trabajos; ver `cmd/worker/heartbeat.go`) en los ultimos 30s. Un worker `unhealthy` esta
 colgado o deteniendose; no indica por si solo que la base este caida.
+<!-- vogel:component worker end -->
 
 Los roles los crea `deploy/initdb/10-roles.sh` en el **primer** arranque del
 volumen (`/docker-entrypoint-initdb.d`). El script es idempotente: correrlo
@@ -63,8 +66,12 @@ otra vez a mano (ver «Actualizar un volumen existente») crea
 el rol que falte y fija las dos contraseñas a los valores actuales de
 `deploy/.env`. Despues de cada `migrate up`, el servicio de una
 sola ejecucion `grants` aplica `deploy/initdb/runtime-grants.sql` como
-`app_migrator`: `SELECT`/`INSERT` sobre `audit_log`, `SELECT` sobre las
-tablas de version de goose y DML sobre las tablas de River. Las tablas
+`app_migrator`: `SELECT`/`INSERT` sobre `audit_log` y `SELECT` sobre las
+tablas de version de goose.
+<!-- vogel:component worker begin -->
+Tambien DML sobre las tablas de River.
+<!-- vogel:component worker end -->
+Las tablas
 propias de la aplicacion reciben DML de `app_runtime` por los privilegios por
 defecto que deja `10-roles.sh`.
 
@@ -75,7 +82,7 @@ compose. Para inspeccionarlo:
 
 **TLS:** dentro de la red del compose los DSN usan `sslmode=disable` porque
 el Postgres empaquetado no sirve certificado, y por eso el compose fija
-`DB_REQUIRE_TLS=false` en `api` y `worker` (con su valor por defecto, `true`,
+`DB_REQUIRE_TLS=false` en `migrate` y los procesos que sirven (con su valor por defecto, `true`,
 el arranque rechaza ese DSN sea cual sea `APP_ENV`). Eso solo es aceptable en
 una red privada de compose. **En produccion** la base debe ser un PostgreSQL
 con TLS, los DSN deben usar `sslmode=verify-full` (con `sslrootcert` si la CA
@@ -86,26 +93,30 @@ es privada) y hay que quitar ese `DB_REQUIRE_TLS=false` del compose: con
 sirven con `SWAGGER_ENABLED=true`, que `deploy/.env` no debe definir; con
 `APP_ENV=production` esa combinacion hace fallar el arranque.
 
-**Cerbos:** el servicio `cerbos` corre la imagen del PDP con las politicas de
+**Cerbos:** `CERBOS_HOST` y `CERBOS_PLAINTEXT` son obligatorias en
+`deploy/.env` y van siempre de a pares: sin cualquiera de las dos,
+`docker compose` no arranca. Un PDP en otro host se usa con su host y
+`CERBOS_PLAINTEXT=false` (TLS), nunca con `true`. Un modo TLS equivocado hace
+fallar el arranque del `api` con un error que nombra el modo. Un PDP sin
+politicas reporta sano y niega todo: despues de cada despliegue de politicas,
+verifique que el PDP las cargo.
+<!-- vogel:component cerbos begin -->
+
+El servicio `cerbos` corre la imagen del PDP con las politicas de
 `cerbos/policies` horneadas (ver `cerbos/README.md`). Sirve gRPC sin TLS, por
 eso vive solo en la red `authz`, que es `internal` y no publica puertos: solo
-el `api` llega a el. `CERBOS_HOST` y `CERBOS_PLAINTEXT` son obligatorias en
-`deploy/.env` y van siempre de a pares: sin cualquiera de las dos,
-`docker compose` no arranca. `env.example` trae el par del PDP empaquetado
-(`cerbos:3593`, `true`). Si el PDP corre en otro host, use su host con
-`CERBOS_PLAINTEXT=false` (TLS), nunca con `true`, y quite del compose el
+el `api` llega a el. `env.example` trae el par del PDP empaquetado
+(`cerbos:3593`, `true`). Para usar un PDP externo, quite del compose el
 servicio `cerbos`, la entrada `cerbos` del `depends_on` del `api` y su red
-`authz`; si no, el `api` sigue esperando al PDP empaquetado. Un modo TLS
-equivocado hace fallar el arranque del `api` con un error que nombra el modo.
-Las politicas viven en `/bundle/policies` de la
-imagen, no en un volumen, asi que cada version nueva sirve sus propias
-politicas. Despues de desplegar, verifique en los logs que las cargo: un PDP
-sin politicas reporta sano y niega todo.
+`authz`; si no, el `api` sigue esperando al PDP empaquetado. Las politicas
+viven en `/bundle/policies` de la imagen, no en un volumen, asi que cada
+version nueva sirve sus propias politicas. Para verificar que las cargo:
 
 ```bash
 docker compose -f deploy/docker-compose.yaml logs cerbos | grep "executable policies"
 # "Found 0 executable policies" = toda verificacion de permisos responde 403
 ```
+<!-- vogel:component cerbos end -->
 
 ### Parches
 
@@ -118,7 +129,7 @@ revisa y despliega.
 | Imagenes base del `Dockerfile` (`golang`, `alpine`) | Semanal | Dependabot (`docker`, `.github/dependabot.yml`) propone tag y digest nuevos en un PR agrupado |
 | Imagenes de los compose (`postgres`, `cerbos`) | Semanal | Dependabot (`docker-compose`) hace lo mismo en `deploy/` y `examples/api/` |
 | Modulos Go (vogel y este boilerplate) | Semanal | Dependabot (`gomod`), un PR agrupado por modulo; `govulncheck` en CI |
-| Vulnerabilidades conocidas en las imagenes construidas | Cada push o PR y cada lunes (06:17 UTC) | Workflow `Trivy` (`.github/workflows/trivy.yaml`): construye `api` y `worker` desde este `Dockerfile` y falla con hallazgos HIGH o CRITICAL que tengan version corregida |
+| Vulnerabilidades conocidas en las imagenes construidas | Cada push o PR y cada lunes (06:17 UTC) | Workflow `Trivy` (`.github/workflows/trivy.yaml`): construye las imagenes del servicio desde este `Dockerfile` y falla con hallazgos HIGH o CRITICAL que tengan version corregida |
 | Paquetes del sistema de la imagen (`apk`) | En cada rebuild | El runtime parte de `alpine` fijado por digest: un rebuild sin bump no trae parches, por eso importa mergear el PR semanal de Dependabot |
 
 Objetivo sugerido (ajustarlo a la politica del equipo): mergear y desplegar
@@ -149,7 +160,7 @@ en produccion en 48 horas.
 ### Actualizar un volumen existente
 
 Aplica a un volumen `pgdata` creado con el compose anterior, en el que
-`migrate`, `api` y `worker` usaban el superusuario `postgres`. En ese volumen
+`migrate` y los procesos que sirven usaban el superusuario `postgres`. En ese volumen
 los roles `app_migrator` y `app_runtime` no existen (`10-roles.sh` corre solo
 sobre un volumen vacio) y todas las tablas son de `postgres`, asi que
 `migrate` como `app_migrator` fallaria. **No hace falta borrar el volumen**:
@@ -159,7 +170,8 @@ sobre un volumen vacio) y todas las tablas son de `postgres`, asi que
    docker compose -f deploy/docker-compose.yaml exec -T postgres \
      pg_dump -U postgres -Fc boilerplate_db > respaldo-pre-roles.dump
    ```
-2. Detener lo que escribe: `docker compose -f deploy/docker-compose.yaml stop api worker`.
+2. Detener lo que escribe (el paso 3 vuelve a levantar solo Postgres):
+   `docker compose -f deploy/docker-compose.yaml stop`.
 3. Actualizar el compose y completar `deploy/.env` con las variables de
    arriba. Levantar solo Postgres, que ahora recibe las contraseñas de los
    roles: `docker compose -f deploy/docker-compose.yaml up -d postgres`.
@@ -174,12 +186,15 @@ sobre un volumen vacio) y todas las tablas son de `postgres`, asi que
    ```bash
    docker compose -f deploy/docker-compose.yaml exec -T postgres \
      psql -v ON_ERROR_STOP=1 -U postgres -d boilerplate_db \
-     -v worker_schema=river < deploy/initdb/upgrade-ownership.sql
+     < deploy/initdb/upgrade-ownership.sql
    ```
-   (`worker_schema` debe coincidir con `WORKER_SCHEMA` si se cambio.)
+<!-- vogel:component worker begin -->
+   Si se cambio `WORKER_SCHEMA`, agregue `-v worker_schema=<esquema>` al
+   `psql` (por defecto el script usa `river`).
+<!-- vogel:component worker end -->
 6. Desplegar normalmente: `docker compose -f deploy/docker-compose.yaml up -d`.
    `migrate` corre como `app_migrator`, `grants` aplica
-   `runtime-grants.sql` y `api` y `worker` arrancan como `app_runtime`.
+   `runtime-grants.sql` y los procesos que sirven arrancan como `app_runtime`.
 7. Cambiar la contraseña del superusuario, que en el compose anterior era
    `postgres` y que `POSTGRES_PASSWORD` no cambia en un volumen existente:
    ```bash
@@ -193,8 +208,15 @@ Verificar que `app_runtime` quedo con los privilegios esperados:
 SELECT t,
        has_table_privilege('app_runtime', t, 'INSERT') AS insert,
        has_table_privilege('app_runtime', t, 'UPDATE') AS update
-FROM unnest(ARRAY['audit_log', 'river.river_job']) AS t;
--- audit_log: insert t, update f.  river.river_job: insert t, update t.
+FROM unnest(ARRAY['audit_log'
+-- vogel:component worker begin
+  , 'river.river_job'
+-- vogel:component worker end
+]) AS t;
+-- audit_log: insert t, update f.
+-- vogel:component worker begin
+-- river.river_job: insert t, update t.
+-- vogel:component worker end
 ```
 
 **Por que no `REASSIGN OWNED BY postgres TO app_migrator`:** `postgres` es el
@@ -203,8 +225,9 @@ PostgreSQL rechaza el comando ("required by the database system"). Aun con
 otro dueño anterior, `REASSIGN OWNED` mueve todo lo que ese rol posee en la
 base (la base misma, el esquema `public`, las extensiones), no solo las
 tablas de la aplicacion. `upgrade-ownership.sql` nombra exactamente lo que
-mueve: tablas, vistas, secuencias, funciones y tipos de `public` y del
-esquema de River que no pertenecen a una extension, y el esquema de River.
+mueve: tablas, vistas, secuencias, funciones y tipos de `public` (y, con el
+worker, del esquema de River y el esquema mismo) que no pertenecen a una
+extension.
 Las funciones de `pgcrypto` y la extension siguen siendo de `postgres`; el
 esquema `public` conserva su dueño. Correr el script dos veces no cambia
 nada.
@@ -401,14 +424,15 @@ docker compose -f deploy/docker-compose.yaml up -d
 
 **Si el problema es una migracion:**
 
-Las migraciones no corren al arrancar la API ni el worker (`./api server` solo
-sirve y `./worker server` solo procesa jobs): las aplica el servicio `migrate`
-del compose (`./api migrate up`, que incluye el esquema y las migraciones de
-River) antes de que arranquen `api` y `worker`. Si `migrate` falla, ninguno
-de los dos arranca; revisar
-`docker compose -f deploy/docker-compose.yaml logs migrate`. `./api migrate
-down` nunca revierte River: sus migraciones de bajada borran los jobs
-encolados.
+Las migraciones no corren al arrancar los procesos que sirven (`./api server`
+solo sirve): las aplica el servicio `migrate` del compose (`./api migrate up`)
+antes de que arranquen. Si `migrate` falla, no arranca ninguno; revisar
+`docker compose -f deploy/docker-compose.yaml logs migrate`.
+<!-- vogel:component worker begin -->
+`./worker server` solo procesa jobs. `./api migrate up` incluye el esquema y
+las migraciones de River, y `./api migrate down` nunca revierte River: sus
+migraciones de bajada borran los jobs encolados.
+<!-- vogel:component worker end -->
 
 1. **No** desplegar la version nueva hasta resolver la migracion
 2. Revertir la ultima migracion con el subcomando del propio binario, usando
@@ -420,13 +444,13 @@ encolados.
    DB_URL="<url del rol migrador>" ./api migrate down
    ```
    `migrate down` revierte solo la ultima migracion de este servicio, toma el
-   mismo advisory lock que `migrate up` y nunca toca `audit_log` ni River. No
+   mismo advisory lock que `migrate up` y nunca toca `audit_log` (ni River). No
    uses el CLI de `goose` directo: se salta ese lock y no sabe de las tablas
    de version separadas de cada conjunto. `./api migrate status` muestra el
    estado antes y despues.
    `cmd/api/migrate_integration_test.go` prueba que se revierte solo la
    ultima migracion de este servicio (y que su SQL de bajada corre) y que
-   `audit_log` y River quedan intactos. El advisory lock no lo prueba ese
+   `audit_log` (y River) quedan intactos. El advisory lock no lo prueba ese
    test: lo cubren los tests de integracion de `vogel/migrate`.
 3. Verificar que la version anterior funciona con el schema revertido
 4. Investigar la causa del fallo en la migracion
@@ -536,7 +560,7 @@ truncate -s 0 $(docker inspect --format='{{.LogPath}}' api)
 
 ## 9. Respaldos y prueba de restauracion
 
-**Objetivo:** poder reconstruir la base (datos, `audit_log`, River) en otro
+**Objetivo:** poder reconstruir la base (datos, `audit_log`, jobs) en otro
 servidor y saber cuanto tarda. Un respaldo que nunca se restauro no cuenta.
 
 | Elemento | Minimo |
@@ -588,13 +612,26 @@ exposicion y, como minimo, una vez al año.
 
 | Secreto | Como rotarlo | Como verificar |
 |---|---|---|
-| `APP_RUNTIME_PASSWORD` | `ALTER ROLE` en el Postgres en marcha, sin recrear el contenedor ni el volumen: ver «Rotar las contraseñas de los roles» abajo | `/v1/healthz` responde 200, el worker queda `healthy` y el log no muestra `password authentication failed` |
+| `APP_RUNTIME_PASSWORD` | `ALTER ROLE` en el Postgres en marcha, sin recrear el contenedor ni el volumen: ver «Rotar las contraseñas de los roles» abajo | `/v1/healthz` responde 200, el worker (si existe) queda `healthy` y el log no muestra `password authentication failed` |
 | `APP_MIGRATOR_PASSWORD` | Igual que la anterior; el valor nuevo lo usan `migrate` y `grants` en el proximo despliegue | `docker compose -f deploy/docker-compose.yaml run --rm migrate migrate status` |
 | `POSTGRES_PASSWORD` (superusuario) | `docker compose -f deploy/docker-compose.yaml exec postgres psql -U postgres -c "\password postgres"` y actualizar `deploy/.env` | `psql` con la contraseña nueva |
-| Zitadel (clave o secreto de la aplicacion API, si se usa introspeccion) | Crear una clave nueva en la consola de Zitadel (aplicacion API → Keys), desplegarla, reiniciar `api` y `worker` y recien entonces borrar la vieja. `ZITADEL_CLIENT_ID` no es secreto | Las requests autenticadas responden 200; el log no muestra `initializing zitadel` |
+| Zitadel (clave o secreto de la aplicacion API, si se usa introspeccion) | Crear una clave nueva en la consola de Zitadel (aplicacion API → Keys), desplegarla, reiniciar `api` (y `worker`, si existe) y recien entonces borrar la vieja. `ZITADEL_CLIENT_ID` no es secreto | Las requests autenticadas responden 200; el log no muestra `initializing zitadel` |
 | Cerbos (certificado TLS del PDP) | Renovar el certificado en el PDP; si es de una CA propia, desplegar primero la CA nueva en los clientes | Las rutas con `RequirePermission` responden 200 o 403, no 503 |
+
+<!-- vogel:component storage begin -->
+
+| Secreto | Como rotarlo | Como verificar |
+|---|---|---|
 | Almacenamiento (`STORAGE_<NOMBRE>_ACCESS_KEY` y `_SECRET_KEY`) | Crear un segundo par de claves en el proveedor, desplegarlo, reiniciar, desactivar el par viejo y luego borrarlo | Una subida y una descarga de prueba; los enlaces firmados con el par viejo dejan de funcionar al desactivarlo |
-| `SENDGRID_API_KEY` o `SMTP_PASSWORD` | Crear la clave nueva en el proveedor con el minimo permiso (solo envio), desplegarla, reiniciar `api` y `worker` y revocar la vieja | Un correo de prueba llega; el proveedor muestra la clave vieja sin uso |
+
+<!-- vogel:component storage end -->
+<!-- vogel:component notification begin -->
+
+| Secreto | Como rotarlo | Como verificar |
+|---|---|---|
+| `SENDGRID_API_KEY` o `SMTP_PASSWORD` | Crear la clave nueva en el proveedor con el minimo permiso (solo envio), desplegarla, reiniciar `worker` y revocar la vieja | Un correo de prueba llega; el proveedor muestra la clave vieja sin uso |
+
+<!-- vogel:component notification end -->
 
 Despues de rotar por una exposicion, revisar `audit_log` y los logs del
 proveedor afectado desde la fecha probable de la fuga.
@@ -623,7 +660,10 @@ el contenedor ni, mucho menos, el volumen.
    secretos).
 4. Recrear solo los procesos que usan ese rol, **sin** tocar Postgres:
    ```bash
-   docker compose -f deploy/docker-compose.yaml up -d --no-deps api worker
+   docker compose -f deploy/docker-compose.yaml up -d --no-deps api
+   # vogel:component worker begin
+   docker compose -f deploy/docker-compose.yaml up -d --no-deps worker
+   # vogel:component worker end
    ```
    `--no-deps` importa: el servicio `postgres` tambien recibe esas variables
    (para `10-roles.sh`), asi que un `up -d` sin nombrar servicios lo

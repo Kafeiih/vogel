@@ -12,10 +12,13 @@ import (
 
 	"github.com/riverqueue/river"
 
-	"github.com/kafeiih/vogel/logger"
+	// vogel:component notification begin
 	"github.com/kafeiih/vogel/notification"
 	"github.com/kafeiih/vogel/notification/sendgrid"
 	"github.com/kafeiih/vogel/notification/smtp"
+
+	// vogel:component notification end
+	"github.com/kafeiih/vogel/logger"
 	"github.com/kafeiih/vogel/postgres"
 	"github.com/kafeiih/vogel/worker"
 
@@ -110,9 +113,12 @@ func run(migrateFirst bool) error {
 
 	appLogger.Info("database connection established")
 
-	// Build notifier based on config (smtp or sendgrid). Every mutation this
-	// worker records via the audit Recorder below must use audit.SourceWorker,
-	// never audit.SourceHTTP -- there is no inbound HTTP request here.
+	// Every mutation this worker records via an audit Recorder must use
+	// audit.SourceWorker, never audit.SourceHTTP -- there is no inbound HTTP
+	// request here.
+
+	// vogel:component notification begin
+	// Build notifier based on config (smtp or sendgrid).
 	var notifier notification.Notifier
 	switch cfg.Notification.Provider {
 	case "sendgrid":
@@ -129,13 +135,16 @@ func run(migrateFirst bool) error {
 		notifier = nil
 	}
 
+	// vogel:component notification end
 	// Register job workers
 	workers := river.NewWorkers()
 	river.AddWorker(workers, &jobs.ExampleWorker{})
+	// vogel:component notification begin
 	if notifier != nil {
 		river.AddWorker(workers, &jobs.SendEmailWorker{Notifier: notifier})
 		appLogger.Info("send_email worker registered", "provider", cfg.Notification.Provider)
 	}
+	// vogel:component notification end
 	// Register additional workers here:
 	// river.AddWorker(workers, &jobs.GeneratePDFWorker{})
 

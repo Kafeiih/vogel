@@ -1,0 +1,164 @@
+{
+  "modulePath": "github.com/kafeiih/vogel/examples/boilerplate",
+  "minVogelVersion": "v0.10.0",
+  "components": [
+    {
+      "name": "worker",
+      "prompt": "¿Incluir el worker de trabajos en background (River)?",
+      "default": true,
+      "requires": [],
+      "paths": [
+        "cmd/worker",
+        "internal/application/jobs",
+        "internal/infrastructure/riverschema",
+        "internal/infrastructure/config/config_worker_test.go"
+      ]
+    },
+    {
+      "name": "notification",
+      "prompt": "¿Incluir notificaciones por email (SMTP o SendGrid) en el worker?",
+      "default": true,
+      "requires": [
+        "worker"
+      ],
+      "paths": [
+        "internal/application/jobs/send_email.go",
+        "internal/application/jobs/send_email_test.go",
+        "internal/infrastructure/config/config_notification_test.go"
+      ]
+    },
+    {
+      "name": "cerbos",
+      "prompt": "¿Incluir el PDP de Cerbos empaquetado (imagen propia con las políticas del repositorio)? Sin él, la API usa un PDP externo con TLS.",
+      "default": true,
+      "requires": [],
+      "paths": [
+        "cerbos"
+      ]
+    },
+    {
+      "name": "storage",
+      "prompt": "¿Incluir storage S3-compatible?",
+      "default": true,
+      "requires": [],
+      "paths": [
+        "internal/infrastructure/config/config_storage_test.go"
+      ]
+    }
+  ],
+  "alwaysRemove": [
+    ".vogel"
+  ],
+  "replacements": [
+    {
+      "path": "deploy/docker-compose.yaml",
+      "from": "context: ../../..",
+      "to": "context: .."
+    },
+    {
+      "path": "deploy/docker-compose.yaml",
+      "from": "dockerfile: examples/boilerplate/Dockerfile",
+      "to": "dockerfile: Dockerfile"
+    },
+    {
+      "path": "deploy/docker-compose.yaml",
+      "from": "ghcr.io/kafeiih/vogel-boilerplate",
+      "to": "{{.ImageBase}}"
+    },
+    {
+      "path": "deploy/docker-compose.yaml",
+      "from": "boilerplate_db",
+      "to": "{{.DBName}}_db"
+    },
+    {
+      "path": "deploy/docker-compose.developer.yaml",
+      "from": "bluprint_dev",
+      "to": "{{.DBName}}_dev"
+    },
+    {
+      "path": "Dockerfile",
+      "from": "ARG APP_DIR=examples/boilerplate",
+      "to": "ARG APP_DIR=."
+    },
+    {
+      "path": "Makefile",
+      "from": " ../..",
+      "to": " ."
+    },
+    {
+      "path": "README.md",
+      "from": "# Boilerplate\n",
+      "to": "# {{.Name}}\n\nServicio HTTP generado con `create-vogel-app` a partir del boilerplate de\n[`vogel`](https://github.com/kafeiih/vogel): capas\n`domain`/`application`/`infrastructure`/`interfaces`, Swagger, un\n`Dockerfile` multi-stage, `docker-compose` para desarrollo y despliegue y un\n`Makefile`.\n"
+    },
+    {
+      "path": "README.md",
+      "from": "bluprint_dev",
+      "to": "{{.DBName}}_dev"
+    },
+    {
+      "path": "deploy/RUNBOOK.md",
+      "from": "Go Bluprint",
+      "to": "{{.Name}}"
+    },
+    {
+      "path": "deploy/RUNBOOK.md",
+      "from": "ghcr.io/kafeiih/vogel-boilerplate",
+      "to": "{{.ImageBase}}"
+    },
+    {
+      "path": "deploy/RUNBOOK.md",
+      "from": "boilerplate_db",
+      "to": "{{.DBName}}_db"
+    },
+    {
+      "path": "deploy/RUNBOOK.md",
+      "from": "en `deploy/` y `examples/api/`",
+      "to": "en `deploy/`"
+    },
+    {
+      "path": "deploy/RUNBOOK.md",
+      "from": "| Modulos Go (vogel y este boilerplate) | Semanal | Dependabot (`gomod`), un PR agrupado por modulo;",
+      "to": "| Modulos Go (`go.mod`, vogel incluido) | Semanal | Dependabot (`gomod`), un PR agrupado;"
+    },
+    {
+      "path": "deploy/RUNBOOK.md",
+      "from": "Workflow `Trivy` (`.github/workflows/trivy.yaml`)",
+      "to": "Job `trivy` de `.github/workflows/ci.yaml`"
+    },
+    {
+      "path": "deploy/RUNBOOK.md",
+      "from": "**Si el workflow `Trivy` falla:**",
+      "to": "**Si el job `trivy` de CI falla:**"
+    },
+    {
+      "path": "deploy/RUNBOOK.md",
+      "from": "   Si el modulo llega por `vogel`, actualizar tambien el `go.mod` de la raiz.",
+      "to": "   Si llega por `vogel`, subir `vogel` a una version que ya lo corrija."
+    },
+    {
+      "path": "cmd/api/main.go",
+      "from": "Go Bluprint",
+      "to": "{{.Name}}"
+    },
+    {
+      "path": "cmd/worker/heartbeat.go",
+      "from": "vogel-worker.heartbeat",
+      "to": "{{.Name}}-worker.heartbeat"
+    },
+    {
+      "path": "docs/docs.go",
+      "from": "Go Bluprint",
+      "to": "{{.Name}}"
+    },
+    {
+      "path": "docs/swagger.json",
+      "from": "Go Bluprint",
+      "to": "{{.Name}}"
+    },
+    {
+      "path": "docs/swagger.yaml",
+      "from": "Go Bluprint",
+      "to": "{{.Name}}"
+    }
+  ]
+}

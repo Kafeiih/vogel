@@ -1,17 +1,22 @@
-# Deploy compose: Postgres, a one-shot migration step, the Cerbos PDP, the API
-# and the worker.
+# Deploy compose: Postgres, a one-shot migration step and the API.
+# vogel:component cerbos begin
+# The Cerbos PDP is bundled too.
+# vogel:component cerbos end
+# vogel:component worker begin
+# So is the worker.
+# vogel:component worker end
 #
 # Secrets and settings come from deploy/.env (copy deploy/env.example).
 # Compose reads that file twice, for different things:
 #   * to interpolate the ${...} references below (database passwords, the
-#     River schema); every secret is ${VAR:?...}, so a missing one stops
-#     "docker compose" before any container starts;
-#   * as env_file for api and worker, which get the application settings
-#     (APP_ENV, ZITADEL_*, CERBOS_*, ...).
+#     River schema when the worker is bundled); every secret is ${VAR:?...},
+#     so a missing one stops "docker compose" before any container starts;
+#   * as env_file for the serving processes (api, and worker when bundled),
+#     which get the application settings (APP_ENV, ZITADEL_*, CERBOS_*, ...).
 # migrate deliberately does not load .env as env_file, so the migrator role
-# never sees the application's secrets; api and worker blank the migrator and
-# superuser passwords (x-scrub-db-admin-secrets) so the serving processes
-# never hold them either.
+# never sees the application's secrets; the serving processes blank the
+# migrator and superuser passwords (x-scrub-db-admin-secrets) so they never
+# hold them either.
 #
 # Database roles (deploy/initdb/10-roles.sh, created on the volume's first
 # start, and deploy/initdb/runtime-grants.sql, applied after every migration;
@@ -20,13 +25,14 @@
 #   * postgres      superuser, used only by the postgres container itself;
 #   * app_migrator  owns the schema and the tables, used only by migrate and
 #                   grants;
-#   * app_runtime   owns nothing, used by api and worker: SELECT and INSERT on
-#                   audit_log, DML on the application's and River's tables.
+#   * app_runtime   owns nothing, used by the serving processes: SELECT and
+#                   INSERT on audit_log, DML on the application's tables (and
+#                   on River's, when the worker is bundled).
 # See "Un rol para migrar, otro para servir" in vogel's README.
 #
 # TLS: inside this compose network the DSNs use sslmode=disable because the
-# bundled postgres image serves no certificate, which is why migrate, api and
-# worker set DB_REQUIRE_TLS=false below (it defaults to true whatever APP_ENV is,
+# bundled postgres image serves no certificate, which is why migrate and the
+# serving processes set DB_REQUIRE_TLS=false below (it defaults to true whatever APP_ENV is,
 # and then rejects disable, allow, prefer and require). That is acceptable
 # only on a private compose network. In production point the DSNs at a
 # TLS-enabled PostgreSQL with sslmode=verify-full (and sslrootcert if its CA
@@ -36,6 +42,7 @@
 # APP_ENV=development does not turn Swagger on here: the UI and spec are
 # served only with SWAGGER_ENABLED=true, which deploy/.env leaves unset.
 
+# vogel:component worker begin
 # River's schema name is shared by migrate (which creates it), grants (which
 # opens it to app_runtime) and api and worker (which use it). It is defined
 # once here and merged into each service so they cannot drift: compose reads
@@ -43,15 +50,17 @@
 x-worker-schema: &worker-schema
   WORKER_SCHEMA: ${WORKER_SCHEMA:-river}
 
+# vogel:component worker end
 # Images are referenced by an explicit version (APP_VERSION in deploy/.env,
 # required), never :latest, so a deploy and its rollback name exactly which
 # build runs. Postgres is pinned by exact version and digest for the same
 # reason; Dependabot proposes the bumps (see RUNBOOK.md, "Parches").
 #
-# The one-shot and application containers (migrate, grants, api, worker) run
-# hardened: a read-only root filesystem (the binaries write nothing to disk,
-# logs go to stdout; /tmp is a small tmpfs for the worker's heartbeat file
-# and anything the Go runtime or a library might spill there), no Linux
+# The one-shot and application containers (migrate, grants and the serving
+# processes) run hardened: a read-only root filesystem (the binaries write
+# nothing to disk, logs go to stdout; /tmp is a small tmpfs for the worker's
+# heartbeat file and anything the Go runtime or a library might spill
+# there), no Linux
 # capabilities at all (they bind no port below 1024 and change no file
 # ownership), and no-new-privileges, so no setuid binary in the image can
 # raise the process's privileges.
@@ -62,9 +71,12 @@ x-hardened: &hardened
   cap_drop: [ALL]
   security_opt: ["no-new-privileges:true"]
 
-# Built from the repository root: the boilerplate's go.mod replaces vogel
+# Built from the repository root.
+# vogel:only begin
+# Inside vogel that is vogel's root: the boilerplate's go.mod replaces vogel
 # with ../.., so the build needs the library's sources too (see the comment
 # at the top of the Dockerfile; the root .dockerignore filters the context).
+# vogel:only end
 x-build: &build
   context: ../../..
   dockerfile: examples/boilerplate/Dockerfile
@@ -108,10 +120,10 @@ services:
       timeout: 3s
       retries: 5
 
-  # One-shot setup step: applies every migration set, River's schema
-  # included, and exits. It connects as app_migrator, which therefore owns
-  # the tables; api and worker then run as app_runtime, which cannot alter
-  # audit_log or create tables.
+  # One-shot setup step: applies every migration set (River's schema
+  # included, when the worker is bundled) and exits. It connects as
+  # app_migrator, which therefore owns the tables; the serving processes then
+  # run as app_runtime, which cannot alter audit_log or create tables.
   migrate:
     image: ghcr.io/kafeiih/vogel-boilerplate:${APP_VERSION:?set APP_VERSION in deploy/.env}
     <<: *hardened
@@ -123,7 +135,9 @@ services:
       postgres:
         condition: service_healthy
     environment:
+      # vogel:component worker begin
       <<: *worker-schema
+      # vogel:component worker end
       DB_URL: "postgres://app_migrator:${APP_MIGRATOR_PASSWORD:?set APP_MIGRATOR_PASSWORD in deploy/.env}@postgres:5432/boilerplate_db?sslmode=disable"
       # The bundled Postgres serves no TLS; see "TLS" above.
       DB_REQUIRE_TLS: "false"
@@ -139,8 +153,10 @@ services:
       - psql
       - -v
       - ON_ERROR_STOP=1
+      # vogel:component worker begin
       - -v
       - worker_schema=${WORKER_SCHEMA:-river}
+      # vogel:component worker end
       - -f
       - /grants/runtime-grants.sql
     depends_on:
@@ -156,6 +172,7 @@ services:
       - ./initdb/runtime-grants.sql:/grants/runtime-grants.sql:ro
     restart: "no"
 
+  # vogel:component cerbos begin
   # The PDP with the policies of ../cerbos baked in at /bundle/policies (see
   # cerbos/README.md): no mounts, so what runs is exactly what the image build
   # validated, and a new image serves its own policies even though compose
@@ -175,6 +192,7 @@ services:
       retries: 10
     restart: unless-stopped
 
+  # vogel:component cerbos end
   api:
     image: ghcr.io/kafeiih/vogel-boilerplate:${APP_VERSION:?set APP_VERSION in deploy/.env}
     <<: *hardened
@@ -187,29 +205,39 @@ services:
         condition: service_healthy
       grants:
         condition: service_completed_successfully
+      # vogel:component cerbos begin
       cerbos:
         condition: service_healthy
     networks: [default, authz]
+    # vogel:component cerbos end
     ports:
       - "8080:8080"
     env_file:
       - .env
     environment:
-      <<: [*worker-schema, *scrub-db-admin-secrets]
+      <<:
+        # vogel:component worker begin
+        - *worker-schema
+        # vogel:component worker end
+        - *scrub-db-admin-secrets
       DB_URL: "postgres://app_runtime:${APP_RUNTIME_PASSWORD:?set APP_RUNTIME_PASSWORD in deploy/.env}@postgres:5432/boilerplate_db?sslmode=disable"
       # The bundled Postgres serves no TLS; see "TLS" above.
       DB_REQUIRE_TLS: "false"
       # Both required, with no default: they only make sense as a pair, so
-      # deploy/.env must state them together (env.example has the bundled
-      # PDP's pair: cerbos:3593, plaintext, acceptable only because it never
-      # leaves the internal authz network). For an external PDP set its host
-      # with CERBOS_PLAINTEXT=false (TLS), and delete the cerbos service, the
+      # deploy/.env must state them together. An external PDP is reached
+      # over TLS: set its host with CERBOS_PLAINTEXT=false. A TLS mode
+      # mismatch stops the api at boot with an error naming the mode.
+      # vogel:component cerbos begin
+      # env.example has the bundled PDP's pair: cerbos:3593, plaintext,
+      # acceptable only because it never leaves the internal authz network.
+      # To switch to an external PDP, also delete the cerbos service, the
       # api's "cerbos" depends_on entry and its authz network; otherwise the
-      # api still waits for the bundled PDP. A TLS mode mismatch stops the api
-      # at boot with an error naming the mode.
+      # api still waits for the bundled PDP.
+      # vogel:component cerbos end
       CERBOS_HOST: ${CERBOS_HOST:?set CERBOS_HOST and CERBOS_PLAINTEXT together in deploy/.env}
       CERBOS_PLAINTEXT: ${CERBOS_PLAINTEXT:?set CERBOS_HOST and CERBOS_PLAINTEXT together in deploy/.env}
 
+  # vogel:component worker begin
   worker:
     image: ghcr.io/kafeiih/vogel-boilerplate-worker:${APP_VERSION:?set APP_VERSION in deploy/.env}
     <<: *hardened
@@ -231,11 +259,14 @@ services:
       DB_REQUIRE_TLS: "false"
     restart: unless-stopped
 
+  # vogel:component worker end
+# vogel:component cerbos begin
 networks:
   # Only cerbos and api: internal, so no container on it has a route out of
   # this host and nothing outside can reach the plaintext PDP.
   authz:
     internal: true
 
+# vogel:component cerbos end
 volumes:
   pgdata:

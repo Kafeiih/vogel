@@ -1,0 +1,28 @@
+# Local configuration and credentials: never commit them. Templates such as
+# deploy/env.example stay tracked.
+.env
+.env.*
+!.env.example
+deploy/.env
+deploy/.env.*
+secrets/
+*.pem
+*.key
+
+# Build outputs.
+bin/
+tmp/
+*.test
+
+# Coverage outputs.
+coverage*.out
+coverage*.html
+
+# Editors and OS files.
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db

@@ -6,18 +6,22 @@
 -- an init script: a fresh volume never needs it, because there app_migrator
 -- creates every object and owns it from the start.
 --
--- psql variable: worker_schema, River's schema (WORKER_SCHEMA, default river).
+-- vogel:component worker begin
+-- psql variable: worker_schema, River's schema (WORKER_SCHEMA, default river;
+-- pass -v worker_schema=<schema> only if WORKER_SCHEMA was changed).
+-- vogel:component worker end
 --
 -- What it does, in one transaction:
---   1. hands every application object in schema public and in River's schema
---      (tables, views, sequences, routines, types, and River's schema itself)
+--   1. hands every application object in schema public and, with the worker,
+--      in River's schema (tables, views, sequences, routines, types, and
+--      River's schema itself)
 --      to app_migrator, so later migrations, which run as app_migrator, can
 --      alter them, and app_runtime, which owns nothing, cannot;
 --   2. gives app_runtime DML on the tables and sequences that already exist
 --      in public, the grants 10-roles.sh's default privileges give to every
 --      table app_migrator creates from now on. runtime-grants.sql (the
 --      "grants" service) then narrows audit_log and the goose tables, and
---      covers River's schema, exactly as on a fresh volume.
+--      covers River's schema when there is one, exactly as on a fresh volume.
 --
 -- Why not "REASSIGN OWNED BY postgres TO app_migrator": postgres is the
 -- bootstrap superuser and owns the system catalogs, so PostgreSQL refuses to
@@ -25,7 +29,7 @@
 -- another former owner, REASSIGN OWNED acts on every database-wide object
 -- that role owns (the database itself, schema public, extensions, objects in
 -- other schemas), well beyond this application's tables. This script names
--- exactly what moves: objects in public and River's schema that are not
+-- exactly what moves: objects in public (and River's schema) that are not
 -- part of an extension. Extension objects (pgcrypto's functions in public)
 -- and the extension itself stay with their owner: ALTER EXTENSION has no
 -- OWNER TO, and app_migrator only ever runs "CREATE EXTENSION IF NOT
@@ -45,18 +49,29 @@
 
 BEGIN;
 
+-- vogel:component worker begin
+\if :{?worker_schema}
+\else
+\set worker_schema river
+\endif
 SELECT set_config('vogel.worker_schema', :'worker_schema', true);
 
+-- vogel:component worker end
 DO $$
 DECLARE
 	target  constant name := 'app_migrator';
-	schemas constant name[] := ARRAY['public', current_setting('vogel.worker_schema')]::name[];
+	schemas constant name[] := ARRAY['public'
+	-- vogel:component worker begin
+		, current_setting('vogel.worker_schema')
+	-- vogel:component worker end
+	]::name[];
 	obj     record;
 BEGIN
 	IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = target) THEN
 		RAISE EXCEPTION 'role % does not exist: run deploy/initdb/10-roles.sh first', target;
 	END IF;
 
+	-- vogel:component worker begin
 	-- River's schema itself (public keeps its owner, see above).
 	FOR obj IN
 		SELECT n.nspname
@@ -68,6 +83,7 @@ BEGIN
 		EXECUTE format('ALTER SCHEMA %I OWNER TO %I', obj.nspname, target);
 	END LOOP;
 
+	-- vogel:component worker end
 	-- Tables, partitioned tables, views, materialized views, foreign tables
 	-- and the sequences not linked to a table column.
 	FOR obj IN

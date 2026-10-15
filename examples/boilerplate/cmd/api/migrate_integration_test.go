@@ -19,7 +19,10 @@ import (
 
 	auditmigrations "github.com/kafeiih/vogel/audit/migrations"
 
+	// vogel:component worker begin
 	"github.com/kafeiih/vogel/examples/boilerplate/internal/infrastructure/config"
+
+	// vogel:component worker end
 	"github.com/kafeiih/vogel/examples/boilerplate/internal/infrastructure/database/migrations"
 )
 
@@ -49,7 +52,11 @@ var revertEffects = map[string]func(ctx context.Context, t *testing.T, pool *pgx
 
 // TestMigrateDown_RevertsOnlyTheAppSet backs the claims the RUNBOOK rollback
 // step makes about "./api migrate down": it reverts only the latest migration
-// of this service's own set and never touches audit_log nor River. It drives
+// of this service's own set and never touches audit_log.
+// vogel:component worker begin
+// Nor does it touch River's schema.
+// vogel:component worker end
+// It drives
 // runMigrate, the function main dispatches "api migrate ..." to, with DB_URL
 // pointing at a throwaway Postgres.
 //
@@ -68,7 +75,9 @@ func TestMigrateDown_RevertsOnlyTheAppSet(t *testing.T) {
 	}
 	t.Cleanup(pool.Close)
 
+	// vogel:component worker begin
 	riverSchema := config.WorkerSchema()
+	// vogel:component worker end
 	app := migrationVersions(t, migrations.FS)
 	appLatest, appPrevious := app.latest(), app.previous()
 	auditLatest := migrationVersions(t, auditmigrations.FS()).latest()
@@ -86,11 +95,13 @@ func TestMigrateDown_RevertsOnlyTheAppSet(t *testing.T) {
 		t.Fatalf("after up: audit version = %d, want %d", got, auditLatest)
 	}
 	assertAuditLogIntact(ctx, t, pool, "after up")
+	// vogel:component worker begin
 	assertRiverTables(ctx, t, pool, riverSchema, "after up")
 	riverVersion := riverMigrationVersion(ctx, t, pool, riverSchema)
 	if riverVersion == 0 {
 		t.Fatalf("after up: no River migration recorded in %s.river_migration", riverSchema)
 	}
+	// vogel:component worker end
 	checkEffect(ctx, t, pool, true)
 	if t.Failed() {
 		t.FailNow()
@@ -106,10 +117,12 @@ func TestMigrateDown_RevertsOnlyTheAppSet(t *testing.T) {
 		t.Errorf("after down: audit version = %d, want %d (unchanged)", got, auditLatest)
 	}
 	assertAuditLogIntact(ctx, t, pool, "after down")
+	// vogel:component worker begin
 	assertRiverTables(ctx, t, pool, riverSchema, "after down")
 	if got := riverMigrationVersion(ctx, t, pool, riverSchema); got != riverVersion {
 		t.Errorf("after down: River migration version = %d, want %d (unchanged)", got, riverVersion)
 	}
+	// vogel:component worker end
 }
 
 // startTestPostgres spins up a postgres:17-alpine testcontainer and returns
@@ -240,6 +253,7 @@ func assertAuditLogIntact(ctx context.Context, t *testing.T, pool *pgxpool.Pool,
 	}
 }
 
+// vogel:component worker begin
 // assertRiverTables checks River's core tables exist inside schema.
 func assertRiverTables(ctx context.Context, t *testing.T, pool *pgxpool.Pool, schema, phase string) {
 	t.Helper()
@@ -263,6 +277,7 @@ func riverMigrationVersion(ctx context.Context, t *testing.T, pool *pgxpool.Pool
 	return v
 }
 
+// vogel:component worker end
 func relationExists(ctx context.Context, t *testing.T, pool *pgxpool.Pool, name string) bool {
 	t.Helper()
 	var exists bool

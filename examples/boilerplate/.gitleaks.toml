@@ -1,0 +1,15 @@
+# gitleaks configuration: the default ruleset.
+# vogel:component notification begin
+# Plus a single, narrow allowlist for the fake SendGrid key used only in test
+# fixtures.
+# vogel:component notification end
+[extend]
+useDefault = true
+
+# vogel:component notification begin
+[[allowlists]]
+description = "Fake SendGrid key used only in test fixtures"
+targetRules = ["generic-api-key"]
+regexTarget = "match"
+regexes = ['''SG\.test-key-123''']
+# vogel:component notification end

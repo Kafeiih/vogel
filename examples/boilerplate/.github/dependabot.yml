@@ -1,0 +1,70 @@
+# Keeps the SHA-pinned actions in .github/workflows, the Go modules and the
+# pinned images current: one grouped weekly PR per ecosystem, so the noise
+# stays at one review per ecosystem per week. govulncheck in CI and
+# Dependabot do different jobs: govulncheck fails only when the code reaches
+# a function with a KNOWN vulnerability, while Dependabot keeps dependencies
+# current, so a fix is a small, routine bump instead of a jump across many
+# releases under pressure.
+# vogel:only begin
+#
+# Template: inside the vogel repository this file is never read (Dependabot
+# only reads the repository root's .github/dependabot.yml, which already
+# covers examples/boilerplate).
+# vogel:only end
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: ci
+
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      gomod:
+        patterns: ["*"]
+    commit-message:
+      prefix: build(deps)
+
+  # Dependabot bumps image tags, and rewrites the digest together with the
+  # tag where an image is pinned by digest.
+  - package-ecosystem: docker
+    directories:
+      - /
+      # vogel:component cerbos begin
+      # cerbos/ has its own Dockerfile (the PDP image); its Cerbos pin must
+      # move together with the one in deploy/docker-compose.developer.yaml,
+      # which the docker-compose updater below bumps in a separate PR.
+      - /cerbos
+      # vogel:component cerbos end
+    schedule:
+      interval: weekly
+    groups:
+      docker:
+        patterns: ["*"]
+    commit-message:
+      prefix: build(deps)
+
+  # A Postgres major bump is a migration, not a routine update: a data
+  # directory written by one major does not start under the next, so existing
+  # deploy volumes would break. Majors are upgraded deliberately; minors and
+  # digests stay current. Dependabot reads every compose file in deploy/.
+  - package-ecosystem: docker-compose
+    directory: /deploy
+    schedule:
+      interval: weekly
+    ignore:
+      - dependency-name: postgres
+        update-types: ["version-update:semver-major"]
+    groups:
+      docker-compose:
+        patterns: ["*"]
+    commit-message:
+      prefix: build(deps)

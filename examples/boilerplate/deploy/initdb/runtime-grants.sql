@@ -7,7 +7,9 @@
 -- /docker-entrypoint-initdb.d, because the tables below do not exist until
 -- the migrations ran.
 --
+-- vogel:component worker begin
 -- psql variable: worker_schema, River's schema (WORKER_SCHEMA, default river).
+-- vogel:component worker end
 
 \set ON_ERROR_STOP on
 
@@ -24,6 +26,7 @@ GRANT SELECT, INSERT ON audit_log TO app_runtime;
 REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON goose_db_version, vogel_db_version FROM app_runtime;
 GRANT SELECT ON goose_db_version, vogel_db_version TO app_runtime;
 
+-- vogel:component worker begin
 -- River (api inserts jobs; worker fetches, updates and deletes them). At
 -- runtime River's client:
 --   * inserts, fetches (SELECT ... FOR UPDATE SKIP LOCKED), updates and
@@ -47,3 +50,4 @@ SELECT current_setting('server_version_num')::int >= 170000 AS has_maintain \gse
 \if :has_maintain
 GRANT MAINTAIN ON ALL TABLES IN SCHEMA :"worker_schema" TO app_runtime;
 \endif
+-- vogel:component worker end

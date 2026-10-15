@@ -9,9 +9,8 @@
 // here.
 //
 // Wherever an adapter's own Config type already matches this application's
-// needs field-for-field (postgres.Config, worker.Config, zitedel.Config,
-// cerbos.Config, s3.Config, smtp.Config, sendgrid.Config), this package
-// embeds that type directly instead of mirroring it with a redundant local
+// needs field-for-field (postgres.Config, zitadel.Config, cerbos.Config and
+// the other adapters' Config types), this package embeds that type directly instead of mirroring it with a redundant local
 // struct that would need converting at the call site in main.go. Only the
 // fields with no vogel equivalent (App, CORS, Metrics) get a local type.
 package config
@@ -25,28 +24,46 @@ import (
 
 	"github.com/joho/godotenv"
 
+	// vogel:component worker begin
+	"github.com/kafeiih/vogel/worker"
+
+	// vogel:component worker end
+	// vogel:component notification begin
+	"github.com/kafeiih/vogel/notification/sendgrid"
+	"github.com/kafeiih/vogel/notification/smtp"
+
+	// vogel:component notification end
+	// vogel:component storage begin
+	"github.com/kafeiih/vogel/storage/s3"
+
+	// vogel:component storage end
 	"github.com/kafeiih/vogel/auth/zitadel"
 	"github.com/kafeiih/vogel/authz/cerbos"
 	"github.com/kafeiih/vogel/config"
 	vmw "github.com/kafeiih/vogel/httpx/middleware"
-	"github.com/kafeiih/vogel/notification/sendgrid"
-	"github.com/kafeiih/vogel/notification/smtp"
 	"github.com/kafeiih/vogel/postgres"
-	"github.com/kafeiih/vogel/storage/s3"
-	"github.com/kafeiih/vogel/worker"
 )
 
 // Config holds every setting this application needs to boot.
 type Config struct {
-	App          AppConfig
-	Database     postgres.Config
-	Zitadel      zitadel.Config
-	Cerbos       cerbos.Config
-	CORS         CORSConfig
-	Worker       worker.Config
-	Storages     map[string]s3.Config
+	App      AppConfig
+	Database postgres.Config
+	Zitadel  zitadel.Config
+	Cerbos   cerbos.Config
+	CORS     CORSConfig
+	Metrics  MetricsConfig
+	// vogel:component worker begin
+
+	Worker worker.Config
+	// vogel:component worker end
+	// vogel:component storage begin
+
+	Storages map[string]s3.Config
+	// vogel:component storage end
+	// vogel:component notification begin
+
 	Notification NotificationConfig
-	Metrics      MetricsConfig
+	// vogel:component notification end
 }
 
 // AppConfig holds settings with no vogel equivalent: this application's own
@@ -79,6 +96,7 @@ type MetricsConfig struct {
 	ListenAddr string // METRICS_LISTEN_ADDR, default ":9090"
 }
 
+// vogel:component notification begin
 // NotificationConfig holds configuration for email delivery. Provider picks
 // which of the two vogel-shaped configs below main.go actually builds an
 // adapter from.
@@ -89,6 +107,7 @@ type NotificationConfig struct {
 	SendGrid    sendgrid.Config // SendGrid-specific settings
 }
 
+// vogel:component notification end
 // CORSConfig holds settings with no vogel equivalent -- CORS is wired
 // directly with github.com/rs/cors in router.go.
 type CORSConfig struct {
@@ -160,10 +179,19 @@ func Load() (*Config, error) {
 			AllowedMethods: []string{"GET", "POST", "PUT", "PATCH", "DELETE"},
 			AllowedHeaders: []string{"Authorization", "Content-Type", "X-Request-ID"},
 		},
-		Worker:       parseWorkerConfig(),
-		Storages:     parseStorageConfigs(),
+		Metrics: parseMetricsConfig(),
+		// vogel:component worker begin
+
+		Worker: parseWorkerConfig(),
+		// vogel:component worker end
+		// vogel:component storage begin
+
+		Storages: parseStorageConfigs(),
+		// vogel:component storage end
+		// vogel:component notification begin
+
 		Notification: parseNotificationConfig(),
-		Metrics:      parseMetricsConfig(),
+		// vogel:component notification end
 	}
 
 	cfg.validate(&errs)
@@ -317,6 +345,7 @@ func parseZitadelConfig(errs *config.Errors) zitadel.Config {
 	return cfg
 }
 
+// vogel:component worker begin
 // WorkerSchema returns the PostgreSQL schema River's tables live in
 // (WORKER_SCHEMA, default "river"). It reads only that variable, so "api
 // migrate up" can apply River's migrations without the variables Load
@@ -326,6 +355,7 @@ func WorkerSchema() string {
 	return config.String("WORKER_SCHEMA", "river")
 }
 
+// vogel:component worker end
 // MigrateRequiresTLS reads DB_REQUIRE_TLS (default true) for "api migrate",
 // which connects with DB_URL directly instead of going through Load. The
 // migrator role owns the schema, so it gets the same TLS policy as the
@@ -336,6 +366,7 @@ func MigrateRequiresTLS() (bool, error) {
 	return v, errs.Err()
 }
 
+// vogel:component worker begin
 // parseWorkerConfig reads WORKER_* env vars and returns a worker.Config with
 // defaults.
 func parseWorkerConfig() worker.Config {
@@ -373,6 +404,8 @@ func parseWorkerConfig() worker.Config {
 	}
 }
 
+// vogel:component worker end
+// vogel:component storage begin
 // parseStorageConfigs reads named storage configurations from environment
 // variables.
 //
@@ -422,6 +455,7 @@ func parseStorageConfigs() map[string]s3.Config {
 	return configs
 }
 
+// vogel:component storage end
 // parseCerbosConfig reads the Cerbos PDP connection. TLS is the default;
 // CERBOS_PLAINTEXT=true opts out, for the local development container only.
 //
@@ -439,14 +473,7 @@ func parseCerbosConfig(errs *config.Errors) cerbos.Config {
 	}
 }
 
-// parseMetricsConfig reads METRICS_* env vars and returns a MetricsConfig
-// with defaults.
-func parseMetricsConfig() MetricsConfig {
-	return MetricsConfig{
-		ListenAddr: config.String("METRICS_LISTEN_ADDR", ":9090"),
-	}
-}
-
+// vogel:component notification begin
 // parseNotificationConfig reads NOTIFICATION_*, SMTP_*, and SENDGRID_* env
 // vars.
 func parseNotificationConfig() NotificationConfig {
@@ -469,5 +496,14 @@ func parseNotificationConfig() NotificationConfig {
 		SendGrid: sendgrid.Config{
 			APIKey: config.String("SENDGRID_API_KEY", ""),
 		},
+	}
+}
+
+// vogel:component notification end
+// parseMetricsConfig reads METRICS_* env vars and returns a MetricsConfig
+// with defaults.
+func parseMetricsConfig() MetricsConfig {
+	return MetricsConfig{
+		ListenAddr: config.String("METRICS_LISTEN_ADDR", ":9090"),
 	}
 }

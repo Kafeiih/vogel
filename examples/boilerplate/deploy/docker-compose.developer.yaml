@@ -2,10 +2,12 @@
 # docker-compose.yaml. Images are pinned by exact version and multi-arch
 # digest, like the deploy compose and the Dockerfile, so every developer runs
 # the same bytes; Dependabot proposes the bumps (see RUNBOOK.md, "Parches").
+# vogel:component storage begin
 #
 # No S3-compatible store is bundled: the minio/minio image is no longer
 # published on Docker Hub. Point STORAGE_* at any S3-compatible endpoint if
 # you need one (storage is optional, see the README).
+# vogel:component storage end
 services:
   postgres:
     image: postgres:17.11-alpine3.24@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
@@ -26,6 +28,7 @@ services:
       timeout: 3s
       retries: 5
 
+  # vogel:component cerbos begin
   # Serves gRPC without TLS: run the app with CERBOS_PLAINTEXT=true locally.
   # Serves ../cerbos/policies through bind mounts with hot reload, so a policy
   # edit applies without a restart. Same Cerbos version as cerbos/Dockerfile;
@@ -43,5 +46,6 @@ services:
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
 
+  # vogel:component cerbos end
 volumes:
   pgdata_dev:
