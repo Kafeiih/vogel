@@ -199,15 +199,16 @@ services:
       DB_URL: "postgres://app_runtime:${APP_RUNTIME_PASSWORD:?set APP_RUNTIME_PASSWORD in deploy/.env}@postgres:5432/boilerplate_db?sslmode=disable"
       # The bundled Postgres serves no TLS; see "TLS" above.
       DB_REQUIRE_TLS: "false"
-      # The bundled PDP above serves no TLS either. Plaintext is acceptable
-      # only because it never leaves the internal authz network. For an
-      # external PDP set BOTH in deploy/.env (CERBOS_HOST and, for TLS,
-      # CERBOS_PLAINTEXT=false: each default below applies on its own), and
-      # delete the cerbos service, the api's "cerbos" depends_on entry and its
-      # authz network; otherwise the api still waits for the bundled PDP. A TLS
-      # mode mismatch stops the api at boot with an error naming the mode.
-      CERBOS_HOST: ${CERBOS_HOST:-cerbos:3593}
-      CERBOS_PLAINTEXT: ${CERBOS_PLAINTEXT:-true}
+      # Both required, with no default: they only make sense as a pair, so
+      # deploy/.env must state them together (env.example has the bundled
+      # PDP's pair: cerbos:3593, plaintext, acceptable only because it never
+      # leaves the internal authz network). For an external PDP set its host
+      # with CERBOS_PLAINTEXT=false (TLS), and delete the cerbos service, the
+      # api's "cerbos" depends_on entry and its authz network; otherwise the
+      # api still waits for the bundled PDP. A TLS mode mismatch stops the api
+      # at boot with an error naming the mode.
+      CERBOS_HOST: ${CERBOS_HOST:?set CERBOS_HOST and CERBOS_PLAINTEXT together in deploy/.env}
+      CERBOS_PLAINTEXT: ${CERBOS_PLAINTEXT:?set CERBOS_HOST and CERBOS_PLAINTEXT together in deploy/.env}
 
   worker:
     image: ghcr.io/kafeiih/vogel-boilerplate-worker:${APP_VERSION:?set APP_VERSION in deploy/.env}

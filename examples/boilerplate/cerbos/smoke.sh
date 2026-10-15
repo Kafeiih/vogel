@@ -38,7 +38,11 @@ trap cleanup EXIT
 # Port 0 lets the daemon pick a free port, so concurrent runs do not collide.
 echo "==> starting $IMAGE"
 docker run -d --name "$CONTAINER" -p 127.0.0.1:0:3592 "$IMAGE" >/dev/null
-ADDR="$(docker port "$CONTAINER" 3592/tcp | head -n1)"
+if ! ADDR="$(docker port "$CONTAINER" 3592/tcp | head -n1)" || [[ -z "$ADDR" ]]; then
+	echo "FAIL: the PDP container did not stay up" >&2
+	docker logs "$CONTAINER" >&2 || true
+	exit 1
+fi
 BASE="http://${ADDR}"
 
 echo "==> waiting for the PDP at ${BASE}"

@@ -17,9 +17,11 @@
 # digest only, with no tag, and the publish job tags every digest once all
 # of them have succeeded (the Cerbos one after its smoke test). A failed job
 # leaves untagged digests that no deploy pulls, never a version X.Y.Z that
-# exists for one image and not the others. A service without a worker or a
-# bundled PDP deletes that job, its entry in publish's "needs" and its tag
-# line in publish.
+# exists for one image and not the others. Each tag is retried, and tagging
+# a digest again is a no-op, so if publish still fails partway (registry
+# outage), re-run that job: it completes the missing tags. A service without
+# a worker or a bundled PDP deletes that job and, in publish, its "needs"
+# entry, its *_DIGEST env line and its tag line.
 #
 # A tag v1.2.3 publishes 1.2.3 only: there is no :latest, so a deploy always
 # names the exact version it runs. Each image carries an SBOM and a build
@@ -209,7 +211,14 @@ jobs:
             out="$(.github/workflows/image-ref.sh "$1")"
             name="$(sed -n 's/^name=//p' <<<"$out")"
             ref="$(sed -n 's/^ref=//p' <<<"$out")"
-            docker buildx imagetools create --tag "$ref" "${name}@${2:?missing digest for image $1}"
+            for attempt in 1 2 3; do
+              if docker buildx imagetools create --tag "$ref" "${name}@${2:?missing digest for image $1}"; then
+                return 0
+              fi
+              echo "tagging $ref failed (attempt $attempt), retrying" >&2
+              sleep $((attempt * 10))
+            done
+            return 1
           }
           tag "" "$API_DIGEST"
           tag -worker "$WORKER_DIGEST"
