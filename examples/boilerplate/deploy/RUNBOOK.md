@@ -70,7 +70,7 @@ los roles `app_migrator` y `app_runtime` no existen (`10-roles.sh` corre solo
 sobre un volumen vacio) y todas las tablas son de `postgres`, asi que
 `migrate` como `app_migrator` fallaria. **No hace falta borrar el volumen**:
 
-1. Respaldar la base:
+1. Respaldar la base (ver seccion 9):
    ```bash
    docker compose -f deploy/docker-compose.yaml exec -T postgres \
      pg_dump -U postgres -Fc boilerplate_db > respaldo-pre-roles.dump
@@ -447,6 +447,137 @@ truncate -s 0 $(docker inspect --format='{{.LogPath}}' api)
   }
 }
 ```
+
+---
+
+## 9. Respaldos y prueba de restauracion
+
+**Objetivo:** poder reconstruir la base (datos, `audit_log`, River) en otro
+servidor y saber cuanto tarda. Un respaldo que nunca se restauro no cuenta.
+
+| Elemento | Minimo |
+|---|---|
+| Que | `pg_dump -Fc` diario de `boilerplate_db` (o snapshots del servicio gestionado con PITR) |
+| Cifrado | En reposo, con una clave guardada fuera del servidor de la base (p. ej. `age` o `gpg` con clave publica, o el KMS del proveedor), y en transito |
+| Donde | Fuera del host y de la cuenta de la base (otro bucket o region), con escritura solo para el proceso de respaldo |
+| Retencion | 7 diarios, 4 semanales, 12 mensuales (ajustar a la politica de datos personales) |
+| Quien | Infraestructura |
+
+**Respaldo (ejemplo con `age`):**
+
+```bash
+docker compose -f deploy/docker-compose.yaml exec -T postgres \
+  pg_dump -U postgres -Fc boilerplate_db \
+  | age -r "$BACKUP_AGE_PUBLIC_KEY" > "boilerplate_db-$(date +%F).dump.age"
+# subir el archivo al almacenamiento de respaldos y verificar su tamaño
+```
+
+**Simulacro de restauracion (al menos trimestral):**
+
+1. Bajar el respaldo mas reciente y descifrarlo en una maquina de pruebas:
+   `age -d -i clave.txt respaldo.dump.age > respaldo.dump`.
+2. Levantar un Postgres vacio de la misma version mayor, con la base y los
+   roles creados por `deploy/initdb/10-roles.sh`.
+3. Restaurar como el rol dueño:
+   `pg_restore -U postgres -d boilerplate_db --no-owner --role=app_migrator respaldo.dump`.
+4. Aplicar `deploy/initdb/runtime-grants.sql` como `app_migrator`.
+5. Verificar: `SELECT count(*), max(created_at) FROM audit_log;` coincide con
+   lo esperado; la API arranca contra esa base y `/v1/healthz` responde 200.
+6. Registrar el resultado abajo y borrar la copia descifrada.
+
+| Campo | Valor (lo completa el operador) |
+|---|---|
+| Ultima prueba de restauracion | `AAAA-MM-DD` |
+| Respaldo usado (fecha) | |
+| Tiempo total de restauracion | |
+| Resultado y observaciones | |
+| Responsable | |
+
+---
+
+## 10. Rotacion de secretos
+
+Todos los secretos salen del entorno (`deploy/.env` o el gestor de secretos
+de la plataforma): rotarlos no requiere cambios de codigo, solo cambiar el
+valor y reiniciar el proceso que lo usa. Rotar ante cualquier sospecha de
+exposicion y, como minimo, una vez al año.
+
+| Secreto | Como rotarlo | Como verificar |
+|---|---|---|
+| `APP_RUNTIME_PASSWORD` | Cambiar el valor en `deploy/.env`, recrear Postgres para que reciba el valor (`docker compose -f deploy/docker-compose.yaml up -d postgres`) y correr `docker compose -f deploy/docker-compose.yaml exec postgres sh /docker-entrypoint-initdb.d/10-roles.sh`, que fija las dos contraseñas a los valores actuales; luego `docker compose -f deploy/docker-compose.yaml up -d api worker` | `/v1/healthz` responde 200 y el log no muestra `password authentication failed` |
+| `APP_MIGRATOR_PASSWORD` | Igual que la anterior (el mismo script); el valor nuevo lo usan `migrate` y `grants` en el proximo despliegue | `docker compose -f deploy/docker-compose.yaml run --rm migrate migrate status` |
+| `POSTGRES_PASSWORD` (superusuario) | `docker compose -f deploy/docker-compose.yaml exec postgres psql -U postgres -c "\password postgres"` y actualizar `deploy/.env` | `psql` con la contraseña nueva |
+| Zitadel (clave o secreto de la aplicacion API, si se usa introspeccion) | Crear una clave nueva en la consola de Zitadel (aplicacion API → Keys), desplegarla, reiniciar `api` y `worker` y recien entonces borrar la vieja. `ZITADEL_CLIENT_ID` no es secreto | Las requests autenticadas responden 200; el log no muestra `initializing zitadel` |
+| Cerbos (certificado TLS del PDP) | Renovar el certificado en el PDP; si es de una CA propia, desplegar primero la CA nueva en los clientes | Las rutas con `RequirePermission` responden 200 o 403, no 503 |
+| Almacenamiento (`STORAGE_<NOMBRE>_ACCESS_KEY` y `_SECRET_KEY`) | Crear un segundo par de claves en el proveedor, desplegarlo, reiniciar, desactivar el par viejo y luego borrarlo | Una subida y una descarga de prueba; los enlaces firmados con el par viejo dejan de funcionar al desactivarlo |
+| `SENDGRID_API_KEY` o `SMTP_PASSWORD` | Crear la clave nueva en el proveedor con el minimo permiso (solo envio), desplegarla, reiniciar `api` y `worker` y revocar la vieja | Un correo de prueba llega; el proveedor muestra la clave vieja sin uso |
+
+Despues de rotar por una exposicion, revisar `audit_log` y los logs del
+proveedor afectado desde la fecha probable de la fuga.
+
+---
+
+## 11. Revocacion de tokens y sesiones
+
+El boilerplate valida los tokens **localmente** (JWT firmado, el modo por
+defecto de `vogel/auth/zitadel`): no consulta a Zitadel en cada request, asi
+que **un token ya emitido sigue siendo aceptado hasta su `exp`** aunque la
+sesion se cierre en Zitadel.
+
+| Modo | Que pasa al revocar | Ventana |
+|---|---|---|
+| JWT local (el del boilerplate) | La API no se entera | Hasta el `exp` del token (la vida del access token configurada en Zitadel) |
+| Introspeccion (`zitadel.Config.Introspection`, opt-in) | La API consulta a Zitadel y rechaza el token revocado | Hasta `CacheTTL` (30 s por defecto), nunca mas alla del `exp` |
+
+**Revocar a un usuario (cuenta comprometida o baja):**
+
+1. En la consola de Zitadel: usuario → **Desactivar** (o **Bloquear**) y
+   cerrar sus sesiones; si es una cuenta de servicio, borrar sus claves.
+2. Si sus permisos en Cerbos deben desaparecer ya, quitar sus roles o
+   atributos en el origen del principal.
+3. Esperar la ventana de la tabla de arriba. En un incidente grave con JWT
+   local, rotar las claves de firma de la instancia de Zitadel invalida
+   **todos** los tokens: todos los usuarios vuelven a iniciar sesion.
+4. Revisar en `audit_log` lo que hizo ese actor:
+   `SELECT * FROM audit_log WHERE actor_id = '<id>' ORDER BY created_at DESC;`.
+
+**Acotar la ventana:** bajar la vida del access token en Zitadel (p. ej. 5 a
+15 minutos, con refresh token), o activar la introspeccion agregando
+`Introspection` (con `KeyFile` o `ClientSecret` de la aplicacion API) al
+`zitadel.Config` que arma `internal/infrastructure/config`. Con
+introspeccion hace falta rate limiting delante: cada token desconocido
+cuesta una llamada a Zitadel.
+
+---
+
+## 12. Comunicacion de incidentes
+
+**Quien:** quien detecta abre el incidente y avisa al responsable de guardia.
+Seguridad decide si hay datos personales afectados; esa decision dispara las
+notificaciones a la autoridad y a los afectados que exija la normativa
+aplicable, dentro de sus plazos.
+
+**Cuando:** aviso interno inmediato; actualizaciones cada hora mientras el
+incidente este activo (cada 30 minutos si hay impacto a usuarios); informe de
+cierre dentro de 5 dias habiles.
+
+**Plantilla:**
+
+```text
+[INCIDENTE <id>] <titulo corto> - <ABIERTO | MITIGADO | CERRADO>
+Severidad:     <critica | alta | media | baja>
+Inicio:        <fecha y hora, zona horaria>   Deteccion: <fecha y hora>
+Impacto:       <que no funciona / que datos y cuantos usuarios>
+Datos personales afectados: <si | no | en evaluacion>
+Que sabemos:   <hechos verificados>
+Que hacemos:   <acciones en curso y responsable>
+Proxima actualizacion: <hora>
+Contacto:      <canal y responsable>
+```
+
+**Cierre:** linea de tiempo, causa raiz, acciones correctivas con
+responsable y fecha y, si corresponde, la entrada en `CHANGELOG.md` o el
+advisory de seguridad (ver `SECURITY.md` en la raiz de `vogel`).
 
 ---
 

@@ -1,0 +1,10 @@
+# gitleaks configuration: the default ruleset plus a single, narrow
+# allowlist for the fake SendGrid key used only in test fixtures.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Fake SendGrid key used only in test fixtures"
+targetRules = ["generic-api-key"]
+regexTarget = "match"
+regexes = ['''SG\.test-key-123''']

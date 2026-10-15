@@ -16,11 +16,37 @@ AWS SDK, SendGrid o go-mail.
 |---|---|
 | [`docs/MIGRATION_GUIDE.md`](docs/MIGRATION_GUIDE.md) | Cómo `go-crucible` y `go-licencias` adoptan `vogel`: tabla de correspondencia archivo-local → paquete, orden de migración recomendado, y los cambios de firma que rompen. |
 | [`docs/WIRING.md`](docs/WIRING.md) | Cómo se componen los paquetes entre sí: quién escribe en `reqctx`, el orden de los middlewares, transacción y auditoría juntas, y los errores de montaje que el compilador no detecta. |
+| [`SECURITY.md`](SECURITY.md) | Cómo reportar una vulnerabilidad en privado, versiones con soporte, plazos de respuesta y alcance. |
+| [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) | Límites de confianza, flujos y clasificación de datos, superficie de ataque con lo que cubre `vogel` y lo que queda a cargo de cada servicio, casos de abuso y riesgos residuales. |
 | [`examples/api/`](examples/api/) | Una API ejecutable que monta el módulo completo en un solo proceso. La referencia más confiable sobre cómo encajan las piezas. |
 
-Este README es el inventario: qué contiene cada paquete y por qué. Los tres
+Este README es el inventario: qué contiene cada paquete y por qué. Los
 documentos de arriba cubren lo que el inventario no puede — cómo se usa todo
 junto.
+
+## SBOM de cada versión
+
+Cada tag `v*` publica un release con el SBOM (CycloneDX 1.6, JSON) de los dos
+módulos del repositorio, generado por `.github/workflows/release.yaml` con
+`cyclonedx-gomod` en versión fija:
+
+| Archivo | Módulo |
+|---|---|
+| `vogel.cdx.json` | La librería (`github.com/kafeiih/vogel`), lo que importa un servicio consumidor |
+| `vogel-boilerplate.cdx.json` | `examples/boilerplate`, módulo aparte con sus propias dependencias |
+| `SHA256SUMS` | Hash SHA-256 de los dos archivos anteriores |
+
+Para descargarlos y comprobarlos (reemplazar `v0.9.0` por la versión):
+
+```bash
+gh release download v0.9.0 -R Kafeiih/vogel -p '*.cdx.json' -p SHA256SUMS
+sha256sum -c SHA256SUMS
+```
+
+`SHA256SUMS` sale del mismo release, así que detecta una descarga corrupta,
+no un release alterado. Un escáner de SBOM (p. ej. `grype sbom:vogel.cdx.json`
+u OWASP Dependency-Track) puede cruzar ese inventario con vulnerabilidades
+publicadas después del release.
 
 ## Mapa de paquetes
 
