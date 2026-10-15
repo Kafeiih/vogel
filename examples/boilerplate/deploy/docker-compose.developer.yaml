@@ -27,8 +27,16 @@ services:
       retries: 5
 
   # Serves gRPC without TLS: run the app with CERBOS_PLAINTEXT=true locally.
+  # Serves ../cerbos/policies through bind mounts with hot reload, so a policy
+  # edit applies without a restart. Same Cerbos version as cerbos/Dockerfile;
+  # the deploy stack runs the built image with the policies baked in instead
+  # (see cerbos/README.md for why).
   cerbos:
     image: ghcr.io/cerbos/cerbos:0.56.0@sha256:540643bc67ba628011a150ad1d3370f285daa38995be5cd7a4be181da902bec1
+    command: ["server", "--config=/config/.cerbos.yaml"]
+    volumes:
+      - ../cerbos/.cerbos.yaml:/config/.cerbos.yaml:ro
+      - ../cerbos/policies:/policies:ro
     ports:
       - "3593:3593"
       - "3592:3592"

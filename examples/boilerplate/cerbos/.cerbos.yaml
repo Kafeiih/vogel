@@ -1,0 +1,12 @@
+server:
+  httpListenAddr: ":3592"
+  grpcListenAddr: ":3593"
+
+storage:
+  driver: "disk"
+  disk:
+    directory: /policies
+    # The developer compose bind-mounts policies/ here, so this gives hot
+    # reload while editing a policy. In the built image the policies are
+    # baked in and never change, so it has nothing to watch.
+    watchForChanges: true

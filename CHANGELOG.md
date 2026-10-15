@@ -4,6 +4,22 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el versionado,
 [SemVer](https://semver.org/lang/es/).
 
+## [Unreleased]
+
+### Agregado
+
+- **`examples/boilerplate/cerbos/`: políticas de Cerbos versionadas con el
+  código.** La política `audit:entry` refleja la matriz de
+  `rolematrix_test.go` (`list` solo `admin`; `view` `admin` y `auditor`), con
+  su suite de tests. El `Dockerfile` construye el PDP con las políticas
+  horneadas y no produce imagen si no compilan o falla un test; corre como
+  UID 65532. `make cerbos-test` valida y `make cerbos-smoke` prueba que la
+  imagen las sirve (una tienda vacía arranca sana y deniega todo). El Cerbos
+  de `make dev-infra` sirve ahora esas políticas con recarga en caliente; antes
+  arrancaba vacío y negaba todo chequeo de permisos. El `Makefile` usa
+  `-include .env`, así que los targets que no lo necesitan funcionan en una
+  copia sin `.env`.
+
 ## [0.9.0] — 2026-10-15
 
 ### Agregado

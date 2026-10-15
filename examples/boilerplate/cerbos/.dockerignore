@@ -1,0 +1,8 @@
+# Applies when this directory is the build context (test.sh, smoke.sh,
+# the release workflow). tests/ stays: the validate stage runs them, and the
+# final stage copies only /repo/policies, so they never reach the image.
+Dockerfile
+.dockerignore
+README.md
+test.sh
+smoke.sh

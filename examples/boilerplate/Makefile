@@ -1,7 +1,9 @@
-include .env
+# -include: un .env ausente no rompe los targets que no lo necesitan
+# (cerbos-test, lint, docker-build en una copia recién creada).
+-include .env
 export DB_URL
 
-.PHONY: dev build test migrate lint docker gen-docs worker build-worker migrate-up migrate-down migrate-status migrate-create
+.PHONY: dev build test migrate lint docker gen-docs worker build-worker migrate-up migrate-down migrate-status migrate-create cerbos-test cerbos-smoke
 
 # Desarrollo
 # start-from-migrate aplica las migraciones y luego sirve (comodidad local).
@@ -57,7 +59,15 @@ docker-build:
 docker-run:
 	docker compose -f deploy/docker-compose.yaml up -d
 
-# Levanta infra de desarrollo (Postgres + Cerbos)
+# Cerbos: compila las políticas y corre sus tests (la misma etapa que valida
+# la imagen), y prueba que la imagen construida sirva las políticas.
+cerbos-test:
+	./cerbos/test.sh
+
+cerbos-smoke:
+	./cerbos/smoke.sh
+
+# Levanta infra de desarrollo (Postgres + Cerbos con las políticas de cerbos/)
 dev-infra:
 	docker compose -f deploy/docker-compose.developer.yaml up -d
 

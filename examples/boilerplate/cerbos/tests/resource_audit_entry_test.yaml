@@ -1,0 +1,73 @@
+# Tests for policies/resource_audit_entry.yaml. The "_test.yaml" suffix is
+# how `cerbos compile` finds test suites, and test suites take no apiVersion
+# (adding one fails strict unmarshalling).
+name: AuditEntryTestSuite
+description: Who can list and view audit log entries.
+principals:
+  admin:
+    id: admin-1
+    roles: ["admin"]
+  auditor:
+    id: auditor-1
+    roles: ["auditor"]
+  norole:
+    id: norole-1
+    roles: ["user"]
+resources:
+  all:
+    id: "*"
+    kind: "audit:entry"
+  entry:
+    id: entry-1
+    kind: "audit:entry"
+tests:
+  - name: admin can list and view
+    input:
+      principals: ["admin"]
+      resources: ["all", "entry"]
+      actions: ["list", "view"]
+    expected:
+      - principal: admin
+        resource: all
+        actions:
+          list: EFFECT_ALLOW
+          view: EFFECT_ALLOW
+      - principal: admin
+        resource: entry
+        actions:
+          list: EFFECT_ALLOW
+          view: EFFECT_ALLOW
+
+  - name: auditor can view an entry but not list them
+    input:
+      principals: ["auditor"]
+      resources: ["all", "entry"]
+      actions: ["list", "view"]
+    expected:
+      - principal: auditor
+        resource: all
+        actions:
+          list: EFFECT_DENY
+          view: EFFECT_ALLOW
+      - principal: auditor
+        resource: entry
+        actions:
+          list: EFFECT_DENY
+          view: EFFECT_ALLOW
+
+  - name: any other role is denied
+    input:
+      principals: ["norole"]
+      resources: ["all", "entry"]
+      actions: ["list", "view"]
+    expected:
+      - principal: norole
+        resource: all
+        actions:
+          list: EFFECT_DENY
+          view: EFFECT_DENY
+      - principal: norole
+        resource: entry
+        actions:
+          list: EFFECT_DENY
+          view: EFFECT_DENY
