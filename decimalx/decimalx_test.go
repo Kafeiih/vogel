@@ -53,6 +53,47 @@ func TestParse_NotParseable(t *testing.T) {
 	}
 }
 
+// TestParse_HugeExponentSuffix pins how Parse classifies an exponent suffix
+// past what any Bounds accepts: a well-formed number is out of range (even
+// past decimal.MaxDecodeExponent, where NewFromString itself would fail),
+// while malformed input or an exponent that does not fit in int64 stays
+// not parseable, as before shopspring/decimal v1.5.0.
+func TestParse_HugeExponentSuffix(t *testing.T) {
+	cases := []struct {
+		input string
+		want  error
+	}{
+		{"1e100000000", decimalx.ErrOutOfRange},
+		{"-1.5E-100000000", decimalx.ErrOutOfRange},
+		{"+12e+2001", decimalx.ErrOutOfRange},
+		{"1e2001", decimalx.ErrOutOfRange},
+		{"abce100000000", decimalx.ErrNotParseable},
+		{"-+1e100000000", decimalx.ErrNotParseable},
+		{"1.2.3e100000000", decimalx.ErrNotParseable},
+		{"e100000000", decimalx.ErrNotParseable},
+		{"1e99999999999999999999", decimalx.ErrNotParseable},
+	}
+	custom, err := decimalx.NewBounds(decimalx.MaxLengthLimit, -decimalx.MaxExponentLimit, decimalx.MaxExponentLimit)
+	if err != nil {
+		t.Fatalf("NewBounds: %v", err)
+	}
+	for _, c := range cases {
+		t.Run(c.input, func(t *testing.T) {
+			if _, err := decimalx.Parse(c.input); !errors.Is(err, c.want) {
+				t.Fatalf("Parse(%q) err = %v, want %v", c.input, err, c.want)
+			}
+			if _, err := decimalx.ParseAmount(c.input, 2); !errors.Is(err, c.want) {
+				t.Fatalf("ParseAmount(%q, 2) err = %v, want %v", c.input, err, c.want)
+			}
+			// The widest Bounds NewBounds allows still cannot reach the
+			// exponents this test feeds it.
+			if _, err := custom.Parse(c.input); !errors.Is(err, c.want) {
+				t.Fatalf("widest Bounds.Parse(%q) err = %v, want %v", c.input, err, c.want)
+			}
+		})
+	}
+}
+
 // TestParse_Accepted verifies legitimate amounts parse to the correct value.
 func TestParse_Accepted(t *testing.T) {
 	cases := []struct {

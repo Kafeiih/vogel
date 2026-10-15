@@ -3,6 +3,8 @@ package decimalx
 import (
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/shopspring/decimal"
 )
@@ -138,6 +140,8 @@ func (b Bounds) effective() Bounds {
 //  1. len(s) > MaxLen -> ErrOutOfRange, BEFORE constructing anything. This
 //     bounds the coefficient's digit count ahead of construction, which is
 //     what keeps construction itself cheap.
+//     Still before constructing, an exponent suffix ("e"/"E") that no
+//     Bounds can accept -> ErrOutOfRange (see exponentSuffixOutOfReach).
 //  2. decimal.NewFromString(s) erroring -> ErrNotParseable.
 //  3. ValidateBounds(d) -> ErrOutOfRange. The bounds live there and are not
 //     repeated here: they are the same bounds an already-constructed
@@ -161,7 +165,7 @@ func (b Bounds) effective() Bounds {
 // ValidateBounds rejects is accepted by Parse.
 func (b Bounds) Parse(s string) (decimal.Decimal, error) {
 	b = b.effective()
-	if len(s) > b.maxLen {
+	if len(s) > b.maxLen || exponentSuffixOutOfReach(s) {
 		return decimal.Zero, ErrOutOfRange
 	}
 	d, err := decimal.NewFromString(s)
@@ -172,6 +176,50 @@ func (b Bounds) Parse(s string) (decimal.Decimal, error) {
 		return decimal.Zero, err
 	}
 	return d, nil
+}
+
+// exponentSuffixOutOfReach reports whether s ends in an exponent suffix so
+// large that no Bounds can accept the value. The suffix moves the decimal's
+// exponent by at most the number of fraction digits, which a Bounds caps at
+// MaxLengthLimit, and a Bounds' exponent range is capped at
+// ±MaxExponentLimit; past their sum the value is out of range whatever its
+// coefficient. Checking this first keeps such input on ErrOutOfRange:
+// since shopspring/decimal v1.5.0, NewFromString itself rejects exponents
+// beyond decimal.MaxDecodeExponent, with an untyped error. Only a well-formed
+// number whose exponent fits in an int64 qualifies, so malformed input and
+// an exponent too long for int64 still get ErrNotParseable, as they did
+// before v1.5.0.
+func exponentSuffixOutOfReach(s string) bool {
+	i := strings.LastIndexAny(s, "eE")
+	if i < 0 || !isPlainMantissa(s[:i]) {
+		return false
+	}
+	exp, err := strconv.ParseInt(s[i+1:], 10, 64)
+	if err != nil {
+		return false
+	}
+	const reach = int64(MaxExponentLimit) + MaxLengthLimit
+	return exp > reach || exp < -reach
+}
+
+// isPlainMantissa reports whether m is an optionally signed decimal number
+// with at least one digit and at most one ".".
+func isPlainMantissa(m string) bool {
+	if strings.HasPrefix(m, "-") || strings.HasPrefix(m, "+") {
+		m = m[1:]
+	}
+	digits, dots := 0, 0
+	for _, r := range m {
+		switch {
+		case r >= '0' && r <= '9':
+			digits++
+		case r == '.':
+			dots++
+		default:
+			return false
+		}
+	}
+	return digits > 0 && dots <= 1
 }
 
 // ValidateBounds applies b's bounds to an already-constructed decimal. It is
