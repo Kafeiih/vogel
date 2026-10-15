@@ -1,0 +1,11 @@
+services:
+  api:
+    image: ghcr.io/kafeiih/vogel-boilerplate:latest
+  # vogel:component worker begin
+  worker:
+    image: ghcr.io/kafeiih/vogel-boilerplate-worker:latest
+  # vogel:component worker end
+  # vogel:component cerbos begin
+  cerbos:
+    image: ghcr.io/cerbos/cerbos:0.40.0
+  # vogel:component cerbos end
