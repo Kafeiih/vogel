@@ -501,6 +501,46 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   `sslmode=verify-full` (con `sslrootcert` si la CA del servidor no está en
   el almacén del sistema, como la de RDS). Con `RequireTLS: false` nada
   cambia. El ejemplo del comentario de `Config.URL` usa `verify-full`.
+- **`examples/boilerplate`: el compose de despliegue separa los roles de la
+  base y deja de publicarla.** `migrate`, `api` y `worker` se conectaban con
+  el superusuario `postgres` y una contraseña fija en el archivo, y Postgres
+  se publicaba en el puerto 5433 del host. Ahora `deploy/initdb/10-roles.sh`
+  crea `app_migrator` (dueño del esquema; lo usan `migrate` y el nuevo paso
+  `grants`) y `app_runtime` (`api` y `worker`: `SELECT` e `INSERT` sobre
+  `audit_log`, `SELECT` sobre las tablas de versión, DML sobre las tablas de
+  la aplicación y de River, y `MAINTAIN` en River desde PostgreSQL 17 para su
+  reindexador), y `grants` aplica `deploy/initdb/runtime-grants.sql` después
+  de cada `migrate up`. Las contraseñas salen de `deploy/.env`
+  (`POSTGRES_PASSWORD`, `APP_MIGRATOR_PASSWORD` y `APP_RUNTIME_PASSWORD`,
+  obligatorias: si falta una, `docker compose` falla antes de arrancar) y
+  `api` y `worker` las reciben vacías salvo la propia. Postgres ya no publica
+  puertos; el compose de desarrollo sigue publicando el 5433. El runbook
+  documenta que en producción los DSN deben usar `sslmode=verify-full` contra
+  un PostgreSQL con TLS. Quien ya usaba este compose debe agregar las tres
+  variables a `deploy/.env` y recrear el volumen (los roles se crean solo en
+  el primer arranque).
+- **`examples/boilerplate`: build de contenedores endurecido.** Nuevo
+  `.dockerignore` (el `Dockerfile` hace `COPY . .`) que excluye `.env*`,
+  claves y certificados, `.git`, `deploy/`, `bin/`, coverage y carpetas de
+  herramientas locales, para que ningún secreto quede en una capa de la
+  imagen. Las imágenes base (`golang:1.26-alpine3.23`, `alpine:3.23`) y la de
+  Postgres del compose de despliegue quedan fijadas por digest, con el tag a
+  la vista. Las imágenes de la aplicación ya no usan `:latest`: su tag sale
+  de `APP_VERSION` en `deploy/.env` (obligatoria), y `migrate`, `api` y
+  `worker` corren con el sistema de archivos raíz de solo lectura y un
+  `tmpfs` en `/tmp`. Quien ya usaba este compose debe definir `APP_VERSION`.
+- **`examples/boilerplate`: `/v1/healthz` ya no expone el error de la base,
+  Swagger solo fuera de producción y CORS sin credenciales.** El chequeo
+  profundo devolvía a cualquier llamador sin autenticar el texto del error
+  del ping (`checks.database.error`), que puede nombrar hosts, puertos, roles
+  y detalles de TLS; ahora responde solo `status: down` y el error queda en
+  el log del servidor (`NewHealthHandler` recibe un `*slog.Logger`; `/readyz`
+  también registra la causa). `/v1/swagger/*` se montaba siempre; ahora solo
+  si `RouterConfig.EnableSwagger` (que `main.go` activa cuando `APP_ENV` no
+  es `production`), bajo `SecurityHeaders` y con una CSP propia que permite
+  el script y los estilos inline de swagger-ui. CORS pasa a
+  `AllowCredentials: false`: la autenticación es un Bearer token, no una
+  cookie.
 
 ## [0.8.0] — 2026-09-30
 

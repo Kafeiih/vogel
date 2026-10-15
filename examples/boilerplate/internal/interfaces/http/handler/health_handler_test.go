@@ -1,11 +1,15 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -17,10 +21,14 @@ func (f *fakePinger) Ping(context.Context) error {
 	return f.err
 }
 
+func discardLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
 // --- /livez ---
 
 func TestLive_Always200(t *testing.T) {
-	h := NewHealthHandler(&fakePinger{})
+	h := NewHealthHandler(&fakePinger{}, discardLogger())
 
 	req := httptest.NewRequest(http.MethodGet, "/livez", nil)
 	rec := httptest.NewRecorder()
@@ -41,7 +49,7 @@ func TestLive_Always200(t *testing.T) {
 // --- /healthz ---
 
 func TestCheck_Healthy_Returns200(t *testing.T) {
-	h := NewHealthHandler(&fakePinger{err: nil})
+	h := NewHealthHandler(&fakePinger{err: nil}, discardLogger())
 
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()
@@ -65,7 +73,7 @@ func TestCheck_Healthy_Returns200(t *testing.T) {
 }
 
 func TestCheck_DBDown_Returns503(t *testing.T) {
-	h := NewHealthHandler(&fakePinger{err: errors.New("connection refused")})
+	h := NewHealthHandler(&fakePinger{err: errors.New("connection refused")}, discardLogger())
 
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()
@@ -86,15 +94,38 @@ func TestCheck_DBDown_Returns503(t *testing.T) {
 	if db["status"] != "down" {
 		t.Errorf("db status = %v, want %q", db["status"], "down")
 	}
-	if db["error"] != "connection refused" {
-		t.Errorf("error = %v, want %q", db["error"], "connection refused")
+	if _, ok := db["error"]; ok {
+		t.Errorf("database check has an error field %v; the cause must stay server-side", db["error"])
+	}
+}
+
+// /healthz is public and unauthenticated: the database driver's error text
+// (host names, ports, role names, TLS details) must never reach the caller.
+func TestCheck_DBDown_DoesNotLeakErrorText(t *testing.T) {
+	const secret = "dial tcp 10.1.2.3:5432: password authentication failed for user app_runtime"
+	var logs bytes.Buffer
+	h := NewHealthHandler(&fakePinger{err: errors.New(secret)}, slog.New(slog.NewTextHandler(&logs, nil)))
+
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rec := httptest.NewRecorder()
+	h.Check(rec, req)
+
+	body := rec.Body.String()
+	for _, fragment := range []string{secret, "10.1.2.3", "app_runtime", "password"} {
+		if strings.Contains(body, fragment) {
+			t.Errorf("response body leaks %q: %s", fragment, body)
+		}
+	}
+	// The cause is not lost: operators find it in the server log.
+	if !strings.Contains(logs.String(), "password authentication failed") {
+		t.Errorf("server log does not record the ping error: %q", logs.String())
 	}
 }
 
 // --- /readyz ---
 
 func TestReady_Healthy_Returns200(t *testing.T) {
-	h := NewHealthHandler(&fakePinger{err: nil})
+	h := NewHealthHandler(&fakePinger{err: nil}, discardLogger())
 
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 	rec := httptest.NewRecorder()
@@ -113,7 +144,7 @@ func TestReady_Healthy_Returns200(t *testing.T) {
 }
 
 func TestReady_DBDown_Returns503(t *testing.T) {
-	h := NewHealthHandler(&fakePinger{err: errors.New("timeout")})
+	h := NewHealthHandler(&fakePinger{err: errors.New("timeout")}, discardLogger())
 
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 	rec := httptest.NewRecorder()

@@ -1,34 +1,92 @@
-# River's schema name is shared by migrate (which creates it) and by api and
-# worker (which use it). It is defined once here and merged into each service
-# so the three cannot drift: compose reads WORKER_SCHEMA from deploy/.env, or
-# falls back to "river". migrate deliberately does not load .env, so the
-# migrator role never sees the application's secrets.
+# Deploy compose: Postgres, a one-shot migration step, the API and the worker.
+#
+# Secrets and settings come from deploy/.env (copy deploy/.env.example).
+# Compose reads that file twice, for different things:
+#   * to interpolate the ${...} references below (database passwords, the
+#     River schema); every secret is ${VAR:?...}, so a missing one stops
+#     "docker compose" before any container starts;
+#   * as env_file for api and worker, which get the application settings
+#     (APP_ENV, ZITADEL_*, CERBOS_*, ...).
+# migrate deliberately does not load .env as env_file, so the migrator role
+# never sees the application's secrets; api and worker blank the migrator and
+# superuser passwords (x-scrub-db-admin-secrets) so the serving processes
+# never hold them either.
+#
+# Database roles (deploy/initdb/10-roles.sh, created on the volume's first
+# start, and deploy/initdb/runtime-grants.sql, applied after every migration):
+#   * postgres      superuser, used only by the postgres container itself;
+#   * app_migrator  owns the schema and the tables, used only by migrate and
+#                   grants;
+#   * app_runtime   owns nothing, used by api and worker: SELECT and INSERT on
+#                   audit_log, DML on the application's and River's tables.
+# See "Un rol para migrar, otro para servir" in vogel's README.
+#
+# TLS: inside this compose network the DSNs use sslmode=disable because the
+# bundled postgres image serves no certificate, which is why deploy/.env sets
+# APP_ENV=development (any other APP_ENV turns on RequireTLS, which rejects
+# the DSN). That is acceptable only on a private compose network. In
+# production point the DSNs at a TLS-enabled PostgreSQL with
+# sslmode=verify-full (and sslrootcert if its CA is private) and run with
+# APP_ENV=production: RequireTLS rejects disable, allow, prefer and require.
+# See "Base de datos no responde" in deploy/RUNBOOK.md.
+
+# River's schema name is shared by migrate (which creates it), grants (which
+# opens it to app_runtime) and api and worker (which use it). It is defined
+# once here and merged into each service so they cannot drift: compose reads
+# WORKER_SCHEMA from deploy/.env, or falls back to "river".
 x-worker-schema: &worker-schema
   WORKER_SCHEMA: ${WORKER_SCHEMA:-river}
 
+# Images are referenced by an explicit version (APP_VERSION in deploy/.env,
+# required), never :latest, so a deploy and its rollback name exactly which
+# build runs. Postgres is pinned by digest for the same reason.
+#
+# The application containers run with a read-only root filesystem: the
+# binaries write nothing to disk (logs go to stdout), and /tmp is a small
+# tmpfs for anything the Go runtime or a library might spill there.
+x-hardened: &hardened
+  read_only: true
+  tmpfs:
+    - /tmp:size=16m,mode=1777
+
+# The serving processes get .env as env_file; these overrides take precedence
+# over it, so the passwords that can alter the schema never reach them.
+x-scrub-db-admin-secrets: &scrub-db-admin-secrets
+  POSTGRES_PASSWORD: ""
+  APP_MIGRATOR_PASSWORD: ""
+
 services:
   postgres:
-    image: postgres:17-alpine
+    image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env}
       POSTGRES_DB: boilerplate_db
-    ports:
-      - "5433:5432"
+      # Read by initdb/10-roles.sh on the first start of the volume.
+      APP_MIGRATOR_PASSWORD: ${APP_MIGRATOR_PASSWORD:?set APP_MIGRATOR_PASSWORD in deploy/.env}
+      APP_RUNTIME_PASSWORD: ${APP_RUNTIME_PASSWORD:?set APP_RUNTIME_PASSWORD in deploy/.env}
+    # No "ports": the database is reachable only from this compose network,
+    # never from the host or beyond it. (docker-compose.developer.yaml does
+    # publish it, for local tools.) To inspect it here:
+    #   docker compose -f deploy/docker-compose.yaml exec postgres psql -U postgres boilerplate_db
     volumes:
       - pgdata:/var/lib/postgresql/data
+      # Only the roles script is an init script; runtime-grants.sql needs the
+      # migrated tables and runs from the grants service instead.
+      - ./initdb/10-roles.sh:/docker-entrypoint-initdb.d/10-roles.sh:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d boilerplate_db"]
       interval: 5s
       timeout: 3s
       retries: 5
 
   # One-shot setup step: applies every migration set, River's schema
-  # included, and exits. In production DB_URL here is the migrator role,
-  # which owns the tables; api and worker then run with roles that cannot
-  # alter audit_log or create tables.
+  # included, and exits. It connects as app_migrator, which therefore owns
+  # the tables; api and worker then run as app_runtime, which cannot alter
+  # audit_log or create tables.
   migrate:
-    image: ghcr.io/kafeiih/vogel-boilerplate:latest
+    image: ghcr.io/kafeiih/vogel-boilerplate:${APP_VERSION:?set APP_VERSION in deploy/.env}
+    <<: *hardened
     build:
       context: ..
       target: api
@@ -38,11 +96,38 @@ services:
         condition: service_healthy
     environment:
       <<: *worker-schema
-      DB_URL: "postgres://postgres:postgres@postgres:5432/boilerplate_db?sslmode=disable"
+      DB_URL: "postgres://app_migrator:${APP_MIGRATOR_PASSWORD:?set APP_MIGRATOR_PASSWORD in deploy/.env}@postgres:5432/boilerplate_db?sslmode=disable"
+    restart: "no"
+
+  # One-shot step after migrate: grants app_runtime what it needs on the
+  # tables the migrations created (deploy/initdb/runtime-grants.sql). Runs as
+  # app_migrator, the owner, so it needs no superuser either.
+  grants:
+    image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+    command:
+      - psql
+      - -v
+      - ON_ERROR_STOP=1
+      - -v
+      - worker_schema=${WORKER_SCHEMA:-river}
+      - -f
+      - /grants/runtime-grants.sql
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      PGHOST: postgres
+      PGDATABASE: boilerplate_db
+      PGUSER: app_migrator
+      PGPASSWORD: ${APP_MIGRATOR_PASSWORD:?set APP_MIGRATOR_PASSWORD in deploy/.env}
+      PGSSLMODE: disable
+    volumes:
+      - ./initdb/runtime-grants.sql:/grants/runtime-grants.sql:ro
     restart: "no"
 
   api:
-    image: ghcr.io/kafeiih/vogel-boilerplate:latest
+    image: ghcr.io/kafeiih/vogel-boilerplate:${APP_VERSION:?set APP_VERSION in deploy/.env}
+    <<: *hardened
     build:
       context: ..
       target: api
@@ -50,18 +135,19 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      migrate:
+      grants:
         condition: service_completed_successfully
     ports:
       - "8080:8080"
     env_file:
       - .env
     environment:
-      <<: *worker-schema
-      DB_URL: "postgres://postgres:postgres@postgres:5432/boilerplate_db?sslmode=disable"
+      <<: [*worker-schema, *scrub-db-admin-secrets]
+      DB_URL: "postgres://app_runtime:${APP_RUNTIME_PASSWORD:?set APP_RUNTIME_PASSWORD in deploy/.env}@postgres:5432/boilerplate_db?sslmode=disable"
 
   worker:
-    image: ghcr.io/kafeiih/vogel-boilerplate-worker:latest
+    image: ghcr.io/kafeiih/vogel-boilerplate-worker:${APP_VERSION:?set APP_VERSION in deploy/.env}
+    <<: *hardened
     build:
       context: ..
       target: worker
@@ -69,13 +155,13 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      migrate:
+      grants:
         condition: service_completed_successfully
     env_file:
       - .env
     environment:
-      <<: *worker-schema
-      DB_URL: "postgres://postgres:postgres@postgres:5432/boilerplate_db?sslmode=disable"
+      <<: [*worker-schema, *scrub-db-admin-secrets]
+      DB_URL: "postgres://app_runtime:${APP_RUNTIME_PASSWORD:?set APP_RUNTIME_PASSWORD in deploy/.env}@postgres:5432/boilerplate_db?sslmode=disable"
     restart: unless-stopped
 
 volumes:

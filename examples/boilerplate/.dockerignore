@@ -1,0 +1,40 @@
+# The Dockerfile's builder stage runs "COPY . .": everything not excluded here
+# ends up in a build layer, and secrets in a layer survive even when a later
+# step deletes them. Keep credentials, VCS data and local artefacts out.
+
+# Secrets and environment files (deploy/.env, .env.local, ...).
+.env
+.env.*
+**/.env
+**/.env.*
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+**/key.json
+**/secrets/
+
+# VCS and editor/tool state.
+.git
+.gitignore
+.idea/
+.vscode/
+.claude/
+.codegraph/
+.atl/
+*.swp
+*~
+.DS_Store
+
+# Build outputs and test artefacts.
+bin/
+coverage*
+*.out
+*.test
+*.prof
+
+# Deployment files are not part of the image.
+deploy/
+Dockerfile
+.dockerignore

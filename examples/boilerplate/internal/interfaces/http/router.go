@@ -48,7 +48,20 @@ type RouterConfig struct {
 	// TrustedProxies are the only peers whose X-Forwarded-For / X-Real-IP
 	// headers vmw.RealIP believes (TRUSTED_PROXIES). Empty trusts none.
 	TrustedProxies []netip.Prefix
+
+	// EnableSwagger mounts the Swagger UI and spec under /v1/swagger/.
+	// main.go sets it outside production only; the zero value leaves the
+	// routes unregistered, so a forgotten setting fails closed.
+	EnableSwagger bool
 }
+
+// swaggerCSP replaces SecurityHeaders' "default-src 'none'" on the Swagger
+// routes only. swagger-ui's index.html bootstraps itself with an inline
+// <script> and inline styles and uses data: images, all served from this
+// origin; nothing else is loosened, and framing stays denied.
+const swaggerCSP = "default-src 'self'; script-src 'self' 'unsafe-inline'; " +
+	"style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; " +
+	"frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
 
 // AuthMessages holds the Spanish user-facing strings for authentication and
 // authorization failures. This boilerplate is for Spanish-speaking apps, so
@@ -106,14 +119,18 @@ func NewRouter(deps Dependencies) *chi.Mux {
 	r.Use(middleware.Timeout(deps.Config.Timeout))
 
 	r.Route("/v1", func(r chi.Router) {
-		docsURL := "/v1/swagger/doc.json"
-		r.Get("/swagger/*", httpSwagger.Handler(
-			httpSwagger.URL(docsURL),
-		))
-
 		// All API routes get security headers
 		r.Group(func(r chi.Router) {
 			r.Use(vmw.SecurityHeaders)
+
+			// API description: development and staging only. In production
+			// it is not registered at all (404), so it cannot map the API
+			// for an unauthenticated caller.
+			if deps.Config.EnableSwagger {
+				r.With(swaggerHeaders).Get("/swagger/*", httpSwagger.Handler(
+					httpSwagger.URL("/v1/swagger/doc.json"),
+				))
+			}
 
 			// Rutas públicas — health checks (Kubernetes probes)
 			r.Get("/healthz", deps.HealthHandler.Check)
@@ -160,6 +177,15 @@ func NewRouter(deps Dependencies) *chi.Mux {
 	return r
 }
 
+// swaggerHeaders runs after vmw.SecurityHeaders and swaps only its CSP for
+// swaggerCSP; every other security header stays as SecurityHeaders set it.
+func swaggerHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Security-Policy", swaggerCSP)
+		next.ServeHTTP(w, r)
+	})
+}
+
 // corsMiddleware configura CORS usando los orígenes de la configuración.
 // Si no hay orígenes configurados, usa localhost como fallback seguro.
 func corsMiddleware(allowedOrigins []string) func(http.Handler) http.Handler {
@@ -167,11 +193,15 @@ func corsMiddleware(allowedOrigins []string) func(http.Handler) http.Handler {
 		allowedOrigins = []string{"http://localhost:3000"}
 	}
 	c := cors.New(cors.Options{
-		AllowedOrigins:   allowedOrigins,
-		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-Request-ID"},
-		ExposedHeaders:   []string{"Link"},
-		AllowCredentials: true,
+		AllowedOrigins: allowedOrigins,
+		AllowedMethods: []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+		AllowedHeaders: []string{"Accept", "Authorization", "Content-Type", "X-Request-ID"},
+		ExposedHeaders: []string{"Link"},
+		// La autenticación es un Bearer token en Authorization, nunca una
+		// cookie: el navegador no necesita enviar credenciales cross-origin,
+		// y permitirlo solo ampliaría lo que un origen permitido puede hacer
+		// con las cookies que el usuario tuviera para este host.
+		AllowCredentials: false,
 		MaxAge:           300,
 	})
 	return c.Handler

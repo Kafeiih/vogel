@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -13,12 +14,20 @@ type Pinger interface {
 	Ping(ctx context.Context) error
 }
 
+// HealthHandler serves the public, unauthenticated probe endpoints.
 type HealthHandler struct {
-	db Pinger
+	db     Pinger
+	logger *slog.Logger
 }
 
-func NewHealthHandler(db Pinger) *HealthHandler {
-	return &HealthHandler{db: db}
+// NewHealthHandler builds the probe handlers. logger receives the cause of a
+// failed database ping, which the response never carries; nil uses
+// slog.Default().
+func NewHealthHandler(db Pinger, logger *slog.Logger) *HealthHandler {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &HealthHandler{db: db, logger: logger}
 }
 
 // healthcheckHandler godoc
@@ -38,9 +47,12 @@ func (h *HealthHandler) Check(w http.ResponseWriter, r *http.Request) {
 	dbCheck := map[string]any{"status": dbStatus}
 
 	if err := h.db.Ping(ctx); err != nil {
+		// The endpoint is public: the driver's error names hosts, ports,
+		// roles and TLS details, so it is logged here and the caller only
+		// learns that the database is down.
+		h.logger.ErrorContext(ctx, "health check: database ping failed", "error", err)
 		dbStatus = "down"
 		dbCheck["status"] = dbStatus
-		dbCheck["error"] = err.Error()
 	}
 
 	result := map[string]any{
@@ -73,6 +85,7 @@ func (h *HealthHandler) Ready(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	if err := h.db.Ping(ctx); err != nil {
+		h.logger.ErrorContext(ctx, "readiness check: database ping failed", "error", err)
 		result := map[string]any{
 			"status": "not_ready",
 			"reason": "database unavailable",
