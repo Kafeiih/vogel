@@ -1,0 +1,16 @@
+{
+  "modulePath": "github.com/kafeiih/vogel/examples/boilerplate",
+  "minVogelVersion": "v0.10.0",
+  "components": [
+    {"name": "worker", "prompt": "Keep the worker?", "default": true, "requires": [], "paths": ["cmd/worker"]},
+    {"name": "notification", "prompt": "Keep notifications?", "default": true, "requires": ["worker"], "paths": []},
+    {"name": "cerbos", "prompt": "Keep the bundled Cerbos PDP?", "default": true, "requires": [], "paths": ["cerbos"]},
+    {"name": "storage", "prompt": "Keep S3 storage?", "default": false, "requires": [], "paths": []}
+  ],
+  "alwaysRemove": [".vogel"],
+  "replacements": [
+    {"path": "deploy/docker-compose.yaml", "from": "ghcr.io/kafeiih/vogel-boilerplate", "to": "{{.ImageBase}}"},
+    {"path": "cerbos/config.yaml", "from": "boilerplate-pdp", "to": "{{.Name}}-pdp"},
+    {"path": "Makefile", "from": "boilerplate_db", "to": "{{.DBName}}"}
+  ]
+}
