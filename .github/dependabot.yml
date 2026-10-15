@@ -60,12 +60,19 @@ updates:
     commit-message:
       prefix: build(deps)
 
+  # A Postgres major bump is a migration, not a routine update: a data
+  # directory written by one major does not start under the next (and the
+  # official image moved PGDATA in 18), so existing deploy volumes would
+  # break. Majors are upgraded deliberately; minors and digests stay current.
   - package-ecosystem: docker-compose
     directories:
       - /examples/api
       - /examples/boilerplate/deploy
     schedule:
       interval: weekly
+    ignore:
+      - dependency-name: postgres
+        update-types: ["version-update:semver-major"]
     groups:
       docker-compose:
         patterns: ["*"]
