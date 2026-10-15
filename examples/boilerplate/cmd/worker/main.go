@@ -34,6 +34,15 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+	if cmd == cmdHealthcheck {
+		// Reads the heartbeat only: no config, no database, so it is cheap
+		// enough to run every few seconds from the container's HEALTHCHECK.
+		if err := checkHeartbeat(heartbeatPath(), time.Now(), heartbeatMaxAge); err != nil {
+			fmt.Fprintln(os.Stderr, "unhealthy:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := run(cmd == cmdStartFromMigrate); err != nil {
 		log.Fatal(err)
 	}
@@ -53,6 +62,10 @@ const (
 	// then processes jobs. It is a development convenience: the worker's role
 	// must be able to create the schema and its tables.
 	cmdStartFromMigrate
+	// cmdHealthcheck exits 0 when a running "worker server" in the same
+	// container has written a fresh heartbeat, 1 otherwise. It is the
+	// image's HEALTHCHECK; see heartbeat.go.
+	cmdHealthcheck
 )
 
 // parseCommand maps the first CLI argument to a command.
@@ -62,8 +75,10 @@ func parseCommand(subcmd string) (command, error) {
 		return cmdServer, nil
 	case "start-from-migrate":
 		return cmdStartFromMigrate, nil
+	case "healthcheck":
+		return cmdHealthcheck, nil
 	default:
-		return 0, fmt.Errorf("unknown subcommand %q; valid: server, start-from-migrate", subcmd)
+		return 0, fmt.Errorf("unknown subcommand %q; valid: server, start-from-migrate, healthcheck", subcmd)
 	}
 }
 
@@ -153,12 +168,23 @@ func run(migrateFirst bool) error {
 		"schema", cfg.Worker.Schema,
 	)
 
+	// Liveness for the container healthcheck ("worker healthcheck").
+	hbCtx, hbCancel := context.WithCancel(context.Background())
+	defer hbCancel()
+	hbDone := make(chan struct{})
+	go func() {
+		defer close(hbDone)
+		runHeartbeat(hbCtx, heartbeatPath(), heartbeatInterval, appLogger.Logger)
+	}()
+
 	// Graceful shutdown
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 
 	<-sigCh
 	appLogger.Info("shutdown signal received, stopping worker...")
+	hbCancel()
+	<-hbDone
 
 	// Soft stop: wait for in-flight jobs to complete
 	softCtx, softCancel := context.WithTimeout(context.Background(), 10*time.Second)
