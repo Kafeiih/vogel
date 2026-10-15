@@ -98,8 +98,9 @@ func lastLines(s string, n int) string {
 }
 
 // Generate creates a new project from the vogel boilerplate. Failures before
-// go.mod is edited remove what was written to the target directory; later
-// failures leave it for inspection.
+// go.mod is edited (including reading go.mod and checking its module path)
+// remove what was written to the target directory, or empty it when it
+// already existed; later failures leave it for inspection.
 func Generate(ctx context.Context, opts Options) (*Result, error) {
 	if err := opts.validate(); err != nil {
 		return nil, err
@@ -113,12 +114,15 @@ func Generate(ctx context.Context, opts Options) (*Result, error) {
 		return nil, err
 	}
 
-	res, m, err := opts.render(ctx, dir)
+	res, err := opts.render(ctx, dir)
+	if err == nil {
+		err = opts.checkGoMod(ctx, dir)
+	}
 	if err != nil {
 		cleanupTarget(dir, created)
 		return nil, err
 	}
-	if err := opts.finish(ctx, dir, m, res); err != nil {
+	if err := opts.finish(ctx, dir, res); err != nil {
 		return res, err
 	}
 	return res, nil
@@ -191,42 +195,42 @@ func cleanupTarget(dir string, created bool) {
 }
 
 // render fetches the boilerplate and applies every file-level rewrite.
-func (o *Options) render(ctx context.Context, dir string) (*Result, *Manifest, error) {
+func (o *Options) render(ctx context.Context, dir string) (*Result, error) {
 	if o.From != "" {
 		o.logf("Copying %s from %s", boilerplateDir, o.From)
 		if err := CopyLocal(ctx, o.From, dir); err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 	} else {
 		o.logf("Downloading vogel %s", o.Version)
 		if err := o.Fetcher.Fetch(ctx, o.Version, dir); err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 	}
 	m, err := LoadManifest(dir)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	if o.From == "" {
 		if err := CheckMinVersion(o.Version, m.MinVogelVersion); err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 	}
 
 	sel, err := o.selection(m)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	removed, err := removePaths(dir, m, sel)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	values := Derive(o.Name, o.Owner, o.Module)
 	if err := applyReplacements(dir, m, values, removed); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	if err := rewriteFiles(dir, m, sel, o.Module); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	res := &Result{
@@ -239,7 +243,7 @@ func (o *Options) render(ctx context.Context, dir string) (*Result, *Manifest, e
 	if o.From != "" {
 		res.LocalReplace = o.From
 	}
-	return res, m, nil
+	return res, nil
 }
 
 func (o *Options) selection(m *Manifest) (Selection, error) {
@@ -375,8 +379,9 @@ func writeKeepingMode(file string, content []byte) error {
 	return os.WriteFile(file, content, 0o644) //nolint:gosec // the file already exists inside the generated project; its mode is preserved
 }
 
-// finish edits go.mod, tidies, checks formatting and creates the git repo.
-func (o *Options) finish(ctx context.Context, dir string, _ *Manifest, res *Result) error {
+// checkGoMod checks that the rewritten go.mod declares the new module, which
+// fails when the manifest modulePath does not match the boilerplate go.mod.
+func (o *Options) checkGoMod(ctx context.Context, dir string) error {
 	mod, err := readGoMod(ctx, dir)
 	if err != nil {
 		return err
@@ -384,7 +389,11 @@ func (o *Options) finish(ctx context.Context, dir string, _ *Manifest, res *Resu
 	if mod.Module.Path != o.Module {
 		return fmt.Errorf("go.mod declares module %q after the rewrite, want %q (the manifest modulePath does not match the boilerplate go.mod)", mod.Module.Path, o.Module)
 	}
+	return nil
+}
 
+// finish edits go.mod, tidies, checks formatting and creates the git repo.
+func (o *Options) finish(ctx context.Context, dir string, res *Result) error {
 	args := []string{"mod", "edit"}
 	if o.From == "" {
 		args = append(args, "-dropreplace="+VogelModule)
@@ -399,7 +408,8 @@ func (o *Options) finish(ctx context.Context, dir string, _ *Manifest, res *Resu
 	}
 	res.Version = o.Version
 	if res.Version == "" {
-		if mod, err = readGoMod(ctx, dir); err != nil {
+		mod, err := readGoMod(ctx, dir)
+		if err != nil {
 			return err
 		}
 		res.Version = mod.require(VogelModule)

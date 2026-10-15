@@ -2,11 +2,17 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/kafeiih/vogel/internal/scaffold"
 )
 
 // fakeVogelRoot lays the scaffold fixture template out as
@@ -48,7 +54,7 @@ type result struct {
 func runCLI(t *testing.T, stdin string, interactive bool, args ...string) result {
 	t.Helper()
 	var out, errOut bytes.Buffer
-	code := run(args, strings.NewReader(stdin), &out, &errOut, interactive)
+	code := run(context.Background(), args, strings.NewReader(stdin), &out, &errOut, interactive)
 	return result{code: code, stdout: out.String(), stderr: errOut.String()}
 }
 
@@ -151,7 +157,7 @@ func TestInteractiveRun(t *testing.T) {
 	if r.code != exitOK {
 		t.Fatalf("exit = %d; stderr:\n%s\nstdout:\n%s", r.code, r.stderr, r.stdout)
 	}
-	for _, want := range []string{"GitHub owner", "Keep the worker? [Y/n]", "Please answer y or n.", "Keep the bundled Cerbos PDP? [Y/n]", "Keep S3 storage? [y/N]", "kept:    cerbos, storage"} {
+	for _, want := range []string{"GitHub owner", "Keep the worker? [Y/n]", "Please answer y or n (s/si also mean yes).", "Keep the bundled Cerbos PDP? [Y/n]", "Keep S3 storage? [y/N]", "kept:    cerbos, storage"} {
 		if !strings.Contains(r.stdout, want) {
 			t.Fatalf("stdout missing %q:\n%s", want, r.stdout)
 		}
@@ -181,5 +187,79 @@ func TestRuntimeFailureExitCode(t *testing.T) {
 	r := runCLI(t, "", false, "--owner", "acme", "--from", root, "--dir", filepath.Join(t.TempDir(), "x"), "--no-git", "--skip-tidy", "billing")
 	if r.code != exitFailure || !strings.Contains(r.stderr, "not found in Makefile") {
 		t.Fatalf("exit = %d, stderr = %q", r.code, r.stderr)
+	}
+}
+
+// blockingStdin is a terminal nobody types into: reads block until the test
+// ends.
+func blockingStdin(t *testing.T) io.Reader {
+	t.Helper()
+	r, w := io.Pipe()
+	t.Cleanup(func() { _ = w.Close() })
+	return r
+}
+
+func TestAskYesNoHonorsCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := askYesNo(ctx, newLineReader(blockingStdin(t)), io.Discard, scaffold.Component{Name: "worker"})
+		done <- err
+	}()
+	time.AfterFunc(50*time.Millisecond, cancel)
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("askYesNo() error = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("askYesNo() kept blocking after the context was canceled")
+	}
+}
+
+func TestAskOwnerHonorsCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := askOwner(ctx, newLineReader(blockingStdin(t)), io.Discard)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("askOwner() error = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("askOwner() kept blocking after the context was canceled")
+	}
+}
+
+func TestInterruptAtPromptLeavesNoTarget(t *testing.T) {
+	root := fakeVogelRoot(t)
+	dir := filepath.Join(t.TempDir(), "billing")
+	ctx, cancel := context.WithCancel(context.Background())
+	var out, errOut bytes.Buffer
+	done := make(chan int, 1)
+	go func() {
+		done <- run(ctx, []string{"--owner", "acme", "--from", root, "--dir", dir, "--no-git", "--skip-tidy", "billing"}, blockingStdin(t), &out, &errOut, true)
+	}()
+	time.AfterFunc(200*time.Millisecond, cancel)
+	select {
+	case code := <-done:
+		if code != exitInterrupted {
+			t.Fatalf("exit = %d, want %d; stderr:\n%s", code, exitInterrupted, errOut.String())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("run kept waiting at the prompt after the interrupt")
+	}
+	if !strings.Contains(out.String(), "Keep the worker?") {
+		t.Fatalf("the interrupt did not happen at a component prompt; stdout:\n%s", out.String())
+	}
+	if !strings.Contains(errOut.String(), "interrupted") {
+		t.Fatalf("stderr does not report the interrupt:\n%s", errOut.String())
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatal("an interrupt at a prompt left the target directory behind")
 	}
 }
