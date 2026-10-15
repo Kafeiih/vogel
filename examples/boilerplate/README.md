@@ -144,8 +144,10 @@ go run ./cmd/api start-from-migrate   # o: make dev
 > de un balanceador hay que declararlo aquí, o todas las requests aparecen con
 > su IP. Un valor inválido hace fallar el arranque.
 
-`docker compose -f deploy/docker-compose.developer.yaml` levanta Postgres,
-Cerbos y MinIO para desarrollo local. `docker compose -f
+`docker compose -f deploy/docker-compose.developer.yaml` levanta Postgres
+y Cerbos para desarrollo local (sin MinIO: su imagen ya no se publica en
+Docker Hub; apunte `STORAGE_*` a cualquier endpoint S3-compatible si lo
+necesita). `docker compose -f
 deploy/docker-compose.yaml` es el compose de despliegue (API + worker +
 Postgres) que construye la imagen desde el `Dockerfile` de este directorio.
 Como el `go.mod` apunta a `../..` con el `replace`, el contexto de build es

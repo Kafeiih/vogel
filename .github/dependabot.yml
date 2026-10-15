@@ -15,7 +15,9 @@
 # The boilerplate's Dockerfile and the compose files under examples/ are
 # covered too: Dependabot bumps image tags, and rewrites the digest together
 # with the tag where an image is pinned by digest, so the base images do not
-# quietly age into known-vulnerable ones.
+# quietly age into known-vulnerable ones. In each docker-compose directory
+# Dependabot reads every file matching (docker-)?compose(-\w+)?(.[\w-]+)?.ya?ml,
+# so /examples/boilerplate/deploy covers docker-compose.developer.yaml too.
 version: 2
 updates:
   - package-ecosystem: github-actions
