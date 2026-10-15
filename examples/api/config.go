@@ -26,6 +26,15 @@ type Config struct {
 	// in (for example ":2112" inside a container scraped by Prometheus).
 	// 2112 rather than 9090, which is Prometheus's own default port.
 	MetricsAddr string
+
+	// HTTP server timeouts for the public API listener (see newAPIServer).
+	// Each defaults to a finite value and must be positive: in net/http a
+	// zero timeout means none at all, which lets a slow client hold a
+	// connection, and the goroutine serving it, open indefinitely.
+	ReadHeaderTimeout time.Duration // HTTP_READ_HEADER_TIMEOUT, default 5s
+	ReadTimeout       time.Duration // HTTP_READ_TIMEOUT, default 15s
+	WriteTimeout      time.Duration // HTTP_WRITE_TIMEOUT, default 30s
+	IdleTimeout       time.Duration // HTTP_IDLE_TIMEOUT, default 60s
 }
 
 // LoadConfig reads every setting from the environment and validates it
@@ -57,6 +66,11 @@ func LoadConfig() (Config, error) {
 		errs.Addf("METRICS_ADDR: must not be empty")
 	}
 
+	readHeaderTimeout := positiveDuration(&errs, "HTTP_READ_HEADER_TIMEOUT", 5*time.Second)
+	readTimeout := positiveDuration(&errs, "HTTP_READ_TIMEOUT", 15*time.Second)
+	writeTimeout := positiveDuration(&errs, "HTTP_WRITE_TIMEOUT", 30*time.Second)
+	idleTimeout := positiveDuration(&errs, "HTTP_IDLE_TIMEOUT", 60*time.Second)
+
 	if err := errs.Err(); err != nil {
 		return Config{}, err
 	}
@@ -69,5 +83,20 @@ func LoadConfig() (Config, error) {
 		NotifyFrom:      notifyFrom,
 		ShutdownTimeout: shutdownTimeout,
 		MetricsAddr:     metricsAddr,
+
+		ReadHeaderTimeout: readHeaderTimeout,
+		ReadTimeout:       readTimeout,
+		WriteTimeout:      writeTimeout,
+		IdleTimeout:       idleTimeout,
 	}, nil
+}
+
+// positiveDuration reads key as a duration (defaultValue when unset) and
+// records an error on errs unless it is greater than zero.
+func positiveDuration(errs *config.Errors, key string, defaultValue time.Duration) time.Duration {
+	d := errs.Duration(key, defaultValue)
+	if d <= 0 {
+		errs.Addf("%s: must be greater than zero, got %s", key, d)
+	}
+	return d
 }

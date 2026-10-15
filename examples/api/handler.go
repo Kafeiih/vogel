@@ -86,6 +86,12 @@ func actorID(ctx context.Context) string {
 	return ""
 }
 
+// maxTitleLength is the longest document title, in characters, that Create
+// accepts. documents.title is unbounded TEXT, so without this cap a single
+// request could store (and every later list, history and notification job
+// would carry) a title of any size request.JSON's body limit lets through.
+const maxTitleLength = 200
+
 type createDocumentRequest struct {
 	Title    string `json:"title"`
 	Kind     string `json:"kind"`
@@ -131,9 +137,13 @@ func (h *DocumentHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fields := request.FieldErrors{}
+	v := request.NewValidator()
 	if req.Title == "" || stringutil.Normalize(req.Title) == "" {
-		fields["title"] = "title is required"
+		v.AddError("title", "title is required")
+	} else {
+		// MaxLen counts runes, so an accented title is not penalised for
+		// its UTF-8 byte length.
+		v.MaxLen("title", req.Title, maxTitleLength)
 	}
 	kindOK := false
 	for _, k := range DocumentKinds {
@@ -143,14 +153,14 @@ func (h *DocumentHandler) Create(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if !kindOK {
-		fields["kind"] = "kind must be one of contract, invoice, report"
+		v.AddError("kind", "kind must be one of contract, invoice, report")
 	}
 	issuedAt, dateErr := stringutil.ParseFlexibleDate(req.IssuedAt)
 	if dateErr != nil {
-		fields["issued_at"] = "issued_at must be a valid date (DD/MM/YYYY, DD-MM-YYYY or YYYY-MM-DD)"
+		v.AddError("issued_at", "issued_at must be a valid date (DD/MM/YYYY, DD-MM-YYYY or YYYY-MM-DD)")
 	}
-	if len(fields) > 0 {
-		response.ValidationError(w, r, fields)
+	if v.HasErrors() {
+		v.WriteErrors(w, r)
 		return
 	}
 
@@ -320,6 +330,13 @@ func (h *DocumentHandler) List(w http.ResponseWriter, r *http.Request) {
 	limit := v.IntQuery(r, "limit", 20)
 	limit = v.MaxInt("limit", limit, 100)
 	offset := v.IntQuery(r, "offset", 0)
+	// Same bound as Inbox, for the same reason: Postgres reads and discards
+	// every row an OFFSET skips, so an unbounded one lets a single request
+	// make the database walk the whole table. Deeper pages should filter
+	// instead of paging further.
+	if offset > workflow.MaxListOffset {
+		v.AddError("offset", fmt.Sprintf("offset must not exceed %d", workflow.MaxListOffset))
+	}
 	if v.HasErrors() {
 		v.WriteErrors(w, r)
 		return

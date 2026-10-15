@@ -21,7 +21,6 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 
@@ -246,17 +245,8 @@ func run() error {
 
 	docs := NewDocumentHandler(documentStore, engine, wfRepo, recorder, queue, fileStorage, txManager, pool, accessGuard, log.Logger)
 
-	// 9. Every timeout below is set explicitly (gosec G112): a slow or
-	// hanging client must never be able to hold a connection, and the
-	// goroutine serving it, open indefinitely.
-	srv := &http.Server{
-		Addr:              fmt.Sprintf(":%d", cfg.Port),
-		Handler:           NewRouter(docs, auditHandler, authenticator, checker, accessGuard, metrics, pool, log.Logger),
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      30 * time.Second,
-		IdleTimeout:       60 * time.Second,
-	}
+	// 9. The public API server; see newAPIServer for its timeouts.
+	srv := newAPIServer(cfg, NewRouter(docs, auditHandler, authenticator, checker, accessGuard, metrics, pool, log.Logger))
 
 	// Internal metrics listener (METRICS_ADDR, loopback by default), apart
 	// from the public API port. Binding here, before serving, makes a busy
@@ -316,6 +306,30 @@ func run() error {
 			log.Error("river queue shutdown", "error", err)
 		}
 		return nil
+	}
+}
+
+// maxHeaderBytes bounds the request line plus headers the API server reads
+// (http.Server.MaxHeaderBytes). net/http's 1 MiB default is far more than a
+// bearer token and a handful of headers need; 64 KiB still leaves room for a
+// large JWT.
+const maxHeaderBytes = 64 << 10
+
+// newAPIServer builds the public API server on cfg.Port. Every timeout is set
+// explicitly from cfg (gosec G112): a slow or hanging client must never be
+// able to hold a connection, and the goroutine serving it, open
+// indefinitely. ReadTimeout also bounds how long an upload body may take to
+// arrive, so raise HTTP_READ_TIMEOUT before serving clients that upload
+// maxUploadBytes over slow links.
+func newAPIServer(cfg Config, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              fmt.Sprintf(":%d", cfg.Port),
+		Handler:           handler,
+		ReadHeaderTimeout: cfg.ReadHeaderTimeout,
+		ReadTimeout:       cfg.ReadTimeout,
+		WriteTimeout:      cfg.WriteTimeout,
+		IdleTimeout:       cfg.IdleTimeout,
+		MaxHeaderBytes:    maxHeaderBytes,
 	}
 }
 
