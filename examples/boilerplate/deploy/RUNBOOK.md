@@ -91,8 +91,12 @@ sirven con `SWAGGER_ENABLED=true`, que `deploy/.env` no debe definir; con
 eso vive solo en la red `authz`, que es `internal` y no publica puertos: solo
 el `api` llega a el. Si `deploy/.env` no define `CERBOS_HOST` ni
 `CERBOS_PLAINTEXT`, el compose usa `cerbos:3593` en texto plano. Si el PDP corre
-en otro host, defina en `deploy/.env` `CERBOS_HOST` apuntando a un Cerbos con
-TLS y `CERBOS_PLAINTEXT=false`. Las politicas viven en `/bundle/policies` de la
+en otro host, defina en `deploy/.env` las dos: `CERBOS_HOST` apuntando a un
+Cerbos con TLS y `CERBOS_PLAINTEXT=false` (sin ella sigue en `true`), y quite del
+compose el servicio `cerbos`, la entrada `cerbos` del `depends_on` del `api` y
+su red `authz`; si no, el `api` sigue esperando al PDP empaquetado. Un modo TLS
+equivocado hace fallar el arranque del `api` con un error que nombra el modo.
+Las politicas viven en `/bundle/policies` de la
 imagen, no en un volumen, asi que cada version nueva sirve sus propias
 politicas. Despues de desplegar, verifique en los logs que las cargo: un PDP
 sin politicas reporta sano y niega todo.

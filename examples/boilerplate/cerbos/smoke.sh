@@ -3,7 +3,7 @@
 # they compiled (make cerbos-smoke).
 #
 # The validate stage proves the policies compile and pass their tests. It
-# does not prove the final image answers correctly: that stage copies
+# does not prove the final image answers correctly: the final stage copies
 # .cerbos.yaml, which nothing validates. A config pointing storage elsewhere
 # yields an image that starts and reports healthy while denying every
 # request, because an empty policy store denies everything. The ALLOW checks
@@ -80,6 +80,7 @@ check() {
 # auditor). Keep in sync when that policy changes.
 failed=0
 check "admin can list audit entries" admin "*" list EFFECT_ALLOW || failed=1
+check "admin can view an audit entry" admin entry-1 view EFFECT_ALLOW || failed=1
 check "auditor can view an audit entry" auditor entry-1 view EFFECT_ALLOW || failed=1
 check "auditor cannot list audit entries" auditor "*" list EFFECT_DENY || failed=1
 check "other roles cannot list audit entries" user "*" list EFFECT_DENY || failed=1

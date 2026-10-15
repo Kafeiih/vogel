@@ -200,9 +200,12 @@ services:
       # The bundled Postgres serves no TLS; see "TLS" above.
       DB_REQUIRE_TLS: "false"
       # The bundled PDP above serves no TLS either. Plaintext is acceptable
-      # only because it never leaves the internal authz network. To use an
-      # external PDP, set CERBOS_HOST (and CERBOS_PLAINTEXT=false, for TLS) in
-      # deploy/.env: these defaults apply only when it leaves them unset.
+      # only because it never leaves the internal authz network. For an
+      # external PDP set BOTH in deploy/.env (CERBOS_HOST and, for TLS,
+      # CERBOS_PLAINTEXT=false: each default below applies on its own), and
+      # delete the cerbos service, the api's "cerbos" depends_on entry and its
+      # authz network; otherwise the api still waits for the bundled PDP. A TLS
+      # mode mismatch stops the api at boot with an error naming the mode.
       CERBOS_HOST: ${CERBOS_HOST:-cerbos:3593}
       CERBOS_PLAINTEXT: ${CERBOS_PLAINTEXT:-true}
 

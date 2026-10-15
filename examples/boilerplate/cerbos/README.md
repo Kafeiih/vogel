@@ -76,7 +76,7 @@ the PDP logs. A count of 0 means every request is being denied.
 ## Non-root
 
 The upstream image runs as root. The final image runs as UID `65532`: the PDP
-only reads `/config` and `/policies`.
+only reads `/config` and `/bundle/policies`.
 
 ## Attribute-based policies
 

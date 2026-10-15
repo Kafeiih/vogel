@@ -314,8 +314,10 @@ aplique el mismo criterio con `httpx.WithMessages(...)` de
 8. Publique sus imágenes con `.github/workflows/release.yaml`: al empujar un
    tag `vX.Y.Z` construye y sube a GHCR `ghcr.io/<owner>/<repo>` (api),
    `-worker` y `-cerbos` con la versión `X.Y.Z` (sin `:latest`), cada una con
-   SBOM y *provenance*; la de Cerbos pasa antes el *smoke test*. Borre el job
-   del componente que no use y cambie los `image:` de
+   SBOM y *provenance*; la de Cerbos pasa antes el *smoke test*. Es todo o
+   nada: los tags se crean solo cuando las tres imágenes salieron bien. Borre
+   el job del componente que no use (y su entrada y su línea `tag` en el job
+   `publish`) y cambie los `image:` de
    `deploy/docker-compose.yaml` (hoy `ghcr.io/kafeiih/vogel-boilerplate*`) a
    esos nombres. La primera publicación crea paquetes privados: vincúlelos al
    repositorio y elija su visibilidad en la configuración del paquete. Dentro

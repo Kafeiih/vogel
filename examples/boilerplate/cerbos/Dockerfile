@@ -24,7 +24,8 @@ COPY .cerbos.yaml /config/.cerbos.yaml
 # permission would stay granted). /bundle is not a volume, so the policies
 # served are always this image's.
 COPY --from=validate /repo/policies /bundle/policies
-# The upstream image runs as root. The PDP only reads /config and /policies,
-# so it runs as an unprivileged, nameless UID (there is no /etc/passwd).
+# The upstream image runs as root. The PDP only reads /config and
+# /bundle/policies, so it runs as an unprivileged, nameless UID (there is no
+# /etc/passwd).
 USER 65532:65532
 CMD ["server", "--config=/config/.cerbos.yaml"]

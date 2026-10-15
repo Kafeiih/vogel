@@ -13,7 +13,9 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   repositorio de un servicio generado y al empujar un tag `vX.Y.Z`,
   `ghcr.io/<owner>/<repo>` (api), `-worker` y `-cerbos` con la versión exacta,
   sin `:latest`, con SBOM y *provenance*, y la de Cerbos solo si pasa el
-  *smoke test*; un job por componente para poder quitar los que no se usen.
+  *smoke test*; todo o nada: cada job sube su imagen por digest y un job final
+  las etiqueta solo si todas salieron bien. Un job por componente para poder
+  quitar los que no se usen.
   Un `.dockerignore` propio deja fuera del build `.env`, `secrets/` y las
   claves cuando la copia es la raíz del contexto. El compose de despliegue
   suma el PDP de Cerbos con las políticas horneadas, solo en una red
