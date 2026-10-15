@@ -77,7 +77,7 @@ func newTestIntrospector(t *testing.T) *testIntrospector {
 			http.Error(w, "bad form", http.StatusBadRequest)
 			return
 		}
-		method := ""
+		var method string
 		if id, secret, ok := r.BasicAuth(); ok {
 			if id != testAPIClientID || secret != testAPIClientSecret {
 				w.WriteHeader(http.StatusUnauthorized)

@@ -165,7 +165,7 @@ func (c *introspectionCache) Get(token string) (*oauth.IntrospectionContext, boo
 	if !ok {
 		return nil, false
 	}
-	e := el.Value.(*cacheEntry)
+	e := entryOf(el)
 	if !c.now().Before(e.expires) {
 		c.remove(el)
 		return nil, false
@@ -194,7 +194,7 @@ func (c *introspectionCache) Set(token string, value *oauth.IntrospectionContext
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if el, ok := c.entries[key]; ok {
-		e := el.Value.(*cacheEntry)
+		e := entryOf(el)
 		e.value = *value
 		e.expires = expires
 		c.lru.MoveToFront(el)
@@ -216,7 +216,17 @@ func (c *introspectionCache) Len() int {
 
 func (c *introspectionCache) remove(el *list.Element) {
 	c.lru.Remove(el)
-	delete(c.entries, el.Value.(*cacheEntry).key)
+	delete(c.entries, entryOf(el).key)
+}
+
+// entryOf returns the entry el holds. The LRU list only ever holds
+// *cacheEntry, so any other value is a bug in this file.
+func entryOf(el *list.Element) *cacheEntry {
+	e, ok := el.Value.(*cacheEntry)
+	if !ok {
+		panic(fmt.Sprintf("zitadel: introspection cache element holds %T, want *cacheEntry", el.Value))
+	}
+	return e
 }
 
 // checkAudience rejects an introspection result whose aud does not include
