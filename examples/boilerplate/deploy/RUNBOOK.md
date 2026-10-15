@@ -35,8 +35,10 @@ del `Dockerfile` estan fijadas por digest; para actualizarlas, `docker buildx
 imagetools inspect <imagen:tag>` y reemplazar el `sha256`.
 
 Los roles los crea `deploy/initdb/10-roles.sh` en el **primer** arranque del
-volumen (`/docker-entrypoint-initdb.d`); cambiar una contraseña despues
-requiere `ALTER ROLE` a mano. Despues de cada `migrate up`, el servicio de una
+volumen (`/docker-entrypoint-initdb.d`). El script es idempotente: correrlo
+otra vez a mano (ver «Actualizar un volumen existente») crea
+el rol que falte y fija las dos contraseñas a los valores actuales de
+`deploy/.env`. Despues de cada `migrate up`, el servicio de una
 sola ejecucion `grants` aplica `deploy/initdb/runtime-grants.sql` como
 `app_migrator`: `SELECT`/`INSERT` sobre `audit_log`, `SELECT` sobre las
 tablas de version de goose y DML sobre las tablas de River. Las tablas
@@ -55,6 +57,78 @@ es aceptable en una red privada de compose. **En produccion** la base debe ser
 un PostgreSQL con TLS y los DSN deben usar `sslmode=verify-full` (con
 `sslrootcert` si la CA es privada), con `APP_ENV=production`: `RequireTLS`
 rechaza `disable`, `allow`, `prefer` y `require`.
+
+**Swagger:** `APP_ENV=development` no lo activa. La UI y la spec solo se
+sirven con `SWAGGER_ENABLED=true`, que `deploy/.env` no debe definir; con
+`APP_ENV=production` esa combinacion hace fallar el arranque.
+
+### Actualizar un volumen existente
+
+Aplica a un volumen `pgdata` creado con el compose anterior, en el que
+`migrate`, `api` y `worker` usaban el superusuario `postgres`. En ese volumen
+los roles `app_migrator` y `app_runtime` no existen (`10-roles.sh` corre solo
+sobre un volumen vacio) y todas las tablas son de `postgres`, asi que
+`migrate` como `app_migrator` fallaria. **No hace falta borrar el volumen**:
+
+1. Respaldar la base:
+   ```bash
+   docker compose -f deploy/docker-compose.yaml exec -T postgres \
+     pg_dump -U postgres -Fc boilerplate_db > respaldo-pre-roles.dump
+   ```
+2. Detener lo que escribe: `docker compose -f deploy/docker-compose.yaml stop api worker`.
+3. Actualizar el compose y completar `deploy/.env` con las variables de
+   arriba. Levantar solo Postgres, que ahora recibe las contraseñas de los
+   roles: `docker compose -f deploy/docker-compose.yaml up -d postgres`.
+4. Crear los roles corriendo el mismo script de inicializacion como
+   superusuario:
+   ```bash
+   docker compose -f deploy/docker-compose.yaml exec postgres \
+     sh /docker-entrypoint-initdb.d/10-roles.sh
+   ```
+5. Transferir a `app_migrator` los objetos que crearon las migraciones
+   anteriores y dar a `app_runtime` DML sobre las tablas que ya existian:
+   ```bash
+   docker compose -f deploy/docker-compose.yaml exec -T postgres \
+     psql -v ON_ERROR_STOP=1 -U postgres -d boilerplate_db \
+     -v worker_schema=river < deploy/initdb/upgrade-ownership.sql
+   ```
+   (`worker_schema` debe coincidir con `WORKER_SCHEMA` si se cambio.)
+6. Desplegar normalmente: `docker compose -f deploy/docker-compose.yaml up -d`.
+   `migrate` corre como `app_migrator`, `grants` aplica
+   `runtime-grants.sql` y `api` y `worker` arrancan como `app_runtime`.
+7. Cambiar la contraseña del superusuario, que en el compose anterior era
+   `postgres` y que `POSTGRES_PASSWORD` no cambia en un volumen existente:
+   ```bash
+   docker compose -f deploy/docker-compose.yaml exec postgres \
+     psql -U postgres -c "\password postgres"
+   ```
+
+Verificar que `app_runtime` quedo con los privilegios esperados:
+
+```sql
+SELECT t,
+       has_table_privilege('app_runtime', t, 'INSERT') AS insert,
+       has_table_privilege('app_runtime', t, 'UPDATE') AS update
+FROM unnest(ARRAY['audit_log', 'river.river_job']) AS t;
+-- audit_log: insert t, update f.  river.river_job: insert t, update t.
+```
+
+**Por que no `REASSIGN OWNED BY postgres TO app_migrator`:** `postgres` es el
+superusuario de arranque y es dueño del catalogo del sistema, asi que
+PostgreSQL rechaza el comando ("required by the database system"). Aun con
+otro dueño anterior, `REASSIGN OWNED` mueve todo lo que ese rol posee en la
+base (la base misma, el esquema `public`, las extensiones), no solo las
+tablas de la aplicacion. `upgrade-ownership.sql` nombra exactamente lo que
+mueve: tablas, vistas, secuencias, funciones y tipos de `public` y del
+esquema de River que no pertenecen a una extension, y el esquema de River.
+Las funciones de `pgcrypto` y la extension siguen siendo de `postgres`; el
+esquema `public` conserva su dueño. Correr el script dos veces no cambia
+nada.
+
+Si algo falla a mitad de camino: `upgrade-ownership.sql` corre en una sola
+transaccion (o se aplica entero o no se aplica), y los dos scripts se pueden
+repetir. Como ultimo recurso, restaurar el respaldo del paso 1 con
+`pg_restore --clean`.
 
 ---
 

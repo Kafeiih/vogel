@@ -1,6 +1,6 @@
 # Deploy compose: Postgres, a one-shot migration step, the API and the worker.
 #
-# Secrets and settings come from deploy/.env (copy deploy/.env.example).
+# Secrets and settings come from deploy/.env (copy deploy/env.example).
 # Compose reads that file twice, for different things:
 #   * to interpolate the ${...} references below (database passwords, the
 #     River schema); every secret is ${VAR:?...}, so a missing one stops
@@ -13,7 +13,9 @@
 # never hold them either.
 #
 # Database roles (deploy/initdb/10-roles.sh, created on the volume's first
-# start, and deploy/initdb/runtime-grants.sql, applied after every migration):
+# start, and deploy/initdb/runtime-grants.sql, applied after every migration;
+# a volume created before these roles existed is upgraded in place with
+# deploy/initdb/upgrade-ownership.sql, see RUNBOOK.md section 0):
 #   * postgres      superuser, used only by the postgres container itself;
 #   * app_migrator  owns the schema and the tables, used only by migrate and
 #                   grants;
@@ -28,7 +30,10 @@
 # production point the DSNs at a TLS-enabled PostgreSQL with
 # sslmode=verify-full (and sslrootcert if its CA is private) and run with
 # APP_ENV=production: RequireTLS rejects disable, allow, prefer and require.
-# See "Base de datos no responde" in deploy/RUNBOOK.md.
+# See section 0 of deploy/RUNBOOK.md ("TLS").
+#
+# APP_ENV=development does not turn Swagger on here: the UI and spec are
+# served only with SWAGGER_ENABLED=true, which deploy/.env leaves unset.
 
 # River's schema name is shared by migrate (which creates it), grants (which
 # opens it to app_runtime) and api and worker (which use it). It is defined
@@ -62,7 +67,8 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env}
       POSTGRES_DB: boilerplate_db
-      # Read by initdb/10-roles.sh on the first start of the volume.
+      # Read by initdb/10-roles.sh on the first start of the volume (and
+      # when it is run by hand to upgrade an existing volume).
       APP_MIGRATOR_PASSWORD: ${APP_MIGRATOR_PASSWORD:?set APP_MIGRATOR_PASSWORD in deploy/.env}
       APP_RUNTIME_PASSWORD: ${APP_RUNTIME_PASSWORD:?set APP_RUNTIME_PASSWORD in deploy/.env}
     # No "ports": the database is reachable only from this compose network,

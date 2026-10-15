@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -160,4 +161,92 @@ func TestReady_DBDown_Returns503(t *testing.T) {
 	if data["status"] != "not_ready" {
 		t.Errorf("status = %v, want %q", data["status"], "not_ready")
 	}
+}
+
+// --- logging on state transitions ---
+
+// recordingHandler is a slog.Handler that keeps every record it receives.
+type recordingHandler struct {
+	mu      sync.Mutex
+	records []slog.Record
+}
+
+func (h *recordingHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *recordingHandler) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.records = append(h.records, r.Clone())
+	return nil
+}
+
+func (h *recordingHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *recordingHandler) WithGroup(string) slog.Handler      { return h }
+
+// take returns the levels recorded since the previous call and resets them.
+func (h *recordingHandler) take() []slog.Level {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	levels := make([]slog.Level, 0, len(h.records))
+	for _, r := range h.records {
+		levels = append(levels, r.Level)
+	}
+	h.records = nil
+	return levels
+}
+
+// The probes are public and unauthenticated: logging at ERROR on every
+// failed ping would let anyone flood the log while the database is down.
+// The handler logs only when the database state changes, and the responses
+// stay exactly as before.
+func TestHealth_LogsOnlyOnStateTransitions(t *testing.T) {
+	pinger := &fakePinger{}
+	rec := &recordingHandler{}
+	h := NewHealthHandler(pinger, slog.New(rec))
+
+	probe := func(handler http.HandlerFunc, path string, wantCode int) {
+		t.Helper()
+		w := httptest.NewRecorder()
+		handler(w, httptest.NewRequest(http.MethodGet, path, nil))
+		if w.Code != wantCode {
+			t.Fatalf("GET %s = %d, want %d", path, w.Code, wantCode)
+		}
+	}
+	expect := func(step string, want ...slog.Level) {
+		t.Helper()
+		got := rec.take()
+		if len(got) != len(want) {
+			t.Fatalf("%s: logged levels %v, want %v", step, got, want)
+		}
+		for i := range got {
+			if got[i] != want[i] {
+				t.Fatalf("%s: logged levels %v, want %v", step, got, want)
+			}
+		}
+	}
+
+	probe(h.Check, "/healthz", http.StatusOK)
+	probe(h.Ready, "/readyz", http.StatusOK)
+	expect("healthy from the start")
+
+	pinger.err = errors.New("connection refused")
+	probe(h.Check, "/healthz", http.StatusServiceUnavailable)
+	expect("first failure", slog.LevelError)
+
+	for range 5 {
+		probe(h.Check, "/healthz", http.StatusServiceUnavailable)
+		probe(h.Ready, "/readyz", http.StatusServiceUnavailable)
+	}
+	expect("repeated failures")
+
+	pinger.err = nil
+	probe(h.Ready, "/readyz", http.StatusOK)
+	expect("recovery", slog.LevelInfo)
+
+	probe(h.Check, "/healthz", http.StatusOK)
+	expect("still healthy")
+
+	pinger.err = errors.New("timeout")
+	probe(h.Ready, "/readyz", http.StatusServiceUnavailable)
+	expect("second outage", slog.LevelError)
 }

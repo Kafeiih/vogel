@@ -89,6 +89,8 @@ go run ./cmd/api start-from-migrate   # o: make dev
 > CERBOS_PLAINTEXT=true   # solo para el contenedor local de Cerbos
 >
 > CORS_ALLOWED_ORIGINS=http://localhost:3000
+>
+> SWAGGER_ENABLED=true   # UI y spec en /v1/swagger/; solo en desarrollo
 > ```
 >
 > Variables adicionales (todas opcionales, con default razonable si se
@@ -97,6 +99,12 @@ go run ./cmd/api start-from-migrate   # o: make dev
 > `NOTIFICATION_DEFAULT_FROM`, `SMTP_*`, `SENDGRID_API_KEY`,
 > `METRICS_LISTEN_ADDR`. Ver `internal/infrastructure/config/config.go` para
 > el detalle completo de cada una.
+>
+> `SWAGGER_ENABLED` (opcional, `false` por defecto) sirve la UI y la spec de
+> Swagger en `/v1/swagger/`. Es un opt-in explícito, independiente de
+> `APP_ENV`: el compose de despliegue corre con `APP_ENV=development` (su
+> Postgres no sirve TLS) y no debe publicar la descripción de la API. Con
+> `APP_ENV=production` y `SWAGGER_ENABLED=true` el arranque falla.
 >
 > `CERBOS_PLAINTEXT` (opcional, `false` por defecto) desactiva TLS hacia el
 > PDP de Cerbos. Sin ella la conexión gRPC usa TLS; el contenedor de
@@ -285,5 +293,5 @@ patrón del lado del worker.
 - `deploy/RUNBOOK.md` — operación en producción.
 - `docs/swagger.json` / `docs/swagger.yaml` — spec generada por `swag init`;
   regenerar con `make gen-docs` después de anotar un handler nuevo. La UI y
-  la spec se sirven en `/v1/swagger/` solo cuando `APP_ENV` no es
-  `production`; en producción la ruta no existe (404).
+  la spec se sirven en `/v1/swagger/` solo con `SWAGGER_ENABLED=true` (nunca
+  en producción); sin esa variable la ruta no existe (404).
