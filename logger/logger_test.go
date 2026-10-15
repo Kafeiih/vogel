@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -149,6 +151,36 @@ func TestNew_TimestampsAreUTC(t *testing.T) {
 			t.Errorf("first field = %q, want time=<UTC timestamp ending in Z>", field)
 		}
 	})
+}
+
+// NewDefault is New over os.Stdout, so it inherits the UTC conversion; this
+// pins that, so a NewDefault that ever built its own handler options could
+// not silently drop it. It swaps os.Stdout, so it must not run in parallel.
+func TestNewDefault_TimestampsAreUTC(t *testing.T) {
+	withLocalZone(t)
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	prev := os.Stdout
+	os.Stdout = w
+	t.Cleanup(func() { os.Stdout = prev })
+
+	NewDefault("production").Info("hello")
+	_ = w.Close()
+
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read stdout: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(out, &decoded); err != nil {
+		t.Fatalf("decode %q: %v", out, err)
+	}
+	if ts, _ := decoded["time"].(string); !strings.HasSuffix(ts, "Z") {
+		t.Errorf("time = %q, want a UTC timestamp ending in Z", ts)
+	}
 }
 
 // Only the record's own timestamp is converted; a time-valued attribute the

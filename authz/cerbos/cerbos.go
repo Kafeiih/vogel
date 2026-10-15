@@ -25,8 +25,9 @@ type Config struct {
 	// production, where principals, roles and decisions would travel in
 	// cleartext.
 	Plaintext bool
-	// CallTimeout bounds every call to the PDP (IsAllowed and Ping). Zero
-	// uses DefaultCallTimeout; a negative value makes New fail. It is
+	// CallTimeout bounds every IsAllowed call, and a Ping whose context has
+	// no deadline (a Ping with its own deadline uses that one; see Ping).
+	// Zero uses DefaultCallTimeout; a negative value makes New fail. It is
 	// applied on top of the caller's context, so a shorter caller deadline
 	// still wins: the timeout only guarantees that a PDP which accepts the
 	// connection and never answers cannot hang a request whose context has
@@ -111,12 +112,20 @@ func (c *Checker) IsAllowed(ctx context.Context, p authz.Principal, res authz.Re
 // dial (the gRPC connection is lazy), so a wrong host or a transport mismatch
 // (TLS against a plaintext PDP, or the reverse) only shows up on the first
 // call; a consumer can call Ping at startup to fail fast instead of answering
-// 503 on every authorization. The call is bounded by Config.CallTimeout (or
-// a shorter deadline on ctx), so a PDP that accepts the connection but never
-// answers fails Ping instead of blocking startup.
+// 503 on every authorization.
+//
+// When ctx carries a deadline, that deadline alone bounds the call, even when
+// it is longer than Config.CallTimeout: a startup probe that chooses to wait
+// for the PDP to come up must not be cut short by a budget sized for the
+// request path. When ctx has no deadline, Config.CallTimeout bounds the call,
+// so a PDP that accepts the connection but never answers fails Ping instead
+// of blocking startup. IsAllowed, by contrast, always applies CallTimeout.
 func (c *Checker) Ping(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(ctx, c.callTimeout)
-	defer cancel()
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, c.callTimeout)
+		defer cancel()
+	}
 
 	if _, err := c.client.ServerInfo(ctx); err != nil {
 		return fmt.Errorf("authz/cerbos: pinging %s: %w", c.host, err)

@@ -1,0 +1,91 @@
+name: Trivy
+
+# Separate from ci.yaml because its result depends on the vulnerability
+# database at the time of the run, not only on the diff: the weekly schedule
+# catches a new advisory against the boilerplate image even when nobody
+# pushes. Like govulncheck, a PR can turn red without touching a dependency;
+# the fix is a bump (in its own PR if needed), not the PR author's job.
+on:
+  push:
+    branches: [main, master]
+    paths-ignore: ["**.md", "docs/**", ".atl/**"]
+  pull_request:
+    branches: [main, master]
+    paths-ignore: ["**.md", "docs/**", ".atl/**"]
+  schedule:
+    - cron: "17 6 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: trivy-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Runs the trivy CLI from a pinned release, verified against a SHA-256
+  # recorded here (not fetched from the release), so a replaced asset fails
+  # the job. trivy-action is not used: its tags were rewritten in a
+  # supply-chain compromise, and the CLI needs no wrapper.
+  trivy:
+    name: Trivy image + config
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      TRIVY_VERSION: 0.75.0
+      TRIVY_SHA256: c6e65abddb348e25f10549df887045629cf28cc72453cd1c63acb717316b3f3f
+      TRIVY_NO_PROGRESS: "true"
+      TRIVY_SKIP_VERSION_CHECK: "true"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: examples/boilerplate/go.mod
+
+      - name: Install trivy
+        run: |
+          set -euo pipefail
+          tarball="trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          curl -fsSLo "$RUNNER_TEMP/$tarball" \
+            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/${tarball}"
+          echo "${TRIVY_SHA256}  $RUNNER_TEMP/$tarball" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP" trivy
+          "$RUNNER_TEMP/trivy" --version
+
+      # Misconfigurations in the Dockerfiles (and any other IaC trivy knows).
+      # trivy has no docker-compose scanner, so the compose files are only
+      # covered by Dependabot's image bumps, not by this step.
+      - name: Scan config
+        run: '"$RUNNER_TEMP/trivy" config --severity HIGH,CRITICAL --exit-code 1 .'
+
+      # The boilerplate go.mod replaces vogel with ../.., which the Dockerfile's
+      # build context cannot see, so 'go mod download' fails there. Vendoring
+      # here (where ../.. exists) and dropping that one line builds the same
+      # binaries on the same pinned base images; only how the builder stage
+      # obtains the modules differs. The line must match exactly once, so an
+      # edit to the Dockerfile fails this step instead of drifting silently.
+      - name: Build boilerplate images
+        working-directory: examples/boilerplate
+        run: |
+          set -euo pipefail
+          test "$(grep -cxF 'RUN go mod download' Dockerfile)" -eq 1
+          grep -vxF 'RUN go mod download' Dockerfile > "$RUNNER_TEMP/Dockerfile"
+          go mod vendor
+          docker build -f "$RUNNER_TEMP/Dockerfile" --target api -t boilerplate:api .
+          docker build -f "$RUNNER_TEMP/Dockerfile" --target worker -t boilerplate:worker .
+
+      # --ignore-unfixed: a vulnerability with no released fix cannot be acted
+      # on with a bump, so it would only keep CI red. Accepted findings go in
+      # .trivyignore with a reason.
+      - name: Scan images
+        run: |
+          set -uo pipefail
+          status=0
+          for target in api worker; do
+            "$RUNNER_TEMP/trivy" image --severity HIGH,CRITICAL --ignore-unfixed \
+              --exit-code 1 "boilerplate:${target}" || status=1
+          done
+          exit "$status"

@@ -116,6 +116,17 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   si no existe). Solo el job que publica tiene `contents: write`, y no hace
   checkout ni corre el generador. El README explica cómo descargarlo y
   verificarlo.
+- CI: nuevo workflow `trivy.yaml` (push, pull request y semanal) con trivy
+  0.75.0 (binario verificado por SHA-256): `trivy config` sobre el repo y
+  `trivy image` sobre las imágenes `api` y `worker` construidas desde el
+  `Dockerfile` de `examples/boilerplate`; falla con HIGH/CRITICAL
+  (`--ignore-unfixed` en las imágenes).
+- CI: golangci-lint también corre sobre `examples/boilerplate`, con el
+  `.golangci.yml` de la raíz.
+- CI: Dependabot también actualiza las imágenes del `Dockerfile` del
+  boilerplate y de los compose de `examples/` (ecosistemas `docker` y
+  `docker-compose`). `.github/CODEOWNERS` cubre los `go.mod`/`go.sum` de la
+  raíz y del boilerplate.
 - Documentación de seguridad: `SECURITY.md` (reporte privado de
   vulnerabilidades, versiones con soporte, plazos y alcance),
   `docs/THREAT_MODEL.md` (límites de confianza, datos personales y terceros,
@@ -162,6 +173,9 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ### Cambiado
 
+- Dependencias: `google.golang.org/grpc` v1.83.1 → v1.83.2 (CVE-2026-84445,
+  HIGH, detectada por el escaneo de Trivy sobre los binarios del boilerplate),
+  en el módulo raíz y en `examples/boilerplate`.
 - **`logger.New` y `logger.NewDefault` emiten el timestamp en UTC.** Un
   `ReplaceAttr` convierte el atributo `time` de cada registro a UTC, sin
   importar la zona horaria del host, para que las líneas de servicios en zonas
@@ -171,12 +185,14 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   zona local del host.
 
 - **`authz/cerbos`: cada llamada al PDP tiene un plazo propio
-  (`Config.CallTimeout`, constante `DefaultCallTimeout`, 2s).** `IsAllowed` y
-  `Ping` envuelven el `ctx` del llamador en `context.WithTimeout`, así que un
-  PDP que acepta la conexión y nunca responde ya no cuelga la request cuando
-  el `ctx` no trae plazo: la llamada falla con un error, que `access.Guard` y
-  `RequirePermission` convierten en 503 como cualquier otra caída del PDP. Un
-  plazo más corto en el `ctx` sigue ganando. El valor cero usa el valor por
+  (`Config.CallTimeout`, constante `DefaultCallTimeout`, 2s).** `IsAllowed`
+  envuelve el `ctx` del llamador en `context.WithTimeout`, así que un PDP que
+  acepta la conexión y nunca responde ya no cuelga la request: la llamada
+  falla con un error, que `access.Guard` y `RequirePermission` convierten en
+  503 como cualquier otra caída del PDP. Un plazo más corto en el `ctx` sigue
+  ganando. `Ping` aplica `CallTimeout` solo cuando el `ctx` no trae plazo; si
+  lo trae, respeta ese plazo aunque sea más largo, para que una sonda de
+  arranque pueda esperar a que el PDP levante. El valor cero usa el valor por
   defecto y uno negativo hace fallar `New`. Cambio de comportamiento: antes
   la llamada esperaba indefinidamente al `ctx` del llamador.
 - **`audit/httpx.FiltersFromRequest` rechaza filtros de texto libre

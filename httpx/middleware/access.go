@@ -99,16 +99,7 @@ func RequireAccess(guard *access.Guard, resourceKind, action string, logger *slo
 // see the "Log volume" paragraph on RequireAccess for how to bound that
 // with a sampling or rate-limiting slog.Handler.
 func WriteAccessError(w http.ResponseWriter, r *http.Request, err error, logger *slog.Logger, opts ...AuthOption) bool {
-	if err == nil {
-		return false
-	}
-
-	msgs := DefaultAuthMessages()
-	for _, opt := range opts {
-		opt(&msgs)
-	}
-
-	return writeAccessStatus(w, r, err, logger, msgs, "", "", "")
+	return WriteAccessErrorFor(w, r, err, logger, authz.Resource{}, "", opts...)
 }
 
 // WriteAccessErrorFor is WriteAccessError for a handler that knows which
@@ -135,12 +126,13 @@ func WriteAccessErrorFor(w http.ResponseWriter, r *http.Request, err error, logg
 }
 
 // writeAccessStatus is the single status-mapping function shared by
-// RequireAccess, WriteAccessError and WriteAccessErrorFor, so the call paths
-// cannot drift apart on which error maps to which status. resourceKind,
-// resourceID and action are used only for the log lines; any of them may be
-// empty (WriteAccessError passes none of them; WriteAccessErrorFor passes
-// the resource and action the handler checked). A nil logger falls back to slog.Default, so a caller
-// that never wired one still gets its 403 instead of a panic.
+// RequireAccess and WriteAccessErrorFor (which WriteAccessError delegates
+// to), so the call paths cannot drift apart on which error maps to which
+// status. resourceKind, resourceID and action are used only for the log
+// lines; any of them may be empty (WriteAccessError passes none of them;
+// WriteAccessErrorFor passes the resource and action the handler checked).
+// A nil logger falls back to slog.Default, so a caller that never wired one
+// still gets its 403 instead of a panic.
 //
 // Both log lines carry the same request fields: the actor, the resource and
 // action, the request method and path, and the request ID bridged by
