@@ -4,7 +4,7 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el versionado,
 [SemVer](https://semver.org/lang/es/).
 
-## [Unreleased]
+## [0.10.0] — 2026-10-15
 
 ### Agregado
 
@@ -50,6 +50,18 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   arrancaba vacío y negaba todo chequeo de permisos. El `Makefile` usa
   `-include .env`, así que los targets que no lo necesitan funcionan en una
   copia sin `.env`.
+
+### Cambiado
+
+- **`github.com/prometheus/client_golang` v1.25.0** en el módulo raíz. Sus
+  cambios incompatibles están en `api/prometheus/v1`, que `vogel` no usa.
+- **`examples/boilerplate`: el compose de despliegue exige `CERBOS_HOST` y
+  `CERBOS_PLAINTEXT` en `deploy/.env`** (`docker compose` no arranca sin las
+  dos) y trae su propio servicio `cerbos`, del que depende el `api`. Un
+  despliegue existente del boilerplate debe sumar el par a su `deploy/.env`:
+  `env.example` trae el del PDP empaquetado (`cerbos:3593`, `true`); para un
+  PDP externo, su host con `CERBOS_PLAINTEXT=false` y quitar el servicio
+  `cerbos` (ver `deploy/RUNBOOK.md`).
 
 ## [0.9.0] — 2026-10-15
 
