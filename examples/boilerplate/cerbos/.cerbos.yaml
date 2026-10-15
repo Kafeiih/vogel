@@ -5,8 +5,9 @@ server:
 storage:
   driver: "disk"
   disk:
-    directory: /policies
-    # The developer compose bind-mounts policies/ here, so this gives hot
-    # reload while editing a policy. In the built image the policies are
-    # baked in and never change, so it has nothing to watch.
+    # Where the Dockerfile bakes the policies, and where the developer
+    # compose bind-mounts policies/. Not /policies: see the Dockerfile.
+    directory: /bundle/policies
+    # Hot reload while editing a policy under the developer compose. In the
+    # built image the policies never change, so it has nothing to watch.
     watchForChanges: true

@@ -1,4 +1,5 @@
-# Deploy compose: Postgres, a one-shot migration step, the API and the worker.
+# Deploy compose: Postgres, a one-shot migration step, the Cerbos PDP, the API
+# and the worker.
 #
 # Secrets and settings come from deploy/.env (copy deploy/env.example).
 # Compose reads that file twice, for different things:
@@ -155,6 +156,25 @@ services:
       - ./initdb/runtime-grants.sql:/grants/runtime-grants.sql:ro
     restart: "no"
 
+  # The PDP with the policies of ../cerbos baked in at /bundle/policies (see
+  # cerbos/README.md): no mounts, so what runs is exactly what the image build
+  # validated, and a new image serves its own policies even though compose
+  # carries anonymous volumes over on recreate. It serves gRPC without TLS, so
+  # it sits alone on the "authz" network, which is internal (no route outside
+  # this host) and publishes no port: only the api can reach it.
+  cerbos:
+    image: ghcr.io/kafeiih/vogel-boilerplate-cerbos:${APP_VERSION:?set APP_VERSION in deploy/.env}
+    <<: *hardened
+    build:
+      context: ../cerbos
+    networks: [authz]
+    healthcheck:
+      test: ["CMD", "/cerbos", "healthcheck"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
   api:
     image: ghcr.io/kafeiih/vogel-boilerplate:${APP_VERSION:?set APP_VERSION in deploy/.env}
     <<: *hardened
@@ -167,6 +187,9 @@ services:
         condition: service_healthy
       grants:
         condition: service_completed_successfully
+      cerbos:
+        condition: service_healthy
+    networks: [default, authz]
     ports:
       - "8080:8080"
     env_file:
@@ -176,6 +199,16 @@ services:
       DB_URL: "postgres://app_runtime:${APP_RUNTIME_PASSWORD:?set APP_RUNTIME_PASSWORD in deploy/.env}@postgres:5432/boilerplate_db?sslmode=disable"
       # The bundled Postgres serves no TLS; see "TLS" above.
       DB_REQUIRE_TLS: "false"
+      # Both required, with no default: they only make sense as a pair, so
+      # deploy/.env must state them together (env.example has the bundled
+      # PDP's pair: cerbos:3593, plaintext, acceptable only because it never
+      # leaves the internal authz network). For an external PDP set its host
+      # with CERBOS_PLAINTEXT=false (TLS), and delete the cerbos service, the
+      # api's "cerbos" depends_on entry and its authz network; otherwise the
+      # api still waits for the bundled PDP. A TLS mode mismatch stops the api
+      # at boot with an error naming the mode.
+      CERBOS_HOST: ${CERBOS_HOST:?set CERBOS_HOST and CERBOS_PLAINTEXT together in deploy/.env}
+      CERBOS_PLAINTEXT: ${CERBOS_PLAINTEXT:?set CERBOS_HOST and CERBOS_PLAINTEXT together in deploy/.env}
 
   worker:
     image: ghcr.io/kafeiih/vogel-boilerplate-worker:${APP_VERSION:?set APP_VERSION in deploy/.env}
@@ -197,6 +230,12 @@ services:
       # The bundled Postgres serves no TLS; see "TLS" above.
       DB_REQUIRE_TLS: "false"
     restart: unless-stopped
+
+networks:
+  # Only cerbos and api: internal, so no container on it has a route out of
+  # this host and nothing outside can reach the plaintext PDP.
+  authz:
+    internal: true
 
 volumes:
   pgdata:

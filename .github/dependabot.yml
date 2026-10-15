@@ -20,8 +20,12 @@
 # so /examples/boilerplate/deploy covers docker-compose.developer.yaml too.
 version: 2
 updates:
+  # examples/boilerplate/.github holds the template release workflow a
+  # generated service runs; its pinned actions are bumped like the root's.
   - package-ecosystem: github-actions
-    directory: /
+    directories:
+      - /
+      - /examples/boilerplate
     schedule:
       interval: weekly
     groups:

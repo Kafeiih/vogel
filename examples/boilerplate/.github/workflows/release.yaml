@@ -1,0 +1,225 @@
+# Publishes this service's images to GHCR when a version tag is pushed.
+#
+# Template: inside the vogel repository this file never runs (GitHub only
+# reads the workflows of the repository root). In a service generated from
+# the boilerplate it sits at .github/workflows/release.yaml and publishes to
+# that repository's own registry namespace:
+#
+#   ghcr.io/<owner>/<repo>:<version>         api      (job "api")
+#   ghcr.io/<owner>/<repo>-worker:<version>  worker   (job "worker")
+#   ghcr.io/<owner>/<repo>-cerbos:<version>  Cerbos   (job "cerbos")
+#
+# deploy/docker-compose.yaml must pull these names with APP_VERSION. A fresh
+# copy still names ghcr.io/kafeiih/vogel-boilerplate*: rename those image:
+# lines (README, "Cómo copiar este boilerplate") or the deploy pulls nothing.
+#
+# All or nothing: the api, worker and cerbos jobs push their images by
+# digest only, with no tag, and the publish job tags every digest once all
+# of them have succeeded (the Cerbos one after its smoke test). A failed job
+# leaves untagged digests that no deploy pulls, never a version X.Y.Z that
+# exists for one image and not the others. Each tag is retried, and tagging
+# a digest again is a no-op, so if publish still fails partway (registry
+# outage), re-run that job: it completes the missing tags. A service without
+# a worker or a bundled PDP deletes that job and, in publish, its "needs"
+# entry, its *_DIGEST env line and its tag line.
+#
+# A tag v1.2.3 publishes 1.2.3 only: there is no :latest, so a deploy always
+# names the exact version it runs. Each image carries an SBOM and a build
+# provenance attestation, attached in the registry next to the image.
+#
+# The first push of each image creates a private GHCR package. Link it to the
+# repository and set its visibility in the package settings once.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  api:
+    name: Build api image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Image name and version
+        id: image
+        run: .github/workflows/image-ref.sh "" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push by digest
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: Dockerfile
+          target: api
+          build-args: APP_DIR=.
+          platforms: linux/amd64
+          outputs: type=image,name=${{ steps.image.outputs.name }},push-by-digest=true,name-canonical=true,push=true
+          labels: ${{ steps.image.outputs.labels }}
+          sbom: true
+          provenance: mode=max
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,mode=max,scope=api
+
+  worker:
+    name: Build worker image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Image name and version
+        id: image
+        run: .github/workflows/image-ref.sh -worker >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push by digest
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: Dockerfile
+          target: worker
+          build-args: APP_DIR=.
+          platforms: linux/amd64
+          outputs: type=image,name=${{ steps.image.outputs.name }},push-by-digest=true,name-canonical=true,push=true
+          labels: ${{ steps.image.outputs.labels }}
+          sbom: true
+          provenance: mode=max
+          cache-from: type=gha,scope=worker
+          cache-to: type=gha,mode=max,scope=worker
+
+  # The image build already proves the policies compile and pass their tests
+  # (cerbos/Dockerfile). The smoke test proves the pushed image SERVES them:
+  # an empty policy store starts healthy and denies every request
+  # (cerbos/README.md). It runs against the pushed digest, so the version
+  # publish tags is exactly the bytes that passed.
+  cerbos:
+    name: Build and smoke-test Cerbos image
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Image name and version
+        id: image
+        run: .github/workflows/image-ref.sh -cerbos >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push by digest
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: cerbos
+          platforms: linux/amd64
+          outputs: type=image,name=${{ steps.image.outputs.name }},push-by-digest=true,name-canonical=true,push=true
+          labels: ${{ steps.image.outputs.labels }}
+          sbom: true
+          provenance: mode=max
+          cache-from: type=gha,scope=cerbos
+          cache-to: type=gha,mode=max,scope=cerbos
+
+      - name: Smoke test the pushed digest
+        env:
+          IMAGE: ${{ steps.image.outputs.name }}@${{ steps.build.outputs.digest }}
+        run: ./cerbos/smoke.sh "$IMAGE"
+
+  publish:
+    name: Tag the release
+    needs: [api, worker, cerbos]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # tag <suffix> <digest>: points ghcr.io/<repo><suffix>:<version> at the
+      # digest that job built (and, for Cerbos, smoke-tested).
+      - name: Tag every digest
+        env:
+          API_DIGEST: ${{ needs.api.outputs.digest }}
+          WORKER_DIGEST: ${{ needs.worker.outputs.digest }}
+          CERBOS_DIGEST: ${{ needs.cerbos.outputs.digest }}
+        run: |
+          set -euo pipefail
+          tag() {
+            local out name ref
+            out="$(.github/workflows/image-ref.sh "$1")"
+            name="$(sed -n 's/^name=//p' <<<"$out")"
+            ref="$(sed -n 's/^ref=//p' <<<"$out")"
+            for attempt in 1 2 3; do
+              if docker buildx imagetools create --tag "$ref" "${name}@${2:?missing digest for image $1}"; then
+                return 0
+              fi
+              echo "tagging $ref failed (attempt $attempt), retrying" >&2
+              sleep $((attempt * 10))
+            done
+            return 1
+          }
+          tag "" "$API_DIGEST"
+          tag -worker "$WORKER_DIGEST"
+          tag -cerbos "$CERBOS_DIGEST"

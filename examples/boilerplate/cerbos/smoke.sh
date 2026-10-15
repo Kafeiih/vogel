@@ -3,7 +3,7 @@
 # they compiled (make cerbos-smoke).
 #
 # The validate stage proves the policies compile and pass their tests. It
-# does not prove the final image answers correctly: that stage copies
+# does not prove the final image answers correctly: the final stage copies
 # .cerbos.yaml, which nothing validates. A config pointing storage elsewhere
 # yields an image that starts and reports healthy while denying every
 # request, because an empty policy store denies everything. The ALLOW checks
@@ -38,7 +38,11 @@ trap cleanup EXIT
 # Port 0 lets the daemon pick a free port, so concurrent runs do not collide.
 echo "==> starting $IMAGE"
 docker run -d --name "$CONTAINER" -p 127.0.0.1:0:3592 "$IMAGE" >/dev/null
-ADDR="$(docker port "$CONTAINER" 3592/tcp | head -n1)"
+if ! ADDR="$(docker port "$CONTAINER" 3592/tcp | head -n1)" || [[ -z "$ADDR" ]]; then
+	echo "FAIL: the PDP container did not stay up" >&2
+	docker logs "$CONTAINER" >&2 || true
+	exit 1
+fi
 BASE="http://${ADDR}"
 
 echo "==> waiting for the PDP at ${BASE}"
@@ -80,6 +84,7 @@ check() {
 # auditor). Keep in sync when that policy changes.
 failed=0
 check "admin can list audit entries" admin "*" list EFFECT_ALLOW || failed=1
+check "admin can view an audit entry" admin entry-1 view EFFECT_ALLOW || failed=1
 check "auditor can view an audit entry" auditor entry-1 view EFFECT_ALLOW || failed=1
 check "auditor cannot list audit entries" auditor "*" list EFFECT_DENY || failed=1
 check "other roles cannot list audit entries" user "*" list EFFECT_DENY || failed=1
