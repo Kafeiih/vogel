@@ -127,6 +127,15 @@ func runMigrate(args []string) error {
 	if dbURL == "" {
 		return fmt.Errorf("DB_URL environment variable is required for migrate subcommand")
 	}
+	requireTLS, err := config.MigrateRequiresTLS()
+	if err != nil {
+		return err
+	}
+	if requireTLS {
+		if err := postgres.CheckTLS(dbURL); err != nil {
+			return fmt.Errorf("DB_REQUIRE_TLS is true (the default): %w", err)
+		}
+	}
 
 	ctx := context.Background()
 

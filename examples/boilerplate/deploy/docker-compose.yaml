@@ -24,8 +24,8 @@
 # See "Un rol para migrar, otro para servir" in vogel's README.
 #
 # TLS: inside this compose network the DSNs use sslmode=disable because the
-# bundled postgres image serves no certificate, which is why api and worker
-# set DB_REQUIRE_TLS=false below (it defaults to true whatever APP_ENV is,
+# bundled postgres image serves no certificate, which is why migrate, api and
+# worker set DB_REQUIRE_TLS=false below (it defaults to true whatever APP_ENV is,
 # and then rejects disable, allow, prefer and require). That is acceptable
 # only on a private compose network. In production point the DSNs at a
 # TLS-enabled PostgreSQL with sslmode=verify-full (and sslrootcert if its CA
@@ -124,6 +124,8 @@ services:
     environment:
       <<: *worker-schema
       DB_URL: "postgres://app_migrator:${APP_MIGRATOR_PASSWORD:?set APP_MIGRATOR_PASSWORD in deploy/.env}@postgres:5432/boilerplate_db?sslmode=disable"
+      # The bundled Postgres serves no TLS; see "TLS" above.
+      DB_REQUIRE_TLS: "false"
     restart: "no"
 
   # One-shot step after migrate: grants app_runtime what it needs on the

@@ -201,6 +201,20 @@ func resolveTimeoutMillis(configured, defaultValue time.Duration) int64 {
 	}
 }
 
+// CheckTLS reports whether dsn satisfies RequireTLS, applying exactly the
+// check NewPool applies, without connecting. It is for code that must hand a
+// DSN string to something other than NewPool -- a migration tool, for
+// instance -- and still honor the same TLS policy as the rest of the service.
+// It returns an error for an unparsable DSN, or one that allows a plaintext
+// connection or does not verify the server certificate.
+func CheckTLS(dsn string) error {
+	poolConfig, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return fmt.Errorf("parsing database config: %w", err)
+	}
+	return applyTLSConfig(poolConfig, true)
+}
+
 // applyTLSConfig enforces RequireTLS: every TLS configuration pgx may use
 // (the primary host and every fallback) must exist and verify the server,
 // and each gets a minimum of TLS 1.2. It mutates the configs pgxpool.ParseConfig
