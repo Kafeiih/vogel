@@ -3,6 +3,7 @@ package main
 import (
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -27,7 +28,6 @@ func NewRouter(
 	guard *access.Guard,
 	metrics *vmw.Metrics,
 	pool *pgxpool.Pool,
-	reg *prometheus.Registry,
 	logger *slog.Logger,
 ) http.Handler {
 	r := chi.NewRouter()
@@ -66,8 +66,10 @@ func NewRouter(
 	// this example must not add one just to demonstrate a middleware stack.
 	r.Use(vmw.StructuredLogger(logger))
 
+	// Public and unauthenticated: it answers only "ok" or "database
+	// unavailable", one ping, nothing else. /metrics is NOT here: it is
+	// served by newMetricsServer on its own internal listener.
 	r.Get("/healthz", healthzHandler(pool))
-	r.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
 
 	requireRead := vmw.RequirePermission(checker, "documents:document", "read", logger)
 	requireWrite := vmw.RequirePermission(checker, "documents:document", "write", logger)
@@ -101,6 +103,24 @@ func NewRouter(
 	})
 
 	return r
+}
+
+// newMetricsServer serves only /metrics, from reg, on addr (METRICS_ADDR).
+// It is a separate listener from the public API so Prometheus data -- route
+// names, request rates, pool sizes -- is reachable only from wherever addr
+// is bound (loopback by default), never through the API port. Timeouts are
+// explicit for the same reason as the API server's (gosec G112).
+func newMetricsServer(addr string, reg *prometheus.Registry) *http.Server {
+	mux := http.NewServeMux()
+	mux.Handle("GET /metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
+	return &http.Server{
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
 }
 
 // healthzHandler pings the pool so /healthz reports the database as part of
