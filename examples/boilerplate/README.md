@@ -64,6 +64,10 @@ docker compose -f deploy/docker-compose.developer.yaml up -d   # Postgres + Cerb
 go run ./cmd/api start-from-migrate   # o: make dev
 ```
 
+El Cerbos local sirve las políticas de `cerbos/policies` y las recarga al
+guardar. `make cerbos-test` las compila y corre sus tests; `make cerbos-smoke`
+construye la imagen del PDP y prueba que las sirve (ver `cerbos/README.md`).
+
 > Este agente no pudo crear `.env.example` en este repositorio por una regla
 > de permisos que bloquea la escritura de archivos con forma de `.env`. Cree
 > el suyo con este contenido antes del primer arranque:
@@ -322,6 +326,8 @@ patrón del lado del worker.
 
 - `docs/USAGE_GUIDE.md` — cómo agregar un módulo de negocio nuevo, paso a paso.
 - `docs/CERBOS_POLICIES.md` — cómo escribir políticas Cerbos para este boilerplate.
+- `cerbos/README.md` — cómo se construye, valida y despliega la imagen del PDP
+  con las políticas de `cerbos/policies`.
 - `deploy/RUNBOOK.md` — operación en producción.
 - `docs/swagger.json` / `docs/swagger.yaml` — spec generada por `swag init`;
   regenerar con `make gen-docs` después de anotar un handler nuevo. La UI y

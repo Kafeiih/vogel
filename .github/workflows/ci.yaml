@@ -127,6 +127,16 @@ jobs:
       - name: Test
         run: cd examples/boilerplate && go test ./... -race -cover
 
+      # Policies compile and pass their tests (the Dockerfile's validate
+      # stage), then the built PDP image serves them: an empty or misrouted
+      # policy store starts healthy and denies everything, which only the
+      # smoke test's ALLOW checks catch.
+      - name: Cerbos policies
+        run: examples/boilerplate/cerbos/test.sh
+
+      - name: Cerbos smoke test
+        run: examples/boilerplate/cerbos/smoke.sh
+
   # Vulnerabilidades conocidas en dependencias, usando el call graph: solo
   # falla cuando el codigo de vogel (o del boilerplate) ALCANZA la funcion
   # vulnerable, no por el mero hecho de requerir el modulo. Corre sobre los

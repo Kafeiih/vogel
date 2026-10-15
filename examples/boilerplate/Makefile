@@ -1,16 +1,24 @@
-include .env
+# -include: un .env ausente no rompe los targets que no lo necesitan
+# (cerbos-test, lint, docker-build en una copia recién creada). Los que
+# necesitan la base dependen de require-db-url, que corta con un mensaje claro.
+-include .env
 export DB_URL
 
-.PHONY: dev build test migrate lint docker gen-docs worker build-worker migrate-up migrate-down migrate-status migrate-create
+.DEFAULT_GOAL := dev
+
+require-db-url:
+	@test -n "$(DB_URL)" || { echo "DB_URL no está definida: cree .env (ver README, Arranque rápido) o expórtela." >&2; exit 1; }
+
+.PHONY: dev build test migrate lint docker gen-docs worker build-worker migrate-up migrate-down migrate-status migrate-create cerbos-test cerbos-smoke require-db-url
 
 # Desarrollo
 # start-from-migrate aplica las migraciones y luego sirve (comodidad local).
 # En despliegue: "api migrate up" con un rol migrador (incluye River) y luego
 # "api server" y "worker server".
-dev:
+dev: require-db-url
 	go run ./cmd/api start-from-migrate
 
-worker:
+worker: require-db-url
 	go run ./cmd/worker start-from-migrate
 
 # Build
@@ -30,14 +38,14 @@ test-integration:
 
 # Migraciones
 # migrate-up/down/status delegate to the ./api binary subcommand which uses
-# the embedded SQL files. DB_URL must be set (loaded from .env via include above).
-migrate-up:
+# the embedded SQL files. DB_URL must be set (from .env or the environment).
+migrate-up: require-db-url
 	go run ./cmd/api migrate up
 
-migrate-down:
+migrate-down: require-db-url
 	go run ./cmd/api migrate down
 
-migrate-status:
+migrate-status: require-db-url
 	go run ./cmd/api migrate status
 
 # migrate-create scaffolds a new goose-format .sql file via the binary subcommand.
@@ -57,7 +65,15 @@ docker-build:
 docker-run:
 	docker compose -f deploy/docker-compose.yaml up -d
 
-# Levanta infra de desarrollo (Postgres + Cerbos)
+# Cerbos: compila las políticas y corre sus tests (la misma etapa que valida
+# la imagen), y prueba que la imagen construida sirva las políticas.
+cerbos-test:
+	./cerbos/test.sh
+
+cerbos-smoke:
+	./cerbos/smoke.sh
+
+# Levanta infra de desarrollo (Postgres + Cerbos con las políticas de cerbos/)
 dev-infra:
 	docker compose -f deploy/docker-compose.developer.yaml up -d
 

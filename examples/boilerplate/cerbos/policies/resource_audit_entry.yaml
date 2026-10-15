@@ -1,0 +1,19 @@
+# Who may read the audit log (GET /v1/audit and /v1/audit/{id}).
+#
+# Deliberately asymmetric: an auditor may view one entry by id but not list
+# them all. internal/interfaces/http/rolematrix_test.go pins the same matrix
+# at the HTTP layer; keep the two in sync.
+#
+# RequirePermission sends only the principal's id and roles and a resource
+# with no attributes (id "*" for list), so this policy matches on roles alone.
+apiVersion: api.cerbos.dev/v1
+resourcePolicy:
+  version: "default"
+  resource: "audit:entry"
+  rules:
+    - actions: ["list"]
+      effect: EFFECT_ALLOW
+      roles: ["admin"]
+    - actions: ["view"]
+      effect: EFFECT_ALLOW
+      roles: ["admin", "auditor"]
