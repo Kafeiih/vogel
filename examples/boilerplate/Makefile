@@ -1,18 +1,24 @@
 # -include: un .env ausente no rompe los targets que no lo necesitan
-# (cerbos-test, lint, docker-build en una copia recién creada).
+# (cerbos-test, lint, docker-build en una copia recién creada). Los que
+# necesitan la base dependen de require-db-url, que corta con un mensaje claro.
 -include .env
 export DB_URL
 
-.PHONY: dev build test migrate lint docker gen-docs worker build-worker migrate-up migrate-down migrate-status migrate-create cerbos-test cerbos-smoke
+.DEFAULT_GOAL := dev
+
+require-db-url:
+	@test -n "$(DB_URL)" || { echo "DB_URL no está definida: cree .env (ver README, Arranque rápido) o expórtela." >&2; exit 1; }
+
+.PHONY: dev build test migrate lint docker gen-docs worker build-worker migrate-up migrate-down migrate-status migrate-create cerbos-test cerbos-smoke require-db-url
 
 # Desarrollo
 # start-from-migrate aplica las migraciones y luego sirve (comodidad local).
 # En despliegue: "api migrate up" con un rol migrador (incluye River) y luego
 # "api server" y "worker server".
-dev:
+dev: require-db-url
 	go run ./cmd/api start-from-migrate
 
-worker:
+worker: require-db-url
 	go run ./cmd/worker start-from-migrate
 
 # Build
@@ -32,14 +38,14 @@ test-integration:
 
 # Migraciones
 # migrate-up/down/status delegate to the ./api binary subcommand which uses
-# the embedded SQL files. DB_URL must be set (loaded from .env via include above).
-migrate-up:
+# the embedded SQL files. DB_URL must be set (from .env or the environment).
+migrate-up: require-db-url
 	go run ./cmd/api migrate up
 
-migrate-down:
+migrate-down: require-db-url
 	go run ./cmd/api migrate down
 
-migrate-status:
+migrate-status: require-db-url
 	go run ./cmd/api migrate status
 
 # migrate-create scaffolds a new goose-format .sql file via the binary subcommand.

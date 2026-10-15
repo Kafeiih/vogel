@@ -83,6 +83,7 @@ check "admin can list audit entries" admin "*" list EFFECT_ALLOW || failed=1
 check "auditor can view an audit entry" auditor entry-1 view EFFECT_ALLOW || failed=1
 check "auditor cannot list audit entries" auditor "*" list EFFECT_DENY || failed=1
 check "other roles cannot list audit entries" user "*" list EFFECT_DENY || failed=1
+check "other roles cannot view an audit entry" user entry-1 view EFFECT_DENY || failed=1
 
 if ((failed)); then
 	echo "==> PDP logs:" >&2

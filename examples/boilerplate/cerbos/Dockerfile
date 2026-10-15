@@ -5,9 +5,10 @@
 # their tests: an image that exists is an image whose policies passed. See
 # README.md for what the build does not prove (smoke.sh covers that).
 #
-# The Cerbos version is pinned once, on the base stage (tag plus digest, so
-# Dependabot can bump it). The upstream image is FROM scratch: no shell, so
-# RUN must use the exec form.
+# The Cerbos version is pinned on the base stage (tag plus digest, so
+# Dependabot can bump it). deploy/docker-compose.developer.yaml pins the same
+# image for local development: keep the two equal. The upstream image is
+# FROM scratch: no shell, so RUN must use the exec form.
 FROM ghcr.io/cerbos/cerbos:0.56.0@sha256:540643bc67ba628011a150ad1d3370f285daa38995be5cd7a4be181da902bec1 AS base
 
 FROM base AS validate

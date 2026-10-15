@@ -51,7 +51,8 @@ updates:
       prefix: build(deps)
 
   # cerbos/ has its own Dockerfile (the PDP image); its Cerbos pin must move
-  # together with the one in deploy/docker-compose.developer.yaml.
+  # together with the one in deploy/docker-compose.developer.yaml, which the
+  # docker-compose updater below bumps in a separate PR.
   - package-ecosystem: docker
     directories:
       - /examples/boilerplate

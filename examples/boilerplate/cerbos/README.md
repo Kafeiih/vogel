@@ -44,9 +44,11 @@ catches an empty store. Its assertions mirror
 
 ## Version pin
 
-The Cerbos image is pinned once, by tag and digest, on the `base` stage of
-the `Dockerfile`. `deploy/docker-compose.developer.yaml` runs the same image
-for local development; Dependabot bumps both.
+The Cerbos image is pinned by tag and digest in two places that must stay
+equal: the `base` stage of the `Dockerfile` and the `cerbos` service of
+`deploy/docker-compose.developer.yaml`. Dependabot bumps them in separate
+PRs (its `docker` and `docker-compose` updaters); merge them together, or
+local development runs a different Cerbos than the image you ship.
 
 ## Development vs. deploy
 
