@@ -26,3 +26,7 @@
 /go.sum                      @Kafeiih
 /examples/boilerplate/go.mod @Kafeiih
 /examples/boilerplate/go.sum @Kafeiih
+
+# The boilerplate's authorization policies decide who may do what in every
+# service generated from it.
+/examples/boilerplate/cerbos/ @Kafeiih

@@ -50,8 +50,12 @@ updates:
     commit-message:
       prefix: build(deps)
 
+  # cerbos/ has its own Dockerfile (the PDP image); its Cerbos pin must move
+  # together with the one in deploy/docker-compose.developer.yaml.
   - package-ecosystem: docker
-    directory: /examples/boilerplate
+    directories:
+      - /examples/boilerplate
+      - /examples/boilerplate/cerbos
     schedule:
       interval: weekly
     groups:
