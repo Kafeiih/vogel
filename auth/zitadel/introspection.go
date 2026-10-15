@@ -195,13 +195,20 @@ func (v *introspectionVerifier) CheckAuthorization(ctx context.Context, authoriz
 		if r.Err != nil {
 			return nil, r.Err
 		}
-		res, ok := r.Val.(*oauth.IntrospectionContext)
-		if !ok {
-			return nil, fmt.Errorf("%w: unexpected shared result %T", oauth.ErrIntrospectionFailed, r.Val)
-		}
-		c := *res
-		return &c, nil
+		return sharedResult(r.Val)
 	}
+}
+
+// sharedResult returns the caller's own shallow copy of a singleflight
+// result. Anything but a non-nil *oauth.IntrospectionContext is reported as
+// an introspection failure instead of panicking.
+func sharedResult(v any) (*oauth.IntrospectionContext, error) {
+	res, ok := v.(*oauth.IntrospectionContext)
+	if !ok || res == nil {
+		return nil, fmt.Errorf("%w: unexpected shared result %T", oauth.ErrIntrospectionFailed, v)
+	}
+	c := *res
+	return &c, nil
 }
 
 // introspectionCache implements oauth.TokenCache for introspection results.
