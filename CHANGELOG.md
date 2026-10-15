@@ -8,6 +8,18 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ### Agregado
 
+- **`user_id` del usuario autenticado en los logs.** `reqctx` agrega una
+  ranura mutable por request (`WithUserSlot`, `SetUserID`,
+  `UserIDFromContext`). `httpx/middleware.RequestContext` la instala,
+  `Authenticate` la llena con `Principal.UserID` al autenticar (nunca el
+  username, los roles ni el token) y `StructuredLogger` la lee al escribir la
+  línea de acceso, que ahora incluye `user_id`. Hacía falta una ranura porque
+  `StructuredLogger` envuelve a `Authenticate` y nunca ve la request derivada
+  que lleva el `Principal`. `logger.Logger.WithContext` también agrega
+  `user_id` cuando lo hay. En ambos casos la clave se omite si la request no
+  está autenticada; sin `RequestContext` no hay ranura, `SetUserID` no hace
+  nada y `Authenticate` funciona igual que antes.
+
 - **`httpx/middleware.WriteAccessErrorFor`.** Variante de `WriteAccessError`
   que recibe el `authz.Resource` y la acción del chequeo por instancia y los
   registra (`resource_kind`, `resource_id`, `action`; nunca `Attr`) en la
@@ -149,6 +161,14 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   un modo de transporte que no coincide; `Ping` permite detectarlo al arrancar.
 
 ### Cambiado
+
+- **`logger.New` y `logger.NewDefault` emiten el timestamp en UTC.** Un
+  `ReplaceAttr` convierte el atributo `time` de cada registro a UTC, sin
+  importar la zona horaria del host, para que las líneas de servicios en zonas
+  distintas se ordenen y correlacionen sin aritmética de offsets. Los
+  `time.Time` que el llamador registra como atributos con otra clave
+  conservan su zona. Cambio de comportamiento: antes el timestamp salía en la
+  zona local del host.
 
 - **`authz/cerbos`: cada llamada al PDP tiene un plazo propio
   (`Config.CallTimeout`, constante `DefaultCallTimeout`, 2s).** `IsAllowed` y

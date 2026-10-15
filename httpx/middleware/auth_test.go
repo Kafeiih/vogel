@@ -302,3 +302,38 @@ func TestAuthenticate_FailureLog_CarriesRequestFieldsWithoutToken(t *testing.T) 
 		})
 	}
 }
+
+// On success Authenticate records the principal's UserID — and nothing else
+// from it — in the reqctx user slot, so an access logger mounted outside it
+// can report who made the request.
+func TestAuthenticate_Success_FillsUserSlot(t *testing.T) {
+	fa := &fakeAuthenticator{principal: &auth.Principal{UserID: "u1", Username: "alice", Roles: []string{"admin"}}}
+	handler := Authenticate(fa, slog.Default())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer sometoken")
+	ctx := reqctx.WithUserSlot(req.Context())
+	handler.ServeHTTP(httptest.NewRecorder(), req.WithContext(ctx))
+
+	if got := reqctx.UserIDFromContext(ctx); got != "u1" {
+		t.Errorf("user slot = %q, want %q", got, "u1")
+	}
+}
+
+// A failed authentication leaves the slot empty: no user ID reaches the
+// access log for a request that was never authenticated.
+func TestAuthenticate_Failure_LeavesUserSlotEmpty(t *testing.T) {
+	fa := &fakeAuthenticator{principal: &auth.Principal{UserID: "u1"}, err: auth.ErrForbidden}
+	handler := Authenticate(fa, slog.New(slog.DiscardHandler))(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer sometoken")
+	ctx := reqctx.WithUserSlot(req.Context())
+	handler.ServeHTTP(httptest.NewRecorder(), req.WithContext(ctx))
+
+	if got := reqctx.UserIDFromContext(ctx); got != "" {
+		t.Errorf("user slot = %q, want empty after a failed authentication", got)
+	}
+}

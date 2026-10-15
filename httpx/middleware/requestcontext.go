@@ -11,7 +11,8 @@ import (
 
 // RequestContext populates vogel/reqctx with the three pieces of
 // request-scoped metadata every downstream layer needs: the request ID, the
-// client IP, and the User-Agent.
+// client IP, and the User-Agent. It also installs the empty user slot
+// (reqctx.WithUserSlot) that Authenticate fills with the principal's UserID.
 //
 // It is the single writer for this metadata (replacing what used to be two
 // separate middlewares — one bridging chi's request ID into logger's own
@@ -35,6 +36,18 @@ import (
 // request is logged with an empty ip and request_id (RequirePermission and
 // RequireAccess read the request ID the same way). docs/WIRING.md gives the
 // full middleware order.
+//
+// The user slot is installed here rather than in StructuredLogger or
+// Authenticate because this is the one middleware the documented order
+// already places upstream of both: StructuredLogger reads reqctx from the
+// request it receives, so it must sit inside RequestContext, and Authenticate
+// sits inside StructuredLogger. A slot installed by StructuredLogger would
+// work for the access log alone, but would make the user ID's availability to
+// logger.Logger.WithContext depend on whether an access logger happens to be
+// mounted; keeping every reqctx value under this single writer keeps one rule
+// for all of them. With RequestContext missing there is no slot, SetUserID is
+// a no-op and no user_id is logged — the same degradation as the empty
+// request_id.
 func RequestContext(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id := reqctx.RequestIDFromContext(r.Context())
@@ -42,6 +55,7 @@ func RequestContext(next http.Handler) http.Handler {
 			id = chimw.GetReqID(r.Context())
 		}
 		ctx := reqctx.WithRequestID(r.Context(), id)
+		ctx = reqctx.WithUserSlot(ctx)
 
 		ip, _, err := net.SplitHostPort(r.RemoteAddr)
 		if err != nil || ip == "" {

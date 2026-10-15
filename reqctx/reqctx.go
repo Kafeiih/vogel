@@ -1,7 +1,7 @@
 // Package reqctx carries request-scoped metadata — a request/correlation ID,
-// the client IP, and the User-Agent — through a context.Context, independent
-// of any HTTP router or logging framework. It depends on nothing beyond the
-// standard library's context package.
+// the client IP, the User-Agent, and the authenticated user's ID — through a
+// context.Context, independent of any HTTP router, logging framework or
+// identity provider. It depends on nothing beyond the standard library.
 //
 // reqctx exists as neutral ground between two layers that must never import
 // each other:
@@ -18,7 +18,10 @@
 //     provably the same value — see audit.Recorder.Record.
 package reqctx
 
-import "context"
+import (
+	"context"
+	"sync/atomic"
+)
 
 // requestIDKey is the context key this package owns for storing a
 // request/correlation ID. It is unexported so only WithRequestID may set it.
@@ -90,4 +93,76 @@ func WithRequestInfo(ctx context.Context, info RequestInfo) context.Context {
 func RequestInfoFromContext(ctx context.Context) (RequestInfo, bool) {
 	info, ok := ctx.Value(requestInfoKey{}).(RequestInfo)
 	return info, ok
+}
+
+// userSlotKey is the context key for the per-request user slot. Unexported so
+// only WithUserSlot may install one.
+type userSlotKey struct{}
+
+// userSlot is a mutable, per-request cell holding the authenticated user's
+// ID.
+//
+// It is mutable — unlike every other value in this package — because of where
+// the writer and the reader sit in an HTTP middleware chain. The access log
+// (httpx/middleware.StructuredLogger) wraps the authentication middleware
+// (httpx/middleware.Authenticate), and Authenticate can only hand the
+// Principal downstream, on a derived request created with r.WithContext; a
+// value stored there is invisible to the outer access logger, which still
+// holds the ancestor context. A pointer installed upstream of both
+// (httpx/middleware.RequestContext) is shared by every derived context, so a
+// write through the inner context is visible through the outer one.
+//
+// The ID is held in an atomic.Pointer rather than a plain field. In the
+// ordinary chain the write (Authenticate, before calling next) and the read
+// (StructuredLogger's deferred log line, after next returns) happen on the
+// same goroutine, and a plain field would be enough. But a handler wrapped in
+// http.TimeoutHandler runs on a separate goroutine that keeps going after the
+// timeout response is written: an Authenticate inside it, still waiting on a
+// slow identity provider, can then write the slot while the access logger
+// outside it is reading. The atomic makes that interleaving well-defined
+// (the log line carries either the ID or nothing) instead of a data race.
+type userSlot struct {
+	userID atomic.Pointer[string]
+}
+
+// WithUserSlot returns a copy of ctx carrying an empty user slot that
+// SetUserID can fill later through any context derived from it. If ctx
+// already carries a slot, ctx is returned unchanged: a second, inner slot
+// would shadow the first, and a middleware holding the outer context would
+// never see a user ID written through the inner one.
+//
+// Production code installs the slot via httpx/middleware.RequestContext.
+func WithUserSlot(ctx context.Context) context.Context {
+	if _, ok := ctx.Value(userSlotKey{}).(*userSlot); ok {
+		return ctx
+	}
+	return context.WithValue(ctx, userSlotKey{}, &userSlot{})
+}
+
+// SetUserID records id as the authenticated user's ID in the slot ctx
+// carries. It is a no-op when ctx carries no slot (WithUserSlot was never
+// called upstream), so an authentication middleware mounted without
+// httpx/middleware.RequestContext keeps working and the ID is simply not
+// logged.
+//
+// Only an opaque, stable user identifier belongs here — never a username,
+// roles, or a credential: the value ends up in every access-log line.
+func SetUserID(ctx context.Context, id string) {
+	if slot, ok := ctx.Value(userSlotKey{}).(*userSlot); ok {
+		slot.userID.Store(&id)
+	}
+}
+
+// UserIDFromContext returns the user ID previously recorded via SetUserID, or
+// "" if ctx carries no slot or the slot was never filled (an unauthenticated
+// request).
+func UserIDFromContext(ctx context.Context) string {
+	slot, ok := ctx.Value(userSlotKey{}).(*userSlot)
+	if !ok {
+		return ""
+	}
+	if id := slot.userID.Load(); id != nil {
+		return *id
+	}
+	return ""
 }

@@ -23,6 +23,15 @@ import (
 // under "client_request_id", apart from the server-generated "request_id",
 // so a client-chosen value is never mistaken for the server's; the key is
 // left out when there is none.
+//
+// The authenticated user's ID is logged under "user_id", read from the
+// reqctx user slot that RequestContext installs and Authenticate fills on
+// success. A slot is needed because this middleware wraps Authenticate: the
+// Principal Authenticate stores lives on a derived request this middleware
+// never sees, while the slot is a pointer shared by both. The slot is read in
+// the deferred log line, after next has returned, so the write has already
+// happened on the same goroutine. The key is left out for an unauthenticated
+// request or when RequestContext is not mounted.
 func StructuredLogger(logger *slog.Logger) func(next http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -43,6 +52,9 @@ func StructuredLogger(logger *slog.Logger) func(next http.Handler) http.Handler 
 				}
 				if clientID := reqctx.ClientRequestIDFromContext(r.Context()); clientID != "" {
 					attrs = append(attrs, "client_request_id", clientID)
+				}
+				if userID := reqctx.UserIDFromContext(r.Context()); userID != "" {
+					attrs = append(attrs, "user_id", userID)
 				}
 				logger.Info("http request", attrs...)
 			}()

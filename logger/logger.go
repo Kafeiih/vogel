@@ -29,11 +29,16 @@ type Logger struct {
 // New creates a Logger writing to w. Log level and format are derived from env:
 // "production" and "staging" use LevelInfo, anything else uses LevelDebug.
 // "production" emits JSON; other environments emit human-readable text.
+//
+// Every record's timestamp is emitted in UTC regardless of the host's time
+// zone (see utcTime), so log lines from services running in different zones
+// can be ordered and correlated without offset arithmetic.
 func New(env string, w io.Writer) *Logger {
 	var handler slog.Handler
 
 	opts := &slog.HandlerOptions{
-		Level: getLogLevel(env),
+		Level:       getLogLevel(env),
+		ReplaceAttr: utcTime,
 	}
 
 	if env == "production" {
@@ -62,10 +67,32 @@ func (l *Logger) With(args ...any) *Logger {
 // WithContext returns a Logger annotated with the request ID stored in ctx
 // via reqctx.WithRequestID, if any. If no request ID is present, the empty
 // string is used, matching the behavior of an absent ID.
+//
+// When ctx carries an authenticated user's ID (reqctx.UserIDFromContext,
+// filled by httpx/middleware.Authenticate), it is added as "user_id"; the key
+// is left out otherwise, so a line logged outside an authenticated request
+// keeps its shape.
 func (l *Logger) WithContext(ctx context.Context) *Logger {
-	return &Logger{
-		Logger: l.Logger.With("request_id", reqctx.RequestIDFromContext(ctx)),
+	args := []any{"request_id", reqctx.RequestIDFromContext(ctx)}
+	if userID := reqctx.UserIDFromContext(ctx); userID != "" {
+		args = append(args, "user_id", userID)
 	}
+	return &Logger{
+		Logger: l.Logger.With(args...),
+	}
+}
+
+// utcTime is a slog.HandlerOptions.ReplaceAttr that converts the record's
+// built-in timestamp to UTC. It touches only the top-level slog.TimeKey
+// attribute (groups is empty for it): a time.Time the caller logs as an
+// ordinary attribute under any other key, or inside a group, keeps the zone
+// it was given. A caller attribute literally keyed "time" at the top level is
+// indistinguishable from the built-in one here and is converted too.
+func utcTime(groups []string, a slog.Attr) slog.Attr {
+	if len(groups) == 0 && a.Key == slog.TimeKey && a.Value.Kind() == slog.KindTime {
+		a.Value = slog.TimeValue(a.Value.Time().UTC())
+	}
+	return a
 }
 
 func getLogLevel(env string) slog.Level {
