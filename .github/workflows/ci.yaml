@@ -142,6 +142,13 @@ jobs:
       - name: Release template image names
         run: examples/boilerplate/.github/workflows/image-ref_test.sh
 
+      # create-vogel-app turns this boilerplate into new repositories by
+      # deleting component-marked blocks. Generate every combination from this
+      # checkout and build, vet and test each, so a marker placed wrong fails
+      # here instead of in someone's new service.
+      - name: Generated projects
+        run: cmd/create-vogel-app/check-generated.sh
+
   # Vulnerabilidades conocidas en dependencias, usando el call graph: solo
   # falla cuando el codigo de vogel (o del boilerplate) ALCANZA la funcion
   # vulnerable, no por el mero hecho de requerir el modulo. Corre sobre los

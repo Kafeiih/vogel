@@ -26,7 +26,9 @@ permissions:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # Only a newer push to the same PR cancels a run; main pushes and the
+  # weekly scheduled scan always finish, so no commit loses its signal.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   lint:

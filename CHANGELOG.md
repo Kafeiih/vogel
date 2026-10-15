@@ -8,6 +8,23 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ### Agregado
 
+- **`cmd/create-vogel-app`: genera un servicio nuevo desde el boilerplate.**
+  `go run github.com/kafeiih/vogel/cmd/create-vogel-app@vX.Y.Z <nombre>`
+  descarga el tarball del tag de su propia versión (o usa un checkout local con
+  `--from`), pregunta qué componentes opcionales conservar (worker,
+  notificaciones, PDP de Cerbos empaquetado, storage S3) y escribe un
+  repositorio listo: módulo e imágenes renombrados, sin el `replace` de vogel,
+  `go mod tidy`, `git init` y primer commit, y el `gh repo create` para
+  subirlo. La extracción rechaza entradas con *path traversal*, rutas absolutas
+  y symlinks que escapan del destino, y limita el tamaño. Solo usa la librería
+  estándar. El boilerplate marca sus bloques opcionales
+  (`vogel:component <nombre> begin|end`, `vogel:only`) y declara componentes y
+  reemplazos en `.vogel/template.json`; el CI de vogel genera cada combinación y
+  la compila, la prueba y renderiza sus compose. El boilerplate trae además
+  plantillas de `.gitignore`, `.golangci.yml`, `.gitleaks.toml`, `dependabot.yml`
+  y un `ci.yaml` (lint, tests, govulncheck, gitleaks, Trivy, Cerbos) para el
+  repositorio generado.
+
 - **`examples/boilerplate`: plantilla de publicación de imágenes.**
   `.github/workflows/release.yaml` (inerte dentro de `vogel`) publica, en el
   repositorio de un servicio generado y al empujar un tag `vX.Y.Z`,

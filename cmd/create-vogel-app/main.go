@@ -28,10 +28,17 @@ const (
 	exitOK      = 0
 	exitFailure = 1
 	exitUsage   = 2
+	// exitInterrupted follows the shell convention for SIGINT (128 + 2).
+	exitInterrupted = 130
 )
 
 func main() {
-	os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr, stdinIsTerminal()))
+	// Ctrl-C cancels ctx: prompts stop waiting and Generate cleans up what it
+	// wrote before go.mod was edited.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	code := run(ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr, stdinIsTerminal())
+	stop()
+	os.Exit(code)
 }
 
 // Terminal writes cannot be recovered from in a CLI, so their errors are
@@ -96,7 +103,8 @@ Flags:
 `
 
 const usageFooter = `
-Exit codes: 0 success, 1 runtime failure, 2 usage error.
+Exit codes: 0 success, 1 runtime failure, 2 usage error, 130 interrupted
+(Ctrl-C).
 `
 
 func newFlagSet(cfg *config, output io.Writer) *flag.FlagSet {
@@ -162,17 +170,12 @@ func parseArgs(args []string) (*config, error) {
 	if err := scaffold.ValidateName(cfg.name); err != nil {
 		return nil, err
 	}
-	for _, w := range cfg.with {
-		for _, wo := range cfg.without {
-			if w == wo {
-				return nil, fmt.Errorf("component %q is given to both --with and --without", w)
-			}
-		}
-	}
+	// --with/--without conflicts are checked by scaffold.Select once the
+	// manifest is known.
 	return cfg, nil
 }
 
-func run(args []string, stdin io.Reader, stdout, stderr io.Writer, interactive bool) int {
+func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, interactive bool) int {
 	cfg, err := parseArgs(args)
 	if errors.Is(err, flag.ErrHelp) {
 		newFlagSet(&config{}, stdout).Usage()
@@ -183,7 +186,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, interactive b
 		return exitUsage
 	}
 	ask := interactive && !cfg.yes
-	in := bufio.NewReader(stdin)
+	in := newLineReader(stdin)
 
 	if cfg.version == "" && cfg.from == "" {
 		v, err := scaffold.BuildVersion(debug.ReadBuildInfo)
@@ -198,7 +201,10 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, interactive b
 			writeln(stderr, "create-vogel-app: --owner is required with --yes or when stdin is not a terminal")
 			return exitUsage
 		}
-		if cfg.owner, err = askOwner(in, stdout); err != nil {
+		if cfg.owner, err = askOwner(ctx, in, stdout); err != nil {
+			if ctx.Err() != nil {
+				return interrupted(stderr, "") // nothing generated yet
+			}
 			printf(stderr, "create-vogel-app: %v\n", err)
 			return exitUsage
 		}
@@ -229,16 +235,17 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, interactive b
 			manifest = m
 			var askFn scaffold.AskFunc
 			if ask {
-				askFn = func(c scaffold.Component) (bool, error) { return askYesNo(in, stdout, c) }
+				askFn = func(c scaffold.Component) (bool, error) { return askYesNo(ctx, in, stdout, c) }
 			}
 			return scaffold.Select(m, cfg.with, cfg.without, askFn)
 		},
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
 	res, err := scaffold.Generate(ctx, opts)
 	if err != nil {
+		if ctx.Err() != nil {
+			return interrupted(stderr, cfg.dir)
+		}
 		printf(stderr, "create-vogel-app: %v\n", err)
 		var ue *scaffold.UsageError
 		if errors.As(err, &ue) {
@@ -250,10 +257,61 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, interactive b
 	return exitOK
 }
 
-func askOwner(in *bufio.Reader, out io.Writer) (string, error) {
+// interrupted reports a Ctrl-C. dir is the target when the interrupt hit
+// scaffold.Generate, which keeps a partial project after go.mod editing (see
+// its doc): a non-empty dir is then named for the user to inspect or delete.
+// Before Generate starts, callers pass "" because nothing was written.
+func interrupted(stderr io.Writer, dir string) int {
+	writeln(stderr, "\ncreate-vogel-app: interrupted")
+	if entries, err := os.ReadDir(dir); err == nil && len(entries) > 0 {
+		printf(stderr, "create-vogel-app: a partial project was left in %s; delete it before retrying\n", dir)
+	}
+	return exitInterrupted
+}
+
+// lineReader reads answers from stdin without ignoring cancellation: a
+// blocking read cannot be interrupted, so it runs in a goroutine and readLine
+// returns as soon as ctx is done.
+type lineReader struct {
+	in      *bufio.Reader
+	pending chan lineResult // the read in flight, if any
+}
+
+type lineResult struct {
+	line string
+	err  error
+}
+
+func newLineReader(r io.Reader) *lineReader { return &lineReader{in: bufio.NewReader(r)} }
+
+// readLine returns the next line like bufio.Reader.ReadString('\n'), or
+// ctx.Err() once ctx is done. A read abandoned by cancellation is kept and
+// returned by the next call.
+func (r *lineReader) readLine(ctx context.Context) (string, error) {
+	if r.pending == nil {
+		ch := make(chan lineResult, 1)
+		r.pending = ch
+		go func() {
+			line, err := r.in.ReadString('\n')
+			ch <- lineResult{line, err}
+		}()
+	}
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case res := <-r.pending:
+		r.pending = nil
+		return res.line, res.err
+	}
+}
+
+func askOwner(ctx context.Context, in *lineReader, out io.Writer) (string, error) {
 	for {
 		write(out, "GitHub owner (user or organization): ")
-		line, err := in.ReadString('\n')
+		line, err := in.readLine(ctx)
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
 		owner := strings.TrimSpace(line)
 		if owner != "" {
 			if verr := scaffold.ValidateOwner(owner); verr != nil {
@@ -271,7 +329,7 @@ func askOwner(in *bufio.Reader, out io.Writer) (string, error) {
 	}
 }
 
-func askYesNo(in *bufio.Reader, out io.Writer, c scaffold.Component) (bool, error) {
+func askYesNo(ctx context.Context, in *lineReader, out io.Writer, c scaffold.Component) (bool, error) {
 	prompt := c.Prompt
 	if prompt == "" {
 		prompt = fmt.Sprintf("Keep %s?", c.Name)
@@ -282,13 +340,17 @@ func askYesNo(in *bufio.Reader, out io.Writer, c scaffold.Component) (bool, erro
 	}
 	for {
 		printf(out, "%s %s ", prompt, hint)
-		line, err := in.ReadString('\n')
+		line, err := in.readLine(ctx)
+		if ctx.Err() != nil {
+			return false, ctx.Err()
+		}
 		switch strings.ToLower(strings.TrimSpace(line)) {
 		case "":
 			if err != nil {
 				return false, fmt.Errorf("reading the answer for %s: %w (pass --yes to use the defaults without asking)", c.Name, err)
 			}
 			return c.Default, nil
+		// The manifest prompts are in Spanish, so Spanish yes answers count too.
 		case "y", "yes", "s", "si", "sí":
 			return true, nil
 		case "n", "no":
@@ -297,7 +359,7 @@ func askYesNo(in *bufio.Reader, out io.Writer, c scaffold.Component) (bool, erro
 		if err != nil {
 			return false, fmt.Errorf("reading the answer for %s: %w", c.Name, err)
 		}
-		writeln(out, "Please answer y or n.")
+		writeln(out, "Please answer y or n (s/si also mean yes).")
 	}
 }
 

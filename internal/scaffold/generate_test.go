@@ -519,3 +519,45 @@ func TestCommandErrorTruncatesOutput(t *testing.T) {
 		t.Fatalf("output not truncated:\n%s", msg)
 	}
 }
+
+func TestGenerateGoModCheckFailureCleansUp(t *testing.T) {
+	tests := []struct {
+		name    string
+		gomod   string
+		wantMsg string
+	}{
+		{"module path does not match the manifest", "module example.com/other\n\ngo 1.26.7\n", `go.mod declares module "example.com/other"`},
+		{"unparsable go.mod", "this is not a go.mod file\n", "go mod edit -json"},
+	}
+	for _, tt := range tests {
+		for _, preexisting := range []bool{false, true} {
+			name := tt.name
+			if preexisting {
+				name += " in a pre-existing empty directory"
+			}
+			t.Run(name, func(t *testing.T) {
+				root := fakeVogelRoot(t)
+				mustWrite(t, filepath.Join(root, "examples", "boilerplate", "go.mod"), tt.gomod, 0o644)
+				opts := baseOptions(t, root)
+				if preexisting {
+					if err := os.MkdirAll(opts.Dir, 0o755); err != nil {
+						t.Fatal(err)
+					}
+				}
+				_, err := Generate(context.Background(), opts)
+				if err == nil || !strings.Contains(err.Error(), tt.wantMsg) {
+					t.Fatalf("Generate() error = %v, want it to contain %q", err, tt.wantMsg)
+				}
+				entries, statErr := os.ReadDir(opts.Dir)
+				switch {
+				case preexisting && statErr != nil:
+					t.Fatalf("pre-existing target directory was removed: %v", statErr)
+				case preexisting && len(entries) > 0:
+					t.Fatalf("pre-existing target directory was not emptied: %d entries left", len(entries))
+				case !preexisting && !os.IsNotExist(statErr):
+					t.Fatal("target directory should be removed after a failure before go.mod is edited")
+				}
+			})
+		}
+	}
+}
