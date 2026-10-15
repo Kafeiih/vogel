@@ -39,7 +39,10 @@ for combo in "${combos[@]}"; do
 		go build ./...
 		go vet ./...
 		go vet -tags=integration ./...
-		go test ./... >/dev/null
+		if ! go test ./... >"$WORK/$name.test.log" 2>&1; then
+			cat "$WORK/$name.test.log" >&2
+			exit 1
+		fi
 		{
 			echo "APP_VERSION=0.0.0"
 			echo "POSTGRES_PASSWORD=x"
@@ -50,7 +53,7 @@ for combo in "${combos[@]}"; do
 		} >deploy/.env
 		docker compose -f deploy/docker-compose.yaml config -q
 		docker compose -f deploy/docker-compose.developer.yaml config -q
-		if grep -rIlE 'vogel:(component|only) (begin|end)' . >/dev/null; then
+		if grep -rIlE 'vogel:(component [a-z]+|only) (begin|end)' . >/dev/null; then
 			echo "FAIL: $name still has marker lines" >&2
 			exit 1
 		fi

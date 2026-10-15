@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -239,12 +240,18 @@ func TestInterruptAtPromptLeavesNoTarget(t *testing.T) {
 	root := fakeVogelRoot(t)
 	dir := filepath.Join(t.TempDir(), "billing")
 	ctx, cancel := context.WithCancel(context.Background())
-	var out, errOut bytes.Buffer
+	var out, errOut syncBuffer
 	done := make(chan int, 1)
 	go func() {
 		done <- run(ctx, []string{"--owner", "acme", "--from", root, "--dir", dir, "--no-git", "--skip-tidy", "billing"}, blockingStdin(t), &out, &errOut, true)
 	}()
-	time.AfterFunc(200*time.Millisecond, cancel)
+	// Cancel only once the component prompt is showing, however slow the
+	// runner is at copying the template.
+	deadline := time.Now().Add(5 * time.Second)
+	for !strings.Contains(out.String(), "Keep the worker?") && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
 	select {
 	case code := <-done:
 		if code != exitInterrupted {
@@ -261,5 +268,49 @@ func TestInterruptAtPromptLeavesNoTarget(t *testing.T) {
 	}
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
 		t.Fatal("an interrupt at a prompt left the target directory behind")
+	}
+}
+
+// syncBuffer is a bytes.Buffer safe to read while run writes to it.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
+}
+
+// TestInterruptedNamesLeftoverProject pins the interrupt message: when the
+// interrupt lands after go.mod editing, Generate keeps the partial project
+// for inspection and the message must say where it is.
+func TestInterruptedNamesLeftoverProject(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "billing")
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var errOut bytes.Buffer
+	if code := interrupted(&errOut, dir); code != exitInterrupted {
+		t.Fatalf("exit = %d, want %d", code, exitInterrupted)
+	}
+	if !strings.Contains(errOut.String(), dir) || !strings.Contains(errOut.String(), "left") {
+		t.Fatalf("message does not name the partial project %s:\n%s", dir, errOut.String())
+	}
+
+	errOut.Reset()
+	interrupted(&errOut, filepath.Join(t.TempDir(), "missing"))
+	if strings.Contains(errOut.String(), "left") {
+		t.Fatalf("message mentions a leftover project that does not exist:\n%s", errOut.String())
 	}
 }

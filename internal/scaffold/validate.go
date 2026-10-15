@@ -13,6 +13,8 @@ var (
 	moduleElemRe  = regexp.MustCompile(`^[A-Za-z0-9_~.-]+$`)
 	componentRe   = regexp.MustCompile(`^[a-z]+$`)
 	maxNameLength = 50
+	// maxOwnerLength is GitHub's limit for user and organization names.
+	maxOwnerLength = 39
 )
 
 // ValidateName checks the project name: lowercase letters and digits in
@@ -28,7 +30,7 @@ func ValidateName(name string) error {
 // ValidateOwner checks a GitHub user or organization name: letters and
 // digits in single-dash-separated groups, at most 39 characters.
 func ValidateOwner(owner string) error {
-	if !ownerRe.MatchString(owner) || len(owner) > 39 {
+	if !ownerRe.MatchString(owner) || len(owner) > maxOwnerLength {
 		return fmt.Errorf("invalid owner %q: want a GitHub user or organization name", owner)
 	}
 	return nil
