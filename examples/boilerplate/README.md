@@ -303,14 +303,24 @@ aplique el mismo criterio con `httpx.WithMessages(...)` de
 3. Renombre el módulo (`go.mod`) al de su servicio.
 4. Reemplace `internal/infrastructure/database/migrations/001_enable_pgcrypto.sql`
    por las migraciones reales de su dominio.
-5. Sume dotfiles de desarrollo típicos que este repositorio no puede alojar
-   dentro de `vogel` (`.gitignore`, `.dockerignore`, `.golangci.yml`,
-   `.air.toml` para *live reload*) — no vinieron con esta copia porque viven
-   fuera del árbol versionado por `go.mod`; tómelos como referencia del
-   `go-bluprint` original si los necesita.
+5. Sume los dotfiles de desarrollo que todavía no trae (`.gitignore`,
+   `.golangci.yml`, `.air.toml` para *live reload*); tómelos como referencia
+   del `go-bluprint` original si los necesita. El `.dockerignore` sí viene:
+   en la raíz de la copia deja fuera del build `.env`, `secrets/`, las
+   claves y lo que no es código.
 6. Cree su propio `.env` a partir de la sección "Arranque rápido" de este
    README.
 7. Arranque un módulo de negocio nuevo siguiendo `docs/USAGE_GUIDE.md`.
+8. Publique sus imágenes con `.github/workflows/release.yaml`: al empujar un
+   tag `vX.Y.Z` construye y sube a GHCR `ghcr.io/<owner>/<repo>` (api),
+   `-worker` y `-cerbos` con la versión `X.Y.Z` (sin `:latest`), cada una con
+   SBOM y *provenance*; la de Cerbos pasa antes el *smoke test*. Borre el job
+   del componente que no use y cambie los `image:` de
+   `deploy/docker-compose.yaml` (hoy `ghcr.io/kafeiih/vogel-boilerplate*`) a
+   esos nombres. La primera publicación crea paquetes privados: vincúlelos al
+   repositorio y elija su visibilidad en la configuración del paquete. Dentro
+   de `vogel` este workflow no corre (GitHub solo lee el `.github/` de la
+   raíz del repositorio).
 
 ## Agregar un módulo de negocio nuevo
 

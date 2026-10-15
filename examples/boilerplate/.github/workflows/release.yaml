@@ -1,0 +1,165 @@
+# Publishes this service's images to GHCR when a version tag is pushed.
+#
+# Template: inside the vogel repository this file never runs (GitHub only
+# reads the workflows of the repository root). In a service generated from
+# the boilerplate it sits at .github/workflows/release.yaml and publishes to
+# that repository's own registry namespace:
+#
+#   ghcr.io/<owner>/<repo>:<version>         api      (job "api")
+#   ghcr.io/<owner>/<repo>-worker:<version>  worker   (job "worker")
+#   ghcr.io/<owner>/<repo>-cerbos:<version>  Cerbos   (job "cerbos")
+#
+# These are the names deploy/docker-compose.yaml pulls with APP_VERSION. A
+# service without a worker or a bundled PDP deletes that job; the jobs are
+# independent, so no other job refers to them.
+#
+# A tag v1.2.3 publishes 1.2.3 only: there is no :latest, so a deploy always
+# names the exact version it runs. Each image carries an SBOM and a build
+# provenance attestation, attached in the registry next to the image.
+#
+# The first push of each image creates a private GHCR package. Link it to the
+# repository and set its visibility in the package settings once.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  api:
+    name: Publish api image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Image name and version
+        id: image
+        run: .github/workflows/image-ref.sh "" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: Dockerfile
+          target: api
+          build-args: APP_DIR=.
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.image.outputs.ref }}
+          labels: ${{ steps.image.outputs.labels }}
+          sbom: true
+          provenance: mode=max
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,mode=max,scope=api
+
+  worker:
+    name: Publish worker image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Image name and version
+        id: image
+        run: .github/workflows/image-ref.sh -worker >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: Dockerfile
+          target: worker
+          build-args: APP_DIR=.
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.image.outputs.ref }}
+          labels: ${{ steps.image.outputs.labels }}
+          sbom: true
+          provenance: mode=max
+          cache-from: type=gha,scope=worker
+          cache-to: type=gha,mode=max,scope=worker
+
+  # The image build already proves the policies compile and pass their tests
+  # (cerbos/Dockerfile). The smoke test proves the built image SERVES them
+  # before anything is pushed: an empty policy store starts healthy and
+  # denies every request (cerbos/README.md).
+  cerbos:
+    name: Publish Cerbos image
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Image name and version
+        id: image
+        run: .github/workflows/image-ref.sh -cerbos >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build for the smoke test
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: cerbos
+          platforms: linux/amd64
+          load: true
+          tags: cerbos:smoke
+          cache-from: type=gha,scope=cerbos
+          cache-to: type=gha,mode=max,scope=cerbos
+
+      - name: Smoke test
+        run: ./cerbos/smoke.sh cerbos:smoke
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: cerbos
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.image.outputs.ref }}
+          labels: ${{ steps.image.outputs.labels }}
+          sbom: true
+          provenance: mode=max
+          cache-from: type=gha,scope=cerbos

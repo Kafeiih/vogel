@@ -30,3 +30,7 @@
 # The boilerplate's authorization policies decide who may do what in every
 # service generated from it.
 /examples/boilerplate/cerbos/ @Kafeiih
+
+# The release workflow template: it decides what a generated service
+# publishes and with which permissions.
+/examples/boilerplate/.github/ @Kafeiih

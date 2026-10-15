@@ -1,0 +1,27 @@
+# Build context filter for a service generated from this boilerplate, where
+# this file sits at the repository root and the Dockerfile copies the whole
+# context into the builder stage (COPY . /src). Inside the vogel repository
+# the context is vogel's root, so its own .dockerignore applies instead.
+
+# Never send local credentials to the build.
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
+**/secrets/
+
+# VCS, CI and build outputs.
+.git
+.github/
+bin/
+tmp/
+coverage*.out
+
+# Not part of the binaries: deploy files, the Cerbos bundle (its own build
+# context), Markdown and the Dockerfile itself. docs/ stays: cmd/api imports
+# its generated Swagger package.
+deploy/
+cerbos/
+**/*.md
+Dockerfile
+.dockerignore

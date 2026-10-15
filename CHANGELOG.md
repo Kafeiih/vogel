@@ -8,6 +8,18 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ### Agregado
 
+- **`examples/boilerplate`: plantilla de publicación de imágenes.**
+  `.github/workflows/release.yaml` (inerte dentro de `vogel`) publica, en el
+  repositorio de un servicio generado y al empujar un tag `vX.Y.Z`,
+  `ghcr.io/<owner>/<repo>` (api), `-worker` y `-cerbos` con la versión exacta,
+  sin `:latest`, con SBOM y *provenance*, y la de Cerbos solo si pasa el
+  *smoke test*; un job por componente para poder quitar los que no se usen.
+  Un `.dockerignore` propio deja fuera del build `.env`, `secrets/` y las
+  claves cuando la copia es la raíz del contexto. El compose de despliegue
+  suma el PDP de Cerbos con las políticas horneadas, solo en una red
+  `internal` y sin puertos publicados, y el `api` le habla en texto plano
+  (`CERBOS_PLAINTEXT=true`) únicamente dentro de esa red.
+
 - **`examples/boilerplate/cerbos/`: políticas de Cerbos versionadas con el
   código.** La política `audit:entry` refleja la matriz de
   `rolematrix_test.go` (`list` solo `admin`; `view` `admin` y `auditor`), con
