@@ -45,7 +45,7 @@ func TestValidateBounds_RejectsAlreadyConstructedDecimal(t *testing.T) {
 			// RequireFromString is lazy: it stores (coefficient, exponent)
 			// without materializing. Building the hostile value is cheap;
 			// operating on it would be expensive, and we never do that.
-			d := decimal.RequireFromString(c.input)
+			d := decimalOf(c.input)
 
 			// The bound must be O(1): it reads the exponent field, it never
 			// expands the digits. If this hangs, the implementation is
@@ -70,12 +70,12 @@ func TestValidateBounds_RejectsAlreadyConstructedDecimal(t *testing.T) {
 // constructed decimal.
 func TestValidateBounds_ExponentLimits(t *testing.T) {
 	for _, s := range []string{"1e8", "1e-8"} {
-		if err := decimalx.ValidateBounds(decimal.RequireFromString(s)); err != nil {
+		if err := decimalx.ValidateBounds(decimalOf(s)); err != nil {
 			t.Errorf("ValidateBounds(%s) should be accepted, err = %v", s, err)
 		}
 	}
 	for _, s := range []string{"1e9", "1e-9"} {
-		if err := decimalx.ValidateBounds(decimal.RequireFromString(s)); !errors.Is(err, decimalx.ErrOutOfRange) {
+		if err := decimalx.ValidateBounds(decimalOf(s)); !errors.Is(err, decimalx.ErrOutOfRange) {
 			t.Errorf("ValidateBounds(%s) err = %v, want ErrOutOfRange", s, err)
 		}
 	}
@@ -86,12 +86,12 @@ func TestValidateBounds_ExponentLimits(t *testing.T) {
 // than 32 digits is rejected.
 func TestValidateBounds_LongCoefficient(t *testing.T) {
 	// 33 digits: exceeds maxLen by one.
-	long := decimal.RequireFromString(strings.Repeat("9", 33))
+	long := decimalOf(strings.Repeat("9", 33))
 	if err := decimalx.ValidateBounds(long); !errors.Is(err, decimalx.ErrOutOfRange) {
 		t.Errorf("ValidateBounds(33-digit coefficient) err = %v, want ErrOutOfRange", err)
 	}
 	// 32 digits: exactly at the bound, accepted.
-	exact := decimal.RequireFromString(strings.Repeat("9", 32))
+	exact := decimalOf(strings.Repeat("9", 32))
 	if err := decimalx.ValidateBounds(exact); err != nil {
 		t.Errorf("ValidateBounds(32-digit coefficient) should be accepted, err = %v", err)
 	}
@@ -103,7 +103,7 @@ func TestValidateBounds_LongCoefficient(t *testing.T) {
 // different rule, with its own function (ValidateAmount).
 func TestValidateBounds_AcceptsLegitimateAmounts(t *testing.T) {
 	for _, s := range []string{"0", "1500000.00", "100.005", "-5000", "99999999999.99", "0.01"} {
-		if err := decimalx.ValidateBounds(decimal.RequireFromString(s)); err != nil {
+		if err := decimalx.ValidateBounds(decimalOf(s)); err != nil {
 			t.Errorf("ValidateBounds(%s) should be accepted, err = %v", s, err)
 		}
 	}
@@ -168,7 +168,7 @@ func TestParse_DelegatesToValidateBounds(t *testing.T) {
 			if !errors.Is(errParse, decimalx.ErrOutOfRange) {
 				continue // not parseable: out of ValidateBounds' contract.
 			}
-			if err := decimalx.ValidateBounds(decimal.RequireFromString(s)); !errors.Is(err, decimalx.ErrOutOfRange) {
+			if err := decimalx.ValidateBounds(decimalOf(s)); !errors.Is(err, decimalx.ErrOutOfRange) {
 				t.Errorf("drift: Parse(%s) rejects but ValidateBounds accepts (err = %v)", s, err)
 			}
 			continue

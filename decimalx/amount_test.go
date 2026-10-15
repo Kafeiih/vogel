@@ -5,8 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shopspring/decimal"
-
 	"github.com/kafeiih/vogel/decimalx"
 )
 
@@ -65,7 +63,7 @@ func TestParseAmount_MaxTwoDecimals(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ParseAmount(%q, 2) err = %v, want nil", c.input, err)
 			}
-			if want := decimal.RequireFromString(c.input); !got.Equal(want) {
+			if want := decimalOf(c.input); !got.Equal(want) {
 				t.Fatalf("ParseAmount(%q, 2) = %s, want %s", c.input, got, want)
 			}
 			// What is accepted must be exactly what the column will store.
@@ -159,7 +157,7 @@ func TestParseAmount_DoesNotChangeParseContract(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Parse(%q) err = %v, want nil: Parse does not carry the money rule", input, err)
 		}
-		if want := decimal.RequireFromString(input); !d.Equal(want) {
+		if want := decimalOf(input); !d.Equal(want) {
 			t.Fatalf("Parse(%q) = %s, want %s", input, d, want)
 		}
 	}
@@ -197,7 +195,7 @@ func TestValidateAmount_MirrorsMoneyRuleOnAConstructedDecimal(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			err := decimalx.ValidateAmount(decimal.RequireFromString(c.input), 2)
+			err := decimalx.ValidateAmount(decimalOf(c.input), 2)
 			if !errors.Is(err, c.wantErr) {
 				t.Fatalf("ValidateAmount(%s, 2) err = %v, want %v", c.input, err, c.wantErr)
 			}
@@ -234,7 +232,7 @@ func TestValidateAmount_AppliesBoundBeforeRounding(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			done := make(chan error, 1)
-			go func() { done <- decimalx.ValidateAmount(decimal.RequireFromString(c.input), 2) }()
+			go func() { done <- decimalx.ValidateAmount(decimalOf(c.input), 2) }()
 
 			select {
 			case err := <-done:
@@ -255,7 +253,7 @@ func TestValidateAmount_AppliesBoundBeforeRounding(t *testing.T) {
 func TestValidateAmount_DoesNotDuplicateTheBound(t *testing.T) {
 	for _, input := range []string{"1e9", "1e-9", "1e100000000"} {
 		t.Run(input, func(t *testing.T) {
-			d := decimal.RequireFromString(input)
+			d := decimalOf(input)
 			errBounds := decimalx.ValidateBounds(d)
 			if errBounds == nil {
 				t.Fatalf("ValidateBounds(%s) did not fail: the case is no longer useful as anti-drift", input)
@@ -278,7 +276,7 @@ func TestValidateAmount_AndParseAmount_AgreeOnTheSameValue(t *testing.T) {
 	for _, input := range []string{"100", "100.5", "100.50", "100.500", "0", "-100.50", "100.005", "33.334", "0.004"} {
 		t.Run(input, func(t *testing.T) {
 			_, errParse := decimalx.ParseAmount(input, 2)
-			errValidate := decimalx.ValidateAmount(decimal.RequireFromString(input), 2)
+			errValidate := decimalx.ValidateAmount(decimalOf(input), 2)
 
 			if (errParse == nil) != (errValidate == nil) {
 				t.Fatalf("%q: ParseAmount err = %v but ValidateAmount err = %v — the two doors diverge",
@@ -300,10 +298,10 @@ func TestValidateAmount_AndParseAmount_AgreeOnTheSameValue(t *testing.T) {
 // it: the anti-DoS bound already ran first, so Round operates on a
 // coefficient of at most 32 digits regardless of the scale's sign.
 func TestValidateAmount_NegativeScale(t *testing.T) {
-	if err := decimalx.ValidateAmount(decimal.RequireFromString("1200"), -2); err != nil {
+	if err := decimalx.ValidateAmount(decimalOf("1200"), -2); err != nil {
 		t.Errorf("ValidateAmount(1200, -2) should be accepted, err = %v", err)
 	}
-	if err := decimalx.ValidateAmount(decimal.RequireFromString("1234"), -2); !errors.Is(err, decimalx.ErrTooManyDecimals) {
+	if err := decimalx.ValidateAmount(decimalOf("1234"), -2); !errors.Is(err, decimalx.ErrTooManyDecimals) {
 		t.Errorf("ValidateAmount(1234, -2) err = %v, want ErrTooManyDecimals", err)
 	}
 }
@@ -328,10 +326,10 @@ func TestPaddingBeyondTheExponentBoundIsRejectedByBoundsFirst(t *testing.T) {
 		t.Fatalf("ParseAmount(100.000000000, 2) err = %v, want ErrOutOfRange: exponent -9 exceeds the default minExp of -8", err)
 	}
 
-	if err := decimalx.ValidateAmount(decimal.RequireFromString("100.500"), 2); err != nil {
+	if err := decimalx.ValidateAmount(decimalOf("100.500"), 2); err != nil {
 		t.Fatalf("ValidateAmount(100.500, 2) err = %v, want nil", err)
 	}
-	if err := decimalx.ValidateAmount(decimal.RequireFromString("100.000000000"), 2); !errors.Is(err, decimalx.ErrOutOfRange) {
+	if err := decimalx.ValidateAmount(decimalOf("100.000000000"), 2); !errors.Is(err, decimalx.ErrOutOfRange) {
 		t.Fatalf("ValidateAmount(100.000000000, 2) err = %v, want ErrOutOfRange", err)
 	}
 }
