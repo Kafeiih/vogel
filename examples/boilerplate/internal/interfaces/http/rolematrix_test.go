@@ -64,9 +64,13 @@ var matrixCallers = []struct {
 	{"admin", "u3:admin"},
 }
 
-// matrixPolicy stands in for the Cerbos policies in cerbos/policies (whose
-// own tests run with make cerbos-test): the roles allowed each action on
-// each resource kind. Keep the two in sync. It is deliberately asymmetric (an
+// matrixPolicy stands in for the Cerbos policies the PDP serves: the roles
+// allowed each action on each resource kind. Keep the two in sync.
+// vogel:component cerbos begin
+// The bundled policies are in cerbos/policies, whose own tests run with make
+// cerbos-test.
+// vogel:component cerbos end
+// It is deliberately asymmetric (an
 // auditor may view an entry but not list them) so a route wired to the wrong
 // action shows up as a wrong cell.
 var matrixPolicy = map[string]map[string][]string{

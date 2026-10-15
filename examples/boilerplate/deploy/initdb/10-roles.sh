@@ -13,13 +13,14 @@
 #   app_migrator  owns the schemas and tables: only the one-shot "migrate"
 #                 (./api migrate up) and "grants" (runtime-grants.sql)
 #                 services log in with it.
-#   app_runtime   owns nothing: api and worker log in with it. It cannot
+#   app_runtime   owns nothing: the serving processes log in with it. It cannot
 #                 create, alter or drop objects, so it cannot disable
 #                 audit_log's append-only triggers.
 #
 # The table-level grants that depend on objects created by the migrations
-# (audit_log, the goose version tables, River's schema) are applied after
-# every "migrate up" by the "grants" service with runtime-grants.sql.
+# (audit_log, the goose version tables and, with the worker, River's schema)
+# are applied after every "migrate up" by the "grants" service with
+# runtime-grants.sql.
 #
 # The passwords come from the environment (deploy/.env through compose); this
 # file holds no secret. The image may source this script instead of
@@ -44,8 +45,9 @@ ALTER ROLE app_runtime LOGIN PASSWORD :'runtime_password';
 -- Nobody but these two roles (and the superuser) connects to this database.
 REVOKE ALL ON DATABASE :"dbname" FROM PUBLIC;
 GRANT CONNECT ON DATABASE :"dbname" TO app_migrator, app_runtime;
--- CREATE on the database lets the migrator create River's schema
--- (WORKER_SCHEMA) and the trusted pgcrypto extension. app_runtime gets none.
+-- CREATE on the database lets the migrator create the trusted pgcrypto
+-- extension (and, with the worker, River's schema, WORKER_SCHEMA).
+-- app_runtime gets none.
 GRANT CREATE ON DATABASE :"dbname" TO app_migrator;
 
 -- PostgreSQL < 15 lets PUBLIC create in schema public; 15+ already does not.

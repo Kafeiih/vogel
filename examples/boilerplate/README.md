@@ -1,5 +1,6 @@
 # Boilerplate
 
+<!-- vogel:only begin -->
 Un boilerplate de servicio HTTP + worker, listo para copiar como punto de partida
 de un servicio nuevo. A diferencia de `examples/api` (que muestra cómo cablear
 `vogel` en el mínimo espacio posible), este directorio es una aplicación con
@@ -14,6 +15,14 @@ migraciones y colas de trabajo. Lo que queda acá es exclusivamente lo que un
 boilerplate necesita tener propio: los binarios de entrada, el router, la
 configuración de la aplicación, y el andamiaje de ejemplo para agregar
 negocio.
+
+`create-vogel-app` genera un repositorio nuevo a partir de este directorio y
+pregunta qué componentes opcionales conservar (worker, notificaciones, PDP de
+Cerbos empaquetado y storage S3):
+
+```bash
+go run github.com/kafeiih/vogel/cmd/create-vogel-app@<versión> <nombre>
+```
 
 ## Módulo anidado — por qué tiene su propio `go.mod`
 
@@ -55,19 +64,24 @@ go mod tidy
 Sin ese paso, el `go.mod` copiado sigue apuntando a `../..` — una ruta que ya
 no existe fuera de este repositorio — y nada compila.
 
+<!-- vogel:only end -->
 ## Arranque rápido
 
 ```bash
+# vogel:only begin
 cd examples/boilerplate
+# vogel:only end
 cp .env.example .env    # ver más abajo si el archivo no existe en su copia
-docker compose -f deploy/docker-compose.developer.yaml up -d   # Postgres + Cerbos
+docker compose -f deploy/docker-compose.developer.yaml up -d   # infraestructura local
 go run ./cmd/api start-from-migrate   # o: make dev
 ```
 
+<!-- vogel:component cerbos begin -->
 El Cerbos local sirve las políticas de `cerbos/policies` y las recarga al
 guardar. `make cerbos-test` las compila y corre sus tests; `make cerbos-smoke`
 construye la imagen del PDP y prueba que las sirve (ver `cerbos/README.md`).
 
+<!-- vogel:component cerbos end -->
 > Este agente no pudo crear `.env.example` en este repositorio por una regla
 > de permisos que bloquea la escritura de archivos con forma de `.env`. Cree
 > el suyo con este contenido antes del primer arranque:
@@ -79,7 +93,7 @@ construye la imagen del PDP y prueba que las sirve (ver `cerbos/README.md`).
 > APP_VERSION=0.1.0
 > APP_TIMEOUT=30s
 >
-> DB_URL=postgres://postgres:postgres@localhost:5433/boilerplate_db?sslmode=disable
+> DB_URL=postgres://postgres:postgres@localhost:5433/bluprint_dev?sslmode=disable
 > DB_MAX_CONNS=25
 > DB_MIN_CONNS=5
 > DB_MAX_CONN_LIFETIME=1h
@@ -99,11 +113,18 @@ construye la imagen del PDP y prueba que las sirve (ver `cerbos/README.md`).
 > ```
 >
 > Variables adicionales (todas opcionales, con default razonable si se
-> omiten): `WORKER_SCHEMA`, `WORKER_DEFAULT_MAX_WORKERS`, `WORKER_QUEUES`,
-> `STORAGE_CONFIGS` (+ `STORAGE_<NOMBRE>_*`), `NOTIFICATION_PROVIDER`,
-> `NOTIFICATION_DEFAULT_FROM`, `SMTP_*`, `SENDGRID_API_KEY`,
-> `METRICS_LISTEN_ADDR`. Ver `internal/infrastructure/config/config.go` para
-> el detalle completo de cada una.
+> omiten; ver `internal/infrastructure/config/config.go` para el detalle
+> completo de cada una): `METRICS_LISTEN_ADDR`.
+<!-- vogel:component worker begin -->
+> Worker: `WORKER_SCHEMA`, `WORKER_DEFAULT_MAX_WORKERS`, `WORKER_QUEUES`.
+<!-- vogel:component worker end -->
+<!-- vogel:component storage begin -->
+> Storage: `STORAGE_CONFIGS` (+ `STORAGE_<NOMBRE>_*`).
+<!-- vogel:component storage end -->
+<!-- vogel:component notification begin -->
+> Notificaciones: `NOTIFICATION_PROVIDER`, `NOTIFICATION_DEFAULT_FROM`,
+> `SMTP_*`, `SENDGRID_API_KEY`.
+<!-- vogel:component notification end -->
 >
 > `SWAGGER_ENABLED` (opcional, `false` por defecto) sirve la UI y la spec de
 > Swagger en `/v1/swagger/`. Es un opt-in explícito, independiente de
@@ -131,9 +152,8 @@ construye la imagen del PDP y prueba que las sirve (ver `cerbos/README.md`).
 > | `ZITADEL_INTROSPECTION_CACHE_MAX_ENTRIES` | `10000` | Resultados en caché. |
 >
 > `CERBOS_PLAINTEXT` (opcional, `false` por defecto) desactiva TLS hacia el
-> PDP de Cerbos. Sin ella la conexión gRPC usa TLS; el contenedor de
-> `docker-compose.developer.yaml` escucha sin TLS, por eso el `.env` local la
-> pone en `true`. Nunca la active en staging ni en producción: las decisiones
+> PDP de Cerbos. Sin ella la conexión gRPC usa TLS; el contenedor local de
+> Cerbos escucha sin TLS, por eso el `.env` local la pone en `true`. Nunca la active en staging ni en producción: las decisiones
 > de autorización viajarían en texto plano. Reemplaza a `CERBOS_TLS`: si esa
 > variable sigue definida (con cualquier valor), el arranque falla con un
 > error que indica usar `CERBOS_PLAINTEXT`, para que la migración no pase
@@ -149,14 +169,30 @@ construye la imagen del PDP y prueba que las sirve (ver `cerbos/README.md`).
 > su IP. Un valor inválido hace fallar el arranque.
 
 `docker compose -f deploy/docker-compose.developer.yaml` levanta Postgres
-y Cerbos para desarrollo local (sin MinIO: su imagen ya no se publica en
-Docker Hub; apunte `STORAGE_*` a cualquier endpoint S3-compatible si lo
-necesita). `docker compose -f
-deploy/docker-compose.yaml` es el compose de despliegue (API + worker +
-Postgres) que construye la imagen desde el `Dockerfile` de este directorio.
-Como el `go.mod` apunta a `../..` con el `replace`, el contexto de build es
-la **raíz del repositorio**, no este directorio (el compose ya lo configura
-así, y el `.dockerignore` de la raíz filtra lo que entra):
+para desarrollo local.
+<!-- vogel:component cerbos begin -->
+También levanta Cerbos, con las políticas de `cerbos/policies`.
+<!-- vogel:component cerbos end -->
+<!-- vogel:component storage begin -->
+No trae MinIO (su imagen ya no se publica en Docker Hub): apunte `STORAGE_*`
+a cualquier endpoint S3-compatible si lo necesita.
+<!-- vogel:component storage end -->
+
+`docker compose -f deploy/docker-compose.yaml` es el compose de despliegue
+(Postgres, `migrate`, `grants` y la API) que construye las imágenes desde el
+`Dockerfile`, con la raíz del repositorio como contexto de build.
+<!-- vogel:component worker begin -->
+También corre el worker.
+<!-- vogel:component worker end -->
+<!-- vogel:component cerbos begin -->
+También corre el PDP de Cerbos, construido desde `cerbos/`.
+<!-- vogel:component cerbos end -->
+<!-- vogel:only begin -->
+
+Dentro de `vogel` esa raíz es la de `vogel`, no este directorio: como el
+`go.mod` apunta a `../..` con el `replace`, el build necesita el código de la
+librería (el compose ya lo configura así, y el `.dockerignore` de la raíz
+filtra lo que entra):
 
 ```bash
 # desde la raíz de vogel
@@ -167,32 +203,46 @@ docker build -f examples/boilerplate/Dockerfile --target worker -t boilerplate:w
 En una copia sin `replace` (ver "Cómo copiar este boilerplate"), el módulo
 es la raíz del contexto: construya desde ese directorio con `--build-arg
 APP_DIR=.` (o cambie el valor por defecto en el `Dockerfile`).
+<!-- vogel:only end -->
 
 El binario separa el arranque en fases, como `zitadel setup` / `zitadel
 start` / `zitadel start-from-setup`:
 
 | Subcomando | Qué hace | Cuándo usarlo |
 |---|---|---|
-| `./api migrate up` | Aplica todos los conjuntos de migraciones contra `DB_URL`, crea el esquema de River (`WORKER_SCHEMA`, default `river`) y aplica sus migraciones, y termina | En despliegue, como paso previo, con un rol migrador |
+| `./api migrate up` | Aplica todos los conjuntos de migraciones contra `DB_URL` y termina | En despliegue, como paso previo, con un rol migrador |
 | `./api server` (o `./api` sin argumentos) | Sirve la API; **no** toca el esquema | En despliegue, después de `migrate up`, con un rol que solo tenga `SELECT` e `INSERT` sobre `audit_log` |
-| `./api start-from-migrate` | Aplica las migraciones (River incluido) y luego sirve, en un solo proceso | En desarrollo local (`make dev`) |
+| `./api start-from-migrate` | Aplica las migraciones y luego sirve, en un solo proceso | En desarrollo local (`make dev`) |
+<!-- vogel:component worker begin -->
+
+`./api migrate up` y `./api start-from-migrate` también crean el esquema de
+River (`WORKER_SCHEMA`, default `river`) y aplican sus migraciones. El worker
+tiene sus propios subcomandos:
+
+| Subcomando | Qué hace | Cuándo usarlo |
+|---|---|---|
 | `./worker server` (o `./worker` sin argumentos) | Procesa jobs; **no** crea el esquema de River ni lo migra | En despliegue, después de `migrate up`, con un rol sin permiso `CREATE` |
 | `./worker start-from-migrate` | Crea el esquema de River, aplica sus migraciones y luego procesa jobs | En desarrollo local (`make worker`) |
+<!-- vogel:component worker end -->
 
 `start-from-migrate` es una comodidad de desarrollo: el rol que migra queda
 como dueño de `audit_log` y puede deshabilitar sus triggers append-only, así
 que no sirve para producción. El compose de despliegue ya sigue el esquema de
 dos fases: un servicio `migrate` de una sola ejecución corre `migrate up` y
-`api` y `worker` arrancan con `server` solo cuando ese servicio terminó bien.
+los procesos que sirven arrancan con `server` solo cuando ese servicio
+terminó bien.
+<!-- vogel:component worker begin -->
 `WORKER_SCHEMA` se define una sola vez en el compose (bloque
 `x-worker-schema`) y llega con el mismo valor a `migrate`, `api` y `worker`:
-se toma de `deploy/.env` o, si no está, vale `river`. `migrate` no carga
+se toma de `deploy/.env` o, si no está, vale `river`.
+<!-- vogel:component worker end -->
+`migrate` no carga
 `.env` completo, así que el rol migrador no recibe los secretos de la
 aplicación. El compose ya aplica la receta de la sección «Un rol para
 migrar, otro para servir» del README de `vogel`: `deploy/initdb/10-roles.sh`
 crea `app_migrator` (dueño del esquema, lo usan `migrate` y `grants`) y
-`app_runtime` (el de `api` y `worker`) en el primer arranque del volumen, y
-el servicio `grants` aplica `deploy/initdb/runtime-grants.sql` después de
+`app_runtime` (el de los procesos que sirven) en el primer arranque del
+volumen, y el servicio `grants` aplica `deploy/initdb/runtime-grants.sql` después de
 cada `migrate up`. Las contraseñas salen de `deploy/.env`
 (`POSTGRES_PASSWORD`, `APP_MIGRATOR_PASSWORD`, `APP_RUNTIME_PASSWORD`,
 obligatorias) y Postgres no publica ningún puerto en el host. Detalle,
@@ -203,14 +253,16 @@ Verificación:
 curl -s localhost:8080/v1/healthz
 ```
 
+<!-- vogel:component worker begin -->
 El worker se arranca aparte:
 
 ```bash
 go run ./cmd/worker start-from-migrate   # o: make worker
 ```
 
-El `Makefile` resume estos comandos (`make dev`, `make worker`, `make
-dev-infra`, `make migrate-up`, `make lint`, `make docker-build`, ...).
+<!-- vogel:component worker end -->
+El `Makefile` resume estos comandos (`make dev`, `make dev-infra`, `make
+migrate-up`, `make lint`, `make docker-build`, ...).
 
 ## Qué trae de `vogel` y qué es propio
 
@@ -219,20 +271,31 @@ dev-infra`, `make migrate-up`, `make lint`, `make docker-build`, ...).
 | Autenticación | `vogel/auth` + `vogel/auth/zitadel` | — |
 | Autorización | `vogel/authz` + `vogel/authz/cerbos` | — |
 | Auditoría | `vogel/audit` + `vogel/audit/postgres` + `vogel/audit/migrations` | `internal/interfaces/http/handler/audit_handler.go` — un handler propio y delgado que reutiliza `vogel/audit/httpx.FiltersFromRequest`/`ToResponse`/`ToResponseList`, para poder conservar sus propias anotaciones Swagger (que sólo se leen de los comentarios sobre la función handler concreta de la app, nunca de un tipo importado) |
-| Storage S3-compatible | `vogel/storage` + `vogel/storage/s3` | — |
-| Notificaciones (email) | `vogel/notification` + `vogel/notification/smtp` + `vogel/notification/sendgrid` | — |
 | Postgres, métricas de pool | `vogel/postgres` | — |
 | Migraciones de esquema | `vogel/migrate` | `internal/infrastructure/database/migrations/` (las tablas propias de este servicio) + `internal/infrastructure/database/migrate/create.go` (scaffolder de CLI para nuevas migraciones — ver nota abajo) |
-| Cola de trabajos en background | `vogel/worker` (River) | `internal/application/jobs/` (los jobs de negocio concretos) |
 | Middleware HTTP (recovery, rate limit, headers de seguridad, logging estructurado, contexto de request, métricas) | `vogel/httpx/middleware` | — |
 | Respuestas HTTP | `vogel/httpx/response` | — |
 | Parseo/validación de requests | `vogel/request` | — |
 | Logging estructurado | `vogel/logger` | — |
-| Binarios de entrada | — | `cmd/api/main.go`, `cmd/worker/main.go` |
+| Binarios de entrada | — | `cmd/api/main.go` |
 | Router | — | `internal/interfaces/http/router.go`, `server.go` |
 | Health checks | — | `internal/interfaces/http/handler/health_handler.go` (`vogel` no trae uno: cada app decide qué considera "sano") |
 | Servidor de métricas dedicado | — | `internal/interfaces/http/metrics_server.go` (`/metrics` en un puerto aparte del tráfico público — `vogel` no lo define) |
-| Configuración | — | `internal/infrastructure/config/config.go`: los *structs* de configuración (`Config`, `AppConfig`, ...) son propios — `vogel/config` deliberadamente no los define, sólo expone primitivas de lectura (`config.String`, `config.Int32`, `config.Duration`, `config.Require`, un acumulador `config.Errors`, ...). Donde el `Config` de un adaptador de `vogel` ya coincide campo a campo con lo que este boilerplate necesita (`postgres.Config`, `worker.Config`, `zitadel.Config`, `cerbos.Config`, `storage/s3.Config`, `notification/smtp.Config`, `notification/sendgrid.Config`), `Config` lo embebe directamente en vez de duplicarlo en un struct local que después hay que convertir a mano |
+| Configuración | — | `internal/infrastructure/config/config.go`: los *structs* de configuración (`Config`, `AppConfig`, ...) son propios — `vogel/config` deliberadamente no los define, sólo expone primitivas de lectura (`config.String`, `config.Int32`, `config.Duration`, `config.Require`, un acumulador `config.Errors`, ...). Donde el `Config` de un adaptador de `vogel` ya coincide campo a campo con lo que este boilerplate necesita (`postgres.Config`, `zitadel.Config`, `cerbos.Config` y los de los componentes opcionales), `Config` lo embebe directamente en vez de duplicarlo en un struct local que después hay que convertir a mano |
+
+<!-- vogel:component worker begin -->
+- **Cola de trabajos en background**: `vogel/worker` (River) para la cola;
+  propios son el binario `cmd/worker/main.go` y los jobs de negocio concretos
+  de `internal/application/jobs/`.
+<!-- vogel:component worker end -->
+<!-- vogel:component notification begin -->
+- **Notificaciones (email)**: `vogel/notification` +
+  `vogel/notification/smtp` + `vogel/notification/sendgrid`, usados por el
+  job `send_email` del worker.
+<!-- vogel:component notification end -->
+<!-- vogel:component storage begin -->
+- **Storage S3-compatible**: `vogel/storage` + `vogel/storage/s3`.
+<!-- vogel:component storage end -->
 
 Sobre `internal/infrastructure/database/migrate/create.go`: es un scaffolder
 de CLI (`go run ./cmd/api migrate create <nombre>`) que escribe un archivo
@@ -267,11 +330,13 @@ las de audit: `migrate.Down` deshace la última migración del conjunto que
 recibe, y la única migración de audit es la que crea `audit_log`, así que
 incluirla borraría el registro de auditoría en cada `migrate down`.
 
+<!-- vogel:component worker begin -->
 Las migraciones de River no son de goose: `migrate up` las aplica (son
 idempotentes y registra cada versión aplicada), pero `migrate down` nunca las
 revierte —sus migraciones de bajada borran las tablas de jobs y todos los
 jobs encolados— y `migrate status` no las lista.
 
+<!-- vogel:component worker end -->
 `internal/infrastructure/database/migrations/` trae una única migración de
 ejemplo (`001_enable_pgcrypto.sql`, habilita la extensión `pgcrypto` para
 `gen_random_uuid()`) — bórrela o renumérela al agregar las tablas reales de
@@ -296,33 +361,54 @@ su propio handler de auditoría (si no reutiliza `audit_handler.go` tal cual),
 aplique el mismo criterio con `httpx.WithMessages(...)` de
 `vogel/audit/httpx`.
 
+## Publicar imágenes y CI
+
+Al empujar un tag `vX.Y.Z`, `.github/workflows/release.yaml` construye y sube
+a GHCR, con la versión `X.Y.Z` (sin `:latest`) y cada una con SBOM y
+*provenance*:
+
+- `ghcr.io/<owner>/<repo>` (api).
+<!-- vogel:component worker begin -->
+- `ghcr.io/<owner>/<repo>-worker`.
+<!-- vogel:component worker end -->
+<!-- vogel:component cerbos begin -->
+- `ghcr.io/<owner>/<repo>-cerbos`, que antes pasa el *smoke test*.
+<!-- vogel:component cerbos end -->
+
+Es todo o nada: los tags se crean solo cuando todas las imágenes salieron
+bien. La primera publicación crea paquetes privados: vincúlelos al
+repositorio y elija su visibilidad en la configuración del paquete.
+`deploy/docker-compose.yaml` descarga esas imágenes con `APP_VERSION`.
+
+`.github/workflows/ci.yaml` corre lint, tests, `govulncheck`, `gitleaks` y
+Trivy en cada push a `main`, en cada pull request y cada lunes.
+<!-- vogel:only begin -->
+
+Dentro de `vogel` estos workflows no corren (GitHub solo lee el `.github/` de
+la raíz del repositorio); el CI de `vogel` cubre el boilerplate.
+
 ## Cómo copiar este boilerplate para un servicio nuevo
+
+La forma recomendada es `create-vogel-app` (ver el comienzo de este README):
+hace todos estos pasos. A mano:
 
 1. Copie `examples/boilerplate/` a un repositorio nuevo.
 2. Quite el `replace` y fije una versión real de `vogel` (ver arriba).
 3. Renombre el módulo (`go.mod`) al de su servicio.
 4. Reemplace `internal/infrastructure/database/migrations/001_enable_pgcrypto.sql`
    por las migraciones reales de su dominio.
-5. Sume los dotfiles de desarrollo que todavía no trae (`.gitignore`,
-   `.golangci.yml`, `.air.toml` para *live reload*); tómelos como referencia
-   del `go-bluprint` original si los necesita. El `.dockerignore` sí viene:
-   en la raíz de la copia deja fuera del build `.env`, `secrets/`, las
-   claves y lo que no es código.
+5. Los dotfiles ya vienen: `.gitignore`, `.golangci.yml`, `.gitleaks.toml` y
+   `.dockerignore` (este último, en la raíz de la copia, deja fuera del build
+   `.env`, `secrets/`, las claves y lo que no es código).
 6. Cree su propio `.env` a partir de la sección "Arranque rápido" de este
    README.
 7. Arranque un módulo de negocio nuevo siguiendo `docs/USAGE_GUIDE.md`.
-8. Publique sus imágenes con `.github/workflows/release.yaml`: al empujar un
-   tag `vX.Y.Z` construye y sube a GHCR `ghcr.io/<owner>/<repo>` (api),
-   `-worker` y `-cerbos` con la versión `X.Y.Z` (sin `:latest`), cada una con
-   SBOM y *provenance*; la de Cerbos pasa antes el *smoke test*. Es todo o
-   nada: los tags se crean solo cuando las tres imágenes salieron bien. Borre
-   el job del componente que no use (y su entrada y su línea `tag` en el job
-   `publish`) y cambie los `image:` de
-   `deploy/docker-compose.yaml` (hoy `ghcr.io/kafeiih/vogel-boilerplate*`) a
-   esos nombres. La primera publicación crea paquetes privados: vincúlelos al
-   repositorio y elija su visibilidad en la configuración del paquete. Dentro
-   de `vogel` este workflow no corre (GitHub solo lee el `.github/` de la
-   raíz del repositorio).
+8. Cambie los `image:` de `deploy/docker-compose.yaml` (hoy
+   `ghcr.io/kafeiih/vogel-boilerplate*`) a los nombres que publica
+   `release.yaml` (ver "Publicar imágenes y CI"), y borre el job del
+   componente que no use (y su entrada y su línea `tag` en el job `publish`).
+
+<!-- vogel:only end -->
 
 ## Agregar un módulo de negocio nuevo
 
@@ -330,16 +416,20 @@ aplique el mismo criterio con `httpx.WithMessages(...)` de
 (`proveedor`): dominio, repositorio Postgres sobre `vogel/pgxtx`, comandos de
 aplicación que auditan con `vogel/audit` (recordando pasar `audit.SourceHTTP`
 o `audit.SourceWorker` según si el call site es un handler o un job), y un
-handler HTTP con sus propias anotaciones Swagger. `internal/application/jobs/`
-tiene dos jobs de referencia (`example.go`, `send_email.go`) para el mismo
-patrón del lado del worker.
+handler HTTP con sus propias anotaciones Swagger.
+<!-- vogel:component worker begin -->
+`internal/application/jobs/` tiene jobs de referencia (`example.go`) para el
+mismo patrón del lado del worker.
+<!-- vogel:component worker end -->
 
 ## Documentación adicional
 
 - `docs/USAGE_GUIDE.md` — cómo agregar un módulo de negocio nuevo, paso a paso.
 - `docs/CERBOS_POLICIES.md` — cómo escribir políticas Cerbos para este boilerplate.
+<!-- vogel:component cerbos begin -->
 - `cerbos/README.md` — cómo se construye, valida y despliega la imagen del PDP
   con las políticas de `cerbos/policies`.
+<!-- vogel:component cerbos end -->
 - `deploy/RUNBOOK.md` — operación en producción.
 - `docs/swagger.json` / `docs/swagger.yaml` — spec generada por `swag init`;
   regenerar con `make gen-docs` después de anotar un handler nuevo. La UI y

@@ -1,0 +1,230 @@
+# Checks every push to main and every pull request: lint, unit tests,
+# govulncheck, a secret scan, Trivy (config and images) and the release
+# template's image-name logic.
+# vogel:only begin
+#
+# Template: inside the vogel repository this file never runs (GitHub only
+# reads the workflows of the repository root); vogel's own CI covers the
+# boilerplate there. create-vogel-app ships it to the generated repository.
+# vogel:only end
+#
+# No paths-ignore anywhere: required checks must always report, and a skipped
+# workflow never does, which would block documentation-only pull requests.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Weekly, so a new advisory against what is already deployed (govulncheck,
+  # Trivy) turns CI red even when nobody pushes.
+  schedule:
+    - cron: "17 6 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      # Without --build-tags=integration the linter skips every file with
+      # //go:build integration. Tags are additive, so this run also covers
+      # the untagged files. The rules are in .golangci.yml.
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.13.2
+          args: --build-tags=integration
+
+  test:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      # go test does not compile packages without tests; go build does.
+      - name: Build
+        run: go build ./...
+
+      - name: Test
+        run: go test ./... -race -cover
+
+  # Known vulnerabilities in dependencies, through the call graph: it fails
+  # only when this code reaches the vulnerable function. Its result depends
+  # on vuln.go.dev at the time of the run, so a pull request can turn red
+  # without touching a dependency; the fix is a bump.
+  vuln:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      # Pinned, so a new scanner release does not change the result without
+      # a change in this repository. Bumped by hand.
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
+
+      - name: Scan
+        run: govulncheck ./...
+
+  # Runs the gitleaks CLI from a pinned release, verified against a SHA-256
+  # recorded here (not fetched from the release), so a replaced asset fails
+  # the job. It rescans the full history; .gitleaks.toml holds the rules.
+  gitleaks:
+    name: gitleaks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GITLEAKS_VERSION: 8.30.1
+      GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install gitleaks
+        run: |
+          set -euo pipefail
+          tarball="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -fsSLo "$RUNNER_TEMP/$tarball" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${tarball}"
+          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/$tarball" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP" gitleaks
+          "$RUNNER_TEMP/gitleaks" version
+
+      - name: Scan full history
+        run: '"$RUNNER_TEMP/gitleaks" git --redact --no-banner --exit-code 1 .'
+
+  # Runs the trivy CLI from a pinned release, verified against a SHA-256
+  # recorded here, so a replaced asset fails the job. trivy-action is not
+  # used: its tags were rewritten in a supply-chain compromise, and the CLI
+  # needs no wrapper. Like govulncheck, the result depends on the
+  # vulnerability database at the time of the run.
+  trivy:
+    name: Trivy image + config
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      TRIVY_VERSION: 0.75.0
+      TRIVY_SHA256: c6e65abddb348e25f10549df887045629cf28cc72453cd1c63acb717316b3f3f
+      TRIVY_NO_PROGRESS: "true"
+      TRIVY_SKIP_VERSION_CHECK: "true"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install trivy
+        run: |
+          set -euo pipefail
+          tarball="trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          curl -fsSLo "$RUNNER_TEMP/$tarball" \
+            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/${tarball}"
+          echo "${TRIVY_SHA256}  $RUNNER_TEMP/$tarball" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP" trivy
+          "$RUNNER_TEMP/trivy" --version
+
+      # Misconfigurations in the Dockerfiles (and any other IaC trivy knows).
+      # trivy has no docker-compose scanner, so the compose files are not
+      # covered by this step.
+      - name: Scan config
+        run: '"$RUNNER_TEMP/trivy" config --severity HIGH,CRITICAL --exit-code 1 .'
+
+      # The real Dockerfile, built the way release.yaml builds it: from the
+      # repository root, with APP_DIR=. (the module is the context root).
+      - name: Build images
+        run: |
+          set -euo pipefail
+          docker build --build-arg APP_DIR=. --target api -t app:api .
+          # vogel:component worker begin
+          docker build --build-arg APP_DIR=. --target worker -t app:worker .
+          # vogel:component worker end
+          # vogel:component cerbos begin
+          docker build -t app:cerbos cerbos
+          # vogel:component cerbos end
+
+      # --ignore-unfixed: a vulnerability with no released fix cannot be acted
+      # on with a bump, so it would only keep CI red. Accepted findings go in
+      # .trivyignore with a reason.
+      - name: Scan images
+        run: |
+          set -uo pipefail
+          status=0
+          "$RUNNER_TEMP/trivy" image --severity HIGH,CRITICAL --ignore-unfixed \
+            --exit-code 1 app:api || status=1
+          # vogel:component worker begin
+          "$RUNNER_TEMP/trivy" image --severity HIGH,CRITICAL --ignore-unfixed \
+            --exit-code 1 app:worker || status=1
+          # vogel:component worker end
+          # vogel:component cerbos begin
+          # The Cerbos image carries its own expiring ignore list: upstream
+          # findings with a fix that no Cerbos release ships yet.
+          "$RUNNER_TEMP/trivy" image --severity HIGH,CRITICAL --ignore-unfixed \
+            --ignorefile cerbos/.trivyignore \
+            --exit-code 1 app:cerbos || status=1
+          # vogel:component cerbos end
+          exit "$status"
+
+  # vogel:component cerbos begin
+  # Policies compile and pass their tests (the Dockerfile's validate stage),
+  # then the built PDP image serves them: an empty or misrouted policy store
+  # starts healthy and denies everything, which only the smoke test's ALLOW
+  # checks catch.
+  cerbos:
+    name: Cerbos policies
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Policy tests
+        run: cerbos/test.sh
+
+      - name: Smoke test
+        run: cerbos/smoke.sh
+
+  # vogel:component cerbos end
+  # The release workflow's tag and image-name logic.
+  release-template:
+    name: Release image names
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: image-ref test
+        run: .github/workflows/image-ref_test.sh
