@@ -2,6 +2,7 @@ package request_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -24,6 +25,20 @@ func TestDefaultMessages_ExactTexts(t *testing.T) {
 	assert.Equal(t, "amount must be a valid decimal", m.InvalidDecimal("amount"))
 	assert.Equal(t, "Content-Type must be application/json or application/*+json", m.UnsupportedMediaType)
 	assert.Equal(t, "Request body contains data after the JSON value", m.TrailingData)
+	assert.Equal(t, "name must be at most 256 characters long", m.TooLong("name", 256))
+}
+
+// TestWithMessages_OverridesTooLong verifies the MaxLen message can be
+// localized and receives the configured maximum.
+func TestWithMessages_OverridesTooLong(t *testing.T) {
+	d := request.New(request.WithMessages(request.Messages{
+		TooLong: func(field string, max int) string { return fmt.Sprintf("%s: máximo %d caracteres", field, max) },
+	}))
+
+	v := d.NewValidator()
+	v.MaxLen("name", "abcd", 3)
+
+	assert.Equal(t, "name: máximo 3 caracteres", v.Errors()["name"])
 }
 
 // TestWithMessages_OverridesDecodeMessage verifies a decode-path message

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
@@ -130,6 +131,25 @@ func TestHandler_List_ValidationFailureReturns400(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+}
+
+func TestHandler_List_OverLongFilterReturns400(t *testing.T) {
+	repo := &fakeRepository{}
+	h, err := NewHandler(repo, discardLogger())
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+
+	r := httptest.NewRequest(http.MethodGet, "/audit?actor_id="+strings.Repeat("a", MaxFilterLength+1), nil)
+	rec := httptest.NewRecorder()
+	h.List(rec, r)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if repo.gotFilters.ActorID != "" {
+		t.Errorf("repository was queried with an over-long filter")
 	}
 }
 

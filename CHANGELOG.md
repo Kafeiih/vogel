@@ -8,6 +8,15 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ### Agregado
 
+- **`request`: `Validator.MaxLen(param, value, max)` y el mensaje
+  `Messages.TooLong(field, max)`.** Registra un error de validación si el
+  valor tiene más de `max` caracteres, contados en runas
+  (`utf8.RuneCountInString`) y no en bytes; un valor vacío siempre pasa y el
+  valor se devuelve sin cambios. El texto por defecto es
+  `<campo> must be at most <max> characters long` y se localiza con
+  `WithMessages` como los demás.
+- **`audit/httpx`: constante `MaxFilterLength`** (256), el largo máximo de
+  los filtros de texto libre de `FiltersFromRequest`.
 - **`httpx/middleware`: `RealIP(trusted ...netip.Prefix)` y
   `ParseTrustedProxies`.** Reemplazo del `middleware.RealIP` de chi, que cree
   `X-Forwarded-For`, `X-Real-IP` y `True-Client-IP` de cualquier cliente (un
@@ -80,6 +89,23 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ### Cambiado
 
+- **`audit/httpx.FiltersFromRequest` rechaza filtros de texto libre
+  demasiado largos.** `actor_id`, `resource_type`, `operation_name`,
+  `aggregate_type` y `aggregate_id` de más de `MaxFilterLength` (256)
+  caracteres registran un error de validación, y `Handler.List` responde 400
+  sin consultar el repositorio. Antes se pasaban tal cual a la consulta.
+- **`httpx/middleware.SecurityHeaders` agrega aislamiento entre orígenes y
+  `Cache-Control: private, no-store`.** Ahora envía
+  `Cross-Origin-Opener-Policy: same-origin` y
+  `Cross-Origin-Resource-Policy: same-origin`, y `Cache-Control` pasa de
+  `no-store` a `private, no-store` para que ninguna caché compartida conserve
+  la respuesta. Cambio de comportamiento: CORP `same-origin` hace que el
+  navegador bloquee el uso embebido de las respuestas desde otro origen
+  (`<img>`, `<script>`, `fetch` en modo `no-cors`); quien sirva recursos
+  públicos a otros orígenes puede cambiar `Cross-Origin-Resource-Policy` (por
+  ejemplo a `cross-origin`) en ese handler, igual que ya podía cambiar
+  `Cache-Control`, porque todas las cabeceras se fijan antes de llamar al
+  handler.
 - **`httpx/middleware.StructuredLogger` registra el ID de correlación del
   cliente.** Si la request trae uno (`reqctx.ClientRequestIDFromContext`, que
   `RequestID` guarda saneado), el log de acceso lo incluye bajo

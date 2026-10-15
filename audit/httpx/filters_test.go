@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -210,5 +211,39 @@ func TestAllowedValues_DerivedFromAuditConstants(t *testing.T) {
 	}
 	if want := []string{"success", "failed", "partial", "noop"}; !slices.Equal(statuses, want) {
 		t.Errorf("statuses = %v, want %v", statuses, want)
+	}
+}
+
+func TestFiltersFromRequest_OverLongFreeTextFiltersRecordValidationErrors(t *testing.T) {
+	params := []string{"actor_id", "resource_type", "operation_name", "aggregate_type", "aggregate_id"}
+	for _, param := range params {
+		t.Run(param, func(t *testing.T) {
+			q := url.Values{}
+			q.Set(param, strings.Repeat("a", MaxFilterLength+1))
+			r := httptest.NewRequest(http.MethodGet, "/audit?"+q.Encode(), nil)
+			v := request.NewValidator()
+
+			FiltersFromRequest(v, r)
+
+			if _, ok := v.Errors()[param]; !ok {
+				t.Fatalf("expected a validation error for %s, got %v", param, v.Errors())
+			}
+		})
+	}
+}
+
+func TestFiltersFromRequest_FreeTextFilterAtMaxLengthIsAccepted(t *testing.T) {
+	q := url.Values{}
+	q.Set("actor_id", strings.Repeat("a", MaxFilterLength))
+	r := httptest.NewRequest(http.MethodGet, "/audit?"+q.Encode(), nil)
+	v := request.NewValidator()
+
+	f := FiltersFromRequest(v, r)
+
+	if v.HasErrors() {
+		t.Fatalf("unexpected validation errors: %v", v.Errors())
+	}
+	if len(f.ActorID) != MaxFilterLength {
+		t.Errorf("len(ActorID) = %d, want %d", len(f.ActorID), MaxFilterLength)
 	}
 }

@@ -104,6 +104,10 @@ type Messages struct {
 	// strconv.ParseBool.
 	InvalidBoolean func(field string) string
 
+	// TooLong is used by Validator.MaxLen when the value has more than max
+	// characters (runes).
+	TooLong func(field string, max int) string
+
 	// InvalidDecimal is not read by anything in this package directly. It
 	// exists so a decimal-parsing helper package outside request (for
 	// example, decimalx) can report a validation failure with wording that
@@ -148,6 +152,9 @@ func DefaultMessages() Messages {
 		InvalidIntegerList: func(field string) string { return field + " must contain valid integers" },
 		InvalidBoolean:     func(field string) string { return field + " must be a boolean" },
 		InvalidDecimal:     func(field string) string { return field + " must be a valid decimal" },
+		TooLong: func(field string, max int) string {
+			return fmt.Sprintf("%s must be at most %d characters long", field, max)
+		},
 	}
 }
 
@@ -219,6 +226,9 @@ func WithMessages(m Messages) Option {
 		}
 		if m.InvalidDecimal != nil {
 			d.messages.InvalidDecimal = m.InvalidDecimal
+		}
+		if m.TooLong != nil {
+			d.messages.TooLong = m.TooLong
 		}
 	}
 }

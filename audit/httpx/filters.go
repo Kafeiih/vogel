@@ -7,6 +7,14 @@ import (
 	"github.com/kafeiih/vogel/request"
 )
 
+// MaxFilterLength is the maximum length, in characters, accepted for each
+// free-text filter (actor_id, resource_type, operation_name, aggregate_type,
+// aggregate_id). A longer value is a validation error (HTTP 400) instead of
+// being passed to the repository: no legitimate identifier or type name is
+// that long, and bounding it keeps an attacker from shipping arbitrarily
+// large strings into the database query.
+const MaxFilterLength = 256
+
 // operationCategories and statuses are the allowed values for the
 // operation_category and status query parameters. They are derived from
 // audit's own constants rather than repeated as literals: a value renamed
@@ -29,7 +37,8 @@ func stringsOf[T ~string](vals []T) []string {
 
 // FiltersFromRequest parses audit.Filters from r's query parameters,
 // recording any validation error on v (an invalid resource_id, an
-// out-of-range operation_category or status, a malformed from/to). It does
+// out-of-range operation_category or status, a malformed from/to, a
+// free-text filter longer than MaxFilterLength characters). It does
 // not check v.HasErrors() itself — the caller decides when to check and
 // respond, so this composes with validating other request state before a
 // response is written.
@@ -49,16 +58,21 @@ func FiltersFromRequest(v *request.Validator, r *http.Request) audit.Filters {
 	from := v.TimeQuery(r, "from")
 	to := v.TimeQuery(r, "to")
 	resourceID := v.UUIDQuery(r, "resource_id")
+	actorID := v.MaxLen("actor_id", q.Get("actor_id"), MaxFilterLength)
+	resourceType := v.MaxLen("resource_type", q.Get("resource_type"), MaxFilterLength)
+	operationName := v.MaxLen("operation_name", q.Get("operation_name"), MaxFilterLength)
+	aggregateType := v.MaxLen("aggregate_type", q.Get("aggregate_type"), MaxFilterLength)
+	aggregateID := v.MaxLen("aggregate_id", q.Get("aggregate_id"), MaxFilterLength)
 
 	return audit.Filters{
-		ActorID:           q.Get("actor_id"),
-		ResourceType:      q.Get("resource_type"),
+		ActorID:           actorID,
+		ResourceType:      resourceType,
 		ResourceID:        resourceID,
 		OperationCategory: category,
-		OperationName:     q.Get("operation_name"),
+		OperationName:     operationName,
 		Status:            status,
-		AggregateType:     q.Get("aggregate_type"),
-		AggregateID:       q.Get("aggregate_id"),
+		AggregateType:     aggregateType,
+		AggregateID:       aggregateID,
 		From:              from,
 		To:                to,
 		Limit:             limit,
