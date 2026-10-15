@@ -11,7 +11,7 @@ func TestValidateName(t *testing.T) {
 			t.Fatalf("ValidateName(%q) = %v", n, err)
 		}
 	}
-	for _, n := range []string{"", "1abc", "-abc", "My-Service", "my_service", "a/b", "a" + strings.Repeat("b", 50)} {
+	for _, n := range []string{"", "1abc", "-abc", "svc-", "a--b", "My-Service", "my_service", "a/b", "a" + strings.Repeat("b", 50)} {
 		if err := ValidateName(n); err == nil {
 			t.Fatalf("ValidateName(%q) = nil, want error", n)
 		}
@@ -37,7 +37,7 @@ func TestValidateOwner(t *testing.T) {
 			t.Fatalf("ValidateOwner(%q) = %v", o, err)
 		}
 	}
-	for _, o := range []string{"", "-acme", "acme/x", "acme corp", strings.Repeat("a", 40)} {
+	for _, o := range []string{"", "-acme", "acme-", "ac--me", "acme/x", "acme corp", strings.Repeat("a", 40)} {
 		if err := ValidateOwner(o); err == nil {
 			t.Fatalf("ValidateOwner(%q) = nil, want error", o)
 		}

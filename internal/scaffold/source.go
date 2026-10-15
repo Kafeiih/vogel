@@ -180,6 +180,9 @@ func extractFile(root *os.Root, rel string, r io.Reader, hdr *tar.Header) error 
 		}
 	}
 	f, err := root.OpenFile(rel, os.O_WRONLY|os.O_CREATE|os.O_EXCL, fileMode(hdr.Mode&0o111 != 0))
+	if errors.Is(err, fs.ErrExist) {
+		return fmt.Errorf("tarball has a duplicate entry for %s", rel)
+	}
 	if err != nil {
 		return err
 	}

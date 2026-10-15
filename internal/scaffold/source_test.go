@@ -112,6 +112,7 @@ func TestExtractBoilerplateRejects(t *testing.T) {
 		{"escaping hardlink", []tarEntry{{name: "vogel-0.10.0/examples/boilerplate/hl", typeflag: tar.TypeLink, linkname: "../evil"}}, 1 << 20, "link"},
 		{"second top-level dir", []tarEntry{{name: "other/examples/boilerplate/x", body: "x"}}, 1 << 20, "top-level"},
 		{"size limit", []tarEntry{{name: "vogel-0.10.0/examples/boilerplate/big", body: strings.Repeat("a", 100)}}, 50, "limit"},
+		{"duplicate entry", []tarEntry{{name: "vogel-0.10.0/examples/boilerplate/dup", body: "a"}, {name: "vogel-0.10.0/examples/boilerplate/dup", body: "b"}}, 1 << 20, "duplicate entry"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

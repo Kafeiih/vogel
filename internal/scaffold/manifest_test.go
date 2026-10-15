@@ -176,3 +176,15 @@ func TestSelectInteractive(t *testing.T) {
 		t.Fatalf("Cascaded = %s, want notification", got)
 	}
 }
+
+// TestLoadManifestMissingNamesMinimumVersion pins the message for a vogel
+// version whose boilerplate predates create-vogel-app (no manifest).
+func TestLoadManifestMissingNamesMinimumVersion(t *testing.T) {
+	_, err := LoadManifest(t.TempDir())
+	if err == nil {
+		t.Fatal("LoadManifest(empty dir) error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "predates create-vogel-app") {
+		t.Fatalf("error %q does not say the template predates create-vogel-app", err)
+	}
+}

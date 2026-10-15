@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -45,6 +46,9 @@ type Replacement struct {
 // LoadManifest reads ManifestPath from the boilerplate directory dir.
 func LoadManifest(dir string) (*Manifest, error) {
 	f, err := os.Open(filepath.Join(dir, filepath.FromSlash(ManifestPath))) //nolint:gosec // dir is the boilerplate copy this package just wrote
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("template manifest %s not found: this vogel version's boilerplate predates create-vogel-app; use a later vogel version (v0.10.0 or newer)", ManifestPath)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("template manifest: %w", err)
 	}

@@ -7,25 +7,28 @@ import (
 )
 
 var (
-	nameRe        = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
-	ownerRe       = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,38}$`)
+	nameRe        = regexp.MustCompile(`^[a-z][a-z0-9]*(-[a-z0-9]+)*$`)
+	ownerRe       = regexp.MustCompile(`^[A-Za-z0-9]+(-[A-Za-z0-9]+)*$`)
 	moduleHostRe  = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]*\.[a-z0-9.-]*[a-z0-9]$`)
 	moduleElemRe  = regexp.MustCompile(`^[A-Za-z0-9_~.-]+$`)
 	componentRe   = regexp.MustCompile(`^[a-z]+$`)
 	maxNameLength = 50
 )
 
-// ValidateName checks the project name: ^[a-z][a-z0-9-]*$, at most 50 chars.
+// ValidateName checks the project name: lowercase letters and digits in
+// dash-separated groups, starting with a letter (no leading, trailing or
+// doubled dash, which would make an invalid image name), at most 50 chars.
 func ValidateName(name string) error {
 	if !nameRe.MatchString(name) || len(name) > maxNameLength {
-		return fmt.Errorf("invalid name %q: use lowercase letters, digits and dashes, starting with a letter, at most %d characters", name, maxNameLength)
+		return fmt.Errorf("invalid name %q: use lowercase letters and digits separated by single dashes, starting with a letter and not ending in a dash, at most %d characters", name, maxNameLength)
 	}
 	return nil
 }
 
-// ValidateOwner checks a GitHub user or organization name.
+// ValidateOwner checks a GitHub user or organization name: letters and
+// digits in single-dash-separated groups, at most 39 characters.
 func ValidateOwner(owner string) error {
-	if !ownerRe.MatchString(owner) {
+	if !ownerRe.MatchString(owner) || len(owner) > 39 {
 		return fmt.Errorf("invalid owner %q: want a GitHub user or organization name", owner)
 	}
 	return nil
