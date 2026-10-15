@@ -156,12 +156,12 @@ services:
       - ./initdb/runtime-grants.sql:/grants/runtime-grants.sql:ro
     restart: "no"
 
-  # The PDP with the policies of ../cerbos baked in (see cerbos/README.md):
-  # no volumes, so what runs is exactly what the image build validated. It
-  # serves gRPC without TLS, so it sits alone on the "authz" network, which
-  # is internal (no route outside this host) and publishes no port: only the
-  # api can reach it. Recreate it on deploy (docker compose up -d); a
-  # "restart" keeps the previous image's anonymous /policies volume.
+  # The PDP with the policies of ../cerbos baked in at /bundle/policies (see
+  # cerbos/README.md): no mounts, so what runs is exactly what the image build
+  # validated, and a new image serves its own policies even though compose
+  # carries anonymous volumes over on recreate. It serves gRPC without TLS, so
+  # it sits alone on the "authz" network, which is internal (no route outside
+  # this host) and publishes no port: only the api can reach it.
   cerbos:
     image: ghcr.io/kafeiih/vogel-boilerplate-cerbos:${APP_VERSION:?set APP_VERSION in deploy/.env}
     <<: *hardened
@@ -200,11 +200,11 @@ services:
       # The bundled Postgres serves no TLS; see "TLS" above.
       DB_REQUIRE_TLS: "false"
       # The bundled PDP above serves no TLS either. Plaintext is acceptable
-      # only because it never leaves the internal authz network; point
-      # CERBOS_HOST at a TLS PDP and drop CERBOS_PLAINTEXT once the services
-      # run on separate hosts.
-      CERBOS_HOST: "cerbos:3593"
-      CERBOS_PLAINTEXT: "true"
+      # only because it never leaves the internal authz network. To use an
+      # external PDP, set CERBOS_HOST (and CERBOS_PLAINTEXT=false, for TLS) in
+      # deploy/.env: these defaults apply only when it leaves them unset.
+      CERBOS_HOST: ${CERBOS_HOST:-cerbos:3593}
+      CERBOS_PLAINTEXT: ${CERBOS_PLAINTEXT:-true}
 
   worker:
     image: ghcr.io/kafeiih/vogel-boilerplate-worker:${APP_VERSION:?set APP_VERSION in deploy/.env}

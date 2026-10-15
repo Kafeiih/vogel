@@ -18,7 +18,12 @@ RUN ["/cerbos", "compile", "/repo"]
 
 FROM base
 COPY .cerbos.yaml /config/.cerbos.yaml
-COPY --from=validate /repo/policies /policies
+# Not /policies: the upstream image declares it a VOLUME, and docker compose
+# carries a container's anonymous volumes over when it recreates it, so a new
+# image would keep serving the previous image's policies (a revoked
+# permission would stay granted). /bundle is not a volume, so the policies
+# served are always this image's.
+COPY --from=validate /repo/policies /bundle/policies
 # The upstream image runs as root. The PDP only reads /config and /policies,
 # so it runs as an unprivileged, nameless UID (there is no /etc/passwd).
 USER 65532:65532

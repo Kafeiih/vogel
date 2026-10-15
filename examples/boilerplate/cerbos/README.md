@@ -55,16 +55,20 @@ local development runs a different Cerbos than the image you ship.
 - **Development** (`make dev-infra`) bind-mounts `.cerbos.yaml` and
   `policies/` into the upstream image, read-only, with `watchForChanges`, so a
   saved policy applies without a restart.
-- **Deploy** runs the built image with the policies baked in and **no
-  volumes**. A bind mount to a host path that does not exist does not fail:
-  Docker creates an empty directory and the PDP silently denies every request.
-  Baking the validated policies in removes that failure mode.
+- **Deploy** runs the built image with the policies baked in and no mounts. A
+  bind mount to a host path that does not exist does not fail: Docker creates
+  an empty directory and the PDP silently denies every request. Baking the
+  validated policies in removes that failure mode.
 
-The upstream image declares `VOLUME ["/policies", "/tmp", "/.cache"]`, which
-a Dockerfile cannot undo, so `/policies` is still an anonymous volume seeded
-from the image when the container is created. Deploy by recreating the
-container (`docker compose up -d` does this when the image changes), not with
-`docker compose restart`, and prune old anonymous volumes now and then.
+The policies live at `/bundle/policies`, not at the upstream `/policies`. The
+upstream image declares `VOLUME ["/policies", "/tmp", "/.cache"]`, which a
+Dockerfile cannot undo, and `docker compose up -d` carries a container's
+anonymous volumes over when it recreates it for a new image. Policies baked
+into `/policies` would therefore keep serving the previous release's rules
+after an upgrade, so a revoked permission would stay granted. `/bundle` is not
+a volume, so the PDP always serves the policies of the image it runs. The
+unused anonymous volumes still accumulate: `docker compose down -v` or a
+periodic `docker volume prune` removes them.
 
 After a deploy, a green healthcheck is not enough: check the policy count in
 the PDP logs. A count of 0 means every request is being denied.

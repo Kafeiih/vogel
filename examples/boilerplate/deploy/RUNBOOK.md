@@ -89,15 +89,16 @@ sirven con `SWAGGER_ENABLED=true`, que `deploy/.env` no debe definir; con
 **Cerbos:** el servicio `cerbos` corre la imagen del PDP con las politicas de
 `cerbos/policies` horneadas (ver `cerbos/README.md`). Sirve gRPC sin TLS, por
 eso vive solo en la red `authz`, que es `internal` y no publica puertos: solo
-el `api` llega a el, con `CERBOS_HOST=cerbos:3593` y `CERBOS_PLAINTEXT=true`
-fijados en el compose. Si el PDP corre en otro host, apunte `CERBOS_HOST` a un
-Cerbos con TLS y quite `CERBOS_PLAINTEXT` del compose. Despliegue recreando el
-contenedor (`docker compose up -d`), no con `restart`, y despues verifique en
-los logs que cargo las politicas: un PDP sin politicas reporta sano y niega
-todo.
+el `api` llega a el. Si `deploy/.env` no define `CERBOS_HOST` ni
+`CERBOS_PLAINTEXT`, el compose usa `cerbos:3593` en texto plano. Si el PDP corre
+en otro host, defina en `deploy/.env` `CERBOS_HOST` apuntando a un Cerbos con
+TLS y `CERBOS_PLAINTEXT=false`. Las politicas viven en `/bundle/policies` de la
+imagen, no en un volumen, asi que cada version nueva sirve sus propias
+politicas. Despues de desplegar, verifique en los logs que las cargo: un PDP
+sin politicas reporta sano y niega todo.
 
 ```bash
-docker compose -f deploy/docker-compose.yaml logs cerbos | rg "executable policies"
+docker compose -f deploy/docker-compose.yaml logs cerbos | grep "executable policies"
 # "Found 0 executable policies" = toda verificacion de permisos responde 403
 ```
 

@@ -36,7 +36,7 @@ services:
     command: ["server", "--config=/config/.cerbos.yaml"]
     volumes:
       - ../cerbos/.cerbos.yaml:/config/.cerbos.yaml:ro
-      - ../cerbos/policies:/policies:ro
+      - ../cerbos/policies:/bundle/policies:ro
     ports:
       - "3593:3593"
       - "3592:3592"

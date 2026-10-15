@@ -9,9 +9,14 @@
 #   ghcr.io/<owner>/<repo>-worker:<version>  worker   (job "worker")
 #   ghcr.io/<owner>/<repo>-cerbos:<version>  Cerbos   (job "cerbos")
 #
-# These are the names deploy/docker-compose.yaml pulls with APP_VERSION. A
-# service without a worker or a bundled PDP deletes that job; the jobs are
-# independent, so no other job refers to them.
+# deploy/docker-compose.yaml must pull these names with APP_VERSION. A fresh
+# copy still names ghcr.io/kafeiih/vogel-boilerplate*: rename those image:
+# lines (README, "Cómo copiar este boilerplate") or the deploy pulls nothing.
+#
+# api and worker wait for the cerbos job, so a release whose PDP fails its
+# smoke test publishes no image at all instead of a version the deploy
+# compose cannot pull. A service without a bundled PDP deletes the cerbos job
+# and the "needs: cerbos" lines; one without a worker deletes that job.
 #
 # A tag v1.2.3 publishes 1.2.3 only: there is no :latest, so a deploy always
 # names the exact version it runs. Each image carries an SBOM and a build
@@ -35,6 +40,7 @@ concurrency:
 jobs:
   api:
     name: Publish api image
+    needs: cerbos
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -74,6 +80,7 @@ jobs:
 
   worker:
     name: Publish worker image
+    needs: cerbos
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -112,9 +119,11 @@ jobs:
           cache-to: type=gha,mode=max,scope=worker
 
   # The image build already proves the policies compile and pass their tests
-  # (cerbos/Dockerfile). The smoke test proves the built image SERVES them
-  # before anything is pushed: an empty policy store starts healthy and
-  # denies every request (cerbos/README.md).
+  # (cerbos/Dockerfile). The smoke test proves the image SERVES them: an empty
+  # policy store starts healthy and denies every request (cerbos/README.md).
+  # The image is pushed by digest only, smoke-tested at that digest, and only
+  # then tagged, so the published version is exactly the bytes that passed.
+  # An untagged digest left by a failed smoke test is never pulled by a deploy.
   cerbos:
     name: Publish Cerbos image
     runs-on: ubuntu-latest
@@ -133,33 +142,33 @@ jobs:
 
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
-      - name: Build for the smoke test
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
-        with:
-          context: cerbos
-          platforms: linux/amd64
-          load: true
-          tags: cerbos:smoke
-          cache-from: type=gha,scope=cerbos
-          cache-to: type=gha,mode=max,scope=cerbos
-
-      - name: Smoke test
-        run: ./cerbos/smoke.sh cerbos:smoke
-
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Push
+      - name: Push by digest
+        id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: cerbos
           platforms: linux/amd64
-          push: true
-          tags: ${{ steps.image.outputs.ref }}
+          outputs: type=image,name=${{ steps.image.outputs.name }},push-by-digest=true,name-canonical=true,push=true
           labels: ${{ steps.image.outputs.labels }}
           sbom: true
           provenance: mode=max
           cache-from: type=gha,scope=cerbos
+          cache-to: type=gha,mode=max,scope=cerbos
+
+      - name: Smoke test the pushed digest
+        env:
+          IMAGE: ${{ steps.image.outputs.name }}@${{ steps.build.outputs.digest }}
+        run: ./cerbos/smoke.sh "$IMAGE"
+
+      - name: Tag the tested digest
+        env:
+          NAME: ${{ steps.image.outputs.name }}
+          REF: ${{ steps.image.outputs.ref }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: docker buildx imagetools create --tag "$REF" "${NAME}@${DIGEST}"
