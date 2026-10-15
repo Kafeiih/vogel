@@ -45,7 +45,7 @@ muestra el `gh repo create` para subirlo; no hace ninguna acción remota. Con
 `--yes`, `--owner`, `--with` y `--without` corre sin preguntas; `--help` lista
 todo. Desde un checkout local de vogel, `--from <ruta>` usa ese boilerplate en
 lugar de descargar el del tag (el proyecto queda con un `replace` a esa ruta,
-solo para desarrollo). Requiere una versión de vogel posterior a `v0.9.0`.
+solo para desarrollo). Requiere `v0.10.0` o posterior.
 
 ## SBOM de cada versión
 
@@ -59,10 +59,10 @@ módulos del repositorio, generado por `.github/workflows/release.yaml` con
 | `vogel-boilerplate.cdx.json` | `examples/boilerplate`, módulo aparte con sus propias dependencias |
 | `SHA256SUMS` | Hash SHA-256 de los dos archivos anteriores |
 
-Para descargarlos y comprobarlos (reemplazar `v0.9.0` por la versión):
+Para descargarlos y comprobarlos (reemplazar `v0.10.0` por la versión):
 
 ```bash
-gh release download v0.9.0 -R Kafeiih/vogel -p '*.cdx.json' -p SHA256SUMS
+gh release download v0.10.0 -R Kafeiih/vogel -p '*.cdx.json' -p SHA256SUMS
 sha256sum -c SHA256SUMS
 ```
 
