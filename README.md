@@ -25,6 +25,28 @@ Este README es el inventario: qué contiene cada paquete y por qué. Los
 documentos de arriba cubren lo que el inventario no puede — cómo se usa todo
 junto.
 
+## Crear un servicio nuevo
+
+`create-vogel-app` genera un repositorio nuevo a partir de
+[`examples/boilerplate`](examples/boilerplate/), de la misma versión que el
+comando:
+
+```bash
+go run github.com/kafeiih/vogel/cmd/create-vogel-app@vX.Y.Z mi-servicio
+```
+
+Pregunta el *owner* de GitHub y qué componentes opcionales conservar (worker con
+River, notificaciones del worker, el PDP de Cerbos empaquetado y storage S3);
+auditoría, autorización, Zitadel, métricas y Swagger vienen siempre. Reescribe
+el módulo (`github.com/<owner>/<nombre>`), quita el `replace` de vogel, renombra
+las imágenes a `ghcr.io/<owner>/<nombre>[-worker|-cerbos]` y la base a
+`<nombre>_db`, corre `go mod tidy`, hace `git init` con un primer commit y
+muestra el `gh repo create` para subirlo; no hace ninguna acción remota. Con
+`--yes`, `--owner`, `--with` y `--without` corre sin preguntas; `--help` lista
+todo. Desde un checkout local de vogel, `--from <ruta>` usa ese boilerplate en
+lugar de descargar el del tag (el proyecto queda con un `replace` a esa ruta,
+solo para desarrollo). Requiere una versión de vogel posterior a `v0.9.0`.
+
 ## SBOM de cada versión
 
 Cada tag `v*` publica un release con el SBOM (CycloneDX 1.6, JSON) de los dos
