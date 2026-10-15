@@ -360,6 +360,78 @@ func TestWriteAccessError_Forbidden_LogsDenialWithoutResource(t *testing.T) {
 	}
 }
 
+// A handler that has loaded the entity knows exactly which instance was
+// denied, so WriteAccessErrorFor carries it into the log line; the resource
+// attributes (entity data) stay out of it.
+func TestWriteAccessErrorFor_LogsResourceAndAction(t *testing.T) {
+	tests := []struct {
+		name       string
+		err        error
+		wantStatus int
+		wantLevel  slog.Level
+	}{
+		{name: "forbidden", err: access.ErrForbidden, wantStatus: http.StatusForbidden, wantLevel: slog.LevelWarn},
+		{name: "unauthenticated", err: access.ErrUnauthenticated, wantStatus: http.StatusUnauthorized, wantLevel: slog.LevelWarn},
+		{name: "unavailable", err: errors.Join(access.ErrUnavailable, errors.New("pdp down")), wantStatus: http.StatusServiceUnavailable, wantLevel: slog.LevelError},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			captured := &capturingHandler{}
+			rec := httptest.NewRecorder()
+			req := withPrincipal(httptest.NewRequest(http.MethodDelete, "/documents/7", nil), &auth.Principal{UserID: "u2"})
+			res := authz.Resource{Kind: "documents:document", ID: "doc-7", Attr: map[string]any{"owner": "secret-owner"}}
+
+			if !WriteAccessErrorFor(rec, req, tt.err, slog.New(captured), res, "delete") {
+				t.Fatal("WriteAccessErrorFor() = false, want true")
+			}
+			if rec.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d", rec.Code, tt.wantStatus)
+			}
+			records := captured.all()
+			if len(records) != 1 {
+				t.Fatalf("logged %d records, want exactly 1", len(records))
+			}
+			if records[0].Level != tt.wantLevel {
+				t.Errorf("level = %v, want %v", records[0].Level, tt.wantLevel)
+			}
+			got := attrs(records[0])
+			want := map[string]any{
+				"user_id":       "u2",
+				"resource_kind": "documents:document",
+				"resource_id":   "doc-7",
+				"action":        "delete",
+				"method":        http.MethodDelete,
+				"path":          "/documents/7",
+			}
+			for key, wantVal := range want {
+				if got[key] != wantVal {
+					t.Errorf("attr %q = %#v, want %#v", key, got[key], wantVal)
+				}
+			}
+			for key, val := range got {
+				if s, ok := val.(string); ok && strings.Contains(s, "secret-owner") {
+					t.Errorf("attr %q = %q leaks a resource attribute", key, s)
+				}
+			}
+		})
+	}
+}
+
+func TestWriteAccessErrorFor_UnrecognizedError_WritesNothing(t *testing.T) {
+	for _, err := range []error{nil, errors.New("not an access sentinel")} {
+		captured := &capturingHandler{}
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodDelete, "/documents/7", nil)
+
+		if WriteAccessErrorFor(rec, req, err, slog.New(captured), authz.Resource{Kind: "documents:document", ID: "doc-7"}, "delete") {
+			t.Errorf("WriteAccessErrorFor(%v) = true, want false", err)
+		}
+		if rec.Body.Len() != 0 || len(captured.all()) != 0 {
+			t.Errorf("WriteAccessErrorFor(%v) wrote a body or a log line, want neither", err)
+		}
+	}
+}
+
 func TestWriteAccessError_Unauthenticated_Returns401(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/", nil)

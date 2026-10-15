@@ -283,20 +283,24 @@ Uso típico en un handler, después de cargar la entidad (adaptado de
 doc, err := h.store.GetByID(r.Context(), db, id)
 // ... manejo de error / 404 ...
 
-err = h.guard.Check(r.Context(), authz.Resource{
+resource := authz.Resource{
 	Kind: "documents:document",
 	ID:   doc.ID.String(),
 	Attr: map[string]any{"owner": doc.OwnerID, "kind": doc.Kind},
-}, "delete")
+}
+err = h.guard.Check(r.Context(), resource, "delete")
 if err != nil {
-	if vmw.WriteAccessError(w, r, err, h.logger) {
+	if vmw.WriteAccessErrorFor(w, r, err, h.logger, resource, "delete") {
 		return
 	}
-	// error no reconocido por WriteAccessError: es del propio handler
+	// error no reconocido por WriteAccessErrorFor: es del propio handler
 }
 ```
 
-`httpx/middleware.WriteAccessError` es la contraparte, dentro del handler,
+`httpx/middleware.WriteAccessErrorFor` hace lo mismo que `WriteAccessError`
+pero además registra en la línea de log `resource_kind`, `resource_id` y
+`action` del chequeo por instancia (nunca `Attr`); `WriteAccessError` los deja
+vacíos y se conserva por compatibilidad. Ambas son la contraparte, dentro del handler,
 del mapeo de estados que `RequirePermission`/`RequireAccess` ya hacen en el
 router: mapea `access.ErrUnauthenticated`/`ErrForbidden`/`ErrUnavailable` a
 401/403/503 (logueando el 403 en `Warn` con `user_id`, `method`, `path` y

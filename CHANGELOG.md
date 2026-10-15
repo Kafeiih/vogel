@@ -8,6 +8,13 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ### Agregado
 
+- **`httpx/middleware.WriteAccessErrorFor`.** Variante de `WriteAccessError`
+  que recibe el `authz.Resource` y la acción del chequeo por instancia y los
+  registra (`resource_kind`, `resource_id`, `action`; nunca `Attr`) en la
+  línea de log del 401/403/503, que con `WriteAccessError` quedaban vacíos.
+  Mismo mapeo de estados y mismo `false` sin escribir nada para un error que
+  no es un centinela de `access`. `WriteAccessError` no cambia;
+  `examples/api` (`DocumentHandler.Delete`) usa la nueva variante.
 - **`auth/zitadel`: introspección opcional de tokens (`Config.Introspection`
   e `IntrospectionConfig`).** Si se configura, cada token se valida contra el
   endpoint de introspección de Zitadel (RFC 7662, vía el `rs.ResourceServer`
@@ -143,6 +150,15 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ### Cambiado
 
+- **`authz/cerbos`: cada llamada al PDP tiene un plazo propio
+  (`Config.CallTimeout`, constante `DefaultCallTimeout`, 2s).** `IsAllowed` y
+  `Ping` envuelven el `ctx` del llamador en `context.WithTimeout`, así que un
+  PDP que acepta la conexión y nunca responde ya no cuelga la request cuando
+  el `ctx` no trae plazo: la llamada falla con un error, que `access.Guard` y
+  `RequirePermission` convierten en 503 como cualquier otra caída del PDP. Un
+  plazo más corto en el `ctx` sigue ganando. El valor cero usa el valor por
+  defecto y uno negativo hace fallar `New`. Cambio de comportamiento: antes
+  la llamada esperaba indefinidamente al `ctx` del llamador.
 - **`audit/httpx.FiltersFromRequest` rechaza filtros de texto libre
   demasiado largos.** `actor_id`, `resource_type`, `operation_name`,
   `aggregate_type` y `aggregate_id` de más de `MaxFilterLength` (256)

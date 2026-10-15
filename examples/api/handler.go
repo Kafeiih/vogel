@@ -286,16 +286,19 @@ func (h *DocumentHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	checkErr := h.guard.Check(r.Context(), authz.Resource{
+	resource := authz.Resource{
 		Kind: "documents:document",
 		ID:   doc.ID.String(),
 		Attr: map[string]any{"owner": doc.OwnerID, "kind": doc.Kind},
-	}, "delete")
+	}
+	checkErr := h.guard.Check(r.Context(), resource, "delete")
 	if checkErr != nil {
-		if vmw.WriteAccessError(w, r, checkErr, h.logger) {
+		// WriteAccessErrorFor logs which document was denied (kind, ID and
+		// action, never the Attr data), unlike WriteAccessError.
+		if vmw.WriteAccessErrorFor(w, r, checkErr, h.logger, resource, "delete") {
 			return
 		}
-		// WriteAccessError only recognizes the three access sentinels; any
+		// WriteAccessErrorFor only recognizes the three access sentinels; any
 		// other error here is this handler's own to report.
 		h.logger.ErrorContext(r.Context(), "delete document: check access", "error", checkErr)
 		response.Error(w, r, http.StatusInternalServerError, response.CodeInternalError, "failed to authorize delete")

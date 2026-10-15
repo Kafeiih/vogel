@@ -5,6 +5,7 @@ package cerbos
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/cerbos/cerbos-sdk-go/cerbos"
 
@@ -24,12 +25,27 @@ type Config struct {
 	// production, where principals, roles and decisions would travel in
 	// cleartext.
 	Plaintext bool
+	// CallTimeout bounds every call to the PDP (IsAllowed and Ping). Zero
+	// uses DefaultCallTimeout; a negative value makes New fail. It is
+	// applied on top of the caller's context, so a shorter caller deadline
+	// still wins: the timeout only guarantees that a PDP which accepts the
+	// connection and never answers cannot hang a request whose context has
+	// no deadline. A timed-out call returns an error like any other PDP
+	// failure, which the access layer and RequirePermission map to 503.
+	CallTimeout time.Duration
 }
+
+// DefaultCallTimeout is the per-call deadline used when Config.CallTimeout
+// is zero. A healthy PDP answers a check in single-digit milliseconds, so
+// two seconds is generous for one decision while still failing a wedged PDP
+// fast enough to answer 503 instead of holding the request open.
+const DefaultCallTimeout = 2 * time.Second
 
 // Checker implements authz.Checker using the Cerbos PDP via gRPC.
 type Checker struct {
-	client *cerbos.GRPCClient
-	host   string
+	client      *cerbos.GRPCClient
+	host        string
+	callTimeout time.Duration
 }
 
 // New creates a new Cerbos-backed authorization checker.
@@ -37,13 +53,20 @@ func New(cfg Config) (*Checker, error) {
 	if cfg.Host == "" {
 		return nil, fmt.Errorf("authz/cerbos: host is required")
 	}
+	if cfg.CallTimeout < 0 {
+		return nil, fmt.Errorf("authz/cerbos: CallTimeout must not be negative, got %v", cfg.CallTimeout)
+	}
+	callTimeout := cfg.CallTimeout
+	if callTimeout == 0 {
+		callTimeout = DefaultCallTimeout
+	}
 
 	client, err := cerbos.New(cfg.Host, clientOptions(cfg)...)
 	if err != nil {
 		return nil, fmt.Errorf("authz/cerbos: connecting to %s: %w", cfg.Host, err)
 	}
 
-	return &Checker{client: client, host: cfg.Host}, nil
+	return &Checker{client: client, host: cfg.Host, callTimeout: callTimeout}, nil
 }
 
 // clientOptions builds the cerbos-sdk-go options for cfg. TLS is the SDK
@@ -58,7 +81,9 @@ func clientOptions(cfg Config) []cerbos.Opt {
 
 // IsAllowed implements authz.Checker. A non-nil error means Cerbos could not
 // be reached or failed to evaluate the request — the caller must map that to
-// HTTP 503, not 403; see the doc comment on authz.Checker.
+// HTTP 503, not 403; see the doc comment on authz.Checker. The call is
+// bounded by Config.CallTimeout (or a shorter deadline on ctx); a timeout is
+// such an error.
 func (c *Checker) IsAllowed(ctx context.Context, p authz.Principal, res authz.Resource, action string) (bool, error) {
 	principal := cerbos.NewPrincipal(p.ID, p.Roles...)
 	if len(p.Attr) > 0 {
@@ -69,6 +94,9 @@ func (c *Checker) IsAllowed(ctx context.Context, p authz.Principal, res authz.Re
 	if len(res.Attr) > 0 {
 		resource = resource.WithAttributes(res.Attr)
 	}
+
+	ctx, cancel := context.WithTimeout(ctx, c.callTimeout)
+	defer cancel()
 
 	allowed, err := c.client.IsAllowed(ctx, principal, resource, action)
 	if err != nil {
@@ -83,9 +111,13 @@ func (c *Checker) IsAllowed(ctx context.Context, p authz.Principal, res authz.Re
 // dial (the gRPC connection is lazy), so a wrong host or a transport mismatch
 // (TLS against a plaintext PDP, or the reverse) only shows up on the first
 // call; a consumer can call Ping at startup to fail fast instead of answering
-// 503 on every authorization. Bound ctx: the call waits for it when the PDP
-// accepts the connection but never answers.
+// 503 on every authorization. The call is bounded by Config.CallTimeout (or
+// a shorter deadline on ctx), so a PDP that accepts the connection but never
+// answers fails Ping instead of blocking startup.
 func (c *Checker) Ping(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, c.callTimeout)
+	defer cancel()
+
 	if _, err := c.client.ServerInfo(ctx); err != nil {
 		return fmt.Errorf("authz/cerbos: pinging %s: %w", c.host, err)
 	}
