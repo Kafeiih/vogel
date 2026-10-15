@@ -248,7 +248,11 @@ func TestInterruptAtPromptLeavesNoTarget(t *testing.T) {
 	// Cancel only once the component prompt is showing, however slow the
 	// runner is at copying the template.
 	deadline := time.Now().Add(5 * time.Second)
-	for !strings.Contains(out.String(), "Keep the worker?") && time.Now().Before(deadline) {
+	for !strings.Contains(out.String(), "Keep the worker?") {
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatalf("the component prompt never showed up; stdout:\n%s", out.String())
+		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	cancel()
@@ -304,13 +308,13 @@ func TestInterruptedNamesLeftoverProject(t *testing.T) {
 	if code := interrupted(&errOut, dir); code != exitInterrupted {
 		t.Fatalf("exit = %d, want %d", code, exitInterrupted)
 	}
-	if !strings.Contains(errOut.String(), dir) || !strings.Contains(errOut.String(), "left") {
+	if !strings.Contains(errOut.String(), dir) || !strings.Contains(errOut.String(), "partial project was left") {
 		t.Fatalf("message does not name the partial project %s:\n%s", dir, errOut.String())
 	}
 
 	errOut.Reset()
 	interrupted(&errOut, filepath.Join(t.TempDir(), "missing"))
-	if strings.Contains(errOut.String(), "left") {
+	if strings.Contains(errOut.String(), "partial project") {
 		t.Fatalf("message mentions a leftover project that does not exist:\n%s", errOut.String())
 	}
 }

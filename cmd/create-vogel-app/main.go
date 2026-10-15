@@ -203,7 +203,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		}
 		if cfg.owner, err = askOwner(ctx, in, stdout); err != nil {
 			if ctx.Err() != nil {
-				return interrupted(stderr, cfg.dir)
+				return interrupted(stderr, "") // nothing generated yet
 			}
 			printf(stderr, "create-vogel-app: %v\n", err)
 			return exitUsage
@@ -257,13 +257,14 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	return exitOK
 }
 
-// interrupted reports a Ctrl-C. An interrupt after go.mod editing leaves the
-// partial project for inspection (see scaffold.Generate), so a non-empty dir
-// is named for the user to inspect or delete before retrying.
+// interrupted reports a Ctrl-C. dir is the target when the interrupt hit
+// scaffold.Generate, which keeps a partial project after go.mod editing (see
+// its doc): a non-empty dir is then named for the user to inspect or delete.
+// Before Generate starts, callers pass "" because nothing was written.
 func interrupted(stderr io.Writer, dir string) int {
 	writeln(stderr, "\ncreate-vogel-app: interrupted")
 	if entries, err := os.ReadDir(dir); err == nil && len(entries) > 0 {
-		printf(stderr, "create-vogel-app: the partial project was left in %s; delete it before retrying\n", dir)
+		printf(stderr, "create-vogel-app: a partial project was left in %s; delete it before retrying\n", dir)
 	}
 	return exitInterrupted
 }
