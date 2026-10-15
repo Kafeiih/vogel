@@ -231,7 +231,11 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   `1e100000000` sigue devolviendo `ErrOutOfRange` y no `ErrNotParseable`; la
   entrada malformada sigue en `ErrNotParseable`. Un `decimal.Decimal` con un
   exponente así ya no se obtiene desde JSON ni desde un string: el
-  decodificador lo rechaza antes de llegar a `ValidateBounds`.
+  decodificador lo rechaza antes de llegar a `ValidateBounds`. La directiva
+  `go` pasa a `1.26.7` (la pide el bump), también en `examples/boilerplate`,
+  cuyo `go mod tidy` contra la raíz sube además, entre otras, `river` a
+  v0.49.0 y `testcontainers-go` a v0.44.0, y cambia `docker/docker` por los
+  módulos `moby/moby`.
 - **`examples/boilerplate`: el `Dockerfile` se construye desde la raíz del
   repositorio** (`docker build -f examples/boilerplate/Dockerfile .`), porque
   el `replace` del `go.mod` apunta a `../..`; el compose de despliegue y el

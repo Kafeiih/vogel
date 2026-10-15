@@ -42,9 +42,10 @@ func TestValidateBounds_RejectsAlreadyConstructedDecimal(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			// RequireFromString is lazy: it stores (coefficient, exponent)
-			// without materializing. Building the hostile value is cheap;
-			// operating on it would be expensive, and we never do that.
+			// decimalOf builds these with decimal.New, which stores
+			// (coefficient, exponent) without materializing. Building the
+			// hostile value is cheap; operating on it would be expensive,
+			// and we never do that.
 			d := decimalOf(c.input)
 
 			// The bound must be O(1): it reads the exponent field, it never

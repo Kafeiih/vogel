@@ -73,11 +73,22 @@ func TestParse_HugeExponentSuffix(t *testing.T) {
 		{"e100000000", decimalx.ErrNotParseable},
 		{"1e99999999999999999999", decimalx.ErrNotParseable},
 	}
+	custom, err := decimalx.NewBounds(decimalx.MaxLengthLimit, -decimalx.MaxExponentLimit, decimalx.MaxExponentLimit)
+	if err != nil {
+		t.Fatalf("NewBounds: %v", err)
+	}
 	for _, c := range cases {
 		t.Run(c.input, func(t *testing.T) {
-			_, err := decimalx.Parse(c.input)
-			if !errors.Is(err, c.want) {
+			if _, err := decimalx.Parse(c.input); !errors.Is(err, c.want) {
 				t.Fatalf("Parse(%q) err = %v, want %v", c.input, err, c.want)
+			}
+			if _, err := decimalx.ParseAmount(c.input, 2); !errors.Is(err, c.want) {
+				t.Fatalf("ParseAmount(%q, 2) err = %v, want %v", c.input, err, c.want)
+			}
+			// The widest Bounds NewBounds allows still cannot reach the
+			// exponents this test feeds it.
+			if _, err := custom.Parse(c.input); !errors.Is(err, c.want) {
+				t.Fatalf("widest Bounds.Parse(%q) err = %v, want %v", c.input, err, c.want)
 			}
 		})
 	}

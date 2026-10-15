@@ -186,7 +186,9 @@ func (b Bounds) Parse(s string) (decimal.Decimal, error) {
 // coefficient. Checking this first keeps such input on ErrOutOfRange:
 // since shopspring/decimal v1.5.0, NewFromString itself rejects exponents
 // beyond decimal.MaxDecodeExponent, with an untyped error. Only a well-formed
-// number qualifies, so malformed input still gets ErrNotParseable.
+// number whose exponent fits in an int64 qualifies, so malformed input and
+// an exponent too long for int64 still get ErrNotParseable, as they did
+// before v1.5.0.
 func exponentSuffixOutOfReach(s string) bool {
 	i := strings.LastIndexAny(s, "eE")
 	if i < 0 || !isPlainMantissa(s[:i]) {
