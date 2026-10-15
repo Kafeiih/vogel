@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 
@@ -42,7 +43,11 @@ func (s *stubRepo) GetByID(_ context.Context, id uuid.UUID) (*audit.Entry, error
 	return nil, pgx.ErrNoRows
 }
 
-func (s *stubRepo) List(_ context.Context, _ audit.Filters) ([]audit.Entry, int, error) {
+func (s *stubRepo) List(_ context.Context, f audit.Filters) ([]audit.Entry, int, error) {
+	// Like audit/postgres, reject an out-of-range page before anything else.
+	if _, _, err := f.Page(); err != nil {
+		return nil, 0, err
+	}
 	if s.listErr != nil {
 		return nil, 0, s.listErr
 	}
@@ -235,6 +240,44 @@ func TestList_NegativeOffset_Returns400(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+// An offset past audit.MaxListOffset is the caller's error, not the
+// server's: the repository rejects it (audit.ErrOffsetOutOfRange) before
+// querying, and the handler answers 400 on the offset field instead of 500.
+func TestList_OffsetAboveMax_Returns400(t *testing.T) {
+	repo := &stubRepo{}
+	h := newTestHandler(repo)
+
+	req := httptest.NewRequest(http.MethodGet, "/audit?offset="+strconv.Itoa(audit.MaxListOffset+1), nil)
+	rec := httptest.NewRecorder()
+
+	h.List(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decoding body: %v", err)
+	}
+	if body["field"] != "offset" {
+		t.Errorf("field = %v, want offset (body %s)", body["field"], rec.Body.String())
+	}
+}
+
+func TestList_OffsetAtMax_Returns200(t *testing.T) {
+	repo := &stubRepo{}
+	h := newTestHandler(repo)
+
+	req := httptest.NewRequest(http.MethodGet, "/audit?offset="+strconv.Itoa(audit.MaxListOffset), nil)
+	rec := httptest.NewRecorder()
+
+	h.List(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
 	}
 }
 

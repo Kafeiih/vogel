@@ -47,7 +47,7 @@ func NewAuditHandler(repo audit.Repository, logger *slog.Logger) *AuditHandler {
 //	@Param			from				query		string	false	"Start date (RFC3339)"
 //	@Param			to					query		string	false	"End date (RFC3339)"
 //	@Param			limit				query		int		false	"Page size (max 100)"			default(20)
-//	@Param			offset				query		int		false	"Offset"						default(0)
+//	@Param			offset				query		int		false	"Offset (max 100000)"			default(0)
 //	@Success		200					{object}	response.ListResponse
 //	@Failure		400					{object}	response.ValidationErrorResponse
 //	@Failure		500					{object}	response.ErrorResponse
@@ -63,6 +63,15 @@ func (h *AuditHandler) List(w http.ResponseWriter, r *http.Request) {
 	}
 
 	entries, total, err := h.repo.List(r.Context(), filters)
+	if errors.Is(err, audit.ErrOffsetOutOfRange) {
+		// The repository caps the offset at audit.MaxListOffset (Postgres
+		// reads and discards every row an OFFSET skips). Paging past it is a
+		// client error, mapped to 400 exactly as httpx.Handler.List does.
+		response.ErrorWith(w, r, http.StatusBadRequest, response.CodeValidationError,
+			"El offset está fuera de rango; acotá los filtros en lugar de seguir paginando",
+			response.WithField("offset"))
+		return
+	}
 	if err != nil {
 		h.logger.Error("listing audit entries", "error", err, "path", r.URL.Path, "query", r.URL.RawQuery)
 		response.Error(w, r, http.StatusInternalServerError, response.CodeInternalError, "No se pudo listar las entradas de auditoría")

@@ -8,23 +8,21 @@ import (
 )
 
 // Swagger is an explicit opt-in (SWAGGER_ENABLED), independent of APP_ENV:
-// the deploy compose runs with APP_ENV=development because its bundled
-// Postgres serves no TLS, and it must not publish the API description.
+// the deploy compose runs with APP_ENV=development, and it must not publish
+// the API description.
 func TestParseSwaggerEnabled(t *testing.T) {
 	tests := []struct {
 		name    string
-		env     string
 		value   string
 		want    bool
 		wantErr bool
 	}{
-		{name: "unset in development stays off", env: "development", value: "", want: false},
-		{name: "explicit true in development turns it on", env: "development", value: "true", want: true},
-		{name: "explicit false stays off", env: "staging", value: "false", want: false},
-		{name: "unparsable value fails closed", env: "development", value: "yes please", want: false},
-		{name: "explicit true in staging turns it on", env: "staging", value: "true", want: true},
-		{name: "unset in production stays off", env: "production", value: "", want: false},
-		{name: "true in production is a config error", env: "production", value: "true", want: false, wantErr: true},
+		{name: "unset stays off", value: "", want: false},
+		{name: "explicit true turns it on", value: "true", want: true},
+		{name: "explicit false stays off", value: "false", want: false},
+		// A typo must not be read as "off" (or "on") silently: the operator
+		// learns at boot that the value means nothing.
+		{name: "unparsable value is a config error", value: "yes please", want: false, wantErr: true},
 	}
 
 	for _, tt := range tests {
@@ -36,7 +34,7 @@ func TestParseSwaggerEnabled(t *testing.T) {
 			}
 
 			var errs config.Errors
-			got := parseSwaggerEnabled(&errs, tt.env)
+			got := parseSwaggerEnabled(&errs)
 
 			err := errs.Err()
 			if tt.wantErr {
@@ -56,13 +54,8 @@ func TestParseSwaggerEnabled(t *testing.T) {
 // Load carries the flag into AppConfig, so main.go never derives it from
 // APP_ENV again.
 func TestLoad_SwaggerDefaultsToDisabled(t *testing.T) {
-	t.Setenv("APP_ENV", "development")
-	t.Setenv("DB_URL", "postgres://u:p@localhost:5432/db?sslmode=disable")
-	t.Setenv("ZITADEL_ISSUER", "https://auth.example.com")
-	t.Setenv("ZITADEL_CLIENT_ID", "client")
+	setRequiredEnv(t, "development")
 	unsetEnv(t, "SWAGGER_ENABLED")
-	unsetEnv(t, "CERBOS_TLS")
-	unsetEnv(t, "TRUSTED_PROXIES")
 
 	cfg, err := Load()
 	if err != nil {
@@ -79,5 +72,64 @@ func TestLoad_SwaggerDefaultsToDisabled(t *testing.T) {
 	}
 	if !cfg.App.SwaggerEnabled {
 		t.Errorf("App.SwaggerEnabled = false with SWAGGER_ENABLED=true, want true")
+	}
+}
+
+// Whether the environment is production is decided by Config.IsProduction
+// alone, so the Swagger refusal cannot drift from every other
+// production-only rule.
+func TestLoad_SwaggerRefusedInProduction(t *testing.T) {
+	tests := []struct {
+		name    string
+		env     string
+		value   string
+		wantErr bool
+	}{
+		{name: "true in production is a config error", env: "production", value: "true", wantErr: true},
+		{name: "unset in production is fine", env: "production", value: "", wantErr: false},
+		{name: "true in staging is allowed", env: "staging", value: "true", wantErr: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setRequiredEnv(t, tt.env)
+			if tt.value == "" {
+				unsetEnv(t, "SWAGGER_ENABLED")
+			} else {
+				t.Setenv("SWAGGER_ENABLED", tt.value)
+			}
+
+			cfg, err := Load()
+			if tt.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "SWAGGER_ENABLED") {
+					t.Fatalf("Load() error = %v, want an error naming SWAGGER_ENABLED", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Load() error = %v", err)
+			}
+			if cfg.IsProduction() != (tt.env == "production") {
+				t.Errorf("IsProduction() = %v with APP_ENV=%s", cfg.IsProduction(), tt.env)
+			}
+		})
+	}
+}
+
+// setRequiredEnv sets the variables Load requires and clears the optional
+// ones a developer's shell might carry into the test.
+func setRequiredEnv(t *testing.T, appEnv string) {
+	t.Helper()
+	t.Setenv("APP_ENV", appEnv)
+	t.Setenv("DB_URL", "postgres://u:p@localhost:5432/db?sslmode=disable")
+	t.Setenv("ZITADEL_ISSUER", "https://auth.example.com")
+	t.Setenv("ZITADEL_CLIENT_ID", "client")
+	for _, key := range []string{
+		"SWAGGER_ENABLED", "CERBOS_TLS", "TRUSTED_PROXIES", "DB_REQUIRE_TLS",
+		"ZITADEL_HTTP_TIMEOUT", "ZITADEL_MAX_TOKEN_LIFETIME", "ZITADEL_ALLOWED_AUTHORIZED_PARTIES",
+		"ZITADEL_INTROSPECTION", "ZITADEL_INTROSPECTION_KEY_FILE", "ZITADEL_INTROSPECTION_CLIENT_SECRET",
+		"ZITADEL_INTROSPECTION_CACHE_TTL", "ZITADEL_INTROSPECTION_CACHE_MAX_ENTRIES",
+	} {
+		unsetEnv(t, key)
 	}
 }

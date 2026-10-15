@@ -47,7 +47,12 @@ func stringsOf[T ~string](vals []T) []string {
 // a deliberate correction relative to some ports of this handler that leave
 // resource_id an unparsed string filter.
 //
-// limit defaults to 20 and is capped at 100; offset defaults to 0.
+// limit defaults to 20 and is capped at 100; offset defaults to 0. A
+// negative offset is a validation error here; one above audit.MaxListOffset
+// is not, because the bound belongs to audit.Filters.Page, which a
+// Repository applies before querying and reports as audit.ErrOffsetOutOfRange.
+// Handler.List maps that error to 400; a caller that pairs this function with
+// its own handler must do the same, or deep paging surfaces as a 500.
 func FiltersFromRequest(v *request.Validator, r *http.Request) audit.Filters {
 	q := r.URL.Query()
 
