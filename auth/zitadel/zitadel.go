@@ -57,13 +57,14 @@ type Config struct {
 	Introspection *IntrospectionConfig
 }
 
-// DefaultHTTPTimeout is the per-request timeout for discovery and JWKS
-// fetches used when Config.HTTPTimeout is zero.
+// DefaultHTTPTimeout is the per-request timeout used when Config.HTTPTimeout
+// is zero, for every call to the issuer: OIDC discovery, JWKS fetches and,
+// in introspection mode, introspection calls.
 const DefaultHTTPTimeout = 10 * time.Second
 
-// jwksHTTPClient returns the client used for OIDC discovery, JWKS fetches
-// and introspection calls.
-func jwksHTTPClient(cfg Config) *http.Client {
+// issuerHTTPClient returns the bounded client used for every call to the
+// issuer: OIDC discovery, JWKS fetches and introspection calls.
+func issuerHTTPClient(cfg Config) *http.Client {
 	timeout := cfg.HTTPTimeout
 	if timeout == 0 {
 		timeout = DefaultHTTPTimeout
@@ -87,12 +88,15 @@ type Authenticator struct {
 	allowedAuthorizedParties []string
 	maxTokenLifetime         time.Duration
 
-	// Introspection mode only: whether it is on, the audience every result
-	// must carry, and the result cache (nil with local JWT verification).
-	introspection bool
-	clientID      string
-	cache         *introspectionCache
+	// Introspection mode only: the audience every result must carry, and
+	// the result cache. cache is non-nil exactly in introspection mode, so it
+	// is the single source of truth for the mode (see introspectionMode).
+	clientID string
+	cache    *introspectionCache
 }
+
+// introspectionMode reports whether a validates tokens by introspection.
+func (a *Authenticator) introspectionMode() bool { return a.cache != nil }
 
 // New creates an Authenticator that validates tokens issued by the Zitadel
 // instance at cfg.Issuer for the audience cfg.ClientID.
@@ -137,7 +141,7 @@ func validateConfig(cfg Config) (Config, error) {
 // New passes zitadel.New(cfg.Issuer); this package's tests pass a plain-HTTP
 // zitadel.Zitadel pointed at an httptest issuer.
 func build(ctx context.Context, z *zitadel.Zitadel, cfg Config) (*Authenticator, error) {
-	httpClient := jwksHTTPClient(cfg)
+	httpClient := issuerHTTPClient(cfg)
 	var (
 		initVerifier authorization.VerifierInitializer[*oauth.IntrospectionContext]
 		cache        *introspectionCache
@@ -156,25 +160,24 @@ func build(ctx context.Context, z *zitadel.Zitadel, cfg Config) (*Authenticator,
 		return nil, fmt.Errorf("auth/zitadel: creating authorizer: %w", err)
 	}
 
-	a := newFromAuthorizer(authorizer, cfg)
-	a.cache = cache
-	return a, nil
+	return newFromAuthorizer(authorizer, cfg, cache), nil
 }
 
 // newFromAuthorizer builds an Authenticator around an already-constructed
 // authorizer, taking the claim-check settings (AllowedAuthorizedParties,
-// MaxTokenLifetime) from cfg. Unexported: it exists so this package's own tests can inject a
+// MaxTokenLifetime) from cfg. cache is the introspection result cache, nil
+// with local JWT verification; it switches on introspection mode. Unexported: it exists so this package's own tests can inject a
 // fake authorization.Verifier and exercise the real error-mapping path
 // without a network call or a real Zitadel instance (see zitadel_test.go),
 // while keeping authorization.Authorizer[*oauth.IntrospectionContext] out of
 // the exported constructor surface.
-func newFromAuthorizer(a *authorization.Authorizer[*oauth.IntrospectionContext], cfg Config) *Authenticator {
+func newFromAuthorizer(a *authorization.Authorizer[*oauth.IntrospectionContext], cfg Config, cache *introspectionCache) *Authenticator {
 	return &Authenticator{
 		authorizer:               a,
 		allowedAuthorizedParties: slices.Clone(cfg.AllowedAuthorizedParties),
 		maxTokenLifetime:         cfg.MaxTokenLifetime,
-		introspection:            cfg.Introspection != nil,
 		clientID:                 cfg.ClientID,
+		cache:                    cache,
 	}
 }
 
@@ -208,7 +211,7 @@ func (a *Authenticator) Authenticate(ctx context.Context, token string) (*auth.P
 	if err := checkClaims(claimsOf(authCtx), a.allowedAuthorizedParties, a.maxTokenLifetime, time.Now()); err != nil {
 		return nil, fmt.Errorf("auth/zitadel: %w: %w", auth.ErrUnauthenticated, err)
 	}
-	if a.introspection {
+	if a.introspectionMode() {
 		if err := checkAudience(authCtx, a.clientID); err != nil {
 			return nil, fmt.Errorf("auth/zitadel: %w: %w", auth.ErrUnauthenticated, err)
 		}

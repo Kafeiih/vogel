@@ -62,7 +62,7 @@ func newTestAuthenticatorWithConfig(t *testing.T, v *fakeVerifier, cfg Config) *
 	if err != nil {
 		t.Fatalf("authorization.New: %v", err)
 	}
-	return newFromAuthorizer(az, cfg)
+	return newFromAuthorizer(az, cfg, nil)
 }
 
 func TestAuthenticate_ValidToken_ReturnsPrincipal(t *testing.T) {
@@ -166,7 +166,7 @@ func TestAuthenticate_PassesBearerPrefixedTokenToSDK(t *testing.T) {
 	if err != nil {
 		t.Fatalf("authorization.New: %v", err)
 	}
-	a := newFromAuthorizer(az, Config{ClientID: "client-1"})
+	a := newFromAuthorizer(az, Config{ClientID: "client-1"}, nil)
 
 	if _, err := a.Authenticate(context.Background(), "sometoken"); err != nil {
 		t.Fatalf("unexpected error: %v", err)

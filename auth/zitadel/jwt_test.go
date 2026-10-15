@@ -108,11 +108,11 @@ func (ti *testIssuer) authenticator(t *testing.T, cfg Config) *Authenticator {
 		t.Fatalf("parse issuer URL: %v", err)
 	}
 	z := zitadel.New(u.Hostname(), zitadel.WithInsecure(u.Port()))
-	az, err := authorization.New(context.Background(), z, oauth.WithJWT(cfg.ClientID, jwksHTTPClient(cfg)))
+	az, err := authorization.New(context.Background(), z, oauth.WithJWT(cfg.ClientID, issuerHTTPClient(cfg)))
 	if err != nil {
 		t.Fatalf("authorization.New: %v", err)
 	}
-	return newFromAuthorizer(az, cfg)
+	return newFromAuthorizer(az, cfg, nil)
 }
 
 // TestAuthenticate_VerifiedJWT_AzpPolicy proves that azp from a really

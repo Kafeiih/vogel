@@ -171,7 +171,19 @@ authn, err := zitadel.New(ctx, zitadel.Config{
 - **Costo:** cada token no cacheado es un round trip a Zitadel, acotado por
   `Config.HTTPTimeout`. Si Zitadel no responde, o rechaza las credenciales
   de la API, la request recibe 503 (`auth.ErrServiceUnavailable`), no 401:
-  la caída del proveedor nunca se confunde con un token inválido.
+  la caída del proveedor nunca se confunde con un token inválido. Los
+  misses concurrentes del mismo token se fusionan en una sola llamada
+  (`singleflight` por el SHA-256 del token): una ráfaga de requests con un
+  token nuevo cuesta un round trip, y un llamador que cancela su `ctx`
+  vuelve enseguida sin abortar la llamada que comparten los demás.
+- **Avalanchas de tokens distintos:** no hay caché negativa (los tokens
+  inválidos aleatorios desalojarían a los buenos), así que cada token
+  desconocido distinto sigue costando una llamada a Zitadel. Una avalancha
+  sin autenticar de tokens aleatorios se convierte en una introspección por
+  request: hay que poner rate limiting delante de las rutas autenticadas,
+  por ejemplo `httprate.LimitBy` con la IP real del cliente (resuelta por
+  `httpx/middleware.RealIP` con proxies de confianza), como hace
+  `examples/boilerplate` en su router.
 - **Caché:** los resultados activos se guardan en memoria durante
   `CacheTTL` (30s por defecto), nunca más allá del `exp` del token, con a lo
   sumo `CacheMaxEntries` entradas (10000 por defecto, desaloja la menos

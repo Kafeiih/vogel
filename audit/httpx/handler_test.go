@@ -33,6 +33,7 @@ type fakeRepository struct {
 
 	gotFilters audit.Filters
 	gotID      uuid.UUID
+	listCalls  int
 }
 
 func (f *fakeRepository) Create(_ context.Context, _ pgxtx.DBTX, _ *audit.Entry) error {
@@ -48,6 +49,7 @@ func (f *fakeRepository) GetByID(_ context.Context, id uuid.UUID) (*audit.Entry,
 }
 
 func (f *fakeRepository) List(_ context.Context, filters audit.Filters) ([]audit.Entry, int, error) {
+	f.listCalls++
 	f.gotFilters = filters
 	if f.listErr != nil {
 		return nil, 0, f.listErr
@@ -148,8 +150,8 @@ func TestHandler_List_OverLongFilterReturns400(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
-	if repo.gotFilters.ActorID != "" {
-		t.Errorf("repository was queried with an over-long filter")
+	if repo.listCalls != 0 {
+		t.Errorf("repository List called %d times, want 0 for an over-long filter", repo.listCalls)
 	}
 }
 
