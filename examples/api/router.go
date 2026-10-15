@@ -27,6 +27,7 @@ func NewRouter(
 	checker authz.Checker,
 	guard *access.Guard,
 	metrics *vmw.Metrics,
+	limiter *ipRateLimiter,
 	pool *pgxpool.Pool,
 	logger *slog.Logger,
 ) http.Handler {
@@ -59,11 +60,6 @@ func NewRouter(
 	// Structured access log. Mounted last among these so its "status" and
 	// "bytes" fields reflect what every earlier middleware actually did to
 	// the response.
-	//
-	// Deliberately absent: a rate limiter. httprate (and vmw's
-	// RateLimitJSON, built on top of it) would be the natural fit here, but
-	// github.com/go-chi/httprate is not a dependency of this module, and
-	// this example must not add one just to demonstrate a middleware stack.
 	r.Use(vmw.StructuredLogger(logger))
 
 	// Public and unauthenticated: it answers only "ok" or "database
@@ -82,6 +78,12 @@ func NewRouter(
 	requireDelete := vmw.RequireAccess(guard, "documents:document", "delete", logger)
 
 	r.Route("/api/v1", func(r chi.Router) {
+		// Per-client-IP budget, checked BEFORE Authenticate so a client
+		// guessing tokens is throttled too, and after StructuredLogger and
+		// metrics so every 429 is logged and counted. /healthz stays outside
+		// it: an orchestrator probing from one address must never be told
+		// to back off. See ipRateLimiter for why this is only a sample.
+		r.Use(limiter.Middleware)
 		r.Use(vmw.Authenticate(authenticator, logger))
 
 		r.With(requireWrite).Post("/documents", docs.Create)

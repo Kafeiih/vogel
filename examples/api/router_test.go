@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/prometheus/client_golang/prometheus"
@@ -62,7 +63,7 @@ func TestNewRouter_EveryAPIRouteIsGuarded(t *testing.T) {
 		t.Fatalf("NewMetrics: %v", err)
 	}
 	var checker authz.Checker = denyAll{}
-	handler := NewRouter(nil, nil, acceptAll{}, checker, access.New(checker), metrics, nil, logger)
+	handler := NewRouter(nil, nil, acceptAll{}, checker, access.New(checker), metrics, newIPRateLimiter(1_000, time.Minute), nil, logger)
 
 	mux, ok := handler.(chi.Routes)
 	if !ok {

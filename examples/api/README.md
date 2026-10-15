@@ -164,12 +164,20 @@ una subida.
 `router_test.go` recorre el router con `chi.Walk` y falla si alguna ruta
 bajo `/api/` responde sin pasar por `RequirePermission` o `RequireAccess`,
 o si aparece una ruta pública fuera de `/api/` que no esté declarada en
-`publicRoutes`.
+`publicRoutes`. `rolematrix_test.go` fija, para cada ruta y cada tipo de
+llamador (anónimo, token inválido, usuario común, dueño, admin), si los
+guards lo dejan pasar, y falla si aparece una ruta sin fila en la matriz.
 
-Este ejemplo no aplica rate limiting: `github.com/go-chi/httprate` no es
-dependencia del módulo raíz. En una aplicación real, montarlo por IP (con la
-IP resuelta por `vmw.RealIP` y proxies de confianza) como hace
-`examples/boilerplate`.
+`/api/v1` tiene un límite de pedidos por IP de cliente (`ratelimit.go`):
+`RATE_LIMIT_REQUESTS` pedidos (300) por `RATE_LIMIT_WINDOW` (1m), con la IP
+que `vmw.RequestContext` dejó en `reqctx`. Al pasarse responde `429` con el
+código `RATE_LIMITED` y `Retry-After`. Se chequea antes de autenticar, así que
+también frena a quien prueba tokens; `/healthz` queda afuera. Es una muestra,
+no un limitador de producción: ventana fija, contadores en memoria **por
+proceso** (N réplicas permiten N veces la tasa) y, detrás de un proxy, todos
+los clientes comparten la IP del proxy. En una aplicación real, usar un
+limitador compartido (gateway, Redis o `httprate` con `vmw.RateLimitJSON`)
+como hace `examples/boilerplate`.
 
 ## Tres conjuntos de migraciones, tres tablas de versión
 
@@ -213,7 +221,8 @@ handler tiene el engine **y** el repositorio — ver `caseFor` en `handler.go`.
 
 Saber qué se dejó afuera vale tanto como lo que está adentro.
 
-- **No limita el rate.** `httpx/middleware.RateLimitJSON()` se apoya en
+- **No usa un limitador real.** `ratelimit.go` es un contador mínimo por
+  proceso (ver [Rutas](#rutas)). `httpx/middleware.RateLimitJSON()` se apoya en
   `github.com/go-chi/httprate`, que no es dependencia de `vogel`. Agregarla sólo
   para el ejemplo le impondría una dependencia a todos los consumidores. En su
   app, si ya tiene `httprate`:
@@ -226,8 +235,9 @@ Saber qué se dejó afuera vale tanto como lo que está adentro.
   el proceso de API construye la cola con `workers == nil` (modo sólo-inserción)
   y un binario aparte le pasa los workers reales. Esa es exactamente la razón de
   que `worker.NewRiverQueue` acepte `nil` ahí.
-- **No tiene tests.** Es una guía de lectura, no una referencia de testing. Los
-  tests de cada paquete viven junto a su paquete.
+- **Sus tests cubren el cableado, no la librería.** Prueban rutas, roles
+  (`rolematrix_test.go`), límites de entrada y configuración del ejemplo. Los
+  tests de cada paquete de vogel viven junto a su paquete.
 - **No valida la configuración de producción.** `RequireTLS` está en `false` para
   que el compose local funcione. En producción va en `true`, y `postgres.NewPool`
   falla en el arranque si el DSN deshabilita TLS.
