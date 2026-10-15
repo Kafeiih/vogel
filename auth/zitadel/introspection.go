@@ -183,7 +183,7 @@ func (v *introspectionVerifier) CheckAuthorization(ctx context.Context, authoriz
 		}
 		resp, err := rs.Introspect[*oauth.IntrospectionContext](callCtx, v.server, token)
 		if err != nil {
-			return nil, fmt.Errorf("%w: %v", oauth.ErrIntrospectionFailed, err)
+			return nil, fmt.Errorf("%w: %v", oauth.ErrIntrospectionFailed, err) //nolint:errorlint // same non-wrapping %v as the SDK verifier (oauth/authorizer.go), so callers see one error shape
 		}
 		v.cache.Set(token, resp, v.ttl)
 		return resp, nil
@@ -195,7 +195,11 @@ func (v *introspectionVerifier) CheckAuthorization(ctx context.Context, authoriz
 		if r.Err != nil {
 			return nil, r.Err
 		}
-		c := *r.Val.(*oauth.IntrospectionContext)
+		res, ok := r.Val.(*oauth.IntrospectionContext)
+		if !ok {
+			return nil, fmt.Errorf("%w: unexpected shared result %T", oauth.ErrIntrospectionFailed, r.Val)
+		}
+		c := *res
 		return &c, nil
 	}
 }
