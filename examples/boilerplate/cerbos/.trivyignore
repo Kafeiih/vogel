@@ -1,0 +1,20 @@
+# Accepted findings for the Cerbos PDP image only (trivy.yaml passes this file
+# with --ignorefile when it scans boilerplate:cerbos, so the api and worker
+# images are still held to every finding).
+#
+# Cerbos 0.56.0, the latest release (2026-09-30), ships a cerbos binary built
+# with Go 1.27.1 and golang.org/x/net 0.59.0. Both have fixed DoS issues
+# (Go 1.27.2, x/net 0.60.0) that no released Cerbos image includes yet. The
+# deploy compose keeps the PDP on an internal network with no published
+# ports, so only the api and worker can reach it.
+#
+# Each entry expires: when it does, CI fails again. Bump the Cerbos version in
+# cerbos/Dockerfile and deploy/docker-compose.developer.yaml if a fixed
+# release is out, or renew the date with a reason.
+
+# net/http: excessive Range headers (stdlib)
+CVE-2026-78667 exp:2026-11-14
+# net/http2, golang.org/x/net/http2: excessive HTTP/2 SETTINGS frames
+CVE-2026-78669 exp:2026-11-14
+# crypto/tls: multiple ECH outer extension references (stdlib)
+CVE-2026-97031 exp:2026-11-14

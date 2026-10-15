@@ -66,6 +66,7 @@ jobs:
           set -euo pipefail
           docker build -f examples/boilerplate/Dockerfile --target api -t boilerplate:api .
           docker build -f examples/boilerplate/Dockerfile --target worker -t boilerplate:worker .
+          docker build -t boilerplate:cerbos examples/boilerplate/cerbos
 
       # --ignore-unfixed: a vulnerability with no released fix cannot be acted
       # on with a bump, so it would only keep CI red. Accepted findings go in
@@ -78,4 +79,9 @@ jobs:
             "$RUNNER_TEMP/trivy" image --severity HIGH,CRITICAL --ignore-unfixed \
               --exit-code 1 "boilerplate:${target}" || status=1
           done
+          # The Cerbos image carries its own expiring ignore list: upstream
+          # findings with a fix that no Cerbos release ships yet.
+          "$RUNNER_TEMP/trivy" image --severity HIGH,CRITICAL --ignore-unfixed \
+            --ignorefile examples/boilerplate/cerbos/.trivyignore \
+            --exit-code 1 boilerplate:cerbos || status=1
           exit "$status"
