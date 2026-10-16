@@ -9,7 +9,10 @@
 # ports, so only the api and worker can reach it.
 #
 # Renewed 2026-10-15: no Cerbos release after 0.56.0 yet. Cerbos main already
-# requires golang.org/x/net 0.61.0, so the fix ships with the next release.
+# requires golang.org/x/net 0.61.0, which covers the x/net part of
+# CVE-2026-78669. The stdlib parts (CVE-2026-78667, CVE-2026-97031 and the
+# net/http side of CVE-2026-78669) clear only if the next release is built
+# with Go 1.27.2 or later: check its Go version before dropping any entry.
 #
 # Each entry expires: when it does, CI fails again. Bump the Cerbos version in
 # cerbos/Dockerfile and deploy/docker-compose.developer.yaml if a fixed
