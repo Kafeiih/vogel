@@ -5,7 +5,8 @@
 # together:
 #   - cerbos/tests/resource_audit_entry_test.yaml   (policy tests)
 #   - cerbos/smoke.sh                               (image smoke checks)
-#   - internal/interfaces/http/rolematrix_test.go   (HTTP-layer matrix)
+#   - internal/interfaces/http/rolematrix_test.go   (HTTP-layer matrix;
+#     rolematrix_policy_test.go fails when it drifts from this policy)
 #   - docs/CERBOS_POLICIES.md                       (reference table)
 #
 # RequirePermission sends only the principal's id and roles and a resource
