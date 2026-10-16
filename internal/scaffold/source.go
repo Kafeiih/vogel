@@ -25,8 +25,11 @@ const (
 	// DefaultMaxExtractBytes caps the total size of extracted files.
 	DefaultMaxExtractBytes int64 = 64 << 20
 	// maxDownloadBytes caps the compressed download.
-	maxDownloadBytes   int64 = 256 << 20
-	defaultHTTPTimeout       = 2 * time.Minute
+	maxDownloadBytes int64 = 256 << 20
+	// maxTarEntries caps the entries read from a tarball, skipped ones
+	// included; a vogel tarball holds a few hundred.
+	maxTarEntries      = 100_000
+	defaultHTTPTimeout = 2 * time.Minute
 
 	boilerplateDir = "examples/boilerplate"
 )
@@ -85,7 +88,8 @@ func (f *Fetcher) Fetch(ctx context.Context, version, dest string) error {
 // single top-level directory, as GitHub serves it) and writes the entries
 // under <top>/examples/boilerplate/ into dest. Unsafe paths and links that
 // escape the boilerplate are rejected; other symlinks and special files are
-// skipped. maxBytes caps the total size of the extracted files.
+// skipped. maxBytes caps the total size of the extracted files, and at most
+// maxTarEntries entries are read.
 func ExtractBoilerplate(r io.Reader, dest string, maxBytes int64) error {
 	gz, err := gzip.NewReader(r)
 	if err != nil {
@@ -106,6 +110,7 @@ func ExtractBoilerplate(r io.Reader, dest string, maxBytes int64) error {
 	var (
 		top     string
 		total   int64
+		entries int
 		written bool
 	)
 	for {
@@ -115,6 +120,9 @@ func ExtractBoilerplate(r io.Reader, dest string, maxBytes int64) error {
 		}
 		if err != nil {
 			return fmt.Errorf("read tarball: %w", err)
+		}
+		if entries++; entries > maxTarEntries {
+			return fmt.Errorf("tarball exceeds the %d entry limit", maxTarEntries)
 		}
 		if hdr.Typeflag == tar.TypeXGlobalHeader {
 			continue

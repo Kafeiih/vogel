@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -140,6 +141,20 @@ func TestExtractBoilerplateSkipsInnerSymlink(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(dest, "alias")); !os.IsNotExist(err) {
 		t.Fatal("symlink inside the boilerplate should be skipped, not created")
+	}
+}
+
+func TestExtractBoilerplateEntryLimit(t *testing.T) {
+	// Entries outside the boilerplate are skipped without extracting a byte,
+	// so only the entry cap stops a tarball made of millions of them.
+	entries := goodEntries()
+	for i := len(entries); i <= maxTarEntries; i++ {
+		entries = append(entries, tarEntry{name: fmt.Sprintf("vogel-0.10.0/docs/f%d", i), typeflag: tar.TypeDir, mode: 0o755})
+	}
+	dest := filepath.Join(t.TempDir(), "out")
+	err := ExtractBoilerplate(bytes.NewReader(buildTarball(t, entries)), dest, 1<<20)
+	if err == nil || !strings.Contains(err.Error(), "entry limit") {
+		t.Fatalf("error = %v, want entry limit", err)
 	}
 }
 
