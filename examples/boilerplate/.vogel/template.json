@@ -33,7 +33,8 @@
       "default": true,
       "requires": [],
       "paths": [
-        "cerbos"
+        "cerbos",
+        "internal/interfaces/http/rolematrix_policy_test.go"
       ]
     },
     {

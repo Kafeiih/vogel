@@ -18,6 +18,10 @@ PDP image is built, validated and deployed.
 
 `internal/interfaces/http/rolematrix_test.go` pins the same matrix at the
 HTTP layer, with a stand-in for the PDP; keep it and the policy in sync.
+<!-- vogel:component cerbos begin -->
+`rolematrix_policy_test.go` reads `cerbos/policies` and fails when the
+stand-in grants something the policies do not, or the other way around.
+<!-- vogel:component cerbos end -->
 
 ## What the middleware sends
 
