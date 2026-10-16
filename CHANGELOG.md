@@ -4,6 +4,35 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el versionado,
 [SemVer](https://semver.org/lang/es/).
 
+## [0.10.1] — 2026-10-16
+
+### Agregado
+
+- **`examples/boilerplate`: `TestMatrixPolicyMatchesCerbosPolicies`.** Lee
+  `cerbos/policies` y falla cuando `matrixPolicy`, el sustituto del PDP con el
+  que corre `TestNewRouter_RoleMatrix`, no concede exactamente lo mismo que
+  las políticas. También falla ante reglas que `matrixPolicy` no puede
+  representar (`condition`, roles derivados, comodines, efectos distintos de
+  `EFFECT_ALLOW`). Es parte del componente `cerbos`: `--without cerbos` lo
+  quita junto con las políticas.
+
+### Cambiado
+
+- **`examples/boilerplate`: las excepciones de Trivy para Cerbos vencen el
+  2026-12-15** (antes, el 2026-11-14). Ninguna versión de Cerbos posterior a
+  0.56.0 incluye todavía los arreglos de Go 1.27.2 y `golang.org/x/net`. Un
+  proyecto generado con `v0.10.0` tiene su propia copia: debe renovar a mano
+  las fechas de `cerbos/.trivyignore`, o su CI de Trivy falla desde el
+  2026-11-14.
+
+### Corregido
+
+- **`cmd/create-vogel-app`: lee como máximo 100 000 entradas del tarball.**
+  Las entradas que se omiten (fuera de `examples/boilerplate`, enlaces,
+  dispositivos) no contaban para ningún límite, así que un tarball con
+  millones de entradas vacías dejaba la CLI en un bucle. Ahora cuentan todas;
+  el tarball de `v0.10.0` tiene 391.
+
 ## [0.10.0] — 2026-10-15
 
 ### Agregado
