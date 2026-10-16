@@ -457,7 +457,8 @@ func parseStorageConfigs() map[string]s3.Config {
 
 // vogel:component storage end
 // parseCerbosConfig reads the Cerbos PDP connection. TLS is the default;
-// CERBOS_PLAINTEXT=true opts out, for the local development container only.
+// CERBOS_PLAINTEXT=true opts out, for the local development container only;
+// like every flag read with parseBool, a value it cannot read is an error.
 //
 // CERBOS_TLS, which CERBOS_PLAINTEXT replaced, is rejected whenever it is set
 // (whatever its value) and recorded in errs: a deployment that still carries
@@ -469,7 +470,7 @@ func parseCerbosConfig(errs *config.Errors) cerbos.Config {
 	}
 	return cerbos.Config{
 		Host:      config.String("CERBOS_HOST", "localhost:3593"),
-		Plaintext: config.Bool("CERBOS_PLAINTEXT", false),
+		Plaintext: parseBool(errs, "CERBOS_PLAINTEXT", false),
 	}
 }
 

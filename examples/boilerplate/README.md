@@ -154,7 +154,9 @@ construye la imagen del PDP y prueba que las sirve (ver `cerbos/README.md`).
 > `CERBOS_PLAINTEXT` (opcional, `false` por defecto) desactiva TLS hacia el
 > PDP de Cerbos. Sin ella la conexión gRPC usa TLS; el contenedor local de
 > Cerbos escucha sin TLS, por eso el `.env` local la pone en `true`. Nunca la active en staging ni en producción: las decisiones
-> de autorización viajarían en texto plano. Reemplaza a `CERBOS_TLS`: si esa
+> de autorización viajarían en texto plano. Acepta solo valores booleanos
+> (`true`, `false`, `1`, `0`...): cualquier otro hace fallar el arranque en
+> lugar de leerse como `false`. Reemplaza a `CERBOS_TLS`: si esa
 > variable sigue definida (con cualquier valor), el arranque falla con un
 > error que indica usar `CERBOS_PLAINTEXT`, para que la migración no pase
 > inadvertida.

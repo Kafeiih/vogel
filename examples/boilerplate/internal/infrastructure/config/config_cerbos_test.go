@@ -40,6 +40,27 @@ func TestParseCerbosConfig(t *testing.T) {
 	}
 }
 
+// CERBOS_PLAINTEXT switches TLS off, so a value strconv.ParseBool cannot
+// read must fail the boot instead of being taken as false.
+func TestParseCerbosConfig_UnparsablePlaintext_IsConfigError(t *testing.T) {
+	t.Setenv("CERBOS_PLAINTEXT", "ture")
+	unsetEnv(t, "CERBOS_TLS")
+
+	var errs config.Errors
+	got := parseCerbosConfig(&errs)
+
+	err := errs.Err()
+	if err == nil {
+		t.Fatal("errs.Err() = nil, want an error for CERBOS_PLAINTEXT=ture")
+	}
+	if !strings.Contains(err.Error(), `CERBOS_PLAINTEXT: must be true or false, got "ture"`) {
+		t.Errorf("error %q does not name CERBOS_PLAINTEXT and its value", err)
+	}
+	if got.Plaintext {
+		t.Error("Plaintext = true, want the TLS default when the value is invalid")
+	}
+}
+
 // CERBOS_TLS was replaced by CERBOS_PLAINTEXT. A deployment that still sets
 // it must fail at boot instead of being silently switched to TLS and failing
 // later on every authorization call.

@@ -18,8 +18,8 @@ cargo del servicio consumidor.
 
 | Estado | Ítems |
 |---|---|
-| PASS | 79 |
-| PARTIAL | 9 |
+| PASS | 80 |
+| PARTIAL | 8 |
 | FAIL | 0 |
 | CONSUMER | 26 |
 | N/A | 79 |
@@ -188,10 +188,10 @@ un Bearer token que se valida en el servidor.
 
 | ID | Sev. | Ítem | Estado | Evidencia |
 |---|---|---|---|---|
-| 10.1 | C | Sin secretos en el repo; escáner sobre toda la historia | PASS | gitleaks sobre la historia completa (`.github/workflows/secrets.yaml:34`, `.github/workflows/secrets.yaml:48`; reglas en `.gitleaks.toml`). Todavía no es check requerido en `master` (ver seguimiento) |
+| 10.1 | C | Sin secretos en el repo; escáner sobre toda la historia | PASS | gitleaks sobre la historia completa (`.github/workflows/secrets.yaml:34`, `.github/workflows/secrets.yaml:48`; reglas en `.gitleaks.toml`). Check requerido en `master` |
 | 10.2 | C | Secretos inyectados en ejecución; `.env` ignorado y fuera de imágenes | PASS | `.gitignore:19`, `.dockerignore:10`; compose exige las variables con `:?` (`examples/boilerplate/deploy/docker-compose.yaml:176`). El gestor de secretos: CONSUMER |
 | 10.3 | H | Secretos rotables y rotación probada | CONSUMER | `config` solo lee el entorno; procedimiento en `examples/boilerplate/deploy/RUNBOOK.md` §10. Probar la rotación es del operador |
-| 10.4 | H | Escaneo de dependencias en CI que bloquea | PARTIAL | `govulncheck` (`.github/workflows/ci.yaml:142`), Trivy semanal y por PR (`.github/workflows/trivy.yaml:58`), Dependabot (`.github/dependabot.yml`). Trivy y gitleaks aún no son checks requeridos en `master` |
+| 10.4 | H | Escaneo de dependencias en CI que bloquea | PASS | `govulncheck` (`.github/workflows/ci.yaml:142`), Trivy semanal y por PR (`.github/workflows/trivy.yaml:58`), Dependabot (`.github/dependabot.yml`). `govulncheck`, Trivy y gitleaks son checks requeridos en `master` |
 | 10.5 | H | Lockfiles versionados | PASS | `go.sum`, `examples/boilerplate/go.sum`; cambios revisados por `.github/CODEOWNERS` |
 | 10.6 | H | Debug y credenciales por defecto apagados en producción | PASS | Swagger rechazado en producción (`TestLoad_SwaggerRefusedInProduction`); logs JSON en `production` (`logger/logger.go:36`); compose sin contraseñas por defecto (`examples/boilerplate/deploy/docker-compose.yaml:176`) |
 | 10.7 | M | Cifrado en reposo con AES-GCM o KMS | CONSUMER | `vogel` no cifra datos en reposo ni implementa criptografía propia (solo SHA-256 para la clave de caché, `auth/zitadel/introspection.go:221`) |
@@ -344,11 +344,11 @@ SAML, y no tiene webhooks, pagos ni scripts de terceros.
 
 | # | Brecha | Ítems | Estado |
 |---|---|---|---|
-| 1 | `CERBOS_PLAINTEXT` en `examples/boilerplate` usa `config.Bool`, que acepta valores no parseables como `false` en silencio, en lugar del parseo estricto de `SWAGGER_ENABLED` y `DB_REQUIRE_TLS` (`examples/boilerplate/internal/infrastructure/config/config.go:438`) | 7.1 | Abierta |
+| 1 | `CERBOS_PLAINTEXT` en `examples/boilerplate` usa `config.Bool`, que acepta valores no parseables como `false` en silencio, en lugar del parseo estricto de `SWAGGER_ENABLED` y `DB_REQUIRE_TLS` | 7.1 | Cerrada (2026-10-16): usa `parseBool`, que rechaza el valor (`examples/boilerplate/internal/infrastructure/config/config_cerbos_test.go`) |
 | 2 | La política falsa de `examples/api` deja leer `/audit` a cualquier usuario autenticado (`examples/api/fakes.go:60`); la matriz de roles lo fija. Un servicio copiado debe usar Cerbos con su política | 14.8 | Abierta (ejemplo) |
 | 3 | El limitador de `examples/api` cuenta por IP del par directo: detrás de un proxy todos los clientes comparten la IP del proxy (documentado en `examples/api/ratelimit.go:28`) | 8.2 | Abierta (documentada) |
 | 4 | 6 hallazgos previos de `golangci-lint` en `auth/zitadel/introspection*.go` (idénticos en la base) | 14.5 | Abierta |
-| 5 | gitleaks y Trivy todavía no son checks requeridos de la protección de `master` | 10.1, 10.4 | Pendiente tras el merge |
+| 5 | gitleaks y Trivy todavía no son checks requeridos de la protección de `master` | 10.1, 10.4 | Cerrada (2026-10-16): la protección de `master` los exige |
 | 6 | Sin normalización Unicode antes de validar | 4.9 | Abierta |
 | 7 | Fallos de validación de input sin evento de log | 11.2 | Abierta |
 | 8 | Sin claves de idempotencia genéricas | 17.13 | Abierta |
