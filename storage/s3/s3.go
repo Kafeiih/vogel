@@ -33,8 +33,10 @@ type Config struct {
 	// MaxPresignExpiry is the longest expiry a presign call may ask for; a
 	// longer one returns storage.ErrPresignExpiryTooLong. A presigned URL is
 	// a bearer credential nothing can revoke before it expires, so its life
-	// is bounded. Zero means DefaultMaxPresignExpiry; negative, or a
-	// PresignExpiry above it, is a construction error.
+	// is bounded. Zero means DefaultMaxPresignExpiry. A negative value, one
+	// above MaxSigV4PresignExpiry, or a maximum below the effective
+	// PresignExpiry (DefaultPresignExpiry, 15m, when unset) is a construction
+	// error.
 	MaxPresignExpiry time.Duration
 
 	// ResponseHeaderTimeout bounds the phases that reveal a stalled S3
@@ -62,6 +64,10 @@ const DefaultPresignExpiry = 15 * time.Minute
 // Config.MaxPresignExpiry is zero.
 const DefaultMaxPresignExpiry = time.Hour
 
+// MaxSigV4PresignExpiry is the longest lifetime a SigV4 presigned URL can
+// have; S3 rejects a longer X-Amz-Expires when the URL is used.
+const MaxSigV4PresignExpiry = 7 * 24 * time.Hour
+
 // Storage implements storage.Storage using AWS SDK v2.
 type S3Storage struct {
 	client        *s3.Client
@@ -88,6 +94,9 @@ func NewS3Storage(cfg Config, logger *slog.Logger) (*S3Storage, error) {
 	}
 	if cfg.MaxPresignExpiry < 0 {
 		return nil, fmt.Errorf("storage: max presign expiry must not be negative")
+	}
+	if cfg.MaxPresignExpiry > MaxSigV4PresignExpiry {
+		return nil, fmt.Errorf("storage: max presign expiry %s exceeds the %s SigV4 allows", cfg.MaxPresignExpiry, MaxSigV4PresignExpiry)
 	}
 	maxExpiry := cfg.MaxPresignExpiry
 	if maxExpiry == 0 {
@@ -280,7 +289,7 @@ func (s *S3Storage) PresignedPutURL(ctx context.Context, key string, contentType
 	if err != nil {
 		return "", fmt.Errorf("storage: presign put %q: %w", key, err)
 	}
-	if o.HasContentLength && o.ContentLength < 0 {
+	if o.HasContentLength && o.ContentLength <= 0 {
 		return "", fmt.Errorf("storage: presign put %q: %w", key, storage.ErrInvalidContentLength)
 	}
 
