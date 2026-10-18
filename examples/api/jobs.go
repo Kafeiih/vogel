@@ -264,7 +264,7 @@ func (w *ValidateUploadWorker) cleanup(ctx context.Context, id uuid.UUID, args V
 	pending := doc != nil && doc.FileStatus == FileStatusPending
 	references := func(key string) bool { return doc != nil && doc.StorageKey == key }
 
-	if !(pending && references(args.Key)) {
+	if !pending || !references(args.Key) {
 		if err := w.storage.Delete(ctx, args.Key); err != nil {
 			return fmt.Errorf("validate upload: delete upload %q: %w", args.Key, err)
 		}
