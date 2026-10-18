@@ -14,6 +14,7 @@ import (
 	"github.com/kafeiih/vogel/notification"
 	"github.com/kafeiih/vogel/pgxtx"
 	"github.com/kafeiih/vogel/storage"
+	"github.com/kafeiih/vogel/worker"
 )
 
 // NotifyReviewersArgs is the payload for the notify_reviewers background
@@ -82,15 +83,12 @@ func (w *NotifyReviewersWorker) Work(ctx context.Context, job *river.Job[NotifyR
 // ValidateUploadArgs is the payload for the validate_upload background job,
 // enqueued by DocumentHandler.AttachFile in the same transaction that marks
 // the document's file pending (see worker.Queue.EnqueueTx). Key is the
-// upload object the client PUT with its presigned URL. PreviousKey and
-// PreviousContentType, when set, are the final file the document was ready
-// with before this confirm: a rejected upload puts it back, an accepted one
-// replaces it and deletes it.
+// upload object the client PUT with its presigned URL. The file the upload
+// would replace is not in the payload: it is on the row
+// (Document.PreviousStorageKey), where downloads also find it.
 type ValidateUploadArgs struct {
-	DocumentID          string `json:"document_id"`
-	Key                 string `json:"key"`
-	PreviousKey         string `json:"previous_key,omitempty"`
-	PreviousContentType string `json:"previous_content_type,omitempty"`
+	DocumentID string `json:"document_id"`
+	Key        string `json:"key"`
 }
 
 // Kind implements river.JobArgs.
@@ -128,9 +126,12 @@ type ValidateUploadWorker struct {
 	storage  storage.Storage
 	store    *DocumentStore
 	recorder *audit.Recorder
-	tx       *pgxtx.PgxTxManager
-	pool     *pgxpool.Pool
-	logger   *slog.Logger
+	// queue enqueues delete_object for the file an acceptance retires, in
+	// the acceptance's own transaction (see finish).
+	queue  worker.Queue
+	tx     *pgxtx.PgxTxManager
+	pool   *pgxpool.Pool
+	logger *slog.Logger
 }
 
 // Work implements river.Worker.
@@ -144,24 +145,25 @@ type ValidateUploadWorker struct {
 //   - Content allowed: the inspected bytes are copied to a new final key
 //     (Download then Upload: the port has no Copy), and the document moves
 //     to that key as ready with the sniffed type -- the only type a download
-//     is ever served with.
+//     is ever served with. The file it replaces, if any, is retired: its
+//     deletion is enqueued as a delete_object job in the same transaction.
 //
-// A rejected upload never costs the document the file it already had: with
-// a PreviousKey the row goes back to that file, ready, with its type
+// A rejected upload never costs the document the file it already had: when
+// the row holds a previous file, it goes back to it, ready, with its type
 // (audited as document_restore_file); only without one does it end
 // rejected.
 //
 // Every verdict is written only while the document still points at Key with
 // its file pending (see DocumentStore.ResolveUpload): a retry of a job that
-// already resolved the row changes nothing and audits nothing, and a final
-// copy such a run made is deleted again. The verdict commits before the
-// cleanup (see cleanup), so a failed delete returns an error and the retry,
-// finding the row resolved, finishes it. Any storage or database error is
-// returned, so River retries the job.
+// already resolved the row changes nothing, enqueues nothing and audits
+// nothing, and a final copy such a run made is deleted again. The verdict
+// commits before the upload object is deleted (see cleanup), so a failed
+// delete returns an error and the retry, finding the row resolved, finishes
+// it. Any storage or database error is returned, so River retries the job.
 //
 // On the last attempt River would discard a failing job and leave the
-// document pending forever, so the job resolves it by the rules of a
-// rejection (see giveUp) and still returns the error for River to record.
+// document pending, so the job resolves it by the rules of a rejection (see
+// giveUp) and still returns the error for River to record.
 func (w *ValidateUploadWorker) Work(ctx context.Context, job *river.Job[ValidateUploadArgs]) error {
 	id, err := uuid.Parse(job.Args.DocumentID)
 	if err != nil {
@@ -187,7 +189,7 @@ func (w *ValidateUploadWorker) giveUp(ctx context.Context, id uuid.UUID, args Va
 	if err := w.storage.Delete(ctx, args.Key); err != nil {
 		w.logger.WarnContext(ctx, "delete upload after the last attempt", "document_id", id, "key", args.Key, "error", err)
 	}
-	if err := w.reject(ctx, id, args); err != nil {
+	if _, err := w.finish(ctx, id, args.Key, rejectVerdict); err != nil {
 		return errors.Join(cause, err)
 	}
 	if err := w.cleanup(ctx, id, args); err != nil {
@@ -203,7 +205,7 @@ func (w *ValidateUploadWorker) decide(ctx context.Context, id uuid.UUID, args Va
 	out, err := w.storage.Download(ctx, key)
 	if errors.Is(err, storage.ErrNotFound) {
 		w.logger.InfoContext(ctx, "upload missing", "document_id", id, "key", key)
-		if err := w.reject(ctx, id, args); err != nil {
+		if _, err := w.finish(ctx, id, key, rejectVerdict); err != nil {
 			return err
 		}
 		return w.cleanup(ctx, id, args)
@@ -219,7 +221,7 @@ func (w *ValidateUploadWorker) decide(ctx context.Context, id uuid.UUID, args Va
 		if err := w.storage.Delete(ctx, key); err != nil {
 			return fmt.Errorf("validate upload: delete %q: %w", key, err)
 		}
-		if err := w.reject(ctx, id, args); err != nil {
+		if _, err := w.finish(ctx, id, key, rejectVerdict); err != nil {
 			return err
 		}
 		return w.cleanup(ctx, id, args)
@@ -235,10 +237,7 @@ func (w *ValidateUploadWorker) decide(ctx context.Context, id uuid.UUID, args Va
 		return fmt.Errorf("validate upload: copy %q to %q: %w", key, finalKey, err)
 	}
 
-	applied, err := w.finish(ctx, id, key, verdict{
-		storageKey: finalKey, status: FileStatusReady, contentType: contentType,
-		operation: "document_validate_file", label: "acceptance",
-	})
+	applied, err := w.finish(ctx, id, key, acceptVerdict(finalKey, contentType))
 	if err != nil {
 		// The error may have come after the commit landed: keep the copy if
 		// the row points at it; the retry sorts out the rest.
@@ -253,16 +252,12 @@ func (w *ValidateUploadWorker) decide(ctx context.Context, id uuid.UUID, args Va
 	return w.cleanup(ctx, id, args)
 }
 
-// cleanup deletes what the document no longer references once its upload
-// is resolved: the upload object, and the previous final file. It re-reads
-// the row on every run, so a retry after a failed delete finishes the job
-// (Delete is idempotent), and it decides from the row rather than from what
-// this run did.
-//
-// The previous file is kept while the row is pending: under a newer
-// confirm, that upload's job may still need to put it back. AttachFile
-// accepts no confirm while one is pending, so outside that window no job in
-// flight can need it.
+// cleanup deletes the upload object once the row no longer waits on it. It
+// re-reads the row on every run, so a retry after a failed delete finishes
+// the job (Delete is idempotent), and it decides from the row rather than
+// from what this run did. The file an acceptance retires is not deleted
+// here: by then the row no longer names it, so its key travels in the
+// delete_object job the acceptance enqueued instead.
 func (w *ValidateUploadWorker) cleanup(ctx context.Context, id uuid.UUID, args ValidateUploadArgs) error {
 	doc, err := w.store.GetByID(ctx, w.pool, id)
 	if errors.Is(err, ErrDocumentNotFound) {
@@ -270,18 +265,11 @@ func (w *ValidateUploadWorker) cleanup(ctx context.Context, id uuid.UUID, args V
 	} else if err != nil {
 		return fmt.Errorf("validate upload: re-read document: %w", err)
 	}
-	pending := doc != nil && doc.FileStatus == FileStatusPending
-	references := func(key string) bool { return doc != nil && doc.StorageKey == key }
-
-	if !pending || !references(args.Key) {
-		if err := w.storage.Delete(ctx, args.Key); err != nil {
-			return fmt.Errorf("validate upload: delete upload %q: %w", args.Key, err)
-		}
+	if doc != nil && doc.FileStatus == FileStatusPending && doc.StorageKey == args.Key {
+		return nil
 	}
-	if prev := args.PreviousKey; prev != "" && !pending && !references(prev) {
-		if err := w.storage.Delete(ctx, prev); err != nil {
-			return fmt.Errorf("validate upload: delete previous file %q: %w", prev, err)
-		}
+	if err := w.storage.Delete(ctx, args.Key); err != nil {
+		return fmt.Errorf("validate upload: delete upload %q: %w", args.Key, err)
 	}
 	return nil
 }
@@ -306,44 +294,62 @@ func (w *ValidateUploadWorker) deleteCopyUnlessReferenced(ctx context.Context, i
 	}
 }
 
-// reject records that the upload at args.Key will not become the document's
-// file: the row returns to the previous ready file when there is one
-// (document_restore_file), and is marked rejected otherwise.
-func (w *ValidateUploadWorker) reject(ctx context.Context, id uuid.UUID, args ValidateUploadArgs) error {
-	if args.PreviousKey != "" {
-		_, err := w.finish(ctx, id, args.Key, verdict{
-			storageKey: args.PreviousKey, status: FileStatusReady, contentType: args.PreviousContentType,
-			operation: "document_restore_file", label: "restore of the previous file",
-		})
-		return err
-	}
-	_, err := w.finish(ctx, id, args.Key, verdict{
-		storageKey: args.Key, status: FileStatusRejected,
-		operation: "document_validate_file", label: "rejection",
-	})
-	return err
-}
-
 // verdict is what finish writes: the row's new key, status and type, the
-// audit operation that records it, and a label for errors.
+// audit operation that records it, a label for errors, and the file it
+// retires (enqueued for deletion with the verdict). It is computed from the
+// row as finish reads it inside its transaction, so a restore always uses
+// the previous file the row holds at that moment.
 type verdict struct {
 	storageKey  string
 	status      string
 	contentType string
 	operation   string
 	label       string
+	retire      string
 }
 
-// finish records v on uploadKey for document id, with its audit entry, in
-// one transaction, and reports whether it did. A document deleted
-// meanwhile, or one that is no longer pending on uploadKey, is left alone
-// and nothing is audited.
-func (w *ValidateUploadWorker) finish(ctx context.Context, id uuid.UUID, uploadKey string, v verdict) (bool, error) {
+// verdictFor builds a verdict from the row before it changes.
+type verdictFor func(before *Document) verdict
+
+// acceptVerdict moves the row to the validated copy at finalKey and retires
+// the previous file, if the row holds one.
+func acceptVerdict(finalKey, contentType string) verdictFor {
+	return func(before *Document) verdict {
+		return verdict{
+			storageKey: finalKey, status: FileStatusReady, contentType: contentType,
+			operation: "document_validate_file", label: "acceptance",
+			retire: before.PreviousStorageKey,
+		}
+	}
+}
+
+// rejectVerdict puts the row back on its previous ready file when it holds
+// one (document_restore_file), and marks the upload rejected otherwise.
+func rejectVerdict(before *Document) verdict {
+	if before.PreviousStorageKey != "" {
+		return verdict{
+			storageKey: before.PreviousStorageKey, status: FileStatusReady, contentType: before.PreviousContentType,
+			operation: "document_restore_file", label: "restore of the previous file",
+		}
+	}
+	return verdict{
+		storageKey: before.StorageKey, status: FileStatusRejected,
+		operation: "document_validate_file", label: "rejection",
+	}
+}
+
+// finish records the verdict decide builds for uploadKey on document id, in
+// one transaction with its audit entry and, when the verdict retires a
+// file, the delete_object job for it; it reports whether it did. A document
+// deleted meanwhile, or one that is no longer pending on uploadKey, is left
+// alone: nothing is written, enqueued or audited.
+func (w *ValidateUploadWorker) finish(ctx context.Context, id uuid.UUID, uploadKey string, decide verdictFor) (bool, error) {
 	applied := false
+	label := "verdict"
 	err := w.tx.WithTx(ctx, func(txCtx context.Context) error {
 		db := pgxtx.DBFromContext(txCtx, w.pool)
 
-		before, err := w.store.GetByID(txCtx, db, id)
+		before, err := w.store.GetByIDForUpdate(txCtx, db, id)
 		if errors.Is(err, ErrDocumentNotFound) {
 			w.logger.InfoContext(txCtx, "upload validated for a deleted document", "document_id", id, "key", uploadKey)
 			return nil
@@ -351,6 +357,8 @@ func (w *ValidateUploadWorker) finish(ctx context.Context, id uuid.UUID, uploadK
 		if err != nil {
 			return err
 		}
+		v := decide(before)
+		label = v.label
 
 		updated, err := w.store.ResolveUpload(txCtx, db, id, uploadKey, v.storageKey, v.status, v.contentType)
 		if err != nil {
@@ -361,10 +369,21 @@ func (w *ValidateUploadWorker) finish(ctx context.Context, id uuid.UUID, uploadK
 			return nil
 		}
 
+		// The retired file's key leaves the row with this commit, so it is
+		// handed to its own job in the same transaction: River keeps it,
+		// and retries its deletion, whatever happens to this one.
+		if v.retire != "" && v.retire != v.storageKey {
+			if _, err := w.queue.EnqueueTx(txCtx, pgxtx.TxFromContext(txCtx), DeleteObjectArgs{Key: v.retire}, nil); err != nil {
+				return err
+			}
+		}
+
 		after := *before
 		after.StorageKey = v.storageKey
 		after.FileStatus = v.status
 		after.FileContentType = v.contentType
+		after.PreviousStorageKey = ""
+		after.PreviousContentType = ""
 
 		// SourceWorker, not SourceHTTP: this verdict was reached by the job,
 		// with no request and no principal behind it (see
@@ -380,18 +399,49 @@ func (w *ValidateUploadWorker) finish(ctx context.Context, id uuid.UUID, uploadK
 		return nil
 	})
 	if err != nil {
-		return false, fmt.Errorf("validate upload: record %s: %w", v.label, err)
+		return false, fmt.Errorf("validate upload: record %s: %w", label, err)
 	}
 	return applied, nil
+}
+
+// DeleteObjectArgs is the payload for delete_object: one storage object
+// nothing references any more. validate_upload enqueues it, in the
+// transaction that stops the document referencing the object, for the file
+// an accepted upload replaces.
+type DeleteObjectArgs struct {
+	Key string `json:"key"`
+}
+
+// Kind implements river.JobArgs.
+func (DeleteObjectArgs) Kind() string { return "delete_object" }
+
+// DeleteObjectWorker deletes one storage object. Delete is idempotent, so a
+// retry after a partial failure is safe; any error is returned for River
+// to retry. Nothing is audited: the change the deletion follows from was.
+type DeleteObjectWorker struct {
+	river.WorkerDefaults[DeleteObjectArgs]
+
+	storage storage.Storage
+	logger  *slog.Logger
+}
+
+// Work implements river.Worker.
+func (w *DeleteObjectWorker) Work(ctx context.Context, job *river.Job[DeleteObjectArgs]) error {
+	if err := w.storage.Delete(ctx, job.Args.Key); err != nil {
+		return fmt.Errorf("delete object %q: %w", job.Args.Key, err)
+	}
+	w.logger.InfoContext(ctx, "retired object deleted", "key", job.Args.Key)
+	return nil
 }
 
 // RegisterWorkers builds the river.Workers registry this example's queue
 // runs. Passed as NewRiverQueue's second argument; passing nil instead
 // switches a queue to insert-only mode (see the comment in main.go on why
 // this example's single process passes a non-nil registry here).
-func RegisterWorkers(notify *NotifyReviewersWorker, validate *ValidateUploadWorker) *river.Workers {
+func RegisterWorkers(notify *NotifyReviewersWorker, validate *ValidateUploadWorker, deleteObject *DeleteObjectWorker) *river.Workers {
 	workers := river.NewWorkers()
 	river.AddWorker(workers, notify)
 	river.AddWorker(workers, validate)
+	river.AddWorker(workers, deleteObject)
 	return workers
 }

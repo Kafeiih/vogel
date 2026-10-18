@@ -6,11 +6,16 @@
 --   rejected -> the object was missing or its content was not allowed
 -- file_content_type is the type validate_upload sniffed, the only type a
 -- download is ever served with.
+-- previous_storage_key and previous_content_type hold the ready file a
+-- pending replacement would supersede: downloads keep serving it while the
+-- replacement is validated, and a rejected replacement restores it.
 ALTER TABLE documents
     ADD COLUMN file_status TEXT NOT NULL DEFAULT 'none'
         CONSTRAINT documents_file_status_check
         CHECK (file_status IN ('none', 'pending', 'ready', 'rejected')),
-    ADD COLUMN file_content_type TEXT;
+    ADD COLUMN file_content_type TEXT,
+    ADD COLUMN previous_storage_key TEXT,
+    ADD COLUMN previous_content_type TEXT;
 
 -- Rows with a key were attached by the old proxying upload, which sniffed
 -- the content before storing it.
@@ -18,5 +23,7 @@ UPDATE documents SET file_status = 'ready' WHERE storage_key <> '';
 
 -- +goose Down
 ALTER TABLE documents
+    DROP COLUMN previous_content_type,
+    DROP COLUMN previous_storage_key,
     DROP COLUMN file_content_type,
     DROP COLUMN file_status;

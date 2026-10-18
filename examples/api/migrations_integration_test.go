@@ -55,12 +55,20 @@ func TestMigration002_FileStatus(t *testing.T) {
 	_, err = pool.Exec(ctx, `UPDATE documents SET file_status = 'bogus' WHERE id = $1`, withFile)
 	require.Error(t, err, "the CHECK constraint rejects an unknown status")
 
+	countColumns := func() int {
+		var n int
+		require.NoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM information_schema.columns
+			WHERE table_name = 'documents' AND column_name = ANY($1)`, migration002Columns).Scan(&n))
+		return n
+	}
+	assert.Equal(t, len(migration002Columns), countColumns(), "Up adds every column")
+
 	require.NoError(t, migrate.Down(ctx, connStr, appFS, migrate.Options{Logger: logger}))
-	var columns int
-	require.NoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM information_schema.columns
-		WHERE table_name = 'documents' AND column_name IN ('file_status', 'file_content_type')`).Scan(&columns))
-	assert.Zero(t, columns, "Down drops both columns")
+	assert.Zero(t, countColumns(), "Down drops every column Up added")
 }
+
+// migration002Columns are the columns migration 002 adds.
+var migration002Columns = []string{"file_status", "file_content_type", "previous_storage_key", "previous_content_type"}
 
 // A created document starts with no file, and GetByID reads the lifecycle
 // columns back.
@@ -85,7 +93,7 @@ func TestDocumentStore_FileStatusFollowsTheCurrentKey(t *testing.T) {
 	oldKey := uploadKeyPrefix(doc.ID) + uuid.NewString()
 	newKey := uploadKeyPrefix(doc.ID) + uuid.NewString()
 
-	require.NoError(t, h.store.AttachPendingFile(ctx, pool, doc.ID, oldKey))
+	require.NoError(t, h.store.AttachPendingFile(ctx, pool, doc.ID, oldKey, "", ""))
 	finalKey := fileKeyPrefix(doc.ID) + uuid.NewString()
 	ok, err := h.store.ResolveUpload(ctx, pool, doc.ID, oldKey, finalKey, FileStatusReady, "application/pdf")
 	require.NoError(t, err)
@@ -96,7 +104,7 @@ func TestDocumentStore_FileStatusFollowsTheCurrentKey(t *testing.T) {
 	assert.Equal(t, FileStatusReady, got.FileStatus)
 	assert.Equal(t, "application/pdf", got.FileContentType)
 
-	require.NoError(t, h.store.AttachPendingFile(ctx, pool, doc.ID, newKey))
+	require.NoError(t, h.store.AttachPendingFile(ctx, pool, doc.ID, newKey, "", ""))
 	got, err = h.store.GetByID(ctx, pool, doc.ID)
 	require.NoError(t, err)
 	assert.Equal(t, newKey, got.StorageKey)

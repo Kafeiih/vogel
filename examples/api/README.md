@@ -143,14 +143,17 @@ directo al storage con una URL firmada, y la validación pesada corre en un job:
    y un job viejo no la pisa (si ya había copiado, borra su copia); además
    sólo cambia un archivo `pending`, así que un reintento del job que ya
    resolvió la fila no hace nada ni se audita dos veces. Si la confirmación
-   reemplazaba un archivo `ready`, un reemplazo aceptado borra ese archivo
-   anterior, pero uno rechazado (inexistente o no permitido) **lo restaura**:
+   reemplazaba un archivo `ready`, ese archivo queda en la fila como archivo
+   anterior (`previous_storage_key`, `previous_content_type`). Un reemplazo
+   aceptado lo retira: en la misma transacción del veredicto encola un job
+   `delete_object` con su key, que River reintenta hasta borrarlo. Uno
+   rechazado (inexistente o no permitido) **lo restaura**:
    el documento vuelve a `ready` con su archivo y su tipo, y la auditoría lo
    registra como `document_restore_file`, no como una aceptación. Así,
    repetir una confirmación con una `key` ya consumida no destruye el archivo
-   validado. El veredicto se graba antes de borrar lo que ya nadie usa (el
-   objeto de subida, el archivo anterior); si un borrado falla, el reintento
-   del job relee la fila y termina la limpieza.
+   validado. El veredicto se graba antes de borrar el objeto de subida; si
+   ese borrado falla, el reintento del job relee la fila y termina la
+   limpieza.
    El job se encola con 5 intentos como máximo
    (`validateUploadMaxAttempts`, en vez de los 25 de River, que reparten los
    reintentos en semanas): con el backoff de River el último intento llega a
@@ -166,10 +169,12 @@ directo al storage con una URL firmada, y la validación pesada corre en un job:
    objeto ya validado. Nadie firma un `PUT` bajo `file/`, y la confirmación
    sólo acepta keys de `uploads/`, así que el archivo que se sirve es siempre
    el que el job inspeccionó.
-5. `GET /documents/{id}/download-url` responde `409` salvo que el archivo esté
-   `ready`, y firma un `GET` de 5 minutos sobre la key final que el bucket
-   sirve como `attachment` y con el tipo detectado, nunca con el que declaró
-   el cliente.
+5. `GET /documents/{id}/download-url` firma un `GET` de 5 minutos sobre la
+   key final que el bucket sirve como `attachment` y con el tipo detectado,
+   nunca con el que declaró el cliente. Mientras un reemplazo está `pending`,
+   sirve el archivo anterior con su tipo: el documento no se queda sin
+   descarga mientras se valida el nuevo. Sin archivo `ready` ni anterior,
+   responde `409`.
 
 ```bash
 TOKEN='u-1:oscar:admin'

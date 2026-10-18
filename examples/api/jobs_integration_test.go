@@ -31,6 +31,7 @@ func newValidateWorker(h *DocumentHandler) *ValidateUploadWorker {
 		storage:  h.storage,
 		store:    h.store,
 		recorder: h.recorder,
+		queue:    h.queue,
 		tx:       h.tx,
 		pool:     h.pool,
 		logger:   h.logger,
@@ -47,8 +48,51 @@ func pendingUpload(t *testing.T, h *DocumentHandler, body *string) (Document, st
 	if body != nil {
 		putObject(t, h, key, *body)
 	}
-	require.NoError(t, h.store.AttachPendingFile(ctx, h.pool, doc.ID, key))
+	require.NoError(t, h.store.AttachPendingFile(ctx, h.pool, doc.ID, key, "", ""))
 	return doc, key
+}
+
+// replaceReady confirms secondKey on a ready document the way AttachFile
+// does: the ready file is kept on the row as its previous file.
+func replaceReady(t *testing.T, h *DocumentHandler, ready Document, secondKey string) {
+	t.Helper()
+	require.NoError(t, h.store.AttachPendingFile(context.Background(), h.pool, ready.ID, secondKey,
+		ready.StorageKey, ready.FileContentType))
+}
+
+// runDeleteJobs runs every available delete_object job once, as River
+// would, marks the successful ones completed, and returns the keys it
+// deleted. The test queue is insert-only, so nothing else runs them.
+func runDeleteJobs(t *testing.T, h *DocumentHandler, s storage.Storage) []string {
+	t.Helper()
+	ctx := context.Background()
+	rows, err := h.pool.Query(ctx, `SELECT id, args FROM river.river_job
+		WHERE kind = 'delete_object' AND state = 'available' ORDER BY id`)
+	require.NoError(t, err)
+	type queued struct {
+		id   int64
+		args DeleteObjectArgs
+	}
+	var jobs []queued
+	for rows.Next() {
+		var q queued
+		require.NoError(t, rows.Scan(&q.id, &q.args))
+		jobs = append(jobs, q)
+	}
+	require.NoError(t, rows.Err())
+	rows.Close()
+
+	w := &DeleteObjectWorker{storage: s, logger: h.logger}
+	var deleted []string
+	for _, q := range jobs {
+		if err := w.Work(ctx, &river.Job[DeleteObjectArgs]{JobRow: &rivertype.JobRow{ID: q.id}, Args: q.args}); err != nil {
+			continue
+		}
+		_, err := h.pool.Exec(ctx, `UPDATE river.river_job SET state = 'completed', finalized_at = now() WHERE id = $1`, q.id)
+		require.NoError(t, err)
+		deleted = append(deleted, q.args.Key)
+	}
+	return deleted
 }
 
 func putObject(t *testing.T, h *DocumentHandler, key, body string) {
@@ -218,15 +262,18 @@ func TestValidateUpload(t *testing.T) {
 
 		secondKey := uploadKeyPrefix(doc.ID) + uuid.NewString()
 		putObject(t, h, secondKey, pdf)
-		require.NoError(t, h.store.AttachPendingFile(ctx, h.pool, doc.ID, secondKey))
+		replaceReady(t, h, *first, secondKey)
 
-		runValidate(t, h, ValidateUploadArgs{DocumentID: doc.ID.String(), Key: secondKey, PreviousKey: previous})
+		runValidate(t, h, ValidateUploadArgs{DocumentID: doc.ID.String(), Key: secondKey})
 
 		got, err := h.store.GetByID(ctx, h.pool, doc.ID)
 		require.NoError(t, err)
 		assert.Equal(t, FileStatusReady, got.FileStatus)
 		require.True(t, isFileKey(doc.ID, got.StorageKey))
 		assert.NotEqual(t, previous, got.StorageKey)
+		assert.Empty(t, got.PreviousStorageKey, "the previous file is no longer on the row")
+		assert.Empty(t, got.PreviousContentType)
+		assert.Equal(t, []string{previous}, runDeleteJobs(t, h, h.storage), "its deletion was enqueued with the acceptance")
 		assert.Equal(t, []string{got.StorageKey}, objectKeys(t, h, doc.ID), "only the new file is left")
 	})
 
@@ -241,18 +288,17 @@ func TestValidateUpload(t *testing.T) {
 			if body != nil {
 				putObject(t, h, secondKey, *body)
 			}
-			require.NoError(t, h.store.AttachPendingFile(ctx, h.pool, doc.ID, secondKey))
+			replaceReady(t, h, first, secondKey)
 
-			runValidate(t, h, ValidateUploadArgs{
-				DocumentID: doc.ID.String(), Key: secondKey,
-				PreviousKey: first.StorageKey, PreviousContentType: first.FileContentType,
-			})
+			runValidate(t, h, ValidateUploadArgs{DocumentID: doc.ID.String(), Key: secondKey})
 
 			got, err := h.store.GetByID(ctx, h.pool, doc.ID)
 			require.NoError(t, err)
 			assert.Equal(t, FileStatusReady, got.FileStatus)
 			assert.Equal(t, first.StorageKey, got.StorageKey)
 			assert.Equal(t, "application/pdf", got.FileContentType)
+			assert.Empty(t, got.PreviousStorageKey, "restored: nothing is pending any more")
+			assert.Empty(t, runDeleteJobs(t, h, h.storage), "a restore deletes no file")
 			assert.Equal(t, []string{first.StorageKey}, objectKeys(t, h, doc.ID), "the previous file is kept, the bad upload is gone")
 			assert.Equal(t, pdfBody, readObject(t, h, first.StorageKey))
 			assert.Equal(t, [][2]string{{"worker", FileStatusReady}}, validationAudit(t, h, doc.ID), "only the first upload was accepted")
@@ -298,7 +344,7 @@ func TestValidateUpload(t *testing.T) {
 		doc, oldKey := pendingUpload(t, h, &pdf)
 		newKey := uploadKeyPrefix(doc.ID) + uuid.NewString()
 		putObject(t, h, newKey, pdf)
-		require.NoError(t, h.store.AttachPendingFile(ctx, h.pool, doc.ID, newKey))
+		require.NoError(t, h.store.AttachPendingFile(ctx, h.pool, doc.ID, newKey, "", ""))
 
 		runValidate(t, h, ValidateUploadArgs{DocumentID: doc.ID.String(), Key: oldKey})
 
@@ -400,13 +446,10 @@ func TestValidateUpload_LastAttemptResolvesTheRow(t *testing.T) {
 	t.Run("the last attempt restores a previous file", func(t *testing.T) {
 		first := readyFile(t, h)
 		secondKey := uploadKeyPrefix(first.ID) + uuid.NewString()
-		require.NoError(t, h.store.AttachPendingFile(ctx, h.pool, first.ID, secondKey))
+		replaceReady(t, h, first, secondKey)
 		w, fs, _ := newFailingWorker()
 
-		err := w.Work(ctx, attempt(ValidateUploadArgs{
-			DocumentID: first.ID.String(), Key: secondKey,
-			PreviousKey: first.StorageKey, PreviousContentType: first.FileContentType,
-		}, 3))
+		err := w.Work(ctx, attempt(ValidateUploadArgs{DocumentID: first.ID.String(), Key: secondKey}, 3))
 
 		require.Error(t, err)
 		got, gErr := h.store.GetByID(ctx, h.pool, first.ID)
@@ -441,42 +484,30 @@ func (f *flakyDeleteStorage) Delete(ctx context.Context, key string) error {
 	return f.fakeStorage.Delete(ctx, key)
 }
 
-// The job's verdict commits before it deletes the objects nothing
-// references any more, so a failed delete makes River retry a job whose row
-// is already resolved. The retry must finish that cleanup, and audit
-// nothing.
-func TestValidateUpload_RetryFinishesCleanup(t *testing.T) {
+// The acceptance clears the previous file from the row and enqueues its
+// deletion in the same transaction, so the key survives a failed delete:
+// River retries delete_object until it succeeds. The validation job itself
+// is not re-run and audits nothing more.
+func TestDeleteObject_RetriesAFailedDelete(t *testing.T) {
 	h, _ := newIntegrationHandler(t)
 	ctx := context.Background()
 	first := readyFile(t, h)
 	secondKey := uploadKeyPrefix(first.ID) + uuid.NewString()
 	putObject(t, h, secondKey, pdfBody)
-	require.NoError(t, h.store.AttachPendingFile(ctx, h.pool, first.ID, secondKey))
+	replaceReady(t, h, first, secondKey)
+	runValidate(t, h, ValidateUploadArgs{DocumentID: first.ID.String(), Key: secondKey})
+	accepted, err := h.store.GetByID(ctx, h.pool, first.ID)
+	require.NoError(t, err)
 
 	flaky := &flakyDeleteStorage{fakeStorage: h.storage.(*fakeStorage), failKey: first.StorageKey}
-	w := newValidateWorker(h)
-	w.storage = flaky
-	args := ValidateUploadArgs{
-		DocumentID: first.ID.String(), Key: secondKey,
-		PreviousKey: first.StorageKey, PreviousContentType: first.FileContentType,
-	}
 
-	err := w.Work(ctx, validateJob(args))
-	require.Error(t, err, "the failed delete of the previous file is reported for a retry")
-	afterFirst, gErr := h.store.GetByID(ctx, h.pool, first.ID)
-	require.NoError(t, gErr)
-	assert.Equal(t, FileStatusReady, afterFirst.FileStatus)
-	require.True(t, isFileKey(first.ID, afterFirst.StorageKey))
-	assert.NotEqual(t, first.StorageKey, afterFirst.StorageKey, "the row is already on the new final key")
+	assert.Empty(t, runDeleteJobs(t, h, flaky), "the first delete fails and stays queued")
+	assert.Contains(t, objectKeys(t, h, first.ID), first.StorageKey)
+	assert.Equal(t, []string{first.StorageKey}, runDeleteJobs(t, h, flaky), "the retry deletes it")
 
-	require.NoError(t, w.Work(ctx, validateJob(args)), "the retry succeeds")
-
-	afterRetry, gErr := h.store.GetByID(ctx, h.pool, first.ID)
-	require.NoError(t, gErr)
-	assert.Equal(t, afterFirst, afterRetry, "the retry does not touch the row")
-	assert.Equal(t, []string{afterFirst.StorageKey}, objectKeys(t, h, first.ID), "the previous file and the upload are gone")
+	assert.Equal(t, []string{accepted.StorageKey}, objectKeys(t, h, first.ID), "the previous file and the upload are gone")
 	assert.Equal(t, [][2]string{{"worker", FileStatusReady}, {"worker", FileStatusReady}}, validationAudit(t, h, first.ID),
-		"one row for the first file, one for its replacement: the retry adds none")
+		"one row for the first file, one for its replacement")
 }
 
 // A job that fails to record its verdict may still have committed it (the

@@ -240,13 +240,20 @@ func run() error {
 		logger:   log.Logger,
 	}
 
-	queue, err := worker.NewRiverQueue(pool, RegisterWorkers(notifyWorker, validateWorker), worker.Config{
+	// delete_object retires the file an accepted upload replaced.
+	deleteObjectWorker := &DeleteObjectWorker{storage: fileStorage, logger: log.Logger}
+
+	queue, err := worker.NewRiverQueue(pool, RegisterWorkers(notifyWorker, validateWorker, deleteObjectWorker), worker.Config{
 		Schema:            cfg.RiverSchema,
 		DefaultMaxWorkers: 10,
 	}, log.Logger)
 	if err != nil {
 		return fmt.Errorf("build river queue: %w", err)
 	}
+	// validate_upload enqueues delete_object through the same queue it is
+	// registered on, so it gets the queue once the queue exists.
+	validateWorker.queue = queue
+
 	if err := queue.Migrate(ctx); err != nil {
 		return fmt.Errorf("run river migrations: %w", err)
 	}

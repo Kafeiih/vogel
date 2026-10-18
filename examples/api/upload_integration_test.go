@@ -144,13 +144,14 @@ func TestDocumentHandlerAttachFile(t *testing.T) {
 		assert.Equal(t, key, afterKey)
 	})
 
-	// Replacing a ready file hands its final key to the job, which deletes
-	// it once the row no longer points at it: the confirm itself detaches it.
-	t.Run("replacing a ready file passes its key to the job", func(t *testing.T) {
+	// Replacing a ready file keeps it on the row as the previous file: the
+	// job restores it if the new upload is rejected, and downloads keep
+	// serving it meanwhile.
+	t.Run("replacing a ready file keeps it as the previous file", func(t *testing.T) {
 		doc := createTestDocument(t, h)
 		uploadKey := uploadKeyPrefix(doc.ID) + uuid.NewString()
 		fileKey := fileKeyPrefix(doc.ID) + uuid.NewString()
-		require.NoError(t, h.store.AttachPendingFile(ctx, h.pool, doc.ID, uploadKey))
+		require.NoError(t, h.store.AttachPendingFile(ctx, h.pool, doc.ID, uploadKey, "", ""))
 		_, err := h.store.ResolveUpload(ctx, h.pool, doc.ID, uploadKey, fileKey, FileStatusReady, "application/pdf")
 		require.NoError(t, err)
 		key := uploadKeyPrefix(doc.ID) + uuid.NewString()
@@ -158,14 +159,13 @@ func TestDocumentHandlerAttachFile(t *testing.T) {
 		rec := callHandler(h.AttachFile, http.MethodPost, doc.ID.String(), `{"key":"`+key+`"}`)
 
 		require.Equal(t, http.StatusAccepted, rec.Code, "body %s", rec.Body.String())
-		var args ValidateUploadArgs
-		require.NoError(t, h.pool.QueryRow(ctx,
-			`SELECT args FROM river.river_job WHERE kind = 'validate_upload' AND args->>'document_id' = $1`,
-			doc.ID.String()).Scan(&args))
-		assert.Equal(t, ValidateUploadArgs{
-			DocumentID: doc.ID.String(), Key: key,
-			PreviousKey: fileKey, PreviousContentType: "application/pdf",
-		}, args)
+		assert.Equal(t, ValidateUploadArgs{DocumentID: doc.ID.String(), Key: key}, latestValidateArgs(t, h, doc.ID))
+		got, err := h.store.GetByID(ctx, h.pool, doc.ID)
+		require.NoError(t, err)
+		assert.Equal(t, FileStatusPending, got.FileStatus)
+		assert.Equal(t, key, got.StorageKey)
+		assert.Equal(t, fileKey, got.PreviousStorageKey)
+		assert.Equal(t, "application/pdf", got.PreviousContentType)
 	})
 
 	// A client that retries its confirm with a key the job already consumed
@@ -221,7 +221,7 @@ func TestDocumentHandlerDownloadURL(t *testing.T) {
 			doc := createTestDocument(t, h)
 			if status != FileStatusNone {
 				key := uploadKeyPrefix(doc.ID) + uuid.NewString()
-				require.NoError(t, h.store.AttachPendingFile(ctx, h.pool, doc.ID, key))
+				require.NoError(t, h.store.AttachPendingFile(ctx, h.pool, doc.ID, key, "", ""))
 				if status == FileStatusRejected {
 					_, err := h.store.ResolveUpload(ctx, h.pool, doc.ID, key, key, FileStatusRejected, "")
 					require.NoError(t, err)
@@ -259,11 +259,32 @@ func TestDocumentHandlerDownloadURL(t *testing.T) {
 		assert.Equal(t, "application/octet-stream", storage.DefaultResponseContentType)
 	})
 
+	// While a replacement is validated, downloads keep serving the file the
+	// document had, with its verified type, instead of a 409.
+	t.Run("a pending replacement serves the previous file", func(t *testing.T) {
+		doc := createTestDocument(t, h)
+		uploadKey := uploadKeyPrefix(doc.ID) + uuid.NewString()
+		previousKey := fileKeyPrefix(doc.ID) + uuid.NewString()
+		require.NoError(t, h.store.AttachPendingFile(ctx, h.pool, doc.ID, uploadKey, previousKey, "image/png"))
+
+		rec := callHandler(h.DownloadURL, http.MethodGet, doc.ID.String(), "")
+
+		require.Equal(t, http.StatusOK, rec.Code, "body %s", rec.Body.String())
+		var resp struct {
+			Data map[string]string `json:"data"`
+		}
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+		u, err := url.Parse(resp.Data["url"])
+		require.NoError(t, err)
+		assert.Equal(t, fakeStoragePath+previousKey, u.Path, "never the pending upload")
+		assert.Equal(t, "image/png", u.Query().Get("response_content_type"))
+	})
+
 	t.Run("ready file is served with its sniffed type", func(t *testing.T) {
 		doc := createTestDocument(t, h)
 		uploadKey := uploadKeyPrefix(doc.ID) + uuid.NewString()
 		key := fileKeyPrefix(doc.ID) + uuid.NewString()
-		require.NoError(t, h.store.AttachPendingFile(ctx, h.pool, doc.ID, uploadKey))
+		require.NoError(t, h.store.AttachPendingFile(ctx, h.pool, doc.ID, uploadKey, "", ""))
 		_, err := h.store.ResolveUpload(ctx, h.pool, doc.ID, uploadKey, key, FileStatusReady, "image/png")
 		require.NoError(t, err)
 
@@ -350,12 +371,13 @@ func TestPresignedUploadFlow(t *testing.T) {
 	}
 }
 
-// AttachFile decides what to hand the job (PreviousKey, PreviousContentType)
-// from the row as it is once the confirm holds it, not from a snapshot read
+// AttachFile decides which previous file to keep on the row
+// (previous_storage_key, previous_content_type) from the row as it is once
+// the confirm holds it, not from a snapshot read
 // before another writer commits. Here a concurrent transaction holds the
 // row lock and makes the file ready while the confirm is already running.
 // Reading the row with a plain SELECT would see the old state (no file),
-// hand the job no previous file, and leak the final file the other writer
+// keep no previous file, and leak the final file the other writer
 // committed. Reading it FOR UPDATE waits for that commit and sees it.
 func TestDocumentHandlerAttachFile_DecidesFromTheLockedRow(t *testing.T) {
 	h, _ := newIntegrationHandler(t)
@@ -388,10 +410,10 @@ func TestDocumentHandlerAttachFile_DecidesFromTheLockedRow(t *testing.T) {
 
 	rec := <-done
 	require.Equal(t, http.StatusAccepted, rec.Code, "body %s", rec.Body.String())
-	assert.Equal(t, ValidateUploadArgs{
-		DocumentID: doc.ID.String(), Key: key,
-		PreviousKey: finalKey, PreviousContentType: "application/pdf",
-	}, latestValidateArgs(t, h, doc.ID))
+	got, err := h.store.GetByID(ctx, h.pool, doc.ID)
+	require.NoError(t, err)
+	assert.Equal(t, finalKey, got.PreviousStorageKey, "the file the other writer committed is kept as previous")
+	assert.Equal(t, "application/pdf", got.PreviousContentType)
 }
 
 // validateJobCount is how many validate_upload jobs were enqueued for docID.

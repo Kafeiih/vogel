@@ -734,10 +734,10 @@ func (h *DocumentHandler) AttachFile(w http.ResponseWriter, r *http.Request) {
 		if before.FileStatus == FileStatusPending {
 			return errUploadPending
 		}
-		// A ready file goes to the job with its type: the job puts it back
-		// if this upload is rejected, and deletes it if this upload
-		// replaces it. A pending or rejected row points at an upload key
-		// whose own job (or the bucket's lifecycle rule) handles it.
+		// A ready file stays on the row as the previous file, with its type:
+		// downloads keep serving it while this upload is validated, and the
+		// job puts it back if this upload is rejected (or retires it if
+		// this upload replaces it). A rejected or empty row has none.
 		previousKey, previousContentType := "", ""
 		if before.FileStatus == FileStatusReady && before.StorageKey != "" {
 			previousKey, previousContentType = before.StorageKey, before.FileContentType
@@ -747,18 +747,18 @@ func (h *DocumentHandler) AttachFile(w http.ResponseWriter, r *http.Request) {
 		after.StorageKey = req.Key
 		after.FileStatus = FileStatusPending
 		after.FileContentType = ""
+		after.PreviousStorageKey = previousKey
+		after.PreviousContentType = previousContentType
 
-		if err := h.store.AttachPendingFile(txCtx, db, id, req.Key); err != nil {
+		if err := h.store.AttachPendingFile(txCtx, db, id, req.Key, previousKey, previousContentType); err != nil {
 			return err
 		}
 
 		// EnqueueTx: the job exists if and only if the pending state it
 		// will resolve commits -- see Create.
 		if _, err := h.queue.EnqueueTx(txCtx, pgxtx.TxFromContext(txCtx), ValidateUploadArgs{
-			DocumentID:          id.String(),
-			Key:                 req.Key,
-			PreviousKey:         previousKey,
-			PreviousContentType: previousContentType,
+			DocumentID: id.String(),
+			Key:        req.Key,
 		}, &river.InsertOpts{MaxAttempts: validateUploadMaxAttempts}); err != nil {
 			return err
 		}
@@ -816,11 +816,18 @@ func (h *DocumentHandler) DownloadURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Only a file validate_upload accepted may be downloaded: a pending one
-	// has not been inspected and a rejected one was deleted. Returning 409
-	// rather than 404 is deliberate: the document exists, a downloadable
-	// file does not (yet).
-	if doc.FileStatus != FileStatusReady {
+	// Only a file validate_upload accepted may be downloaded: a pending
+	// upload has not been inspected and a rejected one was deleted. While a
+	// replacement is pending, the file it would replace is still the
+	// document's validated file, so that one is served. Otherwise 409 rather
+	// than 404 is deliberate: the document exists, a downloadable file does
+	// not (yet).
+	key, contentType := doc.StorageKey, doc.FileContentType
+	switch {
+	case doc.FileStatus == FileStatusReady:
+	case doc.FileStatus == FileStatusPending && doc.PreviousStorageKey != "":
+		key, contentType = doc.PreviousStorageKey, doc.PreviousContentType
+	default:
 		msg, ok := fileNotReadyMessages[doc.FileStatus]
 		if !ok {
 			msg = "document file is not ready"
@@ -838,10 +845,10 @@ func (h *DocumentHandler) DownloadURL(w http.ResponseWriter, r *http.Request) {
 	// (attached by the old proxying upload) has a NULL type, read as "":
 	// WithResponseContentType("") keeps storage.DefaultResponseContentType,
 	// so such a file is served as application/octet-stream.
-	url, err := h.storage.PresignedGetURL(r.Context(), doc.StorageKey, downloadURLExpiry,
-		storage.WithResponseContentType(doc.FileContentType))
+	url, err := h.storage.PresignedGetURL(r.Context(), key, downloadURLExpiry,
+		storage.WithResponseContentType(contentType))
 	if err != nil {
-		h.logger.ErrorContext(r.Context(), "download url: presign", "key", doc.StorageKey, "error", err)
+		h.logger.ErrorContext(r.Context(), "download url: presign", "key", key, "error", err)
 		response.Error(w, r, http.StatusInternalServerError, response.CodeInternalError, "failed to generate download url")
 		return
 	}

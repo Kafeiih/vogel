@@ -50,8 +50,14 @@ type Document struct {
 	// "" until a file is ready. Downloads are served with this type, never
 	// with one the client declared.
 	FileContentType string
-	OwnerID         string
-	CreatedAt       time.Time
+	// PreviousStorageKey and PreviousContentType are the ready file a
+	// pending replacement would supersede ("" otherwise): DownloadURL keeps
+	// serving it while the replacement is validated, and validate_upload
+	// restores it if the replacement is rejected.
+	PreviousStorageKey  string
+	PreviousContentType string
+	OwnerID             string
+	CreatedAt           time.Time
 }
 
 // var _ audit.Auditable = (*Document)(nil) documents, at compile time, that
@@ -70,15 +76,16 @@ func (d *Document) AuditRepr() string {
 // AuditSnapshot implements audit.Auditable.
 func (d *Document) AuditSnapshot() map[string]any {
 	return map[string]any{
-		"id":                d.ID.String(),
-		"title":             d.Title,
-		"kind":              d.Kind,
-		"issued_at":         d.IssuedAt,
-		"storage_key":       d.StorageKey,
-		"file_status":       d.FileStatus,
-		"file_content_type": d.FileContentType,
-		"owner_id":          d.OwnerID,
-		"created_at":        d.CreatedAt,
+		"id":                   d.ID.String(),
+		"title":                d.Title,
+		"kind":                 d.Kind,
+		"issued_at":            d.IssuedAt,
+		"storage_key":          d.StorageKey,
+		"file_status":          d.FileStatus,
+		"file_content_type":    d.FileContentType,
+		"previous_storage_key": d.PreviousStorageKey,
+		"owner_id":             d.OwnerID,
+		"created_at":           d.CreatedAt,
 	}
 }
 
