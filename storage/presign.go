@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"errors"
 	"strings"
 	"unicode"
 )
@@ -170,5 +171,59 @@ func isAttrChar(c byte) bool {
 func WithResponseContentType(contentType string) PresignGetOption {
 	return func(o *PresignGetOptions) {
 		o.ContentType = contentType
+	}
+}
+
+// ErrNotFound is wrapped by Download when the key has no object.
+var ErrNotFound = errors.New("storage: object not found")
+
+// ErrPresignExpiryTooLong is returned by a presign method when the requested
+// expiry exceeds the adapter's maximum. A presigned URL is a bearer
+// credential that nothing can revoke before it expires, so adapters refuse to
+// sign one that lives longer than they allow instead of silently shortening
+// it.
+var ErrPresignExpiryTooLong = errors.New("storage: presign expiry exceeds the maximum")
+
+// ErrInvalidContentLength is returned by PresignedPutURL when
+// WithContentLength was given a size that is not positive.
+var ErrInvalidContentLength = errors.New("storage: content length must be positive")
+
+// PresignPutOptions holds the constraints a presigned PUT URL signs. Build a
+// value with ApplyPresignPutOptions.
+type PresignPutOptions struct {
+	// ContentLength is the exact body size, in bytes, the URL accepts. It is
+	// only signed when HasContentLength is set; adapters reject a size that is
+	// not positive, so an explicit zero is an error rather than "no limit".
+	ContentLength    int64
+	HasContentLength bool
+}
+
+// PresignPutOption customizes a presigned PUT URL. See WithContentLength.
+type PresignPutOption func(*PresignPutOptions)
+
+// ApplyPresignPutOptions folds opts and returns the result. Adapters
+// implementing Storage.PresignedPutURL call this; nil options are ignored.
+func ApplyPresignPutOptions(opts ...PresignPutOption) PresignPutOptions {
+	var o PresignPutOptions
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&o)
+		}
+	}
+	return o
+}
+
+// WithContentLength signs the exact size of the body the URL accepts. The
+// store rejects an upload whose Content-Length differs, so whoever holds the
+// URL cannot store an object larger (or smaller) than the size the
+// application approved. Validate the size against your limit before signing.
+// A size that is not positive makes PresignedPutURL return
+// ErrInvalidContentLength: the AWS SDK signs neither Content-Length nor
+// Content-Type for a zero length, which would leave the URL less constrained
+// than one signed without this option.
+func WithContentLength(n int64) PresignPutOption {
+	return func(o *PresignPutOptions) {
+		o.ContentLength = n
+		o.HasContentLength = true
 	}
 }

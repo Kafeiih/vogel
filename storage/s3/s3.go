@@ -6,6 +6,7 @@ package s3
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -16,6 +17,7 @@ import (
 	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 
 	"github.com/kafeiih/vogel/storage"
 )
@@ -29,6 +31,15 @@ type Config struct {
 	SecretKey     string        // Static secret key
 	PathStyle     bool          // Use path-style access (required for MinIO)
 	PresignExpiry time.Duration // Default presigned URL expiry when a call passes expiry <= 0 (default: 15m)
+
+	// MaxPresignExpiry is the longest expiry a presign call may ask for; a
+	// longer one returns storage.ErrPresignExpiryTooLong. A presigned URL is
+	// a bearer credential nothing can revoke before it expires, so its life
+	// is bounded. Zero means DefaultMaxPresignExpiry. A negative value, one
+	// above MaxSigV4PresignExpiry, or a maximum below the effective
+	// PresignExpiry (DefaultPresignExpiry, 15m, when unset) is a construction
+	// error.
+	MaxPresignExpiry time.Duration
 
 	// ResponseHeaderTimeout bounds the phases that reveal a stalled S3
 	// endpoint, so an Upload or Download whose context has no deadline cannot
@@ -51,12 +62,21 @@ const DefaultResponseHeaderTimeout = 60 * time.Second
 // Config.PresignExpiry is zero and a call passes a non-positive expiry.
 const DefaultPresignExpiry = 15 * time.Minute
 
+// DefaultMaxPresignExpiry is the longest presigned URL lifetime allowed when
+// Config.MaxPresignExpiry is zero.
+const DefaultMaxPresignExpiry = time.Hour
+
+// MaxSigV4PresignExpiry is the longest lifetime a SigV4 presigned URL can
+// have; S3 rejects a longer X-Amz-Expires when the URL is used.
+const MaxSigV4PresignExpiry = 7 * 24 * time.Hour
+
 // Storage implements storage.Storage using AWS SDK v2.
 type S3Storage struct {
 	client        *s3.Client
 	presignClient *s3.PresignClient
 	bucket        string
 	presignExpiry time.Duration
+	maxExpiry     time.Duration
 	logger        *slog.Logger
 }
 
@@ -73,6 +93,23 @@ func NewS3Storage(cfg Config, logger *slog.Logger) (*S3Storage, error) {
 	}
 	if cfg.ResponseHeaderTimeout < 0 {
 		return nil, fmt.Errorf("storage: response header timeout must not be negative")
+	}
+	if cfg.MaxPresignExpiry < 0 {
+		return nil, fmt.Errorf("storage: max presign expiry must not be negative")
+	}
+	if cfg.MaxPresignExpiry > MaxSigV4PresignExpiry {
+		return nil, fmt.Errorf("storage: max presign expiry %s exceeds the %s SigV4 allows", cfg.MaxPresignExpiry, MaxSigV4PresignExpiry)
+	}
+	maxExpiry := cfg.MaxPresignExpiry
+	if maxExpiry == 0 {
+		maxExpiry = DefaultMaxPresignExpiry
+	}
+	presignExpiry := cfg.PresignExpiry
+	if presignExpiry <= 0 {
+		presignExpiry = DefaultPresignExpiry
+	}
+	if presignExpiry > maxExpiry {
+		return nil, fmt.Errorf("storage: presign expiry %s exceeds the maximum %s", presignExpiry, maxExpiry)
 	}
 
 	headerTimeout := cfg.ResponseHeaderTimeout
@@ -113,16 +150,12 @@ func NewS3Storage(cfg Config, logger *slog.Logger) (*S3Storage, error) {
 	client := s3.New(s3.Options{}, opts...)
 	presignClient := s3.NewPresignClient(client)
 
-	presignExpiry := cfg.PresignExpiry
-	if presignExpiry <= 0 {
-		presignExpiry = DefaultPresignExpiry
-	}
-
 	return &S3Storage{
 		client:        client,
 		presignClient: presignClient,
 		bucket:        cfg.Bucket,
 		presignExpiry: presignExpiry,
+		maxExpiry:     maxExpiry,
 		logger:        logger,
 	}, nil
 }
@@ -146,12 +179,16 @@ func newHTTPClient(bound time.Duration) *awshttp.BuildableClient {
 
 // effectiveExpiry returns expiry, or the configured default when expiry is
 // not positive, so a caller can pass 0 to mean "whatever the adapter was
-// configured with".
-func (s *S3Storage) effectiveExpiry(expiry time.Duration) time.Duration {
+// configured with". An expiry above the maximum returns
+// storage.ErrPresignExpiryTooLong.
+func (s *S3Storage) effectiveExpiry(expiry time.Duration) (time.Duration, error) {
 	if expiry <= 0 {
-		return s.presignExpiry
+		return s.presignExpiry, nil
 	}
-	return expiry
+	if expiry > s.maxExpiry {
+		return 0, fmt.Errorf("%w: %s > %s", storage.ErrPresignExpiryTooLong, expiry, s.maxExpiry)
+	}
+	return expiry, nil
 }
 
 // Upload stores a file in the configured bucket.
@@ -181,6 +218,10 @@ func (s *S3Storage) Download(ctx context.Context, key string) (*storage.Download
 		Key:    aws.String(key),
 	})
 	if err != nil {
+		var noSuchKey *types.NoSuchKey
+		if errors.As(err, &noSuchKey) {
+			return nil, fmt.Errorf("storage: download %q: %w", key, storage.ErrNotFound)
+		}
 		return nil, fmt.Errorf("storage: download %q: %w", key, err)
 	}
 
@@ -223,6 +264,10 @@ func (s *S3Storage) Delete(ctx context.Context, key string) error {
 // link.
 func (s *S3Storage) PresignedGetURL(ctx context.Context, key string, expiry time.Duration, opts ...storage.PresignGetOption) (string, error) {
 	o := storage.ApplyPresignGetOptions(opts...)
+	expires, err := s.effectiveExpiry(expiry)
+	if err != nil {
+		return "", fmt.Errorf("storage: presign get %q: %w", key, err)
+	}
 
 	input := &s3.GetObjectInput{
 		Bucket:                     aws.String(s.bucket),
@@ -232,7 +277,7 @@ func (s *S3Storage) PresignedGetURL(ctx context.Context, key string, expiry time
 	}
 
 	req, err := s.presignClient.PresignGetObject(ctx, input, func(po *s3.PresignOptions) {
-		po.Expires = s.effectiveExpiry(expiry)
+		po.Expires = expires
 	})
 	if err != nil {
 		return "", fmt.Errorf("storage: presign get %q: %w", key, err)
@@ -241,14 +286,30 @@ func (s *S3Storage) PresignedGetURL(ctx context.Context, key string, expiry time
 }
 
 // PresignedPutURL generates a temporary upload URL.
-// A non-positive expiry uses Config.PresignExpiry.
-func (s *S3Storage) PresignedPutURL(ctx context.Context, key string, contentType string, expiry time.Duration) (string, error) {
-	req, err := s.presignClient.PresignPutObject(ctx, &s3.PutObjectInput{
+// A non-positive expiry uses Config.PresignExpiry. With
+// storage.WithContentLength the URL also signs Content-Length, so S3 rejects
+// a body of any other size.
+func (s *S3Storage) PresignedPutURL(ctx context.Context, key string, contentType string, expiry time.Duration, opts ...storage.PresignPutOption) (string, error) {
+	o := storage.ApplyPresignPutOptions(opts...)
+	expires, err := s.effectiveExpiry(expiry)
+	if err != nil {
+		return "", fmt.Errorf("storage: presign put %q: %w", key, err)
+	}
+	if o.HasContentLength && o.ContentLength <= 0 {
+		return "", fmt.Errorf("storage: presign put %q: %w", key, storage.ErrInvalidContentLength)
+	}
+
+	input := &s3.PutObjectInput{
 		Bucket:      aws.String(s.bucket),
 		Key:         aws.String(key),
 		ContentType: aws.String(contentType),
-	}, func(o *s3.PresignOptions) {
-		o.Expires = s.effectiveExpiry(expiry)
+	}
+	if o.HasContentLength {
+		input.ContentLength = aws.Int64(o.ContentLength)
+	}
+
+	req, err := s.presignClient.PresignPutObject(ctx, input, func(po *s3.PresignOptions) {
+		po.Expires = expires
 	})
 	if err != nil {
 		return "", fmt.Errorf("storage: presign put %q: %w", key, err)

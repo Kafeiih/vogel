@@ -6,6 +6,35 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ## [Unreleased]
 
+### Cambios que rompen
+
+- **`storage`: `PresignedPutURL` acepta opciones.** La firma pasa a
+  `PresignedPutURL(ctx, key, contentType, expiry, opts ...PresignPutOption)`.
+  Quien llama no cambia nada, pero un tipo propio que implemente
+  `storage.Storage` (un fake de tests, por ejemplo) deja de compilar hasta
+  agregar el parámetro variádico.
+- **`storage/s3`: la expiración de las URL firmadas tiene un máximo.**
+  `Config.MaxPresignExpiry` (por defecto `DefaultMaxPresignExpiry`, 1 h) acota
+  `PresignedGetURL` y `PresignedPutURL`: una expiración mayor devuelve
+  `storage.ErrPresignExpiryTooLong` en vez de firmarse. `NewS3Storage` falla si
+  `PresignExpiry` (o su default implícito de 15 min) supera el máximo, o si el
+  máximo supera los 7 días que permite SigV4. Una URL firmada es una credencial que nada
+  revoca antes de que expire. Quien hoy firme por más de 1 h debe subir
+  `MaxPresignExpiry` o acortar la expiración.
+
+### Agregado
+
+- **`storage`: `ErrNotFound`.** `Download` envuelve `storage.ErrNotFound`
+  cuando la clave no tiene objeto (`storage/s3` traduce el `NoSuchKey` del SDK),
+  así que quien llama distingue un objeto inexistente de una falla transitoria
+  sin importar el SDK de AWS. Los demás errores no cambian.
+- **`storage`: `WithContentLength(n)` para `PresignedPutURL`.** Firma el tamaño
+  exacto del cuerpo: el store rechaza una subida de otro tamaño (verificado con
+  un servidor S3 real: 403), así que quien tiene la URL no puede guardar un
+  objeto de cualquier tamaño. Un tamaño que no es positivo devuelve
+  `storage.ErrInvalidContentLength`: con cero, el SDK de AWS no firmaría ni el
+  largo ni el `Content-Type`.
+
 ### Cambiado
 
 - **`logger`: los métodos `*Context` agregan `request_id` y `user_id` desde
