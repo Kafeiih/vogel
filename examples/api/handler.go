@@ -653,6 +653,10 @@ func (h *DocumentHandler) UploadURL(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// errUploadPending is AttachFile's signal, from inside its transaction, that
+// the document's previous upload has not been validated yet (409).
+var errUploadPending = errors.New("previous upload still pending")
+
 type attachFileRequest struct {
 	Key string `json:"key"`
 }
@@ -673,7 +677,9 @@ type attachFileRequest struct {
 // references, never a row pointing at a key nobody presigned for this
 // document. Whether the object really exists and holds an allowed type is
 // the job's call, not this handler's: it answers 202 with the document as
-// it now stands, pending.
+// it now stands, pending. While a previous upload is still pending it
+// answers 409 and changes nothing: the client retries once that upload is
+// resolved.
 //
 // The audit entry uses audit.WithChange(before, after) rather than
 // WithSubject: both snapshots are captured, so the trail shows the document
@@ -714,6 +720,13 @@ func (h *DocumentHandler) AttachFile(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
+		// One upload is validated at a time. A second confirm now would
+		// hand its job no previous file (the row holds the first upload's
+		// key), so a ready file the first job is about to restore or
+		// replace could end up referenced by nothing.
+		if before.FileStatus == FileStatusPending {
+			return errUploadPending
+		}
 		// A ready file goes to the job with its type: the job puts it back
 		// if this upload is rejected, and deletes it if this upload
 		// replaces it. A pending or rejected row points at an upload key
@@ -752,6 +765,10 @@ func (h *DocumentHandler) AttachFile(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if errors.Is(err, ErrDocumentNotFound) {
 			response.Error(w, r, http.StatusNotFound, response.CodeNotFound, "document not found")
+			return
+		}
+		if errors.Is(err, errUploadPending) {
+			response.Error(w, r, http.StatusConflict, response.CodeConflict, "a previous upload is still being validated")
 			return
 		}
 		h.logger.ErrorContext(r.Context(), "attach file", "key", req.Key, "error", err)

@@ -384,3 +384,48 @@ func TestDocumentHandlerAttachFile_DecidesFromTheLockedRow(t *testing.T) {
 		PreviousKey: finalKey, PreviousContentType: "application/pdf",
 	}, latestValidateArgs(t, h, doc.ID))
 }
+
+// validateJobCount is how many validate_upload jobs were enqueued for docID.
+func validateJobCount(t *testing.T, h *DocumentHandler, docID uuid.UUID) int {
+	t.Helper()
+	var n int
+	require.NoError(t, h.pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM river.river_job WHERE kind = 'validate_upload' AND args->>'document_id' = $1`,
+		docID.String()).Scan(&n))
+	return n
+}
+
+// A second confirm while the first upload is still pending would hand its
+// job no previous file (the row holds an upload key, not a ready file), so
+// a ready file the first job is about to restore or replace could be lost.
+// The confirm refuses instead: one upload is validated at a time.
+func TestDocumentHandlerAttachFile_RefusesWhilePending(t *testing.T) {
+	h, _ := newIntegrationHandler(t)
+	ctx := context.Background()
+	doc := createTestDocument(t, h)
+	keyA := uploadKeyPrefix(doc.ID) + uuid.NewString()
+	keyB := uploadKeyPrefix(doc.ID) + uuid.NewString()
+	putObject(t, h, keyA, pdfBody)
+	putObject(t, h, keyB, pdfBody)
+
+	rec := callHandler(h.AttachFile, http.MethodPost, doc.ID.String(), `{"key":"`+keyA+`"}`)
+	require.Equal(t, http.StatusAccepted, rec.Code, "body %s", rec.Body.String())
+	pending, err := h.store.GetByID(ctx, h.pool, doc.ID)
+	require.NoError(t, err)
+
+	rec = callHandler(h.AttachFile, http.MethodPost, doc.ID.String(), `{"key":"`+keyB+`"}`)
+
+	assert.Equal(t, http.StatusConflict, rec.Code, "body %s", rec.Body.String())
+	assert.Contains(t, rec.Body.String(), "CONFLICT")
+	assert.Contains(t, rec.Body.String(), "a previous upload is still being validated")
+	got, err := h.store.GetByID(ctx, h.pool, doc.ID)
+	require.NoError(t, err)
+	assert.Equal(t, pending, got, "the row is unchanged")
+	assert.Equal(t, 1, validateJobCount(t, h, doc.ID), "nothing more is enqueued")
+
+	runValidate(t, h, latestValidateArgs(t, h, doc.ID))
+
+	rec = callHandler(h.AttachFile, http.MethodPost, doc.ID.String(), `{"key":"`+keyB+`"}`)
+	assert.Equal(t, http.StatusAccepted, rec.Code, "once resolved, a new confirm is accepted: %s", rec.Body.String())
+	assert.Equal(t, 2, validateJobCount(t, h, doc.ID))
+}

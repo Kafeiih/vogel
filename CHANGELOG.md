@@ -55,7 +55,9 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   uno rechazado lo restaura (el documento vuelve a `ready` con su archivo y
   su tipo), así que repetir una confirmación no destruye el archivo validado.
   El veredicto sólo se escribe sobre un archivo `pending`: un reintento del
-  job no cambia nada ni audita dos veces. Si el job falla en su último
+  job no cambia nada ni audita dos veces. Mientras una subida sigue
+  `pending`, otra confirmación responde `409` sin encolar nada: se valida
+  una subida por vez. Si el job falla en su último
   intento, resuelve el documento como un rechazo en vez de dejarlo `pending`
   y lo registra en el log. La confirmación lee el documento con
   `SELECT ... FOR UPDATE`, así que decide qué archivo anterior pasar al job

@@ -126,7 +126,10 @@ directo al storage con una URL firmada, y la validación pesada corre en un job:
    `key` tiene que ser una emitida para **ese** documento (si no, `400`). En
    una sola transacción el documento queda con `file_status: "pending"`, se
    encola `validate_upload` con `EnqueueTx` y se audita
-   `document_attach_file`. Responde `202`.
+   `document_attach_file`. Responde `202`. Se valida una subida por vez:
+   mientras la anterior siga `pending`, otra confirmación responde `409`
+   ("a previous upload is still being validated") sin cambiar nada, y el
+   cliente reintenta cuando el job la resolvió.
 4. `validate_upload` (`ValidateUploadWorker` en `jobs.go`) descarga el
    objeto y detecta el tipo por el contenido con `storage.SniffContentType`,
    leyendo sólo los primeros bytes. Si el objeto no existe, el archivo queda
