@@ -24,6 +24,10 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ### Agregado
 
+- **`storage`: `ErrNotFound`.** `Download` envuelve `storage.ErrNotFound`
+  cuando la clave no tiene objeto (`storage/s3` traduce el `NoSuchKey` del SDK),
+  así que quien llama distingue un objeto inexistente de una falla transitoria
+  sin importar el SDK de AWS. Los demás errores no cambian.
 - **`storage`: `WithContentLength(n)` para `PresignedPutURL`.** Firma el tamaño
   exacto del cuerpo: el store rechaza una subida de otro tamaño (verificado con
   un servidor S3 real: 403), así que quien tiene la URL no puede guardar un
