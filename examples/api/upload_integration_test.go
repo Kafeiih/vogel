@@ -342,3 +342,45 @@ func TestPresignedUploadFlow(t *testing.T) {
 		assert.Zero(t, audited, "a presigned URL reached the audit log")
 	}
 }
+
+// AttachFile decides what to hand the job (PreviousKey, PreviousContentType)
+// from the row as it is once the confirm holds it, not from a snapshot read
+// before another writer commits. Here a concurrent transaction holds the
+// row lock and makes the file ready while the confirm is already running.
+// Reading the row with a plain SELECT would see the old state (no file),
+// hand the job no previous file, and leak the final file the other writer
+// committed. Reading it FOR UPDATE waits for that commit and sees it.
+func TestDocumentHandlerAttachFile_DecidesFromTheLockedRow(t *testing.T) {
+	h, _ := newIntegrationHandler(t)
+	ctx := context.Background()
+	doc := createTestDocument(t, h)
+	finalKey := fileKeyPrefix(doc.ID) + uuid.NewString()
+
+	holder, err := h.pool.Begin(ctx)
+	require.NoError(t, err)
+	defer func() { _ = holder.Rollback(ctx) }()
+	_, err = holder.Exec(ctx, `SELECT 1 FROM documents WHERE id = $1 FOR UPDATE`, doc.ID)
+	require.NoError(t, err)
+	_, err = holder.Exec(ctx, `UPDATE documents
+		SET storage_key = $1, file_status = 'ready', file_content_type = 'application/pdf' WHERE id = $2`,
+		finalKey, doc.ID)
+	require.NoError(t, err)
+
+	key := uploadKeyPrefix(doc.ID) + uuid.NewString()
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		done <- callHandler(h.AttachFile, http.MethodPost, doc.ID.String(), `{"key":"`+key+`"}`)
+	}()
+
+	// Give the confirm time to reach its read of the row before the other
+	// writer commits.
+	time.Sleep(300 * time.Millisecond)
+	require.NoError(t, holder.Commit(ctx))
+
+	rec := <-done
+	require.Equal(t, http.StatusAccepted, rec.Code, "body %s", rec.Body.String())
+	assert.Equal(t, ValidateUploadArgs{
+		DocumentID: doc.ID.String(), Key: key,
+		PreviousKey: finalKey, PreviousContentType: "application/pdf",
+	}, latestValidateArgs(t, h, doc.ID))
+}

@@ -75,6 +75,24 @@ func (s *DocumentStore) GetByID(ctx context.Context, db pgxtx.DBTX, id uuid.UUID
 	return &d, nil
 }
 
+// GetByIDForUpdate is GetByID with the row locked (SELECT ... FOR UPDATE)
+// until the transaction db belongs to ends. Use it inside a transaction
+// that decides what to write from the row it read: a concurrent writer then
+// either commits first, and this read sees its result, or waits for this
+// transaction. Outside a transaction the lock is released at once.
+func (s *DocumentStore) GetByIDForUpdate(ctx context.Context, db pgxtx.DBTX, id uuid.UUID) (*Document, error) {
+	row := db.QueryRow(ctx, `SELECT `+selectColumns+` FROM documents WHERE id = $1 FOR UPDATE`, id)
+
+	var d Document
+	if err := scanDocument(row, &d); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("document store: get %s for update: %w", id, ErrDocumentNotFound)
+		}
+		return nil, fmt.Errorf("document store: get %s for update: %w", id, err)
+	}
+	return &d, nil
+}
+
 // List returns a page of documents ordered by created_at descending, plus
 // the total matching row count -- computed in the SAME query via
 // count(*) OVER(), the same technique audit/postgres.Repository.List uses to

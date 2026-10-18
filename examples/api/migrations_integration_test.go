@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -108,4 +109,27 @@ func TestDocumentStore_FileStatusFollowsTheCurrentKey(t *testing.T) {
 	got, err = h.store.GetByID(ctx, pool, doc.ID)
 	require.NoError(t, err)
 	assert.Equal(t, FileStatusPending, got.FileStatus)
+}
+
+// GetByIDForUpdate locks the row until the transaction that read it ends: a
+// second transaction cannot lock it meanwhile.
+func TestDocumentStore_GetByIDForUpdateLocksTheRow(t *testing.T) {
+	ctx := context.Background()
+	h, pool := newIntegrationHandler(t)
+	doc := createTestDocument(t, h)
+
+	tx, err := pool.Begin(ctx)
+	require.NoError(t, err)
+	defer func() { _ = tx.Rollback(ctx) }()
+	got, err := h.store.GetByIDForUpdate(ctx, tx, doc.ID)
+	require.NoError(t, err)
+	assert.Equal(t, doc.ID, got.ID)
+
+	_, err = pool.Exec(ctx, `SELECT 1 FROM documents WHERE id = $1 FOR UPDATE NOWAIT`, doc.ID)
+	var pgErr *pgconn.PgError
+	require.ErrorAs(t, err, &pgErr, "another transaction cannot lock the row")
+	assert.Equal(t, "55P03", pgErr.Code, "lock_not_available")
+
+	_, err = h.store.GetByIDForUpdate(ctx, pool, uuid.New())
+	assert.ErrorIs(t, err, ErrDocumentNotFound)
 }

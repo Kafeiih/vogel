@@ -705,7 +705,12 @@ func (h *DocumentHandler) AttachFile(w http.ResponseWriter, r *http.Request) {
 	err := h.tx.WithTx(r.Context(), func(txCtx context.Context) error {
 		db := pgxtx.DBFromContext(txCtx, h.pool)
 
-		before, err := h.store.GetByID(txCtx, db, id)
+		// FOR UPDATE: what the job is told about the previous file must
+		// come from the row as this transaction will overwrite it. A plain
+		// read could see a state another transaction (a job making a file
+		// ready, a parallel confirm) is about to replace, and lose track of
+		// the file that transaction commits.
+		before, err := h.store.GetByIDForUpdate(txCtx, db, id)
 		if err != nil {
 			return err
 		}
