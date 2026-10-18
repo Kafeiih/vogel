@@ -4,14 +4,11 @@ import (
 	"context"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
 
-	// vogel:component worker begin
-	"log/slog"
-
-	// vogel:component worker end
 	// vogel:component worker begin
 	"github.com/jackc/pgx/v5/pgxpool"
 
