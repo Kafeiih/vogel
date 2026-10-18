@@ -7,11 +7,14 @@
 # An empty list prints "true": no paths means the diff could not be read, and
 # CI must then run every check rather than skip them.
 #
-# Usage: git diff --name-only BASE...HEAD | .github/scripts/code-changed.sh
+# Pass --no-renames to git diff: with rename detection a code file moved into
+# docs/ is listed only under its new path, and the old one would go unseen.
+#
+# Usage: git diff --no-renames --name-only BASE...HEAD | .github/scripts/code-changed.sh
 set -euo pipefail
 
 seen=false
-while IFS= read -r path; do
+while IFS= read -r path || [ -n "$path" ]; do
   [ -n "$path" ] || continue
   seen=true
   case "$path" in

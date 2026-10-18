@@ -57,7 +57,9 @@ jobs:
             echo "code=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          code="$(git diff --name-only "$BASE_SHA...$HEAD_SHA" | .github/scripts/code-changed.sh)"
+          # --no-renames: con deteccion de renombres, mover logger/logger.go a
+          # docs/logger.go lista solo el path nuevo y el PR pareceria solo docs.
+          code="$(git diff --no-renames --name-only "$BASE_SHA...$HEAD_SHA" | .github/scripts/code-changed.sh)"
           echo "code=$code"
           echo "code=$code" >> "$GITHUB_OUTPUT"
 
