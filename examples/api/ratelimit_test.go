@@ -128,7 +128,7 @@ func TestNewRouter_RateLimitsAPIBeforeAuthentication(t *testing.T) {
 		t.Fatalf("NewMetrics: %v", err)
 	}
 	var checker authz.Checker = denyAll{}
-	h := NewRouter(nil, nil, fakeAuthenticator{}, checker, access.New(checker), metrics, newIPRateLimiter(1, time.Minute), nil, logger)
+	h := NewRouter(nil, nil, fakeAuthenticator{}, checker, access.New(checker), metrics, newIPRateLimiter(1, time.Minute), newFakeStorage("http://localhost").Handler(), nil, logger)
 
 	if rec := requestFrom(t, h, "203.0.113.7:1234"); rec.Code != http.StatusUnauthorized {
 		t.Fatalf("first unauthenticated request = %d, want 401", rec.Code)

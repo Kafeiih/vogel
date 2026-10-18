@@ -182,3 +182,29 @@ func TestLoadConfig_RateLimitDefaultsAndValidation(t *testing.T) {
 		})
 	}
 }
+
+// The fake bucket's presigned URLs point back at this server by default,
+// and a base URL a client could not follow fails the boot naming the
+// variable.
+func TestLoadConfig_FakeStorageBaseURL(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://u:p@localhost:5432/db?sslmode=disable")
+	t.Setenv("PORT", "9000")
+	unsetEnv(t, "FAKE_STORAGE_BASE_URL")
+
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if cfg.FakeStorageBaseURL != "http://localhost:9000" {
+		t.Errorf("FakeStorageBaseURL = %q, want http://localhost:9000", cfg.FakeStorageBaseURL)
+	}
+
+	for _, val := range []string{"localhost:9000", "ftp://host", "/relative", "http://"} {
+		t.Run(val, func(t *testing.T) {
+			t.Setenv("FAKE_STORAGE_BASE_URL", val)
+			if _, err := LoadConfig(); err == nil || !strings.Contains(err.Error(), "FAKE_STORAGE_BASE_URL") {
+				t.Errorf("LoadConfig() with FAKE_STORAGE_BASE_URL=%s error = %v, want one naming it", val, err)
+			}
+		})
+	}
+}

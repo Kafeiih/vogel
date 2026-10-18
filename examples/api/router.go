@@ -28,6 +28,7 @@ func NewRouter(
 	guard *access.Guard,
 	metrics *vmw.Metrics,
 	limiter *ipRateLimiter,
+	bucket http.Handler,
 	pool *pgxpool.Pool,
 	logger *slog.Logger,
 ) http.Handler {
@@ -66,6 +67,16 @@ func NewRouter(
 	// unavailable", one ping, nothing else. /metrics is NOT here: it is
 	// served by newMetricsServer on its own internal listener.
 	r.Get("/healthz", healthzHandler(pool))
+
+	// The fake bucket (fakeStorage.Handler) stands in for the object store's
+	// own endpoint, which is why it sits outside /api/v1 with no
+	// Authenticate or rate limit: a client reaches it with a presigned URL,
+	// and that URL's signature is the only credential it checks. Only GET
+	// (download) and PUT (upload) exist. With storage/s3 these two lines go
+	// away: the presigned URLs point at the bucket itself. The access log
+	// above records the path only, never the signed query string.
+	r.Get(fakeStoragePath+"*", bucket.ServeHTTP)
+	r.Put(fakeStoragePath+"*", bucket.ServeHTTP)
 
 	requireRead := vmw.RequirePermission(checker, "documents:document", "read", logger)
 	requireWrite := vmw.RequirePermission(checker, "documents:document", "write", logger)

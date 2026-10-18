@@ -102,7 +102,7 @@ func newIntegrationHandler(t *testing.T) (*DocumentHandler, *pgxpool.Pool) {
 	recorder := audit.NewRecorder(auditpg.NewRepository(pool))
 	guard := access.New(fakeChecker{})
 
-	h := NewDocumentHandler(store, engine, wfRepo, recorder, queue, newFakeStorage(),
+	h := NewDocumentHandler(store, engine, wfRepo, recorder, queue, newFakeStorage("http://localhost:8080"),
 		pgxtx.NewPgxTxManager(pool), pool, guard, logger)
 	return h, pool
 }

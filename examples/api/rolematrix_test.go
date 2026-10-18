@@ -75,6 +75,10 @@ func TestNewRouter_RoleMatrix(t *testing.T) {
 		want                [6]outcome
 	}{
 		{"GET", "/healthz", "/healthz", [6]outcome{A, A, A, A, A, A}},
+		// The fake bucket ignores bearer tokens entirely: without a valid
+		// presigned signature every caller, admin included, gets its 403.
+		{"GET", "/fake-storage/*", "/fake-storage/documents/" + ownedDocID, [6]outcome{F, F, F, F, F, F}},
+		{"PUT", "/fake-storage/*", "/fake-storage/documents/" + ownedDocID, [6]outcome{F, F, F, F, F, F}},
 		{"POST", "/api/v1/documents", "/api/v1/documents", [6]outcome{U, U, F, F, F, A}},
 		{"GET", "/api/v1/documents", "/api/v1/documents", [6]outcome{U, U, A, A, A, A}},
 		{"GET", "/api/v1/documents/{id}", docPath, [6]outcome{U, U, A, A, A, A}},
@@ -152,7 +156,7 @@ func newMatrixRouter(t *testing.T) http.Handler {
 			return map[string]any{"owned_document_ids": ids}, nil
 		},
 	))
-	return NewRouter(nil, nil, fakeAuthenticator{}, checker, guard, metrics, newIPRateLimiter(10_000, time.Minute), nil, logger)
+	return NewRouter(nil, nil, fakeAuthenticator{}, checker, guard, metrics, newIPRateLimiter(10_000, time.Minute), newFakeStorage("http://localhost").Handler(), nil, logger)
 }
 
 func outcomeOf(code int) outcome {

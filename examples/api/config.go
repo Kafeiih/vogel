@@ -1,7 +1,9 @@
 package main
 
 import (
+	"fmt"
 	"math"
+	"net/url"
 	"strings"
 	"time"
 
@@ -42,6 +44,13 @@ type Config struct {
 	// RateLimitWindow (RATE_LIMIT_WINDOW, default 1m). Both must be positive.
 	RateLimitRequests int
 	RateLimitWindow   time.Duration
+
+	// FakeStorageBaseURL (FAKE_STORAGE_BASE_URL, default
+	// http://localhost:<PORT>) is the origin the fake bucket's presigned
+	// URLs point at: where a client reaches this server's /fake-storage/
+	// endpoint. It must be an absolute http or https URL. A real adapter
+	// (storage/s3) needs no such setting: its URLs point at the bucket.
+	FakeStorageBaseURL string
 }
 
 // LoadConfig reads every setting from the environment and validates it
@@ -82,6 +91,11 @@ func LoadConfig() (Config, error) {
 	errs.IntRange("RATE_LIMIT_REQUESTS", rateLimitRequests, 1, math.MaxInt32)
 	rateLimitWindow := positiveDuration(&errs, "RATE_LIMIT_WINDOW", time.Minute)
 
+	fakeStorageBaseURL := config.String("FAKE_STORAGE_BASE_URL", fmt.Sprintf("http://localhost:%d", port))
+	if u, err := url.Parse(fakeStorageBaseURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		errs.Addf("FAKE_STORAGE_BASE_URL: must be an absolute http or https URL, got %q", fakeStorageBaseURL)
+	}
+
 	if err := errs.Err(); err != nil {
 		return Config{}, err
 	}
@@ -102,6 +116,8 @@ func LoadConfig() (Config, error) {
 
 		RateLimitRequests: rateLimitRequests,
 		RateLimitWindow:   rateLimitWindow,
+
+		FakeStorageBaseURL: fakeStorageBaseURL,
 	}, nil
 }
 
