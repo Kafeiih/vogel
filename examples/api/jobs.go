@@ -96,6 +96,15 @@ type ValidateUploadArgs struct {
 // Kind implements river.JobArgs.
 func (ValidateUploadArgs) Kind() string { return "validate_upload" }
 
+// validateUploadMaxAttempts bounds how often River runs validate_upload
+// before the last attempt resolves the document (see giveUp). River's
+// default of 25 attempts spreads retries over weeks, during which the
+// document stays pending. With 5, River's backoff (attempt^4 seconds,
+// +/-10% jitter: about 1s, 16s, 81s and 256s between attempts) plus up to
+// 5 x the 1-minute default job timeout puts the last attempt within about
+// 12 minutes of the confirm.
+const validateUploadMaxAttempts = 5
+
 // ValidateUploadWorker decides whether an object a client uploaded straight
 // to storage may become the document's file. It runs here, not in the HTTP
 // handler, because the API never sees the bytes of a presigned upload, and

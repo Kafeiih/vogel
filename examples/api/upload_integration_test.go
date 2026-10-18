@@ -126,6 +126,12 @@ func TestDocumentHandlerAttachFile(t *testing.T) {
 			`SELECT args FROM river.river_job WHERE kind = 'validate_upload' AND args->>'document_id' = $1`,
 			doc.ID.String()).Scan(&args), "a validate_upload job was enqueued")
 		assert.Equal(t, ValidateUploadArgs{DocumentID: doc.ID.String(), Key: key}, args)
+		var maxAttempts int
+		require.NoError(t, h.pool.QueryRow(ctx,
+			`SELECT max_attempts FROM river.river_job WHERE kind = 'validate_upload' AND args->>'document_id' = $1`,
+			doc.ID.String()).Scan(&maxAttempts))
+		assert.Equal(t, 5, maxAttempts, "validation retries for minutes, not River's default weeks")
+		assert.Equal(t, 5, validateUploadMaxAttempts)
 
 		var source, beforeStatus, afterStatus, afterKey string
 		require.NoError(t, h.pool.QueryRow(ctx, `

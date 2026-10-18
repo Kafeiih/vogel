@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/riverqueue/river"
 
 	"github.com/kafeiih/vogel/access"
 	"github.com/kafeiih/vogel/audit"
@@ -758,7 +759,7 @@ func (h *DocumentHandler) AttachFile(w http.ResponseWriter, r *http.Request) {
 			Key:                 req.Key,
 			PreviousKey:         previousKey,
 			PreviousContentType: previousContentType,
-		}, nil); err != nil {
+		}, &river.InsertOpts{MaxAttempts: validateUploadMaxAttempts}); err != nil {
 			return err
 		}
 

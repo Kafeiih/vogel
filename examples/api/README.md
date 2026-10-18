@@ -151,6 +151,10 @@ directo al storage con una URL firmada, y la validación pesada corre en un job:
    validado. El veredicto se graba antes de borrar lo que ya nadie usa (el
    objeto de subida, el archivo anterior); si un borrado falla, el reintento
    del job relee la fila y termina la limpieza.
+   El job se encola con 5 intentos como máximo
+   (`validateUploadMaxAttempts`, en vez de los 25 de River, que reparten los
+   reintentos en semanas): con el backoff de River el último intento llega a
+   unos 12 minutos de la confirmación.
    Si el job falla en todos sus intentos (por ejemplo, el storage no
    responde), el último intento no deja el documento `pending` para siempre:
    lo resuelve como un rechazo (restaura el archivo anterior o lo marca
