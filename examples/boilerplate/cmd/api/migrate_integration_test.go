@@ -68,6 +68,9 @@ func TestMigrateDown_RevertsOnlyTheAppSet(t *testing.T) {
 	defer cancel()
 	dbURL := startTestPostgres(ctx, t)
 	t.Setenv("DB_URL", dbURL)
+	// The throwaway container serves plaintext (sslmode=disable), which "api
+	// migrate" refuses under DB_REQUIRE_TLS's default of true.
+	t.Setenv("DB_REQUIRE_TLS", "false")
 
 	pool, err := pgxpool.New(ctx, dbURL)
 	if err != nil {
