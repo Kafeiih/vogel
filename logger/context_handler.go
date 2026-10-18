@@ -43,7 +43,7 @@ func (h *contextHandler) Enabled(ctx context.Context, level slog.Level) bool {
 	return h.inner.Enabled(ctx, level)
 }
 
-func (h *contextHandler) Handle(ctx context.Context, r slog.Record) error {
+func (h *contextHandler) Handle(ctx context.Context, r slog.Record) error { //nolint:gocritic // hugeParam: slog.Handler fixes the by-value Record signature
 	if ctx == nil || (h.hasRequestID && h.hasUserID) {
 		return h.inner.Handle(ctx, r)
 	}
