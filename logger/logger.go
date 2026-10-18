@@ -33,6 +33,12 @@ type Logger struct {
 // Every record's timestamp is emitted in UTC regardless of the host's time
 // zone (see utcTime), so log lines from services running in different zones
 // can be ordered and correlated without offset arithmetic.
+//
+// The *Context methods add request_id and user_id from reqctx (see
+// contextHandler), so InfoContext(ctx, ...) inside a request is correlated
+// without WithContext. Install the Logger with slog.SetDefault(l.Logger) to
+// extend that to package-level slog calls and to libraries logging through
+// slog.Default().
 func New(env string, w io.Writer) *Logger {
 	var handler slog.Handler
 
@@ -48,7 +54,7 @@ func New(env string, w io.Writer) *Logger {
 	}
 
 	return &Logger{
-		Logger: slog.New(handler),
+		Logger: slog.New(&contextHandler{inner: handler}),
 	}
 }
 
@@ -73,9 +79,9 @@ func (l *Logger) With(args ...any) *Logger {
 // is left out otherwise, so a line logged outside an authenticated request
 // keeps its shape.
 func (l *Logger) WithContext(ctx context.Context) *Logger {
-	args := []any{"request_id", reqctx.RequestIDFromContext(ctx)}
+	args := []any{requestIDKey, reqctx.RequestIDFromContext(ctx)}
 	if userID := reqctx.UserIDFromContext(ctx); userID != "" {
-		args = append(args, "user_id", userID)
+		args = append(args, userIDKey, userID)
 	}
 	return &Logger{
 		Logger: l.Logger.With(args...),
