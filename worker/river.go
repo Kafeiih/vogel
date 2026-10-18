@@ -43,7 +43,7 @@ func NewRiverQueue(pool *pgxpool.Pool, workers *river.Workers, cfg Config, logge
 	}
 
 	o := newOptions(opts...)
-	riverCfg := buildRiverConfig(cfg, workers, o.periodicJobs)
+	riverCfg := buildRiverConfig(cfg, workers, o.periodicJobs, logger)
 
 	client, err := river.NewClient(riverpgxv5.New(pool), riverCfg)
 	if err != nil {
@@ -117,9 +117,16 @@ func (q *RiverQueue) Stop(ctx context.Context) error {
 // enqueue jobs without consuming them, so none of the three are set then —
 // periodicJobs included, even if the caller passed some in: an insert-only
 // client processes nothing, so there is nothing to run them.
-func buildRiverConfig(cfg Config, workers *river.Workers, periodicJobs []*river.PeriodicJob) *river.Config {
+//
+// Logger and the request ID middleware are set in both modes: River's own
+// log lines go through the app's logger instead of River's default text
+// handler, from warn up as before (see riverLogger), and the request ID is written by the enqueuing process and read by
+// the working one (see requestIDMiddleware).
+func buildRiverConfig(cfg Config, workers *river.Workers, periodicJobs []*river.PeriodicJob, logger *slog.Logger) *river.Config {
 	rc := &river.Config{
-		Schema: cfg.Schema,
+		Schema:     cfg.Schema,
+		Logger:     riverLogger(logger),
+		Middleware: []rivertype.Middleware{&requestIDMiddleware{}},
 	}
 	if workers != nil {
 		rc.Workers = workers

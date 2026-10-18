@@ -67,6 +67,28 @@ Del lado de la lectura, `logger.Logger.WithContext(ctx)` agrega el atributo
 `"request_id"` a cada línea leyendo `reqctx.RequestIDFromContext(ctx)` —
 si no hay ninguno, el atributo queda en `""`, sin error.
 
+Los métodos `*Context` (`InfoContext`, `ErrorContext`, …) de un logger creado
+con `logger.New` hacen lo mismo sin `WithContext`: el handler lee `reqctx` en
+cada línea y agrega `"request_id"` y `"user_id"` cuando el contexto los trae.
+Una clave que la línea o el logger ya llevan (por `WithContext`, un `With` o
+un argumento explícito, como hacen los logs de `Authenticate` y
+`RequireAccess`) no se repite, y gana el valor explícito. Fuera de una request
+no se agrega nada. Para que también lo hagan las llamadas a `slog.InfoContext`
+y las librerías que loguean por `slog.Default()`, el binario instala el logger
+con `slog.SetDefault(appLogger.Logger)`.
+
+El request ID también cruza la cola de jobs. `worker.NewRiverQueue` instala
+un middleware de River que, al encolar, copia el request ID del contexto a la
+metadata del job (clave `vogel_request_id`, sin tocar los args) y, al
+procesarlo, lo devuelve al contexto con `reqctx.WithRequestID`. Así los logs
+del worker y las filas de `audit_log` que graba (con `audit.SourceWorker`)
+llevan el `request_id` de la request que encoló el job. Un job encolado fuera
+de una request (uno periódico, una CLI) no lleva ninguno, y un
+`vogel_request_id` puesto a mano en `InsertOpts.Metadata` gana sobre el del
+contexto. La misma cola pasa el logger de la app a River, así que las líneas
+de River salen con el mismo formato que las de la app, pero sólo desde
+`WARN`: es el piso del logger propio de River, que por debajo es muy verboso.
+
 `audit.Recorder.Record` lee el mismo request ID de `reqctx`, en el mismo
 paso incondicional en el que lee al actor desde `auth.FromContext` (ver la
 sección 3 y el punto 16 del README):
@@ -151,8 +173,8 @@ mutable:
 3. Lo leen `reqctx.UserIDFromContext`:
    - `StructuredLogger`, en la línea de acceso que emite al terminar la
      request (después de que `next` volvió, así que la escritura ya ocurrió);
-   - `logger.Logger.WithContext(ctx)`, en las líneas que escriben los
-     handlers y servicios.
+   - `logger.Logger.WithContext(ctx)` y los métodos `*Context` del logger,
+     en las líneas que escriben los handlers y servicios.
 
    Ambos agregan `"user_id"` solo si hay un valor: una request anónima, o un
    log fuera de una request, conserva la forma de siempre (sin la clave).

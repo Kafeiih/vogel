@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"os"
 	"strings"
 	"testing"
@@ -231,5 +232,168 @@ func TestWithContext_NoUserID_OmitsKey(t *testing.T) {
 	}
 	if v, ok := decoded["user_id"]; ok {
 		t.Errorf("user_id = %v, want the key absent", v)
+	}
+}
+
+// decodeJSONLine decodes a single JSON log line, failing the test otherwise.
+func decodeJSONLine(t *testing.T, buf *bytes.Buffer) map[string]any {
+	t.Helper()
+	var decoded map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &decoded); err != nil {
+		t.Fatalf("decode %q: %v", buf.String(), err)
+	}
+	return decoded
+}
+
+// requestContext returns a context carrying the request ID and an
+// authenticated user, as httpx/middleware leaves it for a handler.
+func requestContext(requestID, userID string) context.Context {
+	ctx := reqctx.WithRequestID(context.Background(), requestID)
+	ctx = reqctx.WithUserSlot(ctx)
+	reqctx.SetUserID(ctx, userID)
+	return ctx
+}
+
+// The *Context methods read reqctx themselves, so a caller that passes ctx
+// gets the request correlation without remembering to call WithContext.
+func TestInfoContext_AddsRequestIDAndUserIDFromContext(t *testing.T) {
+	var buf bytes.Buffer
+	l := New("production", &buf)
+
+	l.InfoContext(requestContext("req-1", "u-1"), "hello")
+
+	decoded := decodeJSONLine(t, &buf)
+	if decoded["request_id"] != "req-1" {
+		t.Errorf("request_id = %v, want %q", decoded["request_id"], "req-1")
+	}
+	if decoded["user_id"] != "u-1" {
+		t.Errorf("user_id = %v, want %q", decoded["user_id"], "u-1")
+	}
+}
+
+// slog.Default() set to the Logger's handler gets the same correlation, so
+// package-level slog.InfoContext calls are covered too.
+func TestInfoContext_ThroughSlogDefault_AddsRequestID(t *testing.T) {
+	var buf bytes.Buffer
+	l := New("production", &buf)
+
+	prev := slog.Default()
+	slog.SetDefault(l.Logger)
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	slog.InfoContext(requestContext("req-2", "u-2"), "hello")
+
+	if decoded := decodeJSONLine(t, &buf); decoded["request_id"] != "req-2" {
+		t.Errorf("request_id = %v, want %q", decoded["request_id"], "req-2")
+	}
+}
+
+// Outside a request the keys are left out, so the line keeps its shape.
+func TestInfoContext_NoRequestValues_OmitsKeys(t *testing.T) {
+	var buf bytes.Buffer
+	l := New("production", &buf)
+
+	l.InfoContext(context.Background(), "hello")
+
+	decoded := decodeJSONLine(t, &buf)
+	for _, key := range []string{"request_id", "user_id"} {
+		if v, ok := decoded[key]; ok {
+			t.Errorf("%s = %v, want the key absent", key, v)
+		}
+	}
+}
+
+// A Logger already bound with WithContext must not print the keys twice
+// when it also logs with a context.
+func TestInfoContext_AfterWithContext_LogsKeysOnce(t *testing.T) {
+	var buf bytes.Buffer
+	l := New("production", &buf)
+	ctx := requestContext("req-3", "u-3")
+
+	l.WithContext(ctx).InfoContext(ctx, "hello")
+
+	for _, key := range []string{`"request_id"`, `"user_id"`} {
+		if n := strings.Count(buf.String(), key); n != 1 {
+			t.Errorf("%s appears %d times in %q, want 1", key, n, buf.String())
+		}
+	}
+}
+
+// A value the caller bound explicitly wins over the one in ctx.
+func TestInfoContext_ExplicitRequestID_WinsOverContext(t *testing.T) {
+	var buf bytes.Buffer
+	l := New("production", &buf)
+
+	l.With("request_id", "explicit").InfoContext(requestContext("from-ctx", "u-4"), "hello")
+
+	if n := strings.Count(buf.String(), `"request_id"`); n != 1 {
+		t.Fatalf("request_id appears %d times in %q, want 1", n, buf.String())
+	}
+	if decoded := decodeJSONLine(t, &buf); decoded["request_id"] != "explicit" {
+		t.Errorf("request_id = %v, want %q", decoded["request_id"], "explicit")
+	}
+}
+
+// Callers such as httpx/middleware's auth and access logs pass request_id
+// and user_id as record attributes themselves; those must not be doubled.
+func TestInfoContext_RecordAttrs_WinOverContext(t *testing.T) {
+	var buf bytes.Buffer
+	l := New("production", &buf)
+
+	l.InfoContext(requestContext("from-ctx", "u-ctx"), "hello",
+		"request_id", "explicit", "user_id", "u-explicit")
+
+	for _, key := range []string{`"request_id"`, `"user_id"`} {
+		if n := strings.Count(buf.String(), key); n != 1 {
+			t.Errorf("%s appears %d times in %q, want 1", key, n, buf.String())
+		}
+	}
+	if decoded := decodeJSONLine(t, &buf); decoded["request_id"] != "explicit" {
+		t.Errorf("request_id = %v, want %q", decoded["request_id"], "explicit")
+	}
+}
+
+// Inside a group, record attributes land in the group, so keys bound after
+// WithGroup are the ones that collide; they must not be doubled either.
+func TestInfoContext_InsideGroup_LogsKeysOnce(t *testing.T) {
+	ctx := requestContext("from-ctx", "u-ctx")
+
+	for name, build := range map[string]func(*Logger) *slog.Logger{
+		"WithContext after group": func(l *Logger) *slog.Logger {
+			return (&Logger{Logger: l.WithGroup("g")}).WithContext(ctx).Logger
+		},
+		"With after group": func(l *Logger) *slog.Logger {
+			return l.WithGroup("g").With("request_id", "explicit", "user_id", "u-explicit")
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var buf bytes.Buffer
+			build(New("production", &buf)).InfoContext(ctx, "hello")
+
+			for _, key := range []string{`"request_id"`, `"user_id"`} {
+				if n := strings.Count(buf.String(), key); n != 1 {
+					t.Errorf("%s appears %d times in %q, want 1", key, n, buf.String())
+				}
+			}
+		})
+	}
+}
+
+// A group opened after the keys were bound at the top level still gets the
+// context values inside it: the top-level ones do not collide with them.
+func TestInfoContext_GroupAfterTopLevelBinding_AddsKeysInsideGroup(t *testing.T) {
+	var buf bytes.Buffer
+	l := New("production", &buf)
+	ctx := requestContext("req-g", "u-g")
+
+	l.WithContext(ctx).WithGroup("g").InfoContext(ctx, "hello")
+
+	decoded := decodeJSONLine(t, &buf)
+	if decoded["request_id"] != "req-g" {
+		t.Errorf("top-level request_id = %v, want %q", decoded["request_id"], "req-g")
+	}
+	group, _ := decoded["g"].(map[string]any)
+	if group["request_id"] != "req-g" {
+		t.Errorf("g.request_id = %v, want %q", group["request_id"], "req-g")
 	}
 }

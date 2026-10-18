@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -47,7 +47,10 @@ func main() {
 		return
 	}
 	if err := run(cmd == cmdStartFromMigrate); err != nil {
-		log.Fatal(err)
+		// slog, not log.Fatal: once run installs the app logger as the default,
+		// the log package writes at INFO, and a fatal error must stay an ERROR.
+		slog.Error("exiting", "error", err)
+		os.Exit(1)
 	}
 }
 
@@ -95,7 +98,12 @@ func run(migrateFirst bool) error {
 		return fmt.Errorf("loading config: %w", err)
 	}
 
-	appLogger := logger.NewDefault(cfg.App.Env)
+	appLogger := logger.NewDefault(cfg.App.Env).With("component", "worker")
+	// Installed as the default too, so package-level slog calls, River's
+	// migrations and libraries logging through slog.Default() share its JSON
+	// format, component attribute and request_id from context. It also routes
+	// the standard log package through it, as INFO records.
+	slog.SetDefault(appLogger.Logger)
 	appLogger.Info("starting worker",
 		"version", cfg.App.Version,
 		"env", cfg.App.Env,

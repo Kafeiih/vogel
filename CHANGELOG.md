@@ -4,6 +4,36 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el versionado,
 [SemVer](https://semver.org/lang/es/).
 
+## [Unreleased]
+
+### Cambiado
+
+- **`logger`: los métodos `*Context` agregan `request_id` y `user_id` desde
+  `reqctx`.** Antes, `InfoContext(ctx, …)` ignoraba el contexto y una línea
+  dentro de una request salía sin `request_id` salvo que se usara
+  `Logger.WithContext`. Una clave que la línea o el logger ya llevan no se
+  repite y gana el valor explícito; fuera de una request no se agrega nada.
+  Las líneas que hoy se loguean con contexto pueden ganar esas dos claves.
+- **`worker`: el request ID viaja con el job.** `NewRiverQueue` instala un
+  middleware de River que copia el request ID del contexto que encola a la
+  metadata del job (`vogel_request_id`) y lo devuelve al contexto del worker.
+  Los logs del worker y las filas de `audit_log` grabadas con
+  `audit.SourceWorker` llevan ahora el `request_id` de la request de origen,
+  donde antes quedaba `NULL`. Un `vogel_request_id` puesto a mano en
+  `InsertOpts.Metadata` se respeta. River recibe además el logger de la app
+  en vez de usar su propio handler de texto, desde `WARN` hacia arriba como
+  hasta ahora: sus líneas de info y debug siguen sin salir.
+- **`examples/boilerplate`: el logger de la app es también `slog.Default()`.**
+  Los binarios `api` y `worker` lo instalan con `slog.SetDefault`, así que los
+  jobs que loguean con `slog.InfoContext`, las migraciones de River y las
+  librerías que usan `slog.Default()` salen en el mismo formato y con
+  `request_id`. Cada línea lleva además `component` (`api` o `worker`) para
+  filtrar por binario. `slog.SetDefault` también redirige el paquete `log` de
+  la biblioteca estándar: `log.Printf` sale como registro JSON de nivel
+  `INFO` en vez de texto plano. Por eso el error con el que termina cada
+  binario ya no usa `log.Fatal` sino `slog.Error`, y conserva el nivel
+  `ERROR`.
+
 ## [0.10.1] — 2026-10-16
 
 ### Agregado
