@@ -804,9 +804,10 @@ func (h *DocumentHandler) DownloadURL(w http.ResponseWriter, r *http.Request) {
 	// than rendering it on the bucket origin. Document keeps no original
 	// filename; a record that did would pass storage.AsAttachment(name).
 	// The response type is the one validate_upload sniffed from the content,
-	// never the one the client declared; a file attached before sniffed
-	// types were recorded has none, and is served as the port's default
-	// application/octet-stream.
+	// never the one the client declared. A row migration 002 marked ready
+	// (attached by the old proxying upload) has a NULL type, read as "":
+	// WithResponseContentType("") keeps storage.DefaultResponseContentType,
+	// so such a file is served as application/octet-stream.
 	url, err := h.storage.PresignedGetURL(r.Context(), doc.StorageKey, downloadURLExpiry,
 		storage.WithResponseContentType(doc.FileContentType))
 	if err != nil {

@@ -21,6 +21,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kafeiih/vogel/auth"
+	"github.com/kafeiih/vogel/storage"
 )
 
 // callHandler sends body to handler as user-alice with the chi {id}
@@ -181,6 +182,30 @@ func TestDocumentHandlerDownloadURL(t *testing.T) {
 			assert.NotContains(t, rec.Body.String(), "fake-storage", "no URL is handed out")
 		})
 	}
+
+	// Migration 002 marks a row that already had a key as ready with a NULL
+	// file_content_type. Its download falls back to the port's default type,
+	// application/octet-stream, never to a type nobody verified.
+	t.Run("legacy ready file without a type is served as octet-stream", func(t *testing.T) {
+		doc := createTestDocument(t, h)
+		legacyKey := "documents/" + doc.ID.String()
+		_, err := h.pool.Exec(ctx, `UPDATE documents
+			SET storage_key = $1, file_status = 'ready', file_content_type = NULL WHERE id = $2`, legacyKey, doc.ID)
+		require.NoError(t, err)
+
+		rec := callHandler(h.DownloadURL, http.MethodGet, doc.ID.String(), "")
+
+		require.Equal(t, http.StatusOK, rec.Code, "body %s", rec.Body.String())
+		var resp struct {
+			Data map[string]string `json:"data"`
+		}
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+		u, err := url.Parse(resp.Data["url"])
+		require.NoError(t, err)
+		assert.Equal(t, fakeStoragePath+legacyKey, u.Path)
+		assert.Equal(t, storage.DefaultResponseContentType, u.Query().Get("response_content_type"))
+		assert.Equal(t, "application/octet-stream", storage.DefaultResponseContentType)
+	})
 
 	t.Run("ready file is served with its sniffed type", func(t *testing.T) {
 		doc := createTestDocument(t, h)
