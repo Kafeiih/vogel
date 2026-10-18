@@ -254,3 +254,47 @@ func TestFakeStorage_ExpiresIsUnixSeconds(t *testing.T) {
 		t.Errorf("expires = %s, want %d", got, start.Add(5*time.Minute).Unix())
 	}
 }
+
+// The fake bucket keeps every object in process memory, so it caps their
+// total size: a write-authorized client cannot grow the process without
+// bound by uploading and never confirming. A PUT that would cross the cap
+// is refused with 507; replacing or deleting an object frees its share.
+func TestFakeStorage_TotalSizeCap(t *testing.T) {
+	if fakeMaxTotalBytes != 256<<20 {
+		t.Errorf("fakeMaxTotalBytes = %d, want 256 MiB", fakeMaxTotalBytes)
+	}
+	ctx := context.Background()
+	s := newFakeStorage(testFakeBase)
+	s.maxTotalBytes = 10
+
+	put := func(key, body string) int {
+		t.Helper()
+		raw, err := s.PresignedPutURL(ctx, key, "text/plain", time.Minute, storage.WithContentLength(int64(len(body))))
+		if err != nil {
+			t.Fatalf("PresignedPutURL: %v", err)
+		}
+		return sendSigned(t, s, http.MethodPut, raw, "text/plain", body).Code
+	}
+
+	if got := put("a", "123456"); got != http.StatusOK {
+		t.Fatalf("first PUT = %d, want 200", got)
+	}
+	if got := put("b", "123456"); got != http.StatusInsufficientStorage {
+		t.Errorf("PUT past the cap = %d, want 507", got)
+	}
+	if _, err := s.Download(ctx, "b"); !errors.Is(err, storage.ErrNotFound) {
+		t.Errorf("the refused PUT stored the object anyway (err %v)", err)
+	}
+	if got := put("a", "1234567890"); got != http.StatusOK {
+		t.Errorf("replacing an object within the cap = %d, want 200: its old size is freed", got)
+	}
+	if err := s.Upload(ctx, &storage.UploadInput{Key: "c", Body: strings.NewReader("x"), ContentType: "text/plain"}); err == nil {
+		t.Error("Upload past the cap succeeded, want an error")
+	}
+	if err := s.Delete(ctx, "a"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if got := put("b", "123456"); got != http.StatusOK {
+		t.Errorf("PUT after a delete freed space = %d, want 200", got)
+	}
+}

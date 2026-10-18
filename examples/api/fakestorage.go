@@ -33,6 +33,17 @@ const fakePresignExpiry = 15 * time.Minute
 // to sign a URL that lives longer, as the storage.Storage contract requires.
 const fakeMaxPresignExpiry = time.Hour
 
+// fakeMaxTotalBytes caps the total size of every object the fake keeps in
+// memory. Uploads nobody confirms are never swept here (a real bucket uses a
+// lifecycle rule, see README), so without a cap any write-authorized client
+// could grow this process's memory without bound by asking for upload URLs
+// and filling them.
+const fakeMaxTotalBytes = 256 << 20 // 256 MiB
+
+// errFakeBucketFull is returned when a write would take the fake past
+// maxTotalBytes; Handler answers it with 507 Insufficient Storage.
+var errFakeBucketFull = errors.New("fake storage: total size cap reached")
+
 // fakeObject is one stored object and the Content-Type it was stored with.
 type fakeObject struct {
 	data        []byte
@@ -53,8 +64,10 @@ type fakeObject struct {
 // match, the way S3 answers 403 to a request that breaks its SigV4
 // signature. The HMAC key is random per process, so URLs die on restart.
 type fakeStorage struct {
-	mu      sync.Mutex
-	objects map[string]fakeObject
+	mu            sync.Mutex
+	objects       map[string]fakeObject
+	totalBytes    int64
+	maxTotalBytes int64
 
 	baseURL string
 	secret  []byte
@@ -71,10 +84,11 @@ func newFakeStorage(baseURL string) *fakeStorage {
 	// crypto/rand.Read never returns an error on supported platforms.
 	_, _ = rand.Read(secret)
 	return &fakeStorage{
-		objects: make(map[string]fakeObject),
-		baseURL: strings.TrimRight(baseURL, "/"),
-		secret:  secret,
-		now:     time.Now,
+		objects:       make(map[string]fakeObject),
+		maxTotalBytes: fakeMaxTotalBytes,
+		baseURL:       strings.TrimRight(baseURL, "/"),
+		secret:        secret,
+		now:           time.Now,
 	}
 }
 
@@ -83,14 +97,25 @@ func (s *fakeStorage) Upload(_ context.Context, input *storage.UploadInput) erro
 	if err != nil {
 		return fmt.Errorf("fake storage: upload %q: %w", input.Key, err)
 	}
-	s.put(input.Key, data, input.ContentType)
+	if err := s.put(input.Key, data, input.ContentType); err != nil {
+		return fmt.Errorf("fake storage: upload %q: %w", input.Key, err)
+	}
 	return nil
 }
 
-func (s *fakeStorage) put(key string, data []byte, contentType string) {
+// put stores data under key, or returns errFakeBucketFull when the total
+// size, counting the replaced object's size as freed, would exceed
+// maxTotalBytes.
+func (s *fakeStorage) put(key string, data []byte, contentType string) error {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	total := s.totalBytes - int64(len(s.objects[key].data)) + int64(len(data))
+	if total > s.maxTotalBytes {
+		return errFakeBucketFull
+	}
 	s.objects[key] = fakeObject{data: data, contentType: contentType}
-	s.mu.Unlock()
+	s.totalBytes = total
+	return nil
 }
 
 func (s *fakeStorage) get(key string) (fakeObject, bool) {
@@ -116,6 +141,7 @@ func (s *fakeStorage) Download(_ context.Context, key string) (*storage.Download
 
 func (s *fakeStorage) Delete(_ context.Context, key string) error {
 	s.mu.Lock()
+	s.totalBytes -= int64(len(s.objects[key].data))
 	delete(s.objects, key)
 	s.mu.Unlock()
 	return nil
@@ -277,7 +303,10 @@ func (s *fakeStorage) servePut(w http.ResponseWriter, r *http.Request, key strin
 		http.Error(w, "body does not match the signed Content-Length", http.StatusForbidden)
 		return
 	}
-	s.put(key, data, contentType)
+	if err := s.put(key, data, contentType); err != nil {
+		http.Error(w, "bucket is full", http.StatusInsufficientStorage)
+		return
+	}
 	w.WriteHeader(http.StatusOK)
 }
 

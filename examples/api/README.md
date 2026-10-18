@@ -166,6 +166,16 @@ el handler responde `403` ante una firma inválida, una URL vencida o un
 `Content-Type`/`Content-Length` distinto del firmado. Con `storage/s3` esas
 rutas desaparecen y las URL apuntan al bucket, que debe seguir siendo privado.
 
+Una URL de subida que nadie confirma deja un objeto bajo
+`documents/{id}/uploads/` que ninguna fila referencia. El ejemplo no los barre:
+en producción la respuesta es una regla de ciclo de vida del bucket sobre ese
+prefijo (por ejemplo, expirar a 1 día), que cubre también las subidas
+abandonadas a mitad de camino. El bucket falso, que guarda todo en memoria,
+limita en cambio el tamaño total de sus objetos a 256 MiB
+(`fakeMaxTotalBytes`): un `PUT` que lo superaría responde `507`, así que un
+cliente con permiso de escritura no puede hacer crecer la memoria del proceso
+sin límite.
+
 ## Cambiar un fake por un adaptador real
 
 Ese es el punto de la arquitectura de puertos, y acá se ve en una línea:
