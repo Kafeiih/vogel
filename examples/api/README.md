@@ -143,8 +143,12 @@ directo al storage con una URL firmada, y la validación pesada corre en un job:
    resolvió la fila no hace nada ni se audita dos veces. Si la confirmación
    reemplazaba un archivo `ready`, un reemplazo aceptado borra ese archivo
    anterior, pero uno rechazado (inexistente o no permitido) **lo restaura**:
-   el documento vuelve a `ready` con su archivo y su tipo. Así, repetir una
-   confirmación con una `key` ya consumida no destruye el archivo validado.
+   el documento vuelve a `ready` con su archivo y su tipo, y la auditoría lo
+   registra como `document_restore_file`, no como una aceptación. Así,
+   repetir una confirmación con una `key` ya consumida no destruye el archivo
+   validado. El veredicto se graba antes de borrar lo que ya nadie usa (el
+   objeto de subida, el archivo anterior); si un borrado falla, el reintento
+   del job relee la fila y termina la limpieza.
    Si el job falla en todos sus intentos (por ejemplo, el storage no
    responde), el último intento no deja el documento `pending` para siempre:
    lo resuelve como un rechazo (restaura el archivo anterior o lo marca

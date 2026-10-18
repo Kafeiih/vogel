@@ -53,7 +53,9 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   archivo validado. El job borra el objeto de subida. Si la confirmación
   reemplazaba un archivo `ready`, un reemplazo aceptado borra el anterior y
   uno rechazado lo restaura (el documento vuelve a `ready` con su archivo y
-  su tipo), así que repetir una confirmación no destruye el archivo validado.
+  su tipo, auditado como `document_restore_file`), así que repetir una
+  confirmación no destruye el archivo validado. Si un borrado falla después
+  del veredicto, el reintento del job relee la fila y termina la limpieza.
   El veredicto sólo se escribe sobre un archivo `pending`: un reintento del
   job no cambia nada ni audita dos veces. Mientras una subida sigue
   `pending`, otra confirmación responde `409` sin encolar nada: se valida

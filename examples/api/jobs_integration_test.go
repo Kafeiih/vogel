@@ -116,10 +116,22 @@ func readObject(t *testing.T, h *DocumentHandler, key string) string {
 // every document_validate_file audit row for docID.
 func validationAudit(t *testing.T, h *DocumentHandler, docID uuid.UUID) [][2]string {
 	t.Helper()
+	return auditRows(t, h, docID, "document_validate_file")
+}
+
+// restoreAudit is validationAudit for document_restore_file rows: a
+// rejected replacement that put the previous file back.
+func restoreAudit(t *testing.T, h *DocumentHandler, docID uuid.UUID) [][2]string {
+	t.Helper()
+	return auditRows(t, h, docID, "document_restore_file")
+}
+
+func auditRows(t *testing.T, h *DocumentHandler, docID uuid.UUID, operation string) [][2]string {
+	t.Helper()
 	rows, err := h.pool.Query(context.Background(), `
 		SELECT source, after_snapshot->>'file_status' FROM audit_log
-		WHERE resource_type = 'document' AND resource_id = $1 AND operation_name = 'document_validate_file'
-		ORDER BY created_at`, docID.String())
+		WHERE resource_type = 'document' AND resource_id = $1 AND operation_name = $2
+		ORDER BY created_at`, docID.String(), operation)
 	require.NoError(t, err)
 	defer rows.Close()
 	var out [][2]string
@@ -243,7 +255,8 @@ func TestValidateUpload(t *testing.T) {
 			assert.Equal(t, "application/pdf", got.FileContentType)
 			assert.Equal(t, []string{first.StorageKey}, objectKeys(t, h, doc.ID), "the previous file is kept, the bad upload is gone")
 			assert.Equal(t, pdfBody, readObject(t, h, first.StorageKey))
-			assert.Equal(t, [][2]string{{"worker", FileStatusReady}, {"worker", FileStatusReady}}, validationAudit(t, h, doc.ID))
+			assert.Equal(t, [][2]string{{"worker", FileStatusReady}}, validationAudit(t, h, doc.ID), "only the first upload was accepted")
+			assert.Equal(t, [][2]string{{"worker", FileStatusReady}}, restoreAudit(t, h, doc.ID), "the rejection is audited as a restore")
 		})
 	}
 
@@ -373,7 +386,10 @@ func TestValidateUpload_LastAttemptResolvesTheRow(t *testing.T) {
 		got, gErr := h.store.GetByID(ctx, h.pool, doc.ID)
 		require.NoError(t, gErr)
 		assert.Equal(t, FileStatusRejected, got.FileStatus)
-		assert.Equal(t, []string{key}, fs.deleted, "the upload object is deleted, best effort")
+		require.NotEmpty(t, fs.deleted)
+		for _, k := range fs.deleted {
+			assert.Equal(t, key, k, "only the upload object is deleted, best effort")
+		}
 		assert.Equal(t, [][2]string{{"worker", FileStatusRejected}}, validationAudit(t, h, doc.ID))
 		assert.Contains(t, logs.String(), "level=ERROR")
 		assert.Contains(t, logs.String(), "document_id="+doc.ID.String())
@@ -398,7 +414,93 @@ func TestValidateUpload_LastAttemptResolvesTheRow(t *testing.T) {
 		assert.Equal(t, FileStatusReady, got.FileStatus)
 		assert.Equal(t, first.StorageKey, got.StorageKey)
 		assert.Equal(t, first.FileContentType, got.FileContentType)
-		assert.Equal(t, []string{secondKey}, fs.deleted, "only the upload is deleted; the previous file is kept")
-		assert.Equal(t, [][2]string{{"worker", FileStatusReady}, {"worker", FileStatusReady}}, validationAudit(t, h, first.ID))
+		require.NotEmpty(t, fs.deleted)
+		for _, k := range fs.deleted {
+			assert.Equal(t, secondKey, k, "only the upload is deleted; the previous file is kept")
+		}
+		assert.Equal(t, [][2]string{{"worker", FileStatusReady}}, validationAudit(t, h, first.ID))
+		assert.Equal(t, [][2]string{{"worker", FileStatusReady}}, restoreAudit(t, h, first.ID))
 	})
+}
+
+// flakyDeleteStorage fails the first Delete of one key, the way a storage
+// outage between two calls would, and records every Delete it is asked for.
+type flakyDeleteStorage struct {
+	*fakeStorage
+	failKey string
+	failed  bool
+	deleted []string
+}
+
+func (f *flakyDeleteStorage) Delete(ctx context.Context, key string) error {
+	f.deleted = append(f.deleted, key)
+	if key == f.failKey && !f.failed {
+		f.failed = true
+		return errors.New("storage unavailable")
+	}
+	return f.fakeStorage.Delete(ctx, key)
+}
+
+// The job's verdict commits before it deletes the objects nothing
+// references any more, so a failed delete makes River retry a job whose row
+// is already resolved. The retry must finish that cleanup, and audit
+// nothing.
+func TestValidateUpload_RetryFinishesCleanup(t *testing.T) {
+	h, _ := newIntegrationHandler(t)
+	ctx := context.Background()
+	first := readyFile(t, h)
+	secondKey := uploadKeyPrefix(first.ID) + uuid.NewString()
+	putObject(t, h, secondKey, pdfBody)
+	require.NoError(t, h.store.AttachPendingFile(ctx, h.pool, first.ID, secondKey))
+
+	flaky := &flakyDeleteStorage{fakeStorage: h.storage.(*fakeStorage), failKey: first.StorageKey}
+	w := newValidateWorker(h)
+	w.storage = flaky
+	args := ValidateUploadArgs{
+		DocumentID: first.ID.String(), Key: secondKey,
+		PreviousKey: first.StorageKey, PreviousContentType: first.FileContentType,
+	}
+
+	err := w.Work(ctx, validateJob(args))
+	require.Error(t, err, "the failed delete of the previous file is reported for a retry")
+	afterFirst, gErr := h.store.GetByID(ctx, h.pool, first.ID)
+	require.NoError(t, gErr)
+	assert.Equal(t, FileStatusReady, afterFirst.FileStatus)
+	require.True(t, isFileKey(first.ID, afterFirst.StorageKey))
+	assert.NotEqual(t, first.StorageKey, afterFirst.StorageKey, "the row is already on the new final key")
+
+	require.NoError(t, w.Work(ctx, validateJob(args)), "the retry succeeds")
+
+	afterRetry, gErr := h.store.GetByID(ctx, h.pool, first.ID)
+	require.NoError(t, gErr)
+	assert.Equal(t, afterFirst, afterRetry, "the retry does not touch the row")
+	assert.Equal(t, []string{afterFirst.StorageKey}, objectKeys(t, h, first.ID), "the previous file and the upload are gone")
+	assert.Equal(t, [][2]string{{"worker", FileStatusReady}, {"worker", FileStatusReady}}, validationAudit(t, h, first.ID),
+		"one row for the first file, one for its replacement: the retry adds none")
+}
+
+// A job that fails to record its verdict may still have committed it (the
+// error can arrive after the commit). Its final copy is deleted only if the
+// row does not reference it; the next run sorts out the rest.
+func TestValidateUpload_FinishErrorKeepsAReferencedCopy(t *testing.T) {
+	h, _ := newIntegrationHandler(t)
+	ctx := context.Background()
+	pdf := pdfBody
+	doc, key := pendingUpload(t, h, &pdf)
+	w := newValidateWorker(h)
+
+	// keepIfReferenced is what the job runs when finish errors: here the
+	// row points at the copy, as if the commit had landed.
+	finalKey := fileKeyPrefix(doc.ID) + uuid.NewString()
+	putObject(t, h, finalKey, pdf)
+	_, err := h.store.ResolveUpload(ctx, h.pool, doc.ID, key, finalKey, FileStatusReady, "application/pdf")
+	require.NoError(t, err)
+
+	w.deleteCopyUnlessReferenced(ctx, doc.ID, finalKey)
+	assert.Contains(t, objectKeys(t, h, doc.ID), finalKey, "a copy the row references is kept")
+
+	orphan := fileKeyPrefix(doc.ID) + uuid.NewString()
+	putObject(t, h, orphan, pdf)
+	w.deleteCopyUnlessReferenced(ctx, doc.ID, orphan)
+	assert.NotContains(t, objectKeys(t, h, doc.ID), orphan, "a copy nothing references is deleted")
 }
