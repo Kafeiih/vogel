@@ -78,16 +78,18 @@ func (d *Document) AuditRepr() string {
 // AuditSnapshot implements audit.Auditable.
 func (d *Document) AuditSnapshot() map[string]any {
 	return map[string]any{
-		"id":                   d.ID.String(),
-		"title":                d.Title,
-		"kind":                 d.Kind,
-		"issued_at":            d.IssuedAt,
-		"storage_key":          d.StorageKey,
-		"file_status":          d.FileStatus,
-		"file_content_type":    d.FileContentType,
-		"previous_storage_key": d.PreviousStorageKey,
-		"owner_id":             d.OwnerID,
-		"created_at":           d.CreatedAt,
+		"id":                    d.ID.String(),
+		"title":                 d.Title,
+		"kind":                  d.Kind,
+		"issued_at":             d.IssuedAt,
+		"storage_key":           d.StorageKey,
+		"file_status":           d.FileStatus,
+		"file_content_type":     d.FileContentType,
+		"file_pending_since":    d.FilePendingSince,
+		"previous_storage_key":  d.PreviousStorageKey,
+		"previous_content_type": d.PreviousContentType,
+		"owner_id":              d.OwnerID,
+		"created_at":            d.CreatedAt,
 	}
 }
 

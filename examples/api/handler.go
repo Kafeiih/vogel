@@ -744,7 +744,11 @@ func (h *DocumentHandler) AttachFile(w http.ResponseWriter, r *http.Request) {
 		// only cleans up its own objects.
 		takeover := false
 		if before.FileStatus == FileStatusPending {
-			if before.FilePendingSince == nil || time.Since(*before.FilePendingSince) < stalePendingAfter {
+			stale, err := h.store.PendingStale(txCtx, db, id, stalePendingAfter)
+			if err != nil {
+				return err
+			}
+			if !stale {
 				return errUploadPending
 			}
 			takeover = true

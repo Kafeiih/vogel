@@ -338,12 +338,12 @@ func rejectVerdict(before *Document) verdict {
 	}
 }
 
-// finish records the verdict decide builds for uploadKey on document id, in
+// finish records the verdict buildVerdict builds for uploadKey on document id, in
 // one transaction with its audit entry and, when the verdict retires a
 // file, the delete_object job for it; it reports whether it did. A document
 // deleted meanwhile, or one that is no longer pending on uploadKey, is left
 // alone: nothing is written, enqueued or audited.
-func (w *ValidateUploadWorker) finish(ctx context.Context, id uuid.UUID, uploadKey string, decide verdictFor) (bool, error) {
+func (w *ValidateUploadWorker) finish(ctx context.Context, id uuid.UUID, uploadKey string, buildVerdict verdictFor) (bool, error) {
 	applied := false
 	label := "verdict"
 	err := w.tx.WithTx(ctx, func(txCtx context.Context) error {
@@ -357,7 +357,7 @@ func (w *ValidateUploadWorker) finish(ctx context.Context, id uuid.UUID, uploadK
 		if err != nil {
 			return err
 		}
-		v := decide(before)
+		v := buildVerdict(before)
 		label = v.label
 
 		updated, err := w.store.ResolveUpload(txCtx, db, id, uploadKey, v.storageKey, v.status, v.contentType)

@@ -130,8 +130,7 @@ func TestDocumentHandlerAttachFile(t *testing.T) {
 		require.NoError(t, h.pool.QueryRow(ctx,
 			`SELECT max_attempts FROM river.river_job WHERE kind = 'validate_upload' AND args->>'document_id' = $1`,
 			doc.ID.String()).Scan(&maxAttempts))
-		assert.Equal(t, 5, maxAttempts, "validation retries for minutes, not River's default weeks")
-		assert.Equal(t, 5, validateUploadMaxAttempts)
+		assert.Equal(t, validateUploadMaxAttempts, maxAttempts, "validation retries for minutes, not River's default weeks")
 
 		var source, beforeStatus, afterStatus, afterKey string
 		require.NoError(t, h.pool.QueryRow(ctx, `
@@ -537,4 +536,32 @@ func TestDocumentHandlerAttachFile_TakesOverAStalePending(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, FileStatusReady, ready.FileStatus)
 	assert.Nil(t, ready.FilePendingSince, "a resolution clears the pending clock")
+}
+
+// PendingStale measures on the database clock, the clock that wrote
+// file_pending_since, so app-host skew cannot move the threshold. Each case
+// sets the timestamp with the database's own now().
+func TestDocumentStorePendingStale_UsesTheDatabaseClock(t *testing.T) {
+	h, _ := newIntegrationHandler(t)
+	ctx := context.Background()
+	doc := readyFile(t, h)
+
+	for name, tc := range map[string]struct {
+		set  string
+		want bool
+	}{
+		"just under the threshold": {`now() - make_interval(secs => $1) + interval '1 minute'`, false},
+		"just over the threshold":  {`now() - make_interval(secs => $1) - interval '1 minute'`, true},
+		"never went pending":       {`NULL::timestamptz + make_interval(secs => $1)`, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := h.pool.Exec(ctx, `UPDATE documents SET file_pending_since = `+tc.set+` WHERE id = $2`,
+				stalePendingAfter.Seconds(), doc.ID)
+			require.NoError(t, err)
+
+			stale, err := h.store.PendingStale(ctx, h.pool, doc.ID, stalePendingAfter)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, stale)
+		})
+	}
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -133,6 +134,25 @@ func (s *DocumentStore) GetByIDForUpdate(ctx context.Context, db pgxtx.DBTX, id 
 		return nil, fmt.Errorf("document store: get %s for update: %w", id, err)
 	}
 	return &d, nil
+}
+
+// PendingStale reports whether document id has been pending for longer
+// than after. It compares on the database clock, the same clock that wrote
+// file_pending_since (now() in AttachPendingFile), so skew between the
+// application host and the database cannot move the threshold. A row with
+// no file_pending_since is not stale.
+func (s *DocumentStore) PendingStale(ctx context.Context, db pgxtx.DBTX, id uuid.UUID, after time.Duration) (bool, error) {
+	var stale bool
+	err := db.QueryRow(ctx, `
+		SELECT coalesce(file_pending_since < now() - make_interval(secs => $2), false)
+		FROM documents WHERE id = $1`, id, after.Seconds()).Scan(&stale)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, fmt.Errorf("document store: pending stale %s: %w", id, ErrDocumentNotFound)
+		}
+		return false, fmt.Errorf("document store: pending stale %s: %w", id, err)
+	}
+	return stale, nil
 }
 
 // List returns a page of documents ordered by created_at descending, plus
