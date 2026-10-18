@@ -120,12 +120,12 @@ func (q *RiverQueue) Stop(ctx context.Context) error {
 //
 // Logger and the request ID middleware are set in both modes: River's own
 // log lines go through the app's logger instead of River's default text
-// handler, and the request ID is written by the enqueuing process and read by
+// handler, from warn up as before (see riverLogger), and the request ID is written by the enqueuing process and read by
 // the working one (see requestIDMiddleware).
 func buildRiverConfig(cfg Config, workers *river.Workers, periodicJobs []*river.PeriodicJob, logger *slog.Logger) *river.Config {
 	rc := &river.Config{
 		Schema:     cfg.Schema,
-		Logger:     logger,
+		Logger:     riverLogger(logger),
 		Middleware: []rivertype.Middleware{&requestIDMiddleware{}},
 	}
 	if workers != nil {

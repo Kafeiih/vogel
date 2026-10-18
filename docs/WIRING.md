@@ -78,9 +78,11 @@ metadata del job (clave `vogel_request_id`, sin tocar los args) y, al
 procesarlo, lo devuelve al contexto con `reqctx.WithRequestID`. Así los logs
 del worker y las filas de `audit_log` que graba (con `audit.SourceWorker`)
 llevan el `request_id` de la request que encoló el job. Un job encolado fuera
-de una request (uno periódico, una CLI) no lleva ninguno. La misma cola pasa
-el logger de la app a River, así que las líneas de River salen con el mismo
-formato que las de la app.
+de una request (uno periódico, una CLI) no lleva ninguno, y un
+`vogel_request_id` puesto a mano en `InsertOpts.Metadata` gana sobre el del
+contexto. La misma cola pasa el logger de la app a River, así que las líneas
+de River salen con el mismo formato que las de la app, pero sólo desde
+`WARN`: es el piso del logger propio de River, que por debajo es muy verboso.
 
 `audit.Recorder.Record` lee el mismo request ID de `reqctx`, en el mismo
 paso incondicional en el que lee al actor desde `auth.FromContext` (ver la

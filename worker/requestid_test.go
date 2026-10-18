@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -132,7 +133,7 @@ func TestBuildRiverConfig_InstallsRequestIDMiddlewareAndLogger(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			rc := buildRiverConfig(Config{Schema: "river"}, workers, nil, logger)
 
-			assert.Same(t, logger, rc.Logger)
+			require.NotNil(t, rc.Logger)
 			require.Len(t, rc.Middleware, 1)
 			assert.IsType(t, &requestIDMiddleware{}, rc.Middleware[0])
 		})
@@ -148,4 +149,52 @@ func TestBuildRiverConfig_AcceptedByRiverClient(t *testing.T) {
 
 	_, err := river.NewClient(riverpgxv5.New(nil), buildRiverConfig(Config{Schema: "river"}, nil, nil, logger))
 	require.NoError(t, err)
+}
+
+// River logs a lot at info and debug. Through the app's handler it keeps the
+// app's format but only from warn up, the level River's own default logger
+// used, so wiring the logger in does not make a worker noisier.
+func TestBuildRiverConfig_RiverLoggerStartsAtWarn(t *testing.T) {
+	var buf bytes.Buffer
+	appLogger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	rc := buildRiverConfig(Config{Schema: "river"}, nil, nil, appLogger)
+	rc.Logger.Debug("river debug")
+	rc.Logger.Info("river info")
+	rc.Logger.Warn("river warn")
+	rc.Logger.Error("river error")
+
+	out := buf.String()
+	assert.NotContains(t, out, "river debug")
+	assert.NotContains(t, out, "river info")
+	assert.Contains(t, out, "river warn")
+	assert.Contains(t, out, "river error")
+}
+
+// An app logger set above warn keeps its own, higher floor.
+func TestBuildRiverConfig_RiverLoggerKeepsHigherAppLevel(t *testing.T) {
+	var buf bytes.Buffer
+	appLogger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	rc := buildRiverConfig(Config{Schema: "river"}, nil, nil, appLogger)
+	rc.Logger.Warn("river warn")
+
+	assert.Empty(t, buf.String())
+}
+
+// With no logger River keeps its own default.
+func TestBuildRiverConfig_NilLogger_LeavesRiverDefault(t *testing.T) {
+	rc := buildRiverConfig(Config{Schema: "river"}, nil, nil, nil)
+	assert.Nil(t, rc.Logger)
+}
+
+// A request ID the caller put in InsertOpts.Metadata wins over the one in
+// the context, as an explicit value does in logger.
+func TestRequestIDMiddleware_Insert_ExplicitMetadataWins(t *testing.T) {
+	ctx := reqctx.WithRequestID(context.Background(), "from-ctx")
+	p := &rivertype.JobInsertParams{Metadata: []byte(`{"vogel_request_id":"explicit"}`)}
+
+	insert(t, ctx, p)
+
+	assert.Equal(t, "explicit", metadataOf(t, p)[requestIDMetadataKey])
 }

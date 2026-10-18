@@ -253,7 +253,8 @@ func runServer(migrateFirst bool) error {
 	appLogger := logger.NewDefault(cfg.App.Env).With("component", "api")
 	// Installed as the default too, so package-level slog calls, River's
 	// migrations and libraries logging through slog.Default() share its JSON
-	// format, component attribute and request_id from context.
+	// format, component attribute and request_id from context. It also routes
+	// the standard log package through it, as INFO records.
 	slog.SetDefault(appLogger.Logger)
 	appLogger.Info("starting application",
 		"version", cfg.App.Version,

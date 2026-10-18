@@ -19,14 +19,18 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   metadata del job (`vogel_request_id`) y lo devuelve al contexto del worker.
   Los logs del worker y las filas de `audit_log` grabadas con
   `audit.SourceWorker` llevan ahora el `request_id` de la request de origen,
-  donde antes quedaba `NULL`. River recibe además el logger de la app en vez
-  de usar su propio handler de texto.
+  donde antes quedaba `NULL`. Un `vogel_request_id` puesto a mano en
+  `InsertOpts.Metadata` se respeta. River recibe además el logger de la app
+  en vez de usar su propio handler de texto, desde `WARN` hacia arriba como
+  hasta ahora: sus líneas de info y debug siguen sin salir.
 - **`examples/boilerplate`: el logger de la app es también `slog.Default()`.**
   Los binarios `api` y `worker` lo instalan con `slog.SetDefault`, así que los
   jobs que loguean con `slog.InfoContext`, las migraciones de River y las
   librerías que usan `slog.Default()` salen en el mismo formato y con
   `request_id`. Cada línea lleva además `component` (`api` o `worker`) para
-  filtrar por binario.
+  filtrar por binario. `slog.SetDefault` también redirige el paquete `log` de
+  la biblioteca estándar: `log.Printf` y `log.Fatal` salen como registros
+  JSON de nivel `INFO` en vez de texto plano.
 
 ## [0.10.1] — 2026-10-16
 

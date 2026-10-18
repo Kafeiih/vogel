@@ -53,13 +53,19 @@ func (m *requestIDMiddleware) Work(ctx context.Context, job *rivertype.JobRow, d
 }
 
 // withRequestID returns metadata with the request ID added. Metadata that is
-// not a JSON object is returned unchanged.
+// not a JSON object, or that already carries the key (set explicitly through
+// river.InsertOpts.Metadata), is returned unchanged: an explicit value wins,
+// as it does in logger.
 func withRequestID(metadata []byte, id string) []byte {
 	fields := map[string]json.RawMessage{}
 	if len(metadata) > 0 {
 		if err := json.Unmarshal(metadata, &fields); err != nil || fields == nil {
 			return metadata
 		}
+	}
+
+	if _, ok := fields[requestIDMetadataKey]; ok {
+		return metadata
 	}
 
 	encodedID, err := json.Marshal(id)
