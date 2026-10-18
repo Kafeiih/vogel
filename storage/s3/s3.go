@@ -6,6 +6,7 @@ package s3
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -16,6 +17,7 @@ import (
 	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 
 	"github.com/kafeiih/vogel/storage"
 )
@@ -216,6 +218,10 @@ func (s *S3Storage) Download(ctx context.Context, key string) (*storage.Download
 		Key:    aws.String(key),
 	})
 	if err != nil {
+		var noSuchKey *types.NoSuchKey
+		if errors.As(err, &noSuchKey) {
+			return nil, fmt.Errorf("storage: download %q: %w", key, storage.ErrNotFound)
+		}
 		return nil, fmt.Errorf("storage: download %q: %w", key, err)
 	}
 

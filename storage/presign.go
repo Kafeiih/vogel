@@ -174,6 +174,9 @@ func WithResponseContentType(contentType string) PresignGetOption {
 	}
 }
 
+// ErrNotFound is wrapped by Download when the key has no object.
+var ErrNotFound = errors.New("storage: object not found")
+
 // ErrPresignExpiryTooLong is returned by a presign method when the requested
 // expiry exceeds the adapter's maximum. A presigned URL is a bearer
 // credential that nothing can revoke before it expires, so adapters refuse to

@@ -49,7 +49,9 @@ type Storage interface {
 	Upload(ctx context.Context, input *UploadInput) error
 
 	// Download retrieves a file from the configured bucket.
-	// Caller MUST close the returned Body when done.
+	// Caller MUST close the returned Body when done. A key with no object
+	// returns an error wrapping ErrNotFound, so a caller can tell a missing
+	// object from a transient failure without importing the adapter's SDK.
 	Download(ctx context.Context, key string) (*DownloadOutput, error)
 
 	// Delete removes a file from the configured bucket.
