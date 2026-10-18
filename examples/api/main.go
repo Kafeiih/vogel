@@ -229,7 +229,18 @@ func run() error {
 		logger:   log.Logger,
 	}
 
-	queue, err := worker.NewRiverQueue(pool, RegisterWorkers(notifyWorker), worker.Config{
+	// validate_upload inspects each object a client uploaded with a
+	// presigned URL, off the HTTP path -- see ValidateUploadWorker.
+	validateWorker := &ValidateUploadWorker{
+		storage:  fileStorage,
+		store:    documentStore,
+		recorder: recorder,
+		tx:       txManager,
+		pool:     pool,
+		logger:   log.Logger,
+	}
+
+	queue, err := worker.NewRiverQueue(pool, RegisterWorkers(notifyWorker, validateWorker), worker.Config{
 		Schema:            cfg.RiverSchema,
 		DefaultMaxWorkers: 10,
 	}, log.Logger)
