@@ -13,8 +13,11 @@ import (
 // Usage:
 //
 //	reg, err := NewStorageRegistry(cfgs, logger)
-//	publicStore := reg.Get("public")   // → AWS S3
-//	privateStore := reg.Get("private") // → MinIO
+//	assets := reg.Get("assets")       // → AWS S3
+//	documents := reg.Get("documents") // → MinIO
+//
+// Names describe what a store holds, not who can read it: every bucket stays
+// private and is reached through presigned URLs.
 type StorageRegistry struct {
 	storages map[string]domainStorage.Storage
 }

@@ -119,7 +119,10 @@ construye la imagen del PDP y prueba que las sirve (ver `cerbos/README.md`).
 > Worker: `WORKER_SCHEMA`, `WORKER_DEFAULT_MAX_WORKERS`, `WORKER_QUEUES`.
 <!-- vogel:component worker end -->
 <!-- vogel:component storage begin -->
-> Storage: `STORAGE_CONFIGS` (+ `STORAGE_<NOMBRE>_*`).
+> Storage: `STORAGE_CONFIGS` (+ `STORAGE_<NOMBRE>_*`). Los buckets son
+> privados (Block Public Access activado) y los clientes acceden con URLs
+> firmadas. `STORAGE_<NOMBRE>_PRESIGN_EXPIRY` (default `15m`) debe ser mayor
+> que cero y como máximo `1h`: un valor inválido impide arrancar.
 <!-- vogel:component storage end -->
 <!-- vogel:component notification begin -->
 > Notificaciones: `NOTIFICATION_PROVIDER`, `NOTIFICATION_DEFAULT_FROM`,

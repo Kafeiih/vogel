@@ -355,13 +355,16 @@ func runServer(migrateFirst bool) error {
 	// vogel:component storage begin
 	// S3-compatible storage (optional — only if STORAGE_CONFIGS is set).
 	//
+	// Buckets stay private: clients upload and download through presigned
+	// URLs, so file bytes never pass through this API.
+	//
 	// Usage in handlers:
-	//   publicStore := storageReg.Get("public")
-	//   privateStore := storageReg.Get("private")
-	//   err := publicStore.Upload(ctx, &storage.UploadInput{Key: "assets/logo.png", Body: f, ContentType: "image/png"})
-	//   // 0 expiry = the backend's PresignExpiry; the URL serves the object as an
-	//   // attachment unless you pass storage.WithContentDisposition("inline").
-	//   url, err := privateStore.PresignedGetURL(ctx, "docs/licencia.pdf", 0, storage.AsAttachment("licencia.pdf"))
+	//   docs := storageReg.Get("documents")
+	//   // 0 expiry = the backend's PresignExpiry (STORAGE_<NAME>_PRESIGN_EXPIRY).
+	//   putURL, err := docs.PresignedPutURL(ctx, "docs/licencia.pdf", "application/pdf", 0)
+	//   // The URL serves the object as an attachment unless you pass
+	//   // storage.WithContentDisposition("inline").
+	//   getURL, err := docs.PresignedGetURL(ctx, "docs/licencia.pdf", 0, storage.AsAttachment("licencia.pdf"))
 	if len(cfg.Storages) > 0 {
 		storageReg, err := s3.NewStorageRegistry(cfg.Storages, appLogger.Logger)
 		if err != nil {
