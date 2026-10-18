@@ -29,9 +29,14 @@ exportadas (`requestIDKey`, `requestInfoKey`, con `WithRequestID` /
 `reqctx`, que no sabe que `httpx` existe.
 
 `httpx/middleware.RequestContext` es el ÚNICO escritor de estas tres claves.
-No genera un request ID propio: lo lee del middleware `RequestID` de chi
-(`chimw.GetReqID`), así que ese middleware de chi tiene que estar montado
-más arriba en la cadena.
+No genera un request ID propio: lo lee del que dejó `vmw.RequestID` en
+`reqctx`, así que ese middleware tiene que estar montado más arriba en la
+cadena. Si no lo encuentra, cae a `chimw.GetReqID`, de modo que un
+consumidor que todavía monta `chimw.RequestID` sigue funcionando; pero el de
+chi adopta tal cual un `X-Request-Id` enviado por el cliente, así que con él
+es el cliente quien elige el `request_id` de logs, filas de `audit_log` y
+respuestas de error. `vmw.RequestID` siempre genera uno propio y guarda el
+del cliente aparte (`reqctx.WithClientRequestID`), sólo para correlación.
 
 ```go
 // httpx/middleware/requestcontext.go
@@ -101,7 +106,7 @@ Orden correcto (ver también `examples/api/router.go`):
 ```go
 r := chi.NewRouter()
 
-r.Use(chimw.RequestID)   // genera/propaga el request ID upstream
+r.Use(vmw.RequestID)      // genera el request ID; nunca adopta el del cliente
 r.Use(vmw.RequestContext) // el único escritor de reqctx: request ID, IP, User-Agent
 // todo middleware y handler montado después de esta línea puede leer reqctx
 ```
@@ -589,7 +594,7 @@ ya existe, es seguro: `EnsureSchema` → `NewRiverQueue` → `queue.Migrate` →
   de datos — todo log y toda fila de `audit_log` de esa request (o del
   proceso entero, si falta por completo) queda con `request_id` vacío o
   `NULL`, indefinidamente, sin ningún error que lo señale — exactamente el
-  bug de origen del punto 16 del README. Arreglo: `chimw.RequestID` →
+  bug de origen del punto 16 del README. Arreglo: `vmw.RequestID` →
   `vmw.RequestContext` antes que cualquier middleware o handler que loguee
   o audite.
 

@@ -177,7 +177,7 @@ Lista de verificación para un servicio nuevo:
 
 | Riesgo | Por qué se acepta | Cómo acotarlo |
 |---|---|---|
-| **Modo JWT local no puede revocar**: un token sigue válido hasta su `exp` | Es el modo por defecto, sin una llamada a Zitadel por request | Tokens de vida corta en Zitadel, o activar introspección |
+| **Modo JWT local no puede revocar**: un token sigue válido hasta su `exp`; con el valor por defecto del boilerplate (`ZITADEL_MAX_TOKEN_LIFETIME=12h`) esa ventana puede llegar a 12 horas | Es el modo por defecto, sin una llamada a Zitadel por request | Tokens de vida corta en Zitadel (5–15 min) y bajar `ZITADEL_MAX_TOKEN_LIFETIME` a juego, o activar introspección |
 | **Ventana de caché de introspección**: un token revocado se acepta hasta `CacheTTL` | Evita una llamada a Zitadel por request | Bajar `CacheTTL`; nunca supera el `exp` del token |
 | Sin caché negativa en introspección | Cachear rechazos podría bloquear un token recién emitido | Rate limit delante |
 | **COOP y CORP `same-origin` por defecto** pueden romper integraciones legítimas entre orígenes (popups OAuth, recursos embebidos) | Lo seguro es el valor por defecto | El consumidor los relaja en la ruta puntual |
