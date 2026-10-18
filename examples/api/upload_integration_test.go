@@ -481,3 +481,60 @@ func waitForLockWaiter(t *testing.T, h *DocumentHandler, holderPID int) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+// A pending upload whose job died (a panic, an operator cancel, a database
+// outage during its last attempt) would block confirms forever. Once the row
+// has been pending longer than stalePendingAfter, well past the bounded
+// retry window, a confirm takes it over: the abandoned upload no longer
+// affects the row, and the previous file the row held is kept.
+func TestDocumentHandlerAttachFile_TakesOverAStalePending(t *testing.T) {
+	h, _ := newIntegrationHandler(t)
+	ctx := context.Background()
+	first := readyFile(t, h)
+	doc := first
+	keyA := uploadKeyPrefix(doc.ID) + uuid.NewString()
+	keyB := uploadKeyPrefix(doc.ID) + uuid.NewString()
+	putObject(t, h, keyA, pdfBody)
+	putObject(t, h, keyB, pdfBody)
+
+	rec := callHandler(h.AttachFile, http.MethodPost, doc.ID.String(), `{"key":"`+keyA+`"}`)
+	require.Equal(t, http.StatusAccepted, rec.Code, "body %s", rec.Body.String())
+	pendingA, err := h.store.GetByID(ctx, h.pool, doc.ID)
+	require.NoError(t, err)
+	require.NotNil(t, pendingA.FilePendingSince, "a confirm records when the row went pending")
+	jobA := latestValidateArgs(t, h, doc.ID)
+
+	rec = callHandler(h.AttachFile, http.MethodPost, doc.ID.String(), `{"key":"`+keyB+`"}`)
+	require.Equal(t, http.StatusConflict, rec.Code, "a fresh pending upload still blocks: %s", rec.Body.String())
+
+	_, err = h.pool.Exec(ctx, `UPDATE documents SET file_pending_since = now() - $1::interval WHERE id = $2`,
+		(stalePendingAfter + time.Minute).String(), doc.ID)
+	require.NoError(t, err)
+
+	rec = callHandler(h.AttachFile, http.MethodPost, doc.ID.String(), `{"key":"`+keyB+`"}`)
+
+	require.Equal(t, http.StatusAccepted, rec.Code, "a stale pending upload is taken over: %s", rec.Body.String())
+	pendingB, err := h.store.GetByID(ctx, h.pool, doc.ID)
+	require.NoError(t, err)
+	assert.Equal(t, keyB, pendingB.StorageKey)
+	assert.Equal(t, FileStatusPending, pendingB.FileStatus)
+	require.NotNil(t, pendingB.FilePendingSince)
+	assert.WithinDuration(t, time.Now(), *pendingB.FilePendingSince, time.Minute, "the takeover restarts the clock")
+	assert.Equal(t, first.StorageKey, pendingB.PreviousStorageKey, "the previous file the row held is kept")
+	assert.Equal(t, first.FileContentType, pendingB.PreviousContentType)
+
+	// The abandoned job, if it ever runs, finds the row moved on: it changes
+	// nothing and only cleans up its own objects.
+	runValidate(t, h, jobA)
+	afterA, err := h.store.GetByID(ctx, h.pool, doc.ID)
+	require.NoError(t, err)
+	assert.Equal(t, pendingB, afterA)
+	assert.ElementsMatch(t, []string{first.StorageKey, keyB}, objectKeys(t, h, doc.ID),
+		"A's upload and any copy it made are gone; the previous file and B's upload remain")
+
+	runValidate(t, h, latestValidateArgs(t, h, doc.ID))
+	ready, err := h.store.GetByID(ctx, h.pool, doc.ID)
+	require.NoError(t, err)
+	assert.Equal(t, FileStatusReady, ready.FileStatus)
+	assert.Nil(t, ready.FilePendingSince, "a resolution clears the pending clock")
+}

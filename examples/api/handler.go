@@ -664,6 +664,13 @@ func (h *DocumentHandler) UploadURL(w http.ResponseWriter, r *http.Request) {
 // the document's previous upload has not been validated yet (409).
 var errUploadPending = errors.New("previous upload still pending")
 
+// stalePendingAfter is how long a document may stay pending before a confirm
+// treats its upload as abandoned and takes the row over. It sits well above
+// validate_upload's bounded retry window (about 12 minutes, see
+// validateUploadMaxAttempts), so a job that is merely retrying is never
+// overtaken.
+const stalePendingAfter = time.Hour
+
 type attachFileRequest struct {
 	Key string `json:"key"`
 }
@@ -727,20 +734,33 @@ func (h *DocumentHandler) AttachFile(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
-		// One upload is validated at a time. A second confirm now would
-		// hand its job no previous file (the row holds the first upload's
-		// key), so a ready file the first job is about to restore or
-		// replace could end up referenced by nothing.
+		// One upload is validated at a time: while one is pending, its
+		// job owns the row's file, and a second confirm answers 409. A row
+		// pending for longer than stalePendingAfter -- far past the bounded
+		// retries of validate_upload -- has lost its job (a panic, an
+		// operator cancel, a database outage on the last attempt) and is
+		// taken over instead, keeping the previous file it holds. The
+		// abandoned job, should it still run, finds the row moved on and
+		// only cleans up its own objects.
+		takeover := false
 		if before.FileStatus == FileStatusPending {
-			return errUploadPending
+			if before.FilePendingSince == nil || time.Since(*before.FilePendingSince) < stalePendingAfter {
+				return errUploadPending
+			}
+			takeover = true
+			h.logger.WarnContext(txCtx, "taking over a stale pending upload",
+				"document_id", id, "abandoned_key", before.StorageKey, "pending_since", *before.FilePendingSince)
 		}
 		// A ready file stays on the row as the previous file, with its type:
 		// downloads keep serving it while this upload is validated, and the
 		// job puts it back if this upload is rejected (or retires it if
 		// this upload replaces it). A rejected or empty row has none.
 		previousKey, previousContentType := "", ""
-		if before.FileStatus == FileStatusReady && before.StorageKey != "" {
+		switch {
+		case before.FileStatus == FileStatusReady && before.StorageKey != "":
 			previousKey, previousContentType = before.StorageKey, before.FileContentType
+		case takeover:
+			previousKey, previousContentType = before.PreviousStorageKey, before.PreviousContentType
 		}
 
 		after = *before
@@ -749,6 +769,8 @@ func (h *DocumentHandler) AttachFile(w http.ResponseWriter, r *http.Request) {
 		after.FileContentType = ""
 		after.PreviousStorageKey = previousKey
 		after.PreviousContentType = previousContentType
+		pendingSince := time.Now() // the row records the database's now()
+		after.FilePendingSince = &pendingSince
 
 		if err := h.store.AttachPendingFile(txCtx, db, id, req.Key, previousKey, previousContentType); err != nil {
 			return err

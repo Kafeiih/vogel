@@ -382,6 +382,7 @@ func (w *ValidateUploadWorker) finish(ctx context.Context, id uuid.UUID, uploadK
 		after.StorageKey = v.storageKey
 		after.FileStatus = v.status
 		after.FileContentType = v.contentType
+		after.FilePendingSince = nil
 		after.PreviousStorageKey = ""
 		after.PreviousContentType = ""
 

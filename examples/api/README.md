@@ -131,7 +131,13 @@ directo al storage con una URL firmada, y la validación pesada corre en un job:
    `document_attach_file`. Responde `202`. Se valida una subida por vez:
    mientras la anterior siga `pending`, otra confirmación responde `409`
    ("a previous upload is still being validated") sin cambiar nada, y el
-   cliente reintenta cuando el job la resolvió.
+   cliente reintenta cuando el job la resolvió. La fila guarda desde cuándo
+   está `pending` (`file_pending_since`); si lleva más de una hora
+   (`stalePendingAfter`, muy por encima de los ~12 minutos de reintentos del
+   job), su job se perdió (un panic, una cancelación, la base caída en el
+   último intento) y la confirmación la toma: conserva el archivo anterior
+   que tuviera, y el job abandonado, si llega a correr, encuentra la fila
+   cambiada y sólo limpia sus propios objetos.
 4. `validate_upload` (`ValidateUploadWorker` en `jobs.go`) descarga el
    objeto y detecta el tipo por el contenido con `storage.SniffContentType`,
    leyendo sólo los primeros bytes. Si el objeto no existe, el archivo queda

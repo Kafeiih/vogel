@@ -50,6 +50,8 @@ type Document struct {
 	// "" until a file is ready. Downloads are served with this type, never
 	// with one the client declared.
 	FileContentType string
+	// FilePendingSince is when the file last went pending, nil otherwise.
+	FilePendingSince *time.Time
 	// PreviousStorageKey and PreviousContentType are the ready file a
 	// pending replacement would supersede ("" otherwise): DownloadURL keeps
 	// serving it while the replacement is validated, and validate_upload

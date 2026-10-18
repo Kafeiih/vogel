@@ -68,7 +68,7 @@ func TestMigration002_FileStatus(t *testing.T) {
 }
 
 // migration002Columns are the columns migration 002 adds.
-var migration002Columns = []string{"file_status", "file_content_type", "previous_storage_key", "previous_content_type"}
+var migration002Columns = []string{"file_status", "file_content_type", "file_pending_since", "previous_storage_key", "previous_content_type"}
 
 // A created document starts with no file, and GetByID reads the lifecycle
 // columns back.

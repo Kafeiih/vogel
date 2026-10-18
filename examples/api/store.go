@@ -54,6 +54,7 @@ func documentFields(d *Document) []documentField {
 		{"storage_key", &d.StorageKey},
 		{"file_status", &d.FileStatus},
 		{"COALESCE(file_content_type, '')", &d.FileContentType},
+		{"file_pending_since", &d.FilePendingSince},
 		{"COALESCE(previous_storage_key, '')", &d.PreviousStorageKey},
 		{"COALESCE(previous_content_type, '')", &d.PreviousContentType},
 		{"owner_id", &d.OwnerID},
@@ -167,8 +168,8 @@ func (s *DocumentStore) List(ctx context.Context, db pgxtx.DBTX, limit, offset i
 }
 
 // AttachPendingFile points id at the uploaded object key and marks its file
-// pending validation, clearing any previously validated content type: the
-// new object has not been sniffed yet. previousKey and previousContentType
+// pending validation as of now, clearing any previously validated content
+// type: the new object has not been sniffed yet. previousKey and previousContentType
 // ("" stores NULL) are the ready file this upload would replace, kept on
 // the row so downloads can serve it meanwhile and a rejection can restore
 // it. A later confirm replaces the key, so a validation job still running
@@ -177,6 +178,7 @@ func (s *DocumentStore) AttachPendingFile(ctx context.Context, db pgxtx.DBTX, id
 	_, err := db.Exec(ctx, `
 		UPDATE documents
 		SET storage_key = $1, file_status = 'pending', file_content_type = NULL,
+		    file_pending_since = now(),
 		    previous_storage_key = NULLIF($2, ''), previous_content_type = NULLIF($3, '')
 		WHERE id = $4`, key, previousKey, previousContentType, id)
 	if err != nil {
@@ -189,7 +191,7 @@ func (s *DocumentStore) AttachPendingFile(ctx context.Context, db pgxtx.DBTX, id
 // row to storageKey (the final file key for an accepted upload, the
 // previous file for a restore, uploadKey itself for a plain rejection) with
 // status and the sniffed contentType ("" stores NULL), and clears the
-// previous file, which no longer has anything pending to stand in for. It
+// pending clock and the previous file, which no longer has anything pending to stand in for. It
 // changes the row only while its storage_key is still uploadKey AND its
 // file is still pending, and reports whether it did: a stale job -- one
 // whose key a newer confirm already replaced -- never overwrites the newer
@@ -199,6 +201,7 @@ func (s *DocumentStore) ResolveUpload(ctx context.Context, db pgxtx.DBTX, id uui
 	tag, err := db.Exec(ctx, `
 		UPDATE documents
 		SET storage_key = $1, file_status = $2, file_content_type = NULLIF($3, ''),
+		    file_pending_since = NULL,
 		    previous_storage_key = NULL, previous_content_type = NULL
 		WHERE id = $4 AND storage_key = $5 AND file_status = 'pending'`, storageKey, status, contentType, id, uploadKey)
 	if err != nil {
