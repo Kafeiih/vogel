@@ -352,3 +352,48 @@ func TestInfoContext_RecordAttrs_WinOverContext(t *testing.T) {
 		t.Errorf("request_id = %v, want %q", decoded["request_id"], "explicit")
 	}
 }
+
+// Inside a group, record attributes land in the group, so keys bound after
+// WithGroup are the ones that collide; they must not be doubled either.
+func TestInfoContext_InsideGroup_LogsKeysOnce(t *testing.T) {
+	ctx := requestContext("from-ctx", "u-ctx")
+
+	for name, build := range map[string]func(*Logger) *slog.Logger{
+		"WithContext after group": func(l *Logger) *slog.Logger {
+			return (&Logger{Logger: l.WithGroup("g")}).WithContext(ctx).Logger
+		},
+		"With after group": func(l *Logger) *slog.Logger {
+			return l.WithGroup("g").With("request_id", "explicit", "user_id", "u-explicit")
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var buf bytes.Buffer
+			build(New("production", &buf)).InfoContext(ctx, "hello")
+
+			for _, key := range []string{`"request_id"`, `"user_id"`} {
+				if n := strings.Count(buf.String(), key); n != 1 {
+					t.Errorf("%s appears %d times in %q, want 1", key, n, buf.String())
+				}
+			}
+		})
+	}
+}
+
+// A group opened after the keys were bound at the top level still gets the
+// context values inside it: the top-level ones do not collide with them.
+func TestInfoContext_GroupAfterTopLevelBinding_AddsKeysInsideGroup(t *testing.T) {
+	var buf bytes.Buffer
+	l := New("production", &buf)
+	ctx := requestContext("req-g", "u-g")
+
+	l.WithContext(ctx).WithGroup("g").InfoContext(ctx, "hello")
+
+	decoded := decodeJSONLine(t, &buf)
+	if decoded["request_id"] != "req-g" {
+		t.Errorf("top-level request_id = %v, want %q", decoded["request_id"], "req-g")
+	}
+	group, _ := decoded["g"].(map[string]any)
+	if group["request_id"] != "req-g" {
+		t.Errorf("g.request_id = %v, want %q", group["request_id"], "req-g")
+	}
+}

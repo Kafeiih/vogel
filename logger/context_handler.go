@@ -27,18 +27,16 @@ const (
 //
 // Inside a group (WithGroup), keys are added within the group, as every
 // record attribute is; slog offers no way to place them at the top level
-// from here.
+// from here. The duplicate check follows them there: only keys bound inside
+// the innermost open group collide with them.
 type contextHandler struct {
 	inner slog.Handler
 
-	// hasRequestID and hasUserID record whether the key is already bound at
-	// the top level through WithAttrs.
+	// hasRequestID and hasUserID record whether the key is already bound,
+	// through WithAttrs, at the level where Handle adds attributes: the top
+	// level, or the innermost group once WithGroup opened one.
 	hasRequestID bool
 	hasUserID    bool
-	// grouped is set once WithGroup opened a group: attributes bound after
-	// it are qualified by the group and no longer collide with the
-	// top-level keys.
-	grouped bool
 }
 
 func (h *contextHandler) Enabled(ctx context.Context, level slog.Level) bool {
@@ -77,14 +75,12 @@ func (h *contextHandler) Handle(ctx context.Context, r slog.Record) error {
 func (h *contextHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	next := *h
 	next.inner = h.inner.WithAttrs(attrs)
-	if !h.grouped {
-		for _, a := range attrs {
-			switch a.Key {
-			case requestIDKey:
-				next.hasRequestID = true
-			case userIDKey:
-				next.hasUserID = true
-			}
+	for _, a := range attrs {
+		switch a.Key {
+		case requestIDKey:
+			next.hasRequestID = true
+		case userIDKey:
+			next.hasUserID = true
 		}
 	}
 	return &next
@@ -94,7 +90,10 @@ func (h *contextHandler) WithGroup(name string) slog.Handler {
 	next := *h
 	next.inner = h.inner.WithGroup(name)
 	if name != "" {
-		next.grouped = true
+		// Attributes from here on are qualified by the new group, so keys
+		// bound outside it no longer collide with the ones Handle adds.
+		next.hasRequestID = false
+		next.hasUserID = false
 	}
 	return &next
 }
