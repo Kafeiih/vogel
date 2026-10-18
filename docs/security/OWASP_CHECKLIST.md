@@ -177,10 +177,10 @@ un Bearer token que se valida en el servidor.
 | ID | Sev. | Ítem | Estado | Evidencia |
 |---|---|---|---|---|
 | 9.1 | C | Archivos nunca ejecutados; en almacenamiento de objetos | PASS | Puerto `storage` sobre S3 (`storage/s3/s3.go`); descarga por URL firmada, nunca desde el proceso |
-| 9.2 | H | Tipo por contenido con lista permitida | PASS | `storage.SniffContentType` (`storage/sniff.go:40`, `storage/sniff_test.go`); `examples/api` lo usa (`examples/api/handler.go:588`, `TestDocumentHandlerUploadFile_RejectsDisallowedContent`) |
-| 9.3 | H | Nombre regenerado en el servidor | PASS | `StorageKeyFor(id)` (`examples/api/document.go:65`) |
-| 9.4 | H | Límite de tamaño antes de leer todo | PASS | `http.MaxBytesReader` de 25 MiB (`examples/api/handler.go:578`) |
-| 9.5 | M | Reencodear imágenes | CONSUMER | Depende del dominio; `examples/api` acepta PNG y JPEG sin reencodear, mitigado por la descarga como adjunto `octet-stream` (§9.7) |
+| 9.2 | H | Tipo por contenido con lista permitida | PASS | `storage.SniffContentType` (`storage/sniff.go:40`, `storage/sniff_test.go`); `examples/api` lo aplica en el job `validate_upload`, después de la subida directa al bucket (`examples/api/jobs.go:148`, `TestValidateUpload`): un objeto no permitido se borra y el documento queda `rejected` |
+| 9.3 | H | Nombre regenerado en el servidor | PASS | `newUploadKey(id)` genera `documents/{id}/uploads/{uuid}` en el servidor (`examples/api/document.go:97`) |
+| 9.4 | H | Límite de tamaño antes de leer todo | PASS | La API ya no recibe el cuerpo: `upload-url` rechaza un tamaño fuera de 1..25 MiB antes de firmar (`examples/api/handler.go:620`) y firma el tamaño exacto con `storage.WithContentLength` (`examples/api/handler.go:640`), así que el bucket rechaza otro tamaño |
+| 9.5 | M | Reencodear imágenes | CONSUMER | Depende del dominio; `examples/api` acepta PNG y JPEG sin reencodear, mitigado por la descarga como adjunto con el tipo verificado por contenido (§9.7) |
 | 9.6 | M | Escaneo de malware | CONSUMER | Según el riesgo del servicio |
 | 9.7 | M | Descarga con `Content-Disposition: attachment` y tipo seguro | PASS | Valores por defecto `attachment` y `application/octet-stream` (`storage/presign.go:13`, `storage/presign.go:23`, `storage/presign_test.go`) |
 
