@@ -4,11 +4,15 @@ on:
   push:
     branches: [main, master]
     paths-ignore: ["**.md", "docs/**", ".atl/**"]
+  # Sin paths-ignore en los PR: los checks de este workflow son obligatorios en
+  # master, y un workflow que no arranca deja esos checks pendientes para
+  # siempre, bloqueando un PR que solo toca documentacion. En su lugar, el job
+  # 'changes' decide y los jobs pesados quedan 'skipped', que GitHub cuenta
+  # como exito para un check obligatorio.
   pull_request:
     branches: [main, master]
     # 'labeled' permite disparar la integracion al agregar el label justo antes de mergear.
     types: [opened, synchronize, reopened, labeled]
-    paths-ignore: ["**.md", "docs/**", ".atl/**"]
 
 # Cancela corridas viejas del mismo PR/rama cuando se pushea de nuevo:
 # no se paga por builds que ya quedaron obsoletos.
@@ -20,10 +24,51 @@ permissions:
   contents: read
 
 jobs:
+  # Decide si el PR toca algo mas que documentacion (los mismos paths que
+  # ignora el trigger de push). Los jobs pesados lo consultan con la condicion
+  # de abajo, que falla cerrado: corren salvo que este job haya terminado bien
+  # Y haya dicho 'false'. Si este job falla o se cancela, corren todos, en vez
+  # de quedar 'skipped' y pasar los checks obligatorios sin haber probado nada.
+  #
+  #   if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.code != 'false') }}
+  changes:
+    name: Detect code changes
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.detect.outputs.code }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Test the classifier
+        run: .github/scripts/code-changed_test.sh
+
+      - name: Detect
+        id: detect
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          # Push ya filtra por paths en el trigger: si corrio, hay codigo.
+          if [ "$EVENT" != "pull_request" ]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # --no-renames: con deteccion de renombres, mover logger/logger.go a
+          # docs/logger.go lista solo el path nuevo y el PR pareceria solo docs.
+          code="$(git diff --no-renames --name-only "$BASE_SHA...$HEAD_SHA" | .github/scripts/code-changed.sh)"
+          echo "code=$code"
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+
   # Feedback barato en CADA push/PR: lint + unit + build en un solo job
   # (un unico checkout + setup-go, sin pagar 3x el arranque).
   fast:
     name: Lint + Unit + Build
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.code != 'false') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -104,6 +149,8 @@ jobs:
   # regresion de la API publica de vogel contra un consumidor real.
   boilerplate:
     name: Boilerplate example
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.code != 'false') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -162,6 +209,8 @@ jobs:
   # autor del PR que quedo en rojo.
   vuln:
     name: govulncheck
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.code != 'false') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -187,7 +236,12 @@ jobs:
   # a mergear. Asi no se pagan en cada push intermedio.
   integration:
     name: Integration
-    if: github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'run-integration')
+    needs: changes
+    if: >-
+      ${{ !cancelled()
+      && github.event_name == 'pull_request'
+      && contains(github.event.pull_request.labels.*.name, 'run-integration')
+      && (needs.changes.result != 'success' || needs.changes.outputs.code != 'false') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
