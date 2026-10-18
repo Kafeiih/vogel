@@ -3,8 +3,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"io"
+	"log/slog"
 	"sort"
 	"strings"
 	"testing"
@@ -302,5 +305,100 @@ func TestValidateUpload(t *testing.T) {
 
 		assert.Empty(t, validationAudit(t, h, doc.ID))
 		assert.Empty(t, objectKeys(t, h, doc.ID), "nothing is left behind for a deleted document")
+	})
+}
+
+// failingStorage is a fake bucket whose reads always fail with a transient
+// error, the kind River retries. It records every key Delete is asked for.
+type failingStorage struct {
+	*fakeStorage
+	deleted []string
+}
+
+func (f *failingStorage) Download(context.Context, string) (*storage.DownloadOutput, error) {
+	return nil, errors.New("storage unavailable")
+}
+
+func (f *failingStorage) Delete(ctx context.Context, key string) error {
+	f.deleted = append(f.deleted, key)
+	return f.fakeStorage.Delete(ctx, key)
+}
+
+// A job that keeps failing is retried, and the document stays pending while
+// it is. On the last attempt River would discard the job and leave the row
+// pending forever, so the job resolves it itself, by the rules of a
+// rejection, and says so in the log.
+func TestValidateUpload_LastAttemptResolvesTheRow(t *testing.T) {
+	h, _ := newIntegrationHandler(t)
+	ctx := context.Background()
+
+	newFailingWorker := func() (*ValidateUploadWorker, *failingStorage, *bytes.Buffer) {
+		fs := &failingStorage{fakeStorage: h.storage.(*fakeStorage)}
+		var logs bytes.Buffer
+		w := newValidateWorker(h)
+		w.storage = fs
+		w.logger = slog.New(slog.NewTextHandler(&logs, nil))
+		return w, fs, &logs
+	}
+	attempt := func(args ValidateUploadArgs, n int) *river.Job[ValidateUploadArgs] {
+		return &river.Job[ValidateUploadArgs]{
+			JobRow: &rivertype.JobRow{Attempt: n, MaxAttempts: 3},
+			Args:   args,
+		}
+	}
+
+	t.Run("an earlier attempt leaves the row pending for the retry", func(t *testing.T) {
+		pdf := pdfBody
+		doc, key := pendingUpload(t, h, &pdf)
+		w, fs, _ := newFailingWorker()
+
+		err := w.Work(ctx, attempt(ValidateUploadArgs{DocumentID: doc.ID.String(), Key: key}, 2))
+
+		require.Error(t, err)
+		got, gErr := h.store.GetByID(ctx, h.pool, doc.ID)
+		require.NoError(t, gErr)
+		assert.Equal(t, FileStatusPending, got.FileStatus)
+		assert.Empty(t, fs.deleted)
+		assert.Empty(t, validationAudit(t, h, doc.ID))
+	})
+
+	t.Run("the last attempt rejects a first upload", func(t *testing.T) {
+		pdf := pdfBody
+		doc, key := pendingUpload(t, h, &pdf)
+		w, fs, logs := newFailingWorker()
+
+		err := w.Work(ctx, attempt(ValidateUploadArgs{DocumentID: doc.ID.String(), Key: key}, 3))
+
+		require.Error(t, err, "the failure is still reported to River")
+		got, gErr := h.store.GetByID(ctx, h.pool, doc.ID)
+		require.NoError(t, gErr)
+		assert.Equal(t, FileStatusRejected, got.FileStatus)
+		assert.Equal(t, []string{key}, fs.deleted, "the upload object is deleted, best effort")
+		assert.Equal(t, [][2]string{{"worker", FileStatusRejected}}, validationAudit(t, h, doc.ID))
+		assert.Contains(t, logs.String(), "level=ERROR")
+		assert.Contains(t, logs.String(), "document_id="+doc.ID.String())
+		assert.Contains(t, logs.String(), "key="+key)
+		assert.NotContains(t, logs.String(), "sig=", "no presigned URL is logged")
+	})
+
+	t.Run("the last attempt restores a previous file", func(t *testing.T) {
+		first := readyFile(t, h)
+		secondKey := uploadKeyPrefix(first.ID) + uuid.NewString()
+		require.NoError(t, h.store.AttachPendingFile(ctx, h.pool, first.ID, secondKey))
+		w, fs, _ := newFailingWorker()
+
+		err := w.Work(ctx, attempt(ValidateUploadArgs{
+			DocumentID: first.ID.String(), Key: secondKey,
+			PreviousKey: first.StorageKey, PreviousContentType: first.FileContentType,
+		}, 3))
+
+		require.Error(t, err)
+		got, gErr := h.store.GetByID(ctx, h.pool, first.ID)
+		require.NoError(t, gErr)
+		assert.Equal(t, FileStatusReady, got.FileStatus)
+		assert.Equal(t, first.StorageKey, got.StorageKey)
+		assert.Equal(t, first.FileContentType, got.FileContentType)
+		assert.Equal(t, []string{secondKey}, fs.deleted, "only the upload is deleted; the previous file is kept")
+		assert.Equal(t, [][2]string{{"worker", FileStatusReady}, {"worker", FileStatusReady}}, validationAudit(t, h, first.ID))
 	})
 }

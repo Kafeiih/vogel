@@ -55,7 +55,11 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   uno rechazado lo restaura (el documento vuelve a `ready` con su archivo y
   su tipo), así que repetir una confirmación no destruye el archivo validado.
   El veredicto sólo se escribe sobre un archivo `pending`: un reintento del
-  job no cambia nada ni audita dos veces. Un objeto inexistente se
+  job no cambia nada ni audita dos veces. Si el job falla en su último
+  intento, resuelve el documento como un rechazo en vez de dejarlo `pending`
+  y lo registra en el log. La confirmación lee el documento con
+  `SELECT ... FOR UPDATE`, así que decide qué archivo anterior pasar al job
+  con la fila que efectivamente va a reemplazar. Un objeto inexistente se
   reconoce con `storage.ErrNotFound`, así que el job funciona igual con
   `storage/s3`. La
   migración `002_add_file_status` agrega `file_status` y `file_content_type`;

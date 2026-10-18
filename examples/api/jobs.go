@@ -148,13 +148,38 @@ type ValidateUploadWorker struct {
 // already resolved the row changes nothing, and in both cases a final copy
 // this run made is deleted again. Any storage or database error is
 // returned, so River retries the job.
+//
+// On the last attempt River would discard a failing job and leave the
+// document pending forever, so the job resolves it by the rules of a
+// rejection (see giveUp) and still returns the error for River to record.
 func (w *ValidateUploadWorker) Work(ctx context.Context, job *river.Job[ValidateUploadArgs]) error {
 	id, err := uuid.Parse(job.Args.DocumentID)
 	if err != nil {
 		// Retrying cannot fix a malformed payload.
 		return river.JobCancel(fmt.Errorf("validate upload: document id: %w", err))
 	}
-	return w.decide(ctx, id, job.Args)
+	err = w.decide(ctx, id, job.Args)
+	if err == nil || job.JobRow == nil || job.Attempt < job.MaxAttempts {
+		return err
+	}
+	return w.giveUp(ctx, id, job.Args, job.Attempt, err)
+}
+
+// giveUp ends a job that failed on its last attempt: it logs the failure
+// (document and key, never a URL), deletes the upload object best effort,
+// and resolves the row like a rejection -- back to the previous ready file
+// if there is one, rejected otherwise -- with one audit entry. It returns
+// cause, joined with any error resolving the row.
+func (w *ValidateUploadWorker) giveUp(ctx context.Context, id uuid.UUID, args ValidateUploadArgs, attempt int, cause error) error {
+	w.logger.ErrorContext(ctx, "upload validation failed on its last attempt; resolving as rejected",
+		"document_id", id, "key", args.Key, "attempt", attempt, "error", cause)
+	if err := w.storage.Delete(ctx, args.Key); err != nil {
+		w.logger.WarnContext(ctx, "delete upload after the last attempt", "document_id", id, "key", args.Key, "error", err)
+	}
+	if err := w.reject(ctx, id, args); err != nil {
+		return errors.Join(cause, err)
+	}
+	return cause
 }
 
 // decide inspects the upload object at args.Key and records the verdict.

@@ -142,6 +142,11 @@ directo al storage con una URL firmada, y la validación pesada corre en un job:
    anterior, pero uno rechazado (inexistente o no permitido) **lo restaura**:
    el documento vuelve a `ready` con su archivo y su tipo. Así, repetir una
    confirmación con una `key` ya consumida no destruye el archivo validado.
+   Si el job falla en todos sus intentos (por ejemplo, el storage no
+   responde), el último intento no deja el documento `pending` para siempre:
+   lo resuelve como un rechazo (restaura el archivo anterior o lo marca
+   `rejected`), borra el objeto de subida si puede y lo deja en el log con
+   `document_id` y `key`.
 
    La copia cierra una carrera: la URL de subida sigue valiendo hasta 5
    minutos después del job, y quien la tenga podría reescribir con ella un
