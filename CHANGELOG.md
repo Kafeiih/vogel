@@ -33,6 +33,26 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ### Cambiado
 
+- **`examples/api`: los archivos se suben directo al storage con una URL
+  firmada.** `PUT /documents/{id}/file`, que recibía los bytes y los reenviaba
+  al storage, ya no existe. El cliente pide
+  `POST /documents/{id}/upload-url` con `content_type` y `size` (`415` para un
+  tipo no permitido, `400` para un tamaño fuera de 1..25 MiB) y recibe una URL
+  de `PUT` de 5 minutos que firma el tipo y el largo exacto, con una key nueva
+  por subida (`documents/{id}/uploads/{uuid}`). Tras subir, confirma con
+  `POST /documents/{id}/file` y `{"key": ...}`: el documento queda
+  `pending` y, en la misma transacción, se encola el job `validate_upload`,
+  que detecta el tipo por el contenido, borra y marca `rejected` lo que no
+  está permitido (o lo que nunca se subió) y deja `ready` el resto. La
+  migración `002_add_file_status` agrega `file_status` y `file_content_type`;
+  las filas que ya tenían archivo pasan a `ready`.
+  `GET /documents/{id}/download-url` responde `409` salvo con el archivo
+  `ready`, firma por 5 minutos (antes 15) y sirve el tipo detectado. El
+  storage falso hace ahora de bucket: sus URL apuntan a
+  `FAKE_STORAGE_BASE_URL` (por defecto `http://localhost:<PORT>`) bajo
+  `/fake-storage/`, firmadas con HMAC, y rechaza con `403` una firma inválida,
+  una URL vencida o un tipo o largo distinto del firmado. Ninguna URL firmada
+  se loguea ni se audita.
 - **`logger`: los métodos `*Context` agregan `request_id` y `user_id` desde
   `reqctx`.** Antes, `InfoContext(ctx, …)` ignoraba el contexto y una línea
   dentro de una request salía sin `request_id` salvo que se usara

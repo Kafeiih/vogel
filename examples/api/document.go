@@ -82,18 +82,18 @@ func (d *Document) AuditSnapshot() map[string]any {
 	}
 }
 
-// StorageKeyFor is the object key a document's file is stored under. It is
-// derived from the document ID rather than stored as a free-form string so
-// that the key is reproducible from the row alone, and one document can
-// never overwrite another's object.
-func StorageKeyFor(id uuid.UUID) string {
-	return "documents/" + id.String()
-}
-
 // uploadKeyPrefix is the prefix of every object key an upload for the
 // document id may use: documents/{id}/uploads/. Keying each upload under its
 // own document means a confirm can check, from the key alone, that the
 // object belongs to the document it is being attached to.
 func uploadKeyPrefix(id uuid.UUID) string {
 	return "documents/" + id.String() + "/uploads/"
+}
+
+// newUploadKey is a fresh object key for one upload to the document id:
+// uploadKeyPrefix(id) followed by a random UUID. A new key per upload means
+// a replacement never overwrites the object a previous upload (or a
+// validation job still reading it) is using.
+func newUploadKey(id uuid.UUID) string {
+	return uploadKeyPrefix(id) + uuid.NewString()
 }

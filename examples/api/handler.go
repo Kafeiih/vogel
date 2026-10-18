@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -542,114 +543,214 @@ func (h *DocumentHandler) Inbox(w http.ResponseWriter, r *http.Request) {
 	response.JSON(w, http.StatusOK, cases)
 }
 
-// maxUploadBytes caps an uploaded document body. http.MaxBytesReader
-// enforces it on the server side, so a client cannot exhaust memory by
-// streaming an unbounded body.
+// maxUploadBytes caps an uploaded document body. UploadURL refuses to sign
+// a larger size, and the URL it signs carries the exact Content-Length, so
+// the store itself refuses a body of any other size: neither this server
+// nor the bucket ever accepts more.
 const maxUploadBytes = 25 << 20 // 25 MiB
 
-// allowedUploadTypes are the media types UploadFile accepts, detected from
-// the content by storage.SniffContentType rather than taken from the
-// client's Content-Type header: the document kinds this example stores.
+// uploadURLExpiry and downloadURLExpiry are how long the presigned URLs
+// this API hands out stay valid. A presigned URL is a bearer credential
+// nothing can revoke, so both are short: long enough for a client to start
+// the transfer, not long enough to be worth stealing.
+const (
+	uploadURLExpiry   = 5 * time.Minute
+	downloadURLExpiry = 5 * time.Minute
+)
+
+// allowedUploadTypes are the media types an upload may be: the document
+// kinds this example stores. UploadURL only signs a URL for one of them, and
+// validate_upload (ValidateUploadWorker) checks the uploaded content against
+// them with storage.SniffContentType, since the type a client signs for
+// says nothing about the bytes it then sends.
 var allowedUploadTypes = []string{"application/pdf", "image/png", "image/jpeg", "text/plain"}
 
 // disallowedUploadMessage is the 415 message, built from allowedUploadTypes
 // so the list it gives the client cannot drift from what is accepted.
 var disallowedUploadMessage = "file type not allowed: accepted types are " + strings.Join(allowedUploadTypes, ", ")
 
-// UploadFile attaches the raw request body to an existing document through
-// the storage port, then records the attachment in the audit trail.
+type uploadURLRequest struct {
+	ContentType string `json:"content_type"`
+	Size        int64  `json:"size"`
+}
+
+// uploadURLResponse tells the client exactly how to send its file: the
+// method, the URL and the headers the URL was signed with. Sending any other
+// Content-Type or a body of any other size makes the store refuse it.
+type uploadURLResponse struct {
+	URL       string            `json:"url"`
+	Key       string            `json:"key"`
+	Method    string            `json:"method"`
+	Headers   map[string]string `json:"headers"`
+	ExpiresAt time.Time         `json:"expires_at"`
+}
+
+// UploadURL is step one of the presigned upload flow: it hands the client a
+// short-lived URL to PUT the file straight to storage, so the file's bytes
+// never pass through this server (step two is AttachFile; step three is
+// the validate_upload job).
 //
-// This is the write half of the storage port; DownloadURL is the read half.
-// Note what the handler does NOT know: whether the bytes land in S3, MinIO,
-// DigitalOcean Spaces or -- as in this example -- a map in memory. It holds
-// a storage.Storage, and main.go decides which implementation that is.
+// The URL signs the content type and the exact size the client declared,
+// both checked first: a type outside allowedUploadTypes is a 415, a size
+// outside 1..maxUploadBytes a 400. Each upload gets its own key,
+// documents/{id}/uploads/{uuid}, so a new upload never overwrites an object
+// a previous one (or its validation job) is still using. Nothing is
+// persisted: until the client confirms, the document is unchanged.
 //
-// The audit entry uses audit.WithChange(before, after) rather than
-// WithSubject: both snapshots are captured, so the trail shows the document
-// exactly as it was before the key was attached and exactly as it is after.
-// That is what the Auditable interface on Document buys.
-func (h *DocumentHandler) UploadFile(w http.ResponseWriter, r *http.Request) {
+// The URL is a credential: it is returned to the caller and nowhere else --
+// never logged, never put in an error, never audited.
+func (h *DocumentHandler) UploadURL(w http.ResponseWriter, r *http.Request) {
 	v := request.NewValidator()
 	id := v.UUIDParam(r, "id")
+
+	var req uploadURLRequest
+	if err := request.JSON(w, r, &req); err != nil {
+		return
+	}
 	if v.HasErrors() {
 		v.WriteErrors(w, r)
 		return
 	}
-
-	limited := http.MaxBytesReader(w, r.Body, maxUploadBytes)
-	defer func() { _ = limited.Close() }()
-
-	// The stored (and later served) type comes from the content, never from
-	// the client's Content-Type header, which anyone can set to
-	// application/pdf on an HTML file. Sniffing reads only the first bytes;
-	// body still yields the whole upload. It runs before the document lookup
-	// on purpose, so a disallowed body is refused without a database round
-	// trip: a disallowed upload to a missing document therefore answers 415,
-	// not 404.
-	contentType, body, err := storage.SniffContentType(limited, allowedUploadTypes...)
-	if errors.Is(err, storage.ErrContentTypeNotAllowed) {
+	// Exact match: the client must send this very Content-Type header, so
+	// there is no room for parameters it would then have to repeat.
+	if !slices.Contains(allowedUploadTypes, req.ContentType) {
 		response.Error(w, r, http.StatusUnsupportedMediaType, response.CodeUnsupportedMediaType, disallowedUploadMessage)
 		return
 	}
-	if err != nil {
-		h.logger.ErrorContext(r.Context(), "upload file: read body", "error", err)
-		response.Error(w, r, http.StatusBadRequest, response.CodeValidationError, "failed to read the uploaded file")
+	if req.Size < 1 || req.Size > maxUploadBytes {
+		v.AddError("size", fmt.Sprintf("size must be between 1 and %d bytes", maxUploadBytes))
+		v.WriteErrors(w, r)
 		return
 	}
 
 	db := pgxtx.DBFromContext(r.Context(), h.pool)
-
-	before, err := h.store.GetByID(r.Context(), db, id)
+	doc, err := h.store.GetByID(r.Context(), db, id)
 	if err != nil {
 		if errors.Is(err, ErrDocumentNotFound) {
 			response.Error(w, r, http.StatusNotFound, response.CodeNotFound, "document not found")
 			return
 		}
-		h.logger.ErrorContext(r.Context(), "upload file: get document", "error", err)
+		h.logger.ErrorContext(r.Context(), "upload url: get document", "error", err)
 		response.Error(w, r, http.StatusInternalServerError, response.CodeInternalError, "failed to get document")
 		return
 	}
 
-	key := StorageKeyFor(before.ID)
-
-	// The object is uploaded BEFORE the transaction opens, on purpose: an
-	// object store is not transactional, so it cannot join the database
-	// transaction below. Doing it first means the worst failure leaves an
-	// orphaned object that no row references -- recoverable by a sweeper --
-	// instead of a row pointing at an object that was never written.
-	if err := h.storage.Upload(r.Context(), &storage.UploadInput{
-		Key:         key,
-		Body:        body,
-		ContentType: contentType,
-	}); err != nil {
-		h.logger.ErrorContext(r.Context(), "upload file: storage", "error", err)
-		response.Error(w, r, http.StatusInternalServerError, response.CodeInternalError, "failed to store file")
+	key := newUploadKey(doc.ID)
+	expiresAt := time.Now().Add(uploadURLExpiry)
+	url, err := h.storage.PresignedPutURL(r.Context(), key, req.ContentType, uploadURLExpiry, storage.WithContentLength(req.Size))
+	if err != nil {
+		h.logger.ErrorContext(r.Context(), "upload url: presign", "key", key, "error", err)
+		response.Error(w, r, http.StatusInternalServerError, response.CodeInternalError, "failed to generate upload url")
 		return
 	}
 
-	after := *before
-	after.StorageKey = key
+	response.JSON(w, http.StatusOK, uploadURLResponse{
+		URL:       url,
+		Key:       key,
+		Method:    http.MethodPut,
+		Headers:   map[string]string{"Content-Type": req.ContentType},
+		ExpiresAt: expiresAt,
+	})
+}
 
-	err = h.tx.WithTx(r.Context(), func(txCtx context.Context) error {
-		txDB := pgxtx.DBFromContext(txCtx, h.pool)
+type attachFileRequest struct {
+	Key string `json:"key"`
+}
 
-		if err := h.store.UpdateStorageKey(txCtx, txDB, before.ID, key); err != nil {
+// AttachFile is step two of the presigned upload flow: the client, having
+// PUT its file with the URL from UploadURL, confirms the key it uploaded
+// to. The key must be one UploadURL could have issued for this document
+// (documents/{id}/uploads/{uuid}), so a client cannot attach another
+// document's object.
+//
+// One transaction points the document at the key with its file pending,
+// enqueues validate_upload with worker.Queue.EnqueueTx, and records the
+// audit entry -- the same all-or-nothing shape as Create. The object itself
+// was written before any of this and outside the transaction, by the
+// client: an object store cannot join a database transaction, and this
+// order means the worst failure leaves an orphaned object no row
+// references, never a row pointing at a key nobody presigned for this
+// document. Whether the object really exists and holds an allowed type is
+// the job's call, not this handler's: it answers 202 with the document as
+// it now stands, pending.
+//
+// The audit entry uses audit.WithChange(before, after) rather than
+// WithSubject: both snapshots are captured, so the trail shows the document
+// exactly as it was before the key was attached and exactly as it is after.
+// That is what the Auditable interface on Document buys.
+func (h *DocumentHandler) AttachFile(w http.ResponseWriter, r *http.Request) {
+	v := request.NewValidator()
+	id := v.UUIDParam(r, "id")
+
+	var req attachFileRequest
+	if err := request.JSON(w, r, &req); err != nil {
+		return
+	}
+	if v.HasErrors() {
+		v.WriteErrors(w, r)
+		return
+	}
+	// Only the canonical UUID form UploadURL issues is accepted, so the key
+	// stays exactly documents/{id}/uploads/{uuid}.
+	prefix := uploadKeyPrefix(id)
+	suffix, ok := strings.CutPrefix(req.Key, prefix)
+	if parsed, err := uuid.Parse(suffix); !ok || err != nil || parsed.String() != suffix {
+		v.AddError("key", "key must be an upload key issued for this document ("+prefix+"<uuid>)")
+		v.WriteErrors(w, r)
+		return
+	}
+
+	var after Document
+	err := h.tx.WithTx(r.Context(), func(txCtx context.Context) error {
+		db := pgxtx.DBFromContext(txCtx, h.pool)
+
+		before, err := h.store.GetByID(txCtx, db, id)
+		if err != nil {
+			return err
+		}
+		after = *before
+		after.StorageKey = req.Key
+		after.FileStatus = FileStatusPending
+		after.FileContentType = ""
+
+		if err := h.store.AttachPendingFile(txCtx, db, id, req.Key); err != nil {
 			return err
 		}
 
-		return h.recorder.Record(txCtx, txDB, audit.SourceHTTP, audit.ActionUpdate,
-			"document", before.ID.String(),
+		// EnqueueTx: the job exists if and only if the pending state it
+		// will resolve commits -- see Create.
+		if _, err := h.queue.EnqueueTx(txCtx, pgxtx.TxFromContext(txCtx), ValidateUploadArgs{
+			DocumentID: id.String(),
+			Key:        req.Key,
+		}, nil); err != nil {
+			return err
+		}
+
+		return h.recorder.Record(txCtx, db, audit.SourceHTTP, audit.ActionUpdate,
+			"document", id.String(),
 			audit.WithChange(before, &after),
 			audit.WithOperationName("document_attach_file"),
 		)
 	})
 	if err != nil {
-		h.logger.ErrorContext(r.Context(), "upload file: persist", "error", err)
+		if errors.Is(err, ErrDocumentNotFound) {
+			response.Error(w, r, http.StatusNotFound, response.CodeNotFound, "document not found")
+			return
+		}
+		h.logger.ErrorContext(r.Context(), "attach file", "key", req.Key, "error", err)
 		response.Error(w, r, http.StatusInternalServerError, response.CodeInternalError, "failed to attach file")
 		return
 	}
 
-	response.JSONWithMessage(w, http.StatusOK, "file attached", &after)
+	response.JSONWithMessage(w, http.StatusAccepted, "file pending validation", &after)
+}
+
+// fileNotReadyMessages is DownloadURL's 409 message per file status: the
+// document exists, but it has no file a client may download yet.
+var fileNotReadyMessages = map[string]string{
+	FileStatusNone:     "document has no file attached",
+	FileStatusPending:  "document file is still being validated",
+	FileStatusRejected: "document file was rejected",
 }
 
 // DownloadURL returns a time-limited URL for downloading a document's
@@ -674,11 +775,16 @@ func (h *DocumentHandler) DownloadURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// A document with no attached object has nothing to presign. Returning
-	// 409 rather than 404 is deliberate: the document exists, its file does
-	// not -- see UploadFile.
-	if doc.StorageKey == "" {
-		response.Error(w, r, http.StatusConflict, response.CodeConflict, "document has no file attached")
+	// Only a file validate_upload accepted may be downloaded: a pending one
+	// has not been inspected and a rejected one was deleted. Returning 409
+	// rather than 404 is deliberate: the document exists, a downloadable
+	// file does not (yet).
+	if doc.FileStatus != FileStatusReady {
+		msg, ok := fileNotReadyMessages[doc.FileStatus]
+		if !ok {
+			msg = "document file is not ready"
+		}
+		response.Error(w, r, http.StatusConflict, response.CodeConflict, msg)
 		return
 	}
 
@@ -686,9 +792,14 @@ func (h *DocumentHandler) DownloadURL(w http.ResponseWriter, r *http.Request) {
 	// attachment, so the browser downloads the object under its key rather
 	// than rendering it on the bucket origin. Document keeps no original
 	// filename; a record that did would pass storage.AsAttachment(name).
-	url, err := h.storage.PresignedGetURL(r.Context(), doc.StorageKey, 15*time.Minute)
+	// The response type is the one validate_upload sniffed from the content,
+	// never the one the client declared; a file attached before sniffed
+	// types were recorded has none, and is served as the port's default
+	// application/octet-stream.
+	url, err := h.storage.PresignedGetURL(r.Context(), doc.StorageKey, downloadURLExpiry,
+		storage.WithResponseContentType(doc.FileContentType))
 	if err != nil {
-		h.logger.ErrorContext(r.Context(), "download url: presign", "error", err)
+		h.logger.ErrorContext(r.Context(), "download url: presign", "key", doc.StorageKey, "error", err)
 		response.Error(w, r, http.StatusInternalServerError, response.CodeInternalError, "failed to generate download url")
 		return
 	}

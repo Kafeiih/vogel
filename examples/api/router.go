@@ -102,7 +102,11 @@ func NewRouter(
 		r.With(requireRead).Get("/documents/{id}", docs.Get)
 		r.With(requireRead).Get("/documents/{id}/history", docs.History)
 		r.With(requireRead).Get("/documents/{id}/download-url", docs.DownloadURL)
-		r.With(requireWrite).Put("/documents/{id}/file", docs.UploadFile)
+		// The presigned upload flow: sign a PUT, then confirm the key once
+		// the client uploaded to it (see UploadURL and AttachFile). The
+		// file's bytes never come through this router.
+		r.With(requireWrite).Post("/documents/{id}/upload-url", docs.UploadURL)
+		r.With(requireWrite).Post("/documents/{id}/file", docs.AttachFile)
 		r.With(requireWrite).Post("/documents/{id}/transitions", docs.Transition)
 		r.With(requireWrite).Post("/documents/{id}/claim", docs.Claim)
 		r.With(requireDelete).Delete("/documents/{id}", docs.Delete)

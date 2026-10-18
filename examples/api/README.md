@@ -80,11 +80,11 @@ El orden importa: cada archivo asume el anterior.
 |---|---|---|
 | 1 | `main.go` | El **composition root**. Todo se construye acá y en ningún otro lado: config, pool, migraciones, métricas, adaptadores, cola, router, apagado ordenado. Si entiende este archivo, entiende el módulo. |
 | 2 | `handler.go` → `Create` | La pieza central. Una transacción, cuatro escrituras. Explicado abajo. |
-| 3 | `fakes.go` | Los cuatro puertos implementados en memoria, cada uno con el adaptador real que reemplaza. |
+| 3 | `fakes.go`, `fakestorage.go` | Los cuatro puertos implementados en memoria, cada uno con el adaptador real que reemplaza. El de storage hace además de bucket: sirve las URL firmadas que emite. |
 | 4 | `router.go` | El orden del stack de middleware, con el porqué de cada posición. |
 | 5 | `store.go` | Un repositorio que recibe `pgxtx.DBTX` en vez de un pool, y por qué eso elimina la duplicación de métodos "con tx" y "sin tx". |
 | 6 | `workflow.go` | Una `Definition` válida y una guarda, con la restricción que define al motor. |
-| 7 | `jobs.go` | Un job de River que audita con `SourceWorker`, no con `SourceHTTP`. |
+| 7 | `jobs.go` | Dos jobs de River que auditan con `SourceWorker`, no con `SourceHTTP`: `notify_reviewers` y `validate_upload`, que inspecciona cada archivo subido. |
 | 8 | `config.go` | El acumulador de errores de configuración: un arranque reporta *todos* los problemas juntos. |
 | 9 | `dotenv.go` | Por qué `vogel/config` no lee archivos, y cómo el consumidor cubre ese hueco sin sumar dependencias. |
 
@@ -109,6 +109,63 @@ outbox*:
 `EnqueueTx` inserta la fila del job dentro de la **misma** transacción. El job se
 vuelve visible para un worker si y sólo si todo commiteó.
 
+## Subir un archivo: el servidor no toca los bytes
+
+La API nunca recibe ni reenvía el contenido de un archivo. El cliente lo sube
+directo al storage con una URL firmada, y la validación pesada corre en un job:
+
+1. `POST /documents/{id}/upload-url` con `{"content_type":"application/pdf","size":1234}`.
+   Un tipo fuera de `allowedUploadTypes` responde `415`; un `size` menor que 1
+   o mayor que `maxUploadBytes` (25 MiB), `400`. La respuesta trae `url`,
+   `key` (`documents/{id}/uploads/{uuid}`, una por subida), `method` (`PUT`),
+   `headers` y `expires_at`. La URL vive 5 minutos y firma el `Content-Type` y
+   el `Content-Length` exactos: el bucket rechaza otro tipo o un cuerpo de otro
+   tamaño. No se persiste nada todavía.
+2. El cliente hace el `PUT` a esa `url` con esos `headers` y el archivo.
+3. `POST /documents/{id}/file` con `{"key":"..."}` confirma la subida. La
+   `key` tiene que ser una emitida para **ese** documento (si no, `400`). En
+   una sola transacción el documento queda con `file_status: "pending"`, se
+   encola `validate_upload` con `EnqueueTx` y se audita
+   `document_attach_file`. Responde `202`.
+4. `validate_upload` (`ValidateUploadWorker` en `jobs.go`) descarga el
+   objeto y detecta el tipo por el contenido con `storage.SniffContentType`,
+   leyendo sólo los primeros bytes. Si el objeto no existe, el archivo queda
+   `rejected`; si el contenido no es un tipo permitido, borra el objeto y lo
+   marca `rejected`; si es válido, `ready` con el tipo detectado. Cada
+   veredicto se escribe sólo si el documento sigue apuntando a esa `key`: una
+   subida más nueva gana y un job viejo no la pisa.
+5. `GET /documents/{id}/download-url` responde `409` salvo que el archivo esté
+   `ready`, y firma un `GET` de 5 minutos que el bucket sirve como
+   `attachment` y con el tipo detectado, nunca con el que declaró el cliente.
+
+```bash
+TOKEN='u-1:oscar:admin'
+DOC='...'   # el id de un documento creado con POST /documents
+printf '%%PDF-1.4\nhola\n' > /tmp/doc.pdf
+
+curl -s -X POST localhost:8080/api/v1/documents/$DOC/upload-url \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"content_type\":\"application/pdf\",\"size\":$(wc -c < /tmp/doc.pdf)}"
+
+# Con la url y la key de la respuesta:
+curl -s -X PUT "$URL" -H 'Content-Type: application/pdf' --data-binary @/tmp/doc.pdf
+curl -s -X POST localhost:8080/api/v1/documents/$DOC/file \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"key\":\"$KEY\"}"
+```
+
+Una URL firmada es una credencial: no se loguea, no va en mensajes de error
+ni en el rastro de auditoría. El access log registra sólo el path, nunca la
+query con la firma.
+
+Con `fakeStorage` el "bucket" es este mismo servidor: las URL apuntan a
+`FAKE_STORAGE_BASE_URL` (por defecto `http://localhost:<PORT>`) bajo
+`/fake-storage/`, fuera de `/api/v1` y sin token, como el endpoint de un bucket
+real. Llevan un HMAC del proceso sobre método, key, expiración, tipo y largo, y
+el handler responde `403` ante una firma inválida, una URL vencida o un
+`Content-Type`/`Content-Length` distinto del firmado. Con `storage/s3` esas
+rutas desaparecen y las URL apuntan al bucket, que debe seguir siendo privado.
+
 ## Cambiar un fake por un adaptador real
 
 Ese es el punto de la arquitectura de puertos, y acá se ve en una línea:
@@ -117,7 +174,7 @@ Ese es el punto de la arquitectura de puertos, y acá se ve en una línea:
 |---|---|---|---|
 | `auth.Authenticator` | `fakeAuthenticator` | `auth/zitadel` | `main.go` |
 | `authz.Checker` | `fakeChecker` | `authz/cerbos` | `main.go` |
-| `storage.Storage` | `fakeStorage` (un `map` con mutex) | `storage/s3` | `main.go` |
+| `storage.Storage` | `fakeStorage` (un `map` con mutex, más un endpoint `/fake-storage/` que verifica la firma de sus URL) | `storage/s3` | `main.go` |
 | `notification.Notifier` | `fakeNotifier` (loguea) | `notification/smtp` o `notification/sendgrid` | `main.go` |
 
 Ningún handler, ningún job y ningún repositorio cambia. Ese es el resultado que
@@ -134,8 +191,9 @@ Todo bajo `/api/v1` exige `Authorization: Bearer <token>`.
 | `POST` | `/documents` | write | La transacción de cuatro escrituras |
 | `GET` | `/documents` | read | Paginación con `response.JSONList` |
 | `GET` | `/documents/{id}` | read | `pgxtx.DBFromContext` fuera de transacción |
-| `PUT` | `/documents/{id}/file` | write | `storage.Upload` + auditoría con `WithChange` (snapshot antes/después) |
-| `GET` | `/documents/{id}/download-url` | read | `storage.PresignedGetURL` |
+| `POST` | `/documents/{id}/upload-url` | write | `storage.PresignedPutURL` con `WithContentLength`: el cliente sube directo al storage ([ver flujo](#subir-un-archivo-el-servidor-no-toca-los-bytes)) |
+| `POST` | `/documents/{id}/file` | write | Confirma la subida: `EnqueueTx` del job `validate_upload` + auditoría con `WithChange` (snapshot antes/después) |
+| `GET` | `/documents/{id}/download-url` | read | `storage.PresignedGetURL` con el tipo detectado (`WithResponseContentType`); `409` si el archivo no está `ready` |
 | `POST` | `/documents/{id}/transitions` | write | `engine.Move`, con guarda y errores mapeados a 409 |
 | `POST` | `/documents/{id}/claim` | write | `engine.Claim` con el actor sacado de `auth.FromContext` |
 | `DELETE` | `/documents/{id}` | delete (`access.Guard`) | Chequeo por instancia: `RequireAccess` filtra por rol y por los IDs que el principal posee (resueltos vía `access.WithPrincipalAttributes`); `DocumentHandler.Delete` carga el documento y llama a `guard.Check` de nuevo, esta vez con `Attr: {"kind": ...}`, para negar el borrado de un `"report"` aunque el dueño coincida — un dato que sólo se conoce después de cargar la fila |
@@ -159,12 +217,12 @@ desde la configuración: `HTTP_READ_HEADER_TIMEOUT` (5s), `HTTP_READ_TIMEOUT`
 o negativo falla en el arranque, porque en `net/http` cero significa "sin
 timeout". Las cabeceras se limitan a 64 KiB (`maxHeaderBytes`).
 `HTTP_READ_TIMEOUT` también acota cuánto puede tardar en llegar el cuerpo de
-una subida.
+un `PUT` al bucket falso, que corre en este mismo servidor.
 
 `router_test.go` recorre el router con `chi.Walk` y falla si alguna ruta
 bajo `/api/` responde sin pasar por `RequirePermission` o `RequireAccess`,
 o si aparece una ruta pública fuera de `/api/` que no esté declarada en
-`publicRoutes`. `rolematrix_test.go` fija, para cada ruta y cada tipo de
+`publicRoutes` (hoy, `/healthz` y el `GET`/`PUT` de `/fake-storage/*`). `rolematrix_test.go` fija, para cada ruta y cada tipo de
 llamador (anónimo, token inválido, usuario común, dueño, admin), si los
 guards lo dejan pasar, y falla si aparece una ruta sin fila en la matriz.
 

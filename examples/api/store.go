@@ -107,16 +107,6 @@ func (s *DocumentStore) List(ctx context.Context, db pgxtx.DBTX, limit, offset i
 	return docs, total, nil
 }
 
-// UpdateStorageKey updates the stored object key for id, e.g. after a
-// replacement upload.
-func (s *DocumentStore) UpdateStorageKey(ctx context.Context, db pgxtx.DBTX, id uuid.UUID, key string) error {
-	_, err := db.Exec(ctx, `UPDATE documents SET storage_key = $1 WHERE id = $2`, key, id)
-	if err != nil {
-		return fmt.Errorf("document store: update storage key %s: %w", id, err)
-	}
-	return nil
-}
-
 // AttachPendingFile points id at the uploaded object key and marks its file
 // pending validation, clearing any previously validated content type: the
 // new object has not been sniffed yet. A later confirm replaces the key, so

@@ -331,9 +331,11 @@ const maxHeaderBytes = 64 << 10
 // newAPIServer builds the public API server on cfg.Port. Every timeout is set
 // explicitly from cfg (gosec G112): a slow or hanging client must never be
 // able to hold a connection, and the goroutine serving it, open
-// indefinitely. ReadTimeout also bounds how long an upload body may take to
-// arrive, so raise HTTP_READ_TIMEOUT before serving clients that upload
-// maxUploadBytes over slow links.
+// indefinitely. Uploads go to storage with a presigned URL, never through
+// /api/v1, but the fake bucket (fakeStorage.Handler) is served by this same
+// server: ReadTimeout also bounds how long its PUT body may take to arrive,
+// so raise HTTP_READ_TIMEOUT before letting clients upload maxUploadBytes to
+// it over slow links. A real bucket has no such coupling.
 func newAPIServer(cfg Config, handler http.Handler) *http.Server {
 	return &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.Port),
