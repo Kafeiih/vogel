@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io/fs"
-	"log"
 	"os"
 	"strings"
 	"time"
@@ -83,7 +82,10 @@ func main() {
 		err = runMigrate(args[1:])
 	}
 	if err != nil {
-		log.Fatal(err)
+		// slog, not log.Fatal: once run installs the app logger as the default,
+		// the log package writes at INFO, and a fatal error must stay an ERROR.
+		slog.Error("exiting", "error", err)
+		os.Exit(1)
 	}
 }
 

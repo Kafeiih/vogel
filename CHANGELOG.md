@@ -29,8 +29,10 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   librerías que usan `slog.Default()` salen en el mismo formato y con
   `request_id`. Cada línea lleva además `component` (`api` o `worker`) para
   filtrar por binario. `slog.SetDefault` también redirige el paquete `log` de
-  la biblioteca estándar: `log.Printf` y `log.Fatal` salen como registros
-  JSON de nivel `INFO` en vez de texto plano.
+  la biblioteca estándar: `log.Printf` sale como registro JSON de nivel
+  `INFO` en vez de texto plano. Por eso el error con el que termina cada
+  binario ya no usa `log.Fatal` sino `slog.Error`, y conserva el nivel
+  `ERROR`.
 
 ## [0.10.1] — 2026-10-16
 
