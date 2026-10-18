@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -33,23 +34,61 @@ func NewDocumentStore() *DocumentStore {
 	return &DocumentStore{}
 }
 
-const documentColumns = "id, title, kind, issued_at, storage_key, file_status, owner_id, created_at"
-
-// selectColumns is documentColumns plus file_content_type, read as "" when
-// NULL (no file validated yet), in the order scanDocument expects.
-const selectColumns = documentColumns + ", COALESCE(file_content_type, '')"
-
-// scanDocument scans one row selected with selectColumns, followed by any
-// extra destinations.
-func scanDocument(row pgx.Row, d *Document, extra ...any) error {
-	dest := append([]any{&d.ID, &d.Title, &d.Kind, &d.IssuedAt, &d.StorageKey, &d.FileStatus, &d.OwnerID, &d.CreatedAt, &d.FileContentType}, extra...)
-	return row.Scan(dest...)
+// documentField is one column a document is read from: the SQL expression
+// selected and the Document field it is scanned into.
+type documentField struct {
+	expr string
+	dest any
 }
+
+// documentFields is the single ordered list of what a document read selects
+// and where each value lands. selectColumns and scanDocument are both built
+// from it, so the SELECT list and the Scan destinations cannot drift apart.
+// Nullable text columns are read as "" with COALESCE.
+func documentFields(d *Document) []documentField {
+	return []documentField{
+		{"id", &d.ID},
+		{"title", &d.Title},
+		{"kind", &d.Kind},
+		{"issued_at", &d.IssuedAt},
+		{"storage_key", &d.StorageKey},
+		{"file_status", &d.FileStatus},
+		{"COALESCE(file_content_type, '')", &d.FileContentType},
+		{"owner_id", &d.OwnerID},
+		{"created_at", &d.CreatedAt},
+	}
+}
+
+// selectColumns is the SELECT list matching documentFields.
+var selectColumns = func() string {
+	fields := documentFields(&Document{})
+	exprs := make([]string, len(fields))
+	for i, f := range fields {
+		exprs[i] = f.expr
+	}
+	return strings.Join(exprs, ", ")
+}()
+
+// scanDocument scans one row selected with selectColumns into d, followed by
+// any extra destinations (for example a window count).
+func scanDocument(row pgx.Row, d *Document, extra ...any) error {
+	fields := documentFields(d)
+	dest := make([]any, 0, len(fields)+len(extra))
+	for _, f := range fields {
+		dest = append(dest, f.dest)
+	}
+	return row.Scan(append(dest, extra...)...)
+}
+
+// insertColumns are the columns Create writes, in the order of its VALUES
+// arguments right below; the file lifecycle columns other than file_status
+// keep their defaults.
+const insertColumns = "id, title, kind, issued_at, storage_key, file_status, owner_id, created_at"
 
 // Create inserts a new document.
 func (s *DocumentStore) Create(ctx context.Context, db pgxtx.DBTX, d *Document) error {
 	_, err := db.Exec(ctx, `
-		INSERT INTO documents (`+documentColumns+`)
+		INSERT INTO documents (`+insertColumns+`)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
 		d.ID, d.Title, d.Kind, d.IssuedAt, d.StorageKey, d.FileStatus, d.OwnerID, d.CreatedAt,
 	)

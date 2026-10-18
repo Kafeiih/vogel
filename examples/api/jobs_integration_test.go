@@ -489,8 +489,8 @@ func TestValidateUpload_FinishErrorKeepsAReferencedCopy(t *testing.T) {
 	doc, key := pendingUpload(t, h, &pdf)
 	w := newValidateWorker(h)
 
-	// keepIfReferenced is what the job runs when finish errors: here the
-	// row points at the copy, as if the commit had landed.
+	// deleteCopyUnlessReferenced is what the job runs when finish errors:
+	// here the row points at the copy, as if the commit had landed.
 	finalKey := fileKeyPrefix(doc.ID) + uuid.NewString()
 	putObject(t, h, finalKey, pdf)
 	_, err := h.store.ResolveUpload(ctx, h.pool, doc.ID, key, finalKey, FileStatusReady, "application/pdf")
