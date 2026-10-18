@@ -661,7 +661,8 @@ type attachFileRequest struct {
 // PUT its file with the URL from UploadURL, confirms the key it uploaded
 // to. The key must be one UploadURL could have issued for this document
 // (documents/{id}/uploads/{uuid}), so a client cannot attach another
-// document's object.
+// document's object, nor a final documents/{id}/file/ key, which only the
+// validate_upload job sets.
 //
 // One transaction points the document at the key with its file pending,
 // enqueues validate_upload with worker.Queue.EnqueueTx, and records the
@@ -708,6 +709,15 @@ func (h *DocumentHandler) AttachFile(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
+		// A ready file is detached by this confirm: its final key goes to
+		// the job, which deletes it. A pending or rejected row points at an
+		// upload key whose own job (or the bucket's lifecycle rule) handles
+		// it.
+		previousKey := ""
+		if before.FileStatus == FileStatusReady && before.StorageKey != "" {
+			previousKey = before.StorageKey
+		}
+
 		after = *before
 		after.StorageKey = req.Key
 		after.FileStatus = FileStatusPending
@@ -720,8 +730,9 @@ func (h *DocumentHandler) AttachFile(w http.ResponseWriter, r *http.Request) {
 		// EnqueueTx: the job exists if and only if the pending state it
 		// will resolve commits -- see Create.
 		if _, err := h.queue.EnqueueTx(txCtx, pgxtx.TxFromContext(txCtx), ValidateUploadArgs{
-			DocumentID: id.String(),
-			Key:        req.Key,
+			DocumentID:  id.String(),
+			Key:         req.Key,
+			PreviousKey: previousKey,
 		}, nil); err != nil {
 			return err
 		}

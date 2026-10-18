@@ -47,7 +47,13 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   `POST /documents/{id}/file` y `{"key": ...}`: el documento queda
   `pending` y, en la misma transacción, se encola el job `validate_upload`,
   que detecta el tipo por el contenido, borra y marca `rejected` lo que no
-  está permitido (o lo que nunca se subió) y deja `ready` el resto. La
+  está permitido (o lo que nunca se subió) y copia lo aceptado a una key
+  final, `documents/{id}/file/{uuid}`, que nadie puede firmar para `PUT`:
+  reusar la URL de subida, que sigue vigente unos minutos, ya no reemplaza un
+  archivo validado. El job borra el objeto de subida y, si la confirmación
+  reemplazó un archivo `ready`, también el anterior. Un objeto inexistente se
+  reconoce con `storage.ErrNotFound`, así que el job funciona igual con
+  `storage/s3`. La
   migración `002_add_file_status` agrega `file_status` y `file_content_type`;
   las filas que ya tenían archivo pasan a `ready`.
   `GET /documents/{id}/download-url` responde `409` salvo con el archivo
@@ -55,8 +61,11 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   storage falso hace ahora de bucket: sus URL apuntan a
   `FAKE_STORAGE_BASE_URL` (por defecto `http://localhost:<PORT>`) bajo
   `/fake-storage/`, firmadas con HMAC, y rechaza con `403` una firma inválida,
-  una URL vencida o un tipo o largo distinto del firmado. Ninguna URL firmada
-  se loguea ni se audita.
+  una URL vencida o un tipo o largo distinto del firmado; limita el total de
+  sus objetos en memoria a 256 MiB (`507` al pasarse). Las subidas nunca
+  confirmadas no se barren: en producción, una regla de ciclo de vida del
+  bucket sobre `documents/*/uploads/`. Ninguna URL firmada se loguea ni se
+  audita.
 - **`logger`: los métodos `*Context` agregan `request_id` y `user_id` desde
   `reqctx`.** Antes, `InfoContext(ctx, …)` ignoraba el contexto y una línea
   dentro de una request salía sin `request_id` salvo que se usara

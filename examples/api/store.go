@@ -111,7 +111,7 @@ func (s *DocumentStore) List(ctx context.Context, db pgxtx.DBTX, limit, offset i
 // pending validation, clearing any previously validated content type: the
 // new object has not been sniffed yet. A later confirm replaces the key, so
 // a validation job still running for the old key no longer matches it (see
-// SetFileStatus).
+// ResolveUpload).
 func (s *DocumentStore) AttachPendingFile(ctx context.Context, db pgxtx.DBTX, id uuid.UUID, key string) error {
 	_, err := db.Exec(ctx, `
 		UPDATE documents
@@ -123,18 +123,20 @@ func (s *DocumentStore) AttachPendingFile(ctx context.Context, db pgxtx.DBTX, id
 	return nil
 }
 
-// SetFileStatus records validate_upload's verdict on key: status, and the
-// sniffed contentType ("" stores NULL). It changes the row only while its
-// storage_key is still key and reports whether it did, so a stale job --
-// one whose key a newer confirm already replaced -- never overwrites the
-// newer upload's state.
-func (s *DocumentStore) SetFileStatus(ctx context.Context, db pgxtx.DBTX, id uuid.UUID, key, status, contentType string) (bool, error) {
+// ResolveUpload records validate_upload's verdict on uploadKey: it moves the
+// row to storageKey (the final file key for an accepted upload, uploadKey
+// itself for a rejected one) with status and the sniffed contentType (""
+// stores NULL). It changes the row only while its storage_key is still
+// uploadKey and reports whether it did, so a stale job -- one whose key a
+// newer confirm already replaced -- never overwrites the newer upload's
+// state.
+func (s *DocumentStore) ResolveUpload(ctx context.Context, db pgxtx.DBTX, id uuid.UUID, uploadKey, storageKey, status, contentType string) (bool, error) {
 	tag, err := db.Exec(ctx, `
 		UPDATE documents
-		SET file_status = $1, file_content_type = NULLIF($2, '')
-		WHERE id = $3 AND storage_key = $4`, status, contentType, id, key)
+		SET storage_key = $1, file_status = $2, file_content_type = NULLIF($3, '')
+		WHERE id = $4 AND storage_key = $5`, storageKey, status, contentType, id, uploadKey)
 	if err != nil {
-		return false, fmt.Errorf("document store: set file status %s: %w", id, err)
+		return false, fmt.Errorf("document store: resolve upload %s: %w", id, err)
 	}
 	return tag.RowsAffected() == 1, nil
 }

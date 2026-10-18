@@ -230,6 +230,7 @@ func TestDocumentHandlerAttachFile_RejectsAForeignKey(t *testing.T) {
 	}{
 		{name: "another document's upload", key: "documents/7e57d0c5-0000-4000-8000-000000000001/uploads/7e57d0c5-0000-4000-8000-000000000002"},
 		{name: "the legacy per-document key", key: "documents/" + testDocID},
+		{name: "a final file key, which only the job may set", key: "documents/" + testDocID + "/file/7e57d0c5-0000-4000-8000-000000000002"},
 		{name: "an empty key", key: ""},
 		{name: "the bare prefix", key: prefix},
 		{name: "a suffix that is not an issued UUID", key: prefix + "../../other"},

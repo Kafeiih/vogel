@@ -136,6 +136,27 @@ func TestDocumentHandlerAttachFile(t *testing.T) {
 		assert.Equal(t, FileStatusPending, afterStatus)
 		assert.Equal(t, key, afterKey)
 	})
+
+	// Replacing a ready file hands its final key to the job, which deletes
+	// it once the row no longer points at it: the confirm itself detaches it.
+	t.Run("replacing a ready file passes its key to the job", func(t *testing.T) {
+		doc := createTestDocument(t, h)
+		uploadKey := uploadKeyPrefix(doc.ID) + uuid.NewString()
+		fileKey := fileKeyPrefix(doc.ID) + uuid.NewString()
+		require.NoError(t, h.store.AttachPendingFile(ctx, h.pool, doc.ID, uploadKey))
+		_, err := h.store.ResolveUpload(ctx, h.pool, doc.ID, uploadKey, fileKey, FileStatusReady, "application/pdf")
+		require.NoError(t, err)
+		key := uploadKeyPrefix(doc.ID) + uuid.NewString()
+
+		rec := callHandler(h.AttachFile, http.MethodPost, doc.ID.String(), `{"key":"`+key+`"}`)
+
+		require.Equal(t, http.StatusAccepted, rec.Code, "body %s", rec.Body.String())
+		var args ValidateUploadArgs
+		require.NoError(t, h.pool.QueryRow(ctx,
+			`SELECT args FROM river.river_job WHERE kind = 'validate_upload' AND args->>'document_id' = $1`,
+			doc.ID.String()).Scan(&args))
+		assert.Equal(t, ValidateUploadArgs{DocumentID: doc.ID.String(), Key: key, PreviousKey: fileKey}, args)
+	})
 }
 
 func TestDocumentHandlerDownloadURL(t *testing.T) {
@@ -149,7 +170,7 @@ func TestDocumentHandlerDownloadURL(t *testing.T) {
 				key := uploadKeyPrefix(doc.ID) + uuid.NewString()
 				require.NoError(t, h.store.AttachPendingFile(ctx, h.pool, doc.ID, key))
 				if status == FileStatusRejected {
-					_, err := h.store.SetFileStatus(ctx, h.pool, doc.ID, key, FileStatusRejected, "")
+					_, err := h.store.ResolveUpload(ctx, h.pool, doc.ID, key, key, FileStatusRejected, "")
 					require.NoError(t, err)
 				}
 			}
@@ -163,9 +184,10 @@ func TestDocumentHandlerDownloadURL(t *testing.T) {
 
 	t.Run("ready file is served with its sniffed type", func(t *testing.T) {
 		doc := createTestDocument(t, h)
-		key := uploadKeyPrefix(doc.ID) + uuid.NewString()
-		require.NoError(t, h.store.AttachPendingFile(ctx, h.pool, doc.ID, key))
-		_, err := h.store.SetFileStatus(ctx, h.pool, doc.ID, key, FileStatusReady, "image/png")
+		uploadKey := uploadKeyPrefix(doc.ID) + uuid.NewString()
+		key := fileKeyPrefix(doc.ID) + uuid.NewString()
+		require.NoError(t, h.store.AttachPendingFile(ctx, h.pool, doc.ID, uploadKey))
+		_, err := h.store.ResolveUpload(ctx, h.pool, doc.ID, uploadKey, key, FileStatusReady, "image/png")
 		require.NoError(t, err)
 
 		rec := callHandler(h.DownloadURL, http.MethodGet, doc.ID.String(), "")
@@ -228,6 +250,16 @@ func TestPresignedUploadFlow(t *testing.T) {
 	require.Equal(t, http.StatusOK, get.Code)
 	assert.Equal(t, pdfBody, get.Body.String())
 	assert.Equal(t, "application/pdf", get.Header().Get("Content-Type"))
+
+	// The upload URL is still within its 5 minutes. Reusing it after the
+	// file was validated must not replace the validated bytes: the job moved
+	// them to a final key no URL can PUT to.
+	swapped := "<html><script>x</script>" + strings.Repeat(" ", len(pdfBody)-len("<html><script>x</script>"))
+	reuse := sendSigned(t, fake, upload.Data.Method, upload.Data.URL, upload.Data.Headers["Content-Type"], swapped)
+	require.Equal(t, http.StatusOK, reuse.Code, "the bucket accepts the reused URL: %s", reuse.Body.String())
+	get = sendSigned(t, fake, http.MethodGet, download.Data["url"], "", "")
+	require.Equal(t, http.StatusOK, get.Code)
+	assert.Equal(t, pdfBody, get.Body.String(), "the validated file is unchanged")
 
 	for _, raw := range []string{upload.Data.URL, download.Data["url"]} {
 		sig, err := url.Parse(raw)

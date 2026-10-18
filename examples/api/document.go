@@ -90,6 +90,20 @@ func uploadKeyPrefix(id uuid.UUID) string {
 	return "documents/" + id.String() + "/uploads/"
 }
 
+// fileKeyPrefix is the prefix of the final key a validated file lives
+// under: documents/{id}/file/. Only validate_upload writes there, by copying
+// an accepted upload; no URL is ever presigned to PUT under it, and
+// AttachFile accepts only upload keys, so a client can never point a
+// document at, or overwrite, a validated file.
+func fileKeyPrefix(id uuid.UUID) string {
+	return "documents/" + id.String() + "/file/"
+}
+
+// newFileKey is a fresh final key for one validated file of the document id.
+func newFileKey(id uuid.UUID) string {
+	return fileKeyPrefix(id) + uuid.NewString()
+}
+
 // newUploadKey is a fresh object key for one upload to the document id:
 // uploadKeyPrefix(id) followed by a random UUID. A new key per upload means
 // a replacement never overwrites the object a previous upload (or a

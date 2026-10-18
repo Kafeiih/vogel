@@ -75,7 +75,8 @@ func TestDocumentStore_NewDocumentHasNoFile(t *testing.T) {
 }
 
 // AttachPendingFile moves a document to a new key as pending, and
-// SetFileStatus only lands while the row still points at the key it names.
+// ResolveUpload only lands while the row still points at the upload key it
+// names, moving the row to the key it is given.
 func TestDocumentStore_FileStatusFollowsTheCurrentKey(t *testing.T) {
 	ctx := context.Background()
 	h, pool := newIntegrationHandler(t)
@@ -84,18 +85,24 @@ func TestDocumentStore_FileStatusFollowsTheCurrentKey(t *testing.T) {
 	newKey := uploadKeyPrefix(doc.ID) + uuid.NewString()
 
 	require.NoError(t, h.store.AttachPendingFile(ctx, pool, doc.ID, oldKey))
-	ok, err := h.store.SetFileStatus(ctx, pool, doc.ID, oldKey, FileStatusReady, "application/pdf")
+	finalKey := fileKeyPrefix(doc.ID) + uuid.NewString()
+	ok, err := h.store.ResolveUpload(ctx, pool, doc.ID, oldKey, finalKey, FileStatusReady, "application/pdf")
 	require.NoError(t, err)
 	require.True(t, ok)
+	got, err := h.store.GetByID(ctx, pool, doc.ID)
+	require.NoError(t, err)
+	assert.Equal(t, finalKey, got.StorageKey)
+	assert.Equal(t, FileStatusReady, got.FileStatus)
+	assert.Equal(t, "application/pdf", got.FileContentType)
 
 	require.NoError(t, h.store.AttachPendingFile(ctx, pool, doc.ID, newKey))
-	got, err := h.store.GetByID(ctx, pool, doc.ID)
+	got, err = h.store.GetByID(ctx, pool, doc.ID)
 	require.NoError(t, err)
 	assert.Equal(t, newKey, got.StorageKey)
 	assert.Equal(t, FileStatusPending, got.FileStatus)
 	assert.Empty(t, got.FileContentType, "a new upload clears the previously sniffed type")
 
-	ok, err = h.store.SetFileStatus(ctx, pool, doc.ID, oldKey, FileStatusRejected, "")
+	ok, err = h.store.ResolveUpload(ctx, pool, doc.ID, oldKey, oldKey, FileStatusRejected, "")
 	require.NoError(t, err)
 	assert.False(t, ok, "a verdict on the replaced key changes nothing")
 	got, err = h.store.GetByID(ctx, pool, doc.ID)

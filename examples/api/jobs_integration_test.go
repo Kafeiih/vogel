@@ -4,6 +4,8 @@ package main
 
 import (
 	"context"
+	"io"
+	"sort"
 	"strings"
 	"testing"
 
@@ -39,18 +41,50 @@ func pendingUpload(t *testing.T, h *DocumentHandler, body *string) (Document, st
 	doc := createTestDocument(t, h)
 	key := uploadKeyPrefix(doc.ID) + uuid.NewString()
 	if body != nil {
-		require.NoError(t, h.storage.Upload(ctx, &storage.UploadInput{Key: key, Body: strings.NewReader(*body), ContentType: "application/pdf"}))
+		putObject(t, h, key, *body)
 	}
 	require.NoError(t, h.store.AttachPendingFile(ctx, h.pool, doc.ID, key))
 	return doc, key
 }
 
-func runValidate(t *testing.T, h *DocumentHandler, docID uuid.UUID, key string) {
+func putObject(t *testing.T, h *DocumentHandler, key, body string) {
 	t.Helper()
-	err := newValidateWorker(h).Work(context.Background(), &river.Job[ValidateUploadArgs]{
-		Args: ValidateUploadArgs{DocumentID: docID.String(), Key: key},
-	})
+	require.NoError(t, h.storage.Upload(context.Background(), &storage.UploadInput{
+		Key: key, Body: strings.NewReader(body), ContentType: "application/pdf",
+	}))
+}
+
+func runValidate(t *testing.T, h *DocumentHandler, args ValidateUploadArgs) {
+	t.Helper()
+	err := newValidateWorker(h).Work(context.Background(), &river.Job[ValidateUploadArgs]{Args: args})
 	require.NoError(t, err)
+}
+
+// objectKeys lists the keys the fake bucket holds for docID, sorted.
+func objectKeys(t *testing.T, h *DocumentHandler, docID uuid.UUID) []string {
+	t.Helper()
+	fake, ok := h.storage.(*fakeStorage)
+	require.True(t, ok)
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	keys := []string{}
+	for k := range fake.objects {
+		if strings.HasPrefix(k, "documents/"+docID.String()+"/") {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func readObject(t *testing.T, h *DocumentHandler, key string) string {
+	t.Helper()
+	out, err := h.storage.Download(context.Background(), key)
+	require.NoError(t, err)
+	defer func() { _ = out.Body.Close() }()
+	b, err := io.ReadAll(out.Body)
+	require.NoError(t, err)
+	return string(b)
 }
 
 // validationAudit returns the source and the after snapshot's file_status of
@@ -73,6 +107,17 @@ func validationAudit(t *testing.T, h *DocumentHandler, docID uuid.UUID) [][2]str
 	return out
 }
 
+// isFileKey reports whether key is a final file key for docID:
+// documents/{id}/file/{uuid}.
+func isFileKey(docID uuid.UUID, key string) bool {
+	suffix, ok := strings.CutPrefix(key, fileKeyPrefix(docID))
+	if !ok {
+		return false
+	}
+	_, err := uuid.Parse(suffix)
+	return err == nil
+}
+
 func TestValidateUpload(t *testing.T) {
 	h, _ := newIntegrationHandler(t)
 	ctx := context.Background()
@@ -82,11 +127,12 @@ func TestValidateUpload(t *testing.T) {
 	t.Run("missing object is rejected", func(t *testing.T) {
 		doc, key := pendingUpload(t, h, nil)
 
-		runValidate(t, h, doc.ID, key)
+		runValidate(t, h, ValidateUploadArgs{DocumentID: doc.ID.String(), Key: key})
 
 		got, err := h.store.GetByID(ctx, h.pool, doc.ID)
 		require.NoError(t, err)
 		assert.Equal(t, FileStatusRejected, got.FileStatus)
+		assert.Equal(t, key, got.StorageKey)
 		assert.Empty(t, got.FileContentType)
 		assert.Equal(t, [][2]string{{"worker", FileStatusRejected}}, validationAudit(t, h, doc.ID))
 	})
@@ -94,7 +140,7 @@ func TestValidateUpload(t *testing.T) {
 	t.Run("disallowed content is deleted and rejected", func(t *testing.T) {
 		doc, key := pendingUpload(t, h, &html)
 
-		runValidate(t, h, doc.ID, key)
+		runValidate(t, h, ValidateUploadArgs{DocumentID: doc.ID.String(), Key: key})
 
 		got, err := h.store.GetByID(ctx, h.pool, doc.ID)
 		require.NoError(t, err)
@@ -102,45 +148,92 @@ func TestValidateUpload(t *testing.T) {
 		assert.Empty(t, got.FileContentType)
 		_, dlErr := h.storage.Download(ctx, key)
 		assert.ErrorIs(t, dlErr, storage.ErrNotFound, "the rejected object is deleted")
+		assert.Empty(t, objectKeys(t, h, doc.ID), "no copy is made of rejected content")
 		assert.Equal(t, [][2]string{{"worker", FileStatusRejected}}, validationAudit(t, h, doc.ID))
 	})
 
-	t.Run("allowed content is ready with the sniffed type", func(t *testing.T) {
+	t.Run("allowed content is moved to a final key and ready", func(t *testing.T) {
 		doc, key := pendingUpload(t, h, &pdf)
 
-		runValidate(t, h, doc.ID, key)
+		runValidate(t, h, ValidateUploadArgs{DocumentID: doc.ID.String(), Key: key})
 
 		got, err := h.store.GetByID(ctx, h.pool, doc.ID)
 		require.NoError(t, err)
 		assert.Equal(t, FileStatusReady, got.FileStatus)
 		assert.Equal(t, "application/pdf", got.FileContentType)
-		assert.Equal(t, key, got.StorageKey)
-		out, err := h.storage.Download(ctx, key)
-		require.NoError(t, err, "an accepted object is kept")
-		_ = out.Body.Close()
+		require.True(t, isFileKey(doc.ID, got.StorageKey), "storage_key %q is a final documents/{id}/file/{uuid} key", got.StorageKey)
+		assert.Equal(t, pdfBody, readObject(t, h, got.StorageKey))
+		assert.Equal(t, []string{got.StorageKey}, objectKeys(t, h, doc.ID), "the upload object is deleted")
 		assert.Equal(t, [][2]string{{"worker", FileStatusReady}}, validationAudit(t, h, doc.ID))
+
+		// The upload URL may still be valid: whatever is PUT to the upload
+		// key now never reaches the validated file.
+		putObject(t, h, key, html)
+		assert.Equal(t, pdfBody, readObject(t, h, got.StorageKey), "re-uploading to the upload key leaves the file untouched")
 	})
 
-	t.Run("a stale key never overwrites the newer upload", func(t *testing.T) {
+	t.Run("a new ready file deletes the previous one", func(t *testing.T) {
+		doc, firstKey := pendingUpload(t, h, &pdf)
+		runValidate(t, h, ValidateUploadArgs{DocumentID: doc.ID.String(), Key: firstKey})
+		first, err := h.store.GetByID(ctx, h.pool, doc.ID)
+		require.NoError(t, err)
+		previous := first.StorageKey
+
+		secondKey := uploadKeyPrefix(doc.ID) + uuid.NewString()
+		putObject(t, h, secondKey, pdf)
+		require.NoError(t, h.store.AttachPendingFile(ctx, h.pool, doc.ID, secondKey))
+
+		runValidate(t, h, ValidateUploadArgs{DocumentID: doc.ID.String(), Key: secondKey, PreviousKey: previous})
+
+		got, err := h.store.GetByID(ctx, h.pool, doc.ID)
+		require.NoError(t, err)
+		assert.Equal(t, FileStatusReady, got.FileStatus)
+		require.True(t, isFileKey(doc.ID, got.StorageKey))
+		assert.NotEqual(t, previous, got.StorageKey)
+		assert.Equal(t, []string{got.StorageKey}, objectKeys(t, h, doc.ID), "only the new file is left")
+	})
+
+	t.Run("a rejected replacement deletes the previous file too", func(t *testing.T) {
+		doc, firstKey := pendingUpload(t, h, &pdf)
+		runValidate(t, h, ValidateUploadArgs{DocumentID: doc.ID.String(), Key: firstKey})
+		first, err := h.store.GetByID(ctx, h.pool, doc.ID)
+		require.NoError(t, err)
+
+		secondKey := uploadKeyPrefix(doc.ID) + uuid.NewString()
+		putObject(t, h, secondKey, html)
+		require.NoError(t, h.store.AttachPendingFile(ctx, h.pool, doc.ID, secondKey))
+
+		runValidate(t, h, ValidateUploadArgs{DocumentID: doc.ID.String(), Key: secondKey, PreviousKey: first.StorageKey})
+
+		got, err := h.store.GetByID(ctx, h.pool, doc.ID)
+		require.NoError(t, err)
+		assert.Equal(t, FileStatusRejected, got.FileStatus)
+		assert.Empty(t, objectKeys(t, h, doc.ID), "the confirm detached the previous file; nothing references it")
+	})
+
+	t.Run("a stale key never overwrites the newer upload and leaves no copy", func(t *testing.T) {
 		doc, oldKey := pendingUpload(t, h, &pdf)
 		newKey := uploadKeyPrefix(doc.ID) + uuid.NewString()
+		putObject(t, h, newKey, pdf)
 		require.NoError(t, h.store.AttachPendingFile(ctx, h.pool, doc.ID, newKey))
 
-		runValidate(t, h, doc.ID, oldKey)
+		runValidate(t, h, ValidateUploadArgs{DocumentID: doc.ID.String(), Key: oldKey})
 
 		got, err := h.store.GetByID(ctx, h.pool, doc.ID)
 		require.NoError(t, err)
 		assert.Equal(t, newKey, got.StorageKey)
 		assert.Equal(t, FileStatusPending, got.FileStatus, "the newer upload still awaits its own job")
 		assert.Empty(t, validationAudit(t, h, doc.ID), "a verdict that changed nothing is not audited")
+		assert.Equal(t, []string{newKey}, objectKeys(t, h, doc.ID), "the stale copy and the stale upload are deleted")
 	})
 
 	t.Run("a document deleted meanwhile is a no-op", func(t *testing.T) {
 		doc, key := pendingUpload(t, h, &pdf)
 		require.NoError(t, h.store.Delete(ctx, h.pool, doc.ID))
 
-		runValidate(t, h, doc.ID, key)
+		runValidate(t, h, ValidateUploadArgs{DocumentID: doc.ID.String(), Key: key})
 
 		assert.Empty(t, validationAudit(t, h, doc.ID))
+		assert.Empty(t, objectKeys(t, h, doc.ID), "nothing is left behind for a deleted document")
 	})
 }
