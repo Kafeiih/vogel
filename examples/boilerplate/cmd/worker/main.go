@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -95,7 +96,11 @@ func run(migrateFirst bool) error {
 		return fmt.Errorf("loading config: %w", err)
 	}
 
-	appLogger := logger.NewDefault(cfg.App.Env)
+	appLogger := logger.NewDefault(cfg.App.Env).With("component", "worker")
+	// Installed as the default too, so package-level slog calls, River's
+	// migrations and libraries logging through slog.Default() share its JSON
+	// format, component attribute and request_id from context.
+	slog.SetDefault(appLogger.Logger)
 	appLogger.Info("starting worker",
 		"version", cfg.App.Version,
 		"env", cfg.App.Env,

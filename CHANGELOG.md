@@ -21,6 +21,12 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   `audit.SourceWorker` llevan ahora el `request_id` de la request de origen,
   donde antes quedaba `NULL`. River recibe además el logger de la app en vez
   de usar su propio handler de texto.
+- **`examples/boilerplate`: el logger de la app es también `slog.Default()`.**
+  Los binarios `api` y `worker` lo instalan con `slog.SetDefault`, así que los
+  jobs que loguean con `slog.InfoContext`, las migraciones de River y las
+  librerías que usan `slog.Default()` salen en el mismo formato y con
+  `request_id`. Cada línea lleva además `component` (`api` o `worker`) para
+  filtrar por binario.
 
 ## [0.10.1] — 2026-10-16
 
