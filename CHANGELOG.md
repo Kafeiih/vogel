@@ -50,8 +50,12 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   está permitido (o lo que nunca se subió) y copia lo aceptado a una key
   final, `documents/{id}/file/{uuid}`, que nadie puede firmar para `PUT`:
   reusar la URL de subida, que sigue vigente unos minutos, ya no reemplaza un
-  archivo validado. El job borra el objeto de subida y, si la confirmación
-  reemplazó un archivo `ready`, también el anterior. Un objeto inexistente se
+  archivo validado. El job borra el objeto de subida. Si la confirmación
+  reemplazaba un archivo `ready`, un reemplazo aceptado borra el anterior y
+  uno rechazado lo restaura (el documento vuelve a `ready` con su archivo y
+  su tipo), así que repetir una confirmación no destruye el archivo validado.
+  El veredicto sólo se escribe sobre un archivo `pending`: un reintento del
+  job no cambia nada ni audita dos veces. Un objeto inexistente se
   reconoce con `storage.ErrNotFound`, así que el job funciona igual con
   `storage/s3`. La
   migración `002_add_file_status` agrega `file_status` y `file_content_type`;

@@ -127,14 +127,15 @@ func (s *DocumentStore) AttachPendingFile(ctx context.Context, db pgxtx.DBTX, id
 // row to storageKey (the final file key for an accepted upload, uploadKey
 // itself for a rejected one) with status and the sniffed contentType (""
 // stores NULL). It changes the row only while its storage_key is still
-// uploadKey and reports whether it did, so a stale job -- one whose key a
-// newer confirm already replaced -- never overwrites the newer upload's
-// state.
+// uploadKey AND its file is still pending, and reports whether it did: a
+// stale job -- one whose key a newer confirm already replaced -- never
+// overwrites the newer upload's state, and a retried job whose earlier
+// attempt already resolved the row changes nothing and audits nothing.
 func (s *DocumentStore) ResolveUpload(ctx context.Context, db pgxtx.DBTX, id uuid.UUID, uploadKey, storageKey, status, contentType string) (bool, error) {
 	tag, err := db.Exec(ctx, `
 		UPDATE documents
 		SET storage_key = $1, file_status = $2, file_content_type = NULLIF($3, '')
-		WHERE id = $4 AND storage_key = $5`, storageKey, status, contentType, id, uploadKey)
+		WHERE id = $4 AND storage_key = $5 AND file_status = 'pending'`, storageKey, status, contentType, id, uploadKey)
 	if err != nil {
 		return false, fmt.Errorf("document store: resolve upload %s: %w", id, err)
 	}

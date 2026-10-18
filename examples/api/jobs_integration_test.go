@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/rivertype"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -54,10 +55,31 @@ func putObject(t *testing.T, h *DocumentHandler, key, body string) {
 	}))
 }
 
+// validateJob wraps args the way River delivers them: first attempt of
+// River's default 25.
+func validateJob(args ValidateUploadArgs) *river.Job[ValidateUploadArgs] {
+	return &river.Job[ValidateUploadArgs]{
+		JobRow: &rivertype.JobRow{Attempt: 1, MaxAttempts: river.MaxAttemptsDefault},
+		Args:   args,
+	}
+}
+
 func runValidate(t *testing.T, h *DocumentHandler, args ValidateUploadArgs) {
 	t.Helper()
-	err := newValidateWorker(h).Work(context.Background(), &river.Job[ValidateUploadArgs]{Args: args})
+	require.NoError(t, newValidateWorker(h).Work(context.Background(), validateJob(args)))
+}
+
+// readyFile creates a document whose file went through one accepted upload
+// and returns it as stored.
+func readyFile(t *testing.T, h *DocumentHandler) Document {
+	t.Helper()
+	pdf := pdfBody
+	doc, key := pendingUpload(t, h, &pdf)
+	runValidate(t, h, ValidateUploadArgs{DocumentID: doc.ID.String(), Key: key})
+	got, err := h.store.GetByID(context.Background(), h.pool, doc.ID)
 	require.NoError(t, err)
+	require.Equal(t, FileStatusReady, got.FileStatus)
+	return *got
 }
 
 // objectKeys lists the keys the fake bucket holds for docID, sorted.
@@ -193,22 +215,67 @@ func TestValidateUpload(t *testing.T) {
 		assert.Equal(t, []string{got.StorageKey}, objectKeys(t, h, doc.ID), "only the new file is left")
 	})
 
-	t.Run("a rejected replacement deletes the previous file too", func(t *testing.T) {
-		doc, firstKey := pendingUpload(t, h, &pdf)
-		runValidate(t, h, ValidateUploadArgs{DocumentID: doc.ID.String(), Key: firstKey})
-		first, err := h.store.GetByID(ctx, h.pool, doc.ID)
+	// A replacement that fails validation must not cost the document the
+	// file it already had: the job puts the previous ready file back.
+	for name, body := range map[string]*string{"disallowed": &html, "missing": nil} {
+		t.Run("a "+name+" replacement restores the previous file", func(t *testing.T) {
+			first := readyFile(t, h)
+			doc := first
+
+			secondKey := uploadKeyPrefix(doc.ID) + uuid.NewString()
+			if body != nil {
+				putObject(t, h, secondKey, *body)
+			}
+			require.NoError(t, h.store.AttachPendingFile(ctx, h.pool, doc.ID, secondKey))
+
+			runValidate(t, h, ValidateUploadArgs{
+				DocumentID: doc.ID.String(), Key: secondKey,
+				PreviousKey: first.StorageKey, PreviousContentType: first.FileContentType,
+			})
+
+			got, err := h.store.GetByID(ctx, h.pool, doc.ID)
+			require.NoError(t, err)
+			assert.Equal(t, FileStatusReady, got.FileStatus)
+			assert.Equal(t, first.StorageKey, got.StorageKey)
+			assert.Equal(t, "application/pdf", got.FileContentType)
+			assert.Equal(t, []string{first.StorageKey}, objectKeys(t, h, doc.ID), "the previous file is kept, the bad upload is gone")
+			assert.Equal(t, pdfBody, readObject(t, h, first.StorageKey))
+			assert.Equal(t, [][2]string{{"worker", FileStatusReady}, {"worker", FileStatusReady}}, validationAudit(t, h, doc.ID))
+		})
+	}
+
+	// River retries a job whose earlier attempt may already have written its
+	// verdict: the second run must find nothing to do.
+	t.Run("a retried rejection changes nothing", func(t *testing.T) {
+		doc, key := pendingUpload(t, h, nil)
+		args := ValidateUploadArgs{DocumentID: doc.ID.String(), Key: key}
+
+		runValidate(t, h, args)
+		once, err := h.store.GetByID(ctx, h.pool, doc.ID)
 		require.NoError(t, err)
+		runValidate(t, h, args)
 
-		secondKey := uploadKeyPrefix(doc.ID) + uuid.NewString()
-		putObject(t, h, secondKey, html)
-		require.NoError(t, h.store.AttachPendingFile(ctx, h.pool, doc.ID, secondKey))
-
-		runValidate(t, h, ValidateUploadArgs{DocumentID: doc.ID.String(), Key: secondKey, PreviousKey: first.StorageKey})
-
-		got, err := h.store.GetByID(ctx, h.pool, doc.ID)
+		twice, err := h.store.GetByID(ctx, h.pool, doc.ID)
 		require.NoError(t, err)
-		assert.Equal(t, FileStatusRejected, got.FileStatus)
-		assert.Empty(t, objectKeys(t, h, doc.ID), "the confirm detached the previous file; nothing references it")
+		assert.Equal(t, once, twice)
+		assert.Equal(t, FileStatusRejected, twice.FileStatus)
+		assert.Equal(t, [][2]string{{"worker", FileStatusRejected}}, validationAudit(t, h, doc.ID), "exactly one audit row")
+	})
+
+	t.Run("a retried acceptance changes nothing", func(t *testing.T) {
+		doc, key := pendingUpload(t, h, &pdf)
+		args := ValidateUploadArgs{DocumentID: doc.ID.String(), Key: key}
+
+		runValidate(t, h, args)
+		once, err := h.store.GetByID(ctx, h.pool, doc.ID)
+		require.NoError(t, err)
+		runValidate(t, h, args)
+
+		twice, err := h.store.GetByID(ctx, h.pool, doc.ID)
+		require.NoError(t, err)
+		assert.Equal(t, once, twice)
+		assert.Equal(t, []string{once.StorageKey}, objectKeys(t, h, doc.ID))
+		assert.Equal(t, [][2]string{{"worker", FileStatusReady}}, validationAudit(t, h, doc.ID), "exactly one audit row")
 	})
 
 	t.Run("a stale key never overwrites the newer upload and leaves no copy", func(t *testing.T) {

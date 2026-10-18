@@ -135,9 +135,13 @@ directo al storage con una URL firmada, y la validación pesada corre en un job:
    `documents/{id}/file/{uuid}`, deja el documento `ready` apuntando ahí con
    el tipo detectado y borra el objeto de subida. Cada veredicto se escribe
    sólo si el documento sigue apuntando a esa `key`: una subida más nueva gana
-   y un job viejo no la pisa (si ya había copiado, borra su copia). Si la
-   confirmación reemplazó un archivo `ready`, el job borra también ese archivo
-   anterior.
+   y un job viejo no la pisa (si ya había copiado, borra su copia); además
+   sólo cambia un archivo `pending`, así que un reintento del job que ya
+   resolvió la fila no hace nada ni se audita dos veces. Si la confirmación
+   reemplazaba un archivo `ready`, un reemplazo aceptado borra ese archivo
+   anterior, pero uno rechazado (inexistente o no permitido) **lo restaura**:
+   el documento vuelve a `ready` con su archivo y su tipo. Así, repetir una
+   confirmación con una `key` ya consumida no destruye el archivo validado.
 
    La copia cierra una carrera: la URL de subida sigue valiendo hasta 5
    minutos después del job, y quien la tenga podría reescribir con ella un

@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/riverqueue/river"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -156,8 +155,54 @@ func TestDocumentHandlerAttachFile(t *testing.T) {
 		require.NoError(t, h.pool.QueryRow(ctx,
 			`SELECT args FROM river.river_job WHERE kind = 'validate_upload' AND args->>'document_id' = $1`,
 			doc.ID.String()).Scan(&args))
-		assert.Equal(t, ValidateUploadArgs{DocumentID: doc.ID.String(), Key: key, PreviousKey: fileKey}, args)
+		assert.Equal(t, ValidateUploadArgs{
+			DocumentID: doc.ID.String(), Key: key,
+			PreviousKey: fileKey, PreviousContentType: "application/pdf",
+		}, args)
 	})
+
+	// A client that retries its confirm with a key the job already consumed
+	// must not lose the file: the second job finds the upload gone, and puts
+	// the validated file back instead of deleting it.
+	t.Run("confirming the same key twice keeps the validated file", func(t *testing.T) {
+		doc := createTestDocument(t, h)
+		key := uploadKeyPrefix(doc.ID) + uuid.NewString()
+		putObject(t, h, key, pdfBody)
+
+		for i := 0; i < 2; i++ {
+			rec := callHandler(h.AttachFile, http.MethodPost, doc.ID.String(), `{"key":"`+key+`"}`)
+			require.Equal(t, http.StatusAccepted, rec.Code, "confirm %d: %s", i+1, rec.Body.String())
+			runValidate(t, h, latestValidateArgs(t, h, doc.ID))
+		}
+
+		got, err := h.store.GetByID(ctx, h.pool, doc.ID)
+		require.NoError(t, err)
+		assert.Equal(t, FileStatusReady, got.FileStatus)
+		require.True(t, isFileKey(doc.ID, got.StorageKey))
+		assert.Equal(t, "application/pdf", got.FileContentType)
+
+		rec := callHandler(h.DownloadURL, http.MethodGet, doc.ID.String(), "")
+		require.Equal(t, http.StatusOK, rec.Code, "body %s", rec.Body.String())
+		var resp struct {
+			Data map[string]string `json:"data"`
+		}
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+		get := sendSigned(t, h.storage.(*fakeStorage), http.MethodGet, resp.Data["url"], "", "")
+		require.Equal(t, http.StatusOK, get.Code)
+		assert.Equal(t, pdfBody, get.Body.String(), "the original final file is still there")
+	})
+}
+
+// latestValidateArgs returns the args of the most recent validate_upload job
+// enqueued for docID.
+func latestValidateArgs(t *testing.T, h *DocumentHandler, docID uuid.UUID) ValidateUploadArgs {
+	t.Helper()
+	var args ValidateUploadArgs
+	require.NoError(t, h.pool.QueryRow(context.Background(), `
+		SELECT args FROM river.river_job
+		WHERE kind = 'validate_upload' AND args->>'document_id' = $1
+		ORDER BY id DESC LIMIT 1`, docID.String()).Scan(&args))
+	return args
 }
 
 func TestDocumentHandlerDownloadURL(t *testing.T) {
@@ -259,9 +304,7 @@ func TestPresignedUploadFlow(t *testing.T) {
 	rec = callHandler(h.AttachFile, http.MethodPost, doc.ID.String(), `{"key":"`+upload.Data.Key+`"}`)
 	require.Equal(t, http.StatusAccepted, rec.Code, "body %s", rec.Body.String())
 
-	err := newValidateWorker(h).Work(ctx, &river.Job[ValidateUploadArgs]{
-		Args: ValidateUploadArgs{DocumentID: doc.ID.String(), Key: upload.Data.Key},
-	})
+	err := newValidateWorker(h).Work(ctx, validateJob(ValidateUploadArgs{DocumentID: doc.ID.String(), Key: upload.Data.Key}))
 	require.NoError(t, err)
 
 	rec = callHandler(h.DownloadURL, http.MethodGet, doc.ID.String(), "")

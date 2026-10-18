@@ -709,13 +709,13 @@ func (h *DocumentHandler) AttachFile(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
-		// A ready file is detached by this confirm: its final key goes to
-		// the job, which deletes it. A pending or rejected row points at an
-		// upload key whose own job (or the bucket's lifecycle rule) handles
-		// it.
-		previousKey := ""
+		// A ready file goes to the job with its type: the job puts it back
+		// if this upload is rejected, and deletes it if this upload
+		// replaces it. A pending or rejected row points at an upload key
+		// whose own job (or the bucket's lifecycle rule) handles it.
+		previousKey, previousContentType := "", ""
 		if before.FileStatus == FileStatusReady && before.StorageKey != "" {
-			previousKey = before.StorageKey
+			previousKey, previousContentType = before.StorageKey, before.FileContentType
 		}
 
 		after = *before
@@ -730,9 +730,10 @@ func (h *DocumentHandler) AttachFile(w http.ResponseWriter, r *http.Request) {
 		// EnqueueTx: the job exists if and only if the pending state it
 		// will resolve commits -- see Create.
 		if _, err := h.queue.EnqueueTx(txCtx, pgxtx.TxFromContext(txCtx), ValidateUploadArgs{
-			DocumentID:  id.String(),
-			Key:         req.Key,
-			PreviousKey: previousKey,
+			DocumentID:          id.String(),
+			Key:                 req.Key,
+			PreviousKey:         previousKey,
+			PreviousContentType: previousContentType,
 		}, nil); err != nil {
 			return err
 		}
