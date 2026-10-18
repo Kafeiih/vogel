@@ -800,9 +800,12 @@ s3Storage, err := s3.NewS3Storage(s3.Config{
 }, logger)
 ```
 
-Sin cambio de firma — `Config`, `Upload`, `Download`, `Delete`,
-`PresignedGetURL`, `PresignedPutURL` coinciden exactamente con lo local en
-ambas apps.
+Sin cambio de firma para quien llama — `Config`, `Upload`, `Download`,
+`Delete`, `PresignedGetURL`, `PresignedPutURL` coinciden con lo local en ambas
+apps. Un tipo propio que implemente `storage.Storage` (un fake de tests, por
+ejemplo) debe agregar el parámetro variádico `opts ...storage.PresignPutOption`
+a `PresignedPutURL`. Una expiración mayor que `s3.Config.MaxPresignExpiry`
+(1 h por defecto) ahora devuelve `storage.ErrPresignExpiryTooLong`.
 
 ### `notification` + `notification/smtp` + `notification/sendgrid`
 

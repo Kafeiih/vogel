@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"errors"
 	"strings"
 	"unicode"
 )
@@ -170,5 +171,53 @@ func isAttrChar(c byte) bool {
 func WithResponseContentType(contentType string) PresignGetOption {
 	return func(o *PresignGetOptions) {
 		o.ContentType = contentType
+	}
+}
+
+// ErrPresignExpiryTooLong is returned by a presign method when the requested
+// expiry exceeds the adapter's maximum. A presigned URL is a bearer
+// credential that nothing can revoke before it expires, so adapters refuse to
+// sign one that lives longer than they allow instead of silently shortening
+// it.
+var ErrPresignExpiryTooLong = errors.New("storage: presign expiry exceeds the maximum")
+
+// ErrInvalidContentLength is returned by PresignedPutURL when
+// WithContentLength was given a negative size.
+var ErrInvalidContentLength = errors.New("storage: content length must not be negative")
+
+// PresignPutOptions holds the constraints a presigned PUT URL signs. Build a
+// value with ApplyPresignPutOptions.
+type PresignPutOptions struct {
+	// ContentLength is the exact body size, in bytes, the URL accepts. It is
+	// only signed when HasContentLength is set, so zero can require an empty
+	// body.
+	ContentLength    int64
+	HasContentLength bool
+}
+
+// PresignPutOption customizes a presigned PUT URL. See WithContentLength.
+type PresignPutOption func(*PresignPutOptions)
+
+// ApplyPresignPutOptions folds opts and returns the result. Adapters
+// implementing Storage.PresignedPutURL call this; nil options are ignored.
+func ApplyPresignPutOptions(opts ...PresignPutOption) PresignPutOptions {
+	var o PresignPutOptions
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&o)
+		}
+	}
+	return o
+}
+
+// WithContentLength signs the exact size of the body the URL accepts. The
+// store rejects an upload whose Content-Length differs, so whoever holds the
+// URL cannot store an object larger (or smaller) than the size the
+// application approved. Validate the size against your limit before signing.
+// A negative size makes PresignedPutURL return ErrInvalidContentLength.
+func WithContentLength(n int64) PresignPutOption {
+	return func(o *PresignPutOptions) {
+		o.ContentLength = n
+		o.HasContentLength = true
 	}
 }

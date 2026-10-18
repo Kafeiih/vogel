@@ -149,7 +149,7 @@ func (s *fakeStorage) PresignedGetURL(_ context.Context, key string, expiry time
 		key, time.Now().Add(presignExpiry(expiry)).Unix(), url.QueryEscape(o.ContentDisposition)), nil
 }
 
-func (s *fakeStorage) PresignedPutURL(_ context.Context, key string, _ string, expiry time.Duration) (string, error) {
+func (s *fakeStorage) PresignedPutURL(_ context.Context, key string, _ string, expiry time.Duration, _ ...storage.PresignPutOption) (string, error) {
 	return fmt.Sprintf("http://localhost/fake-storage/%s?expires=%d", key, time.Now().Add(presignExpiry(expiry)).Unix()), nil
 }
 

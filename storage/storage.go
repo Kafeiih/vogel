@@ -58,7 +58,9 @@ type Storage interface {
 
 	// PresignedGetURL generates a temporary URL for downloading a file.
 	// The URL is valid for the specified duration and requires no authentication.
-	// A non-positive expiry means "use the adapter's configured default".
+	// A non-positive expiry means "use the adapter's configured default"; an
+	// expiry above the adapter's maximum returns ErrPresignExpiryTooLong (the
+	// same holds for PresignedPutURL).
 	//
 	// Without options the URL asks the store to serve the object with
 	// Content-Disposition: attachment (see DefaultContentDisposition), so a
@@ -74,5 +76,10 @@ type Storage interface {
 	// PresignedPutURL generates a temporary URL for uploading a file.
 	// The URL is valid for the specified duration and accepts the specified content type.
 	// A non-positive expiry means "use the adapter's configured default".
-	PresignedPutURL(ctx context.Context, key string, contentType string, expiry time.Duration) (string, error)
+	//
+	// Without options the URL accepts a body of any size. WithContentLength
+	// signs the exact size, so the holder cannot upload more than the
+	// application approved. Adapters fold the options with
+	// ApplyPresignPutOptions.
+	PresignedPutURL(ctx context.Context, key string, contentType string, expiry time.Duration, opts ...PresignPutOption) (string, error)
 }

@@ -104,7 +104,7 @@ datos a ningún tercero por su cuenta: solo a los que el consumidor configura.
 | `request.Validator` | Validación de params y query (UUID, enteros, enums, fechas, `MaxLen` en runas) | Validar todo input antes de usarlo |
 | `audit/httpx.Handler` | Filtros validados, texto libre ≤ 256 caracteres, límite y `offset` acotados, errores sin detalle de la base | Montarlo **detrás** de `Authenticate` y `RequirePermission` (no se protege solo) |
 | `audit.Recorder` | Redacta claves sensibles (`password`, `token`, `secret`, `authorization`, `api_key`, `cookie`, ...) y falla cerrado si no puede; `audit_log` rechaza `UPDATE`/`DELETE`/`TRUNCATE` por trigger | Agregar sus claves sensibles; usar rol de ejecución sin dueño |
-| `storage` (presign) | GET firmado con `Content-Disposition: attachment` y `application/octet-stream` por defecto; expiración por defecto 15 min; `SniffContentType` con lista permitida | Autorizar antes de firmar; claves de objeto no derivadas de input sin validar; verificar el tipo al recibir |
+| `storage` (presign) | GET firmado con `Content-Disposition: attachment` y `application/octet-stream` por defecto; expiración por defecto 15 min y máxima 1 h (`ErrPresignExpiryTooLong` por encima); PUT firmado con tamaño exacto vía `WithContentLength`; `SniffContentType` con lista permitida | Autorizar antes de firmar; limitar el tamaño antes de firmar un PUT; claves de objeto no derivadas de input sin validar; verificar el tipo al recibir |
 | `notification` | Puerto sin SDK; SMTP con STARTTLS obligatorio (política por defecto de go-mail); timeouts HTTP de SendGrid | No armar destinatarios ni cabeceras con input sin validar; limitar envíos |
 | `worker` / River | Esquema propio, migraciones separadas del arranque del servidor | No poner secretos en los argumentos de los jobs; autorizar quién encola |
 | `workflow` | Estado y transiciones en Postgres, reclamo con actor del contexto | Autorizar cada transición |
@@ -127,7 +127,7 @@ datos a ningún tercero por su cuenta: solo a los que el consumidor configura.
 | Cuerpo enorme o JSON malicioso | Límite de bytes y decodificación estricta |
 | Filtro de auditoría gigante para cargar la base | `MaxFilterLength`, límite de página y `offset` máximo |
 | Archivo HTML o SVG subido que ejecuta script | Descarga como adjunto y `octet-stream` por defecto; `SniffContentType` |
-| Enlace firmado filtrado | Expira (15 min por defecto); quien lo tiene descarga hasta entonces (riesgo aceptado) |
+| Enlace firmado filtrado | Expira (15 min por defecto, 1 h como máximo); quien lo tiene descarga o sube hasta entonces (riesgo aceptado); un PUT firmado con `WithContentLength` no acepta otro tamaño |
 | Cerbos o Zitadel caídos | 503: nunca se concede por error |
 | Inyección SQL | Repositorios de `vogel` con consultas parametrizadas (pgx); el consumidor debe hacer lo mismo |
 | Mensajes de error que filtran infraestructura | Errores de base solo en el log; respuestas genéricas |
