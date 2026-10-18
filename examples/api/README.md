@@ -174,7 +174,7 @@ Ese es el punto de la arquitectura de puertos, y acá se ve en una línea:
 |---|---|---|---|
 | `auth.Authenticator` | `fakeAuthenticator` | `auth/zitadel` | `main.go` |
 | `authz.Checker` | `fakeChecker` | `authz/cerbos` | `main.go` |
-| `storage.Storage` | `fakeStorage` (un `map` con mutex, más un endpoint `/fake-storage/` que verifica la firma de sus URL) | `storage/s3` | `main.go` |
+| `storage.Storage` | `fakeStorage` (un `map` con mutex, más un endpoint `/fake-storage/` que verifica la firma de sus URL; un objeto inexistente es `storage.ErrNotFound`, igual que en `storage/s3`) | `storage/s3` (y quitar las dos rutas `/fake-storage/*` de `router.go`) | `main.go` |
 | `notification.Notifier` | `fakeNotifier` (loguea) | `notification/smtp` o `notification/sendgrid` | `main.go` |
 
 Ningún handler, ningún job y ningún repositorio cambia. Ese es el resultado que

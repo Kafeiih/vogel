@@ -101,7 +101,7 @@ func TestValidateUpload(t *testing.T) {
 		assert.Equal(t, FileStatusRejected, got.FileStatus)
 		assert.Empty(t, got.FileContentType)
 		_, dlErr := h.storage.Download(ctx, key)
-		assert.ErrorIs(t, dlErr, errObjectNotFound, "the rejected object is deleted")
+		assert.ErrorIs(t, dlErr, storage.ErrNotFound, "the rejected object is deleted")
 		assert.Equal(t, [][2]string{{"worker", FileStatusRejected}}, validationAudit(t, h, doc.ID))
 	})
 

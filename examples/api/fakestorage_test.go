@@ -227,13 +227,13 @@ func TestFakeStorage_HandlerRejectsOtherMethodsAndMissingObjects(t *testing.T) {
 	}
 }
 
-// Download of a key that was never stored wraps errObjectNotFound, so the
-// validation job can tell "the client never uploaded" from a transient
-// failure worth retrying.
+// Download of a key that was never stored wraps storage.ErrNotFound, as the
+// port requires, so the validation job can tell "the client never uploaded"
+// from a transient failure worth retrying.
 func TestFakeStorage_DownloadMissingIsObjectNotFound(t *testing.T) {
 	_, err := newFakeStorage(testFakeBase).Download(context.Background(), "nope")
-	if !errors.Is(err, errObjectNotFound) {
-		t.Errorf("Download error = %v, want errObjectNotFound", err)
+	if !errors.Is(err, storage.ErrNotFound) {
+		t.Errorf("Download error = %v, want storage.ErrNotFound", err)
 	}
 }
 

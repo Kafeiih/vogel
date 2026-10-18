@@ -33,12 +33,6 @@ const fakePresignExpiry = 15 * time.Minute
 // to sign a URL that lives longer, as the storage.Storage contract requires.
 const fakeMaxPresignExpiry = time.Hour
 
-// errObjectNotFound is wrapped by fakeStorage.Download when no object is
-// stored under the key. The storage port defines no such sentinel, so the
-// validation job (see ValidateUploadWorker) checks for this one; with
-// storage/s3 the same check would look for the SDK's *types.NoSuchKey.
-var errObjectNotFound = errors.New("object not found")
-
 // fakeObject is one stored object and the Content-Type it was stored with.
 type fakeObject struct {
 	data        []byte
@@ -109,7 +103,10 @@ func (s *fakeStorage) get(key string) (fakeObject, bool) {
 func (s *fakeStorage) Download(_ context.Context, key string) (*storage.DownloadOutput, error) {
 	obj, ok := s.get(key)
 	if !ok {
-		return nil, fmt.Errorf("fake storage: download %q: %w", key, errObjectNotFound)
+		// The port's sentinel, as storage/s3 maps S3's NoSuchKey to it: the
+		// validation job checks storage.ErrNotFound and works unchanged with
+		// either adapter.
+		return nil, fmt.Errorf("fake storage: download %q: %w", key, storage.ErrNotFound)
 	}
 	return &storage.DownloadOutput{
 		Body:        io.NopCloser(bytes.NewReader(obj.data)),
@@ -124,9 +121,10 @@ func (s *fakeStorage) Delete(_ context.Context, key string) error {
 	return nil
 }
 
-// presignExpiry applies the storage.Storage contract: a non-positive expiry
-// means "use the adapter's configured default"; a positive one is used as
-// is, up to fakeMaxPresignExpiry.
+// presignExpiry applies the storage.Storage contract's default: a
+// non-positive expiry means "use the adapter's configured default"; a
+// positive one is returned unchanged, never clamped. expiresAt then refuses
+// one above fakeMaxPresignExpiry with storage.ErrPresignExpiryTooLong.
 func presignExpiry(expiry time.Duration) time.Duration {
 	if expiry <= 0 {
 		return fakePresignExpiry

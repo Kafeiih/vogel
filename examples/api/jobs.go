@@ -136,7 +136,7 @@ func (w *ValidateUploadWorker) Work(ctx context.Context, job *river.Job[Validate
 	key := job.Args.Key
 
 	out, err := w.storage.Download(ctx, key)
-	if errors.Is(err, errObjectNotFound) {
+	if errors.Is(err, storage.ErrNotFound) {
 		w.logger.InfoContext(ctx, "upload missing", "document_id", id, "key", key)
 		return w.finish(ctx, id, key, FileStatusRejected, "")
 	}
