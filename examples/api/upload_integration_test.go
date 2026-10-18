@@ -362,6 +362,8 @@ func TestDocumentHandlerAttachFile_DecidesFromTheLockedRow(t *testing.T) {
 	defer func() { _ = holder.Rollback(ctx) }()
 	_, err = holder.Exec(ctx, `SELECT 1 FROM documents WHERE id = $1 FOR UPDATE`, doc.ID)
 	require.NoError(t, err)
+	var holderPID int
+	require.NoError(t, holder.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&holderPID))
 	_, err = holder.Exec(ctx, `UPDATE documents
 		SET storage_key = $1, file_status = 'ready', file_content_type = 'application/pdf' WHERE id = $2`,
 		finalKey, doc.ID)
@@ -373,9 +375,9 @@ func TestDocumentHandlerAttachFile_DecidesFromTheLockedRow(t *testing.T) {
 		done <- callHandler(h.AttachFile, http.MethodPost, doc.ID.String(), `{"key":"`+key+`"}`)
 	}()
 
-	// Give the confirm time to reach its read of the row before the other
-	// writer commits.
-	time.Sleep(300 * time.Millisecond)
+	// Commit only once the confirm is blocked on the row lock, so the test
+	// does not depend on how fast the goroutine starts.
+	waitForLockWaiter(t, h, holderPID)
 	require.NoError(t, holder.Commit(ctx))
 
 	rec := <-done
@@ -429,4 +431,25 @@ func TestDocumentHandlerAttachFile_RefusesWhilePending(t *testing.T) {
 	rec = callHandler(h.AttachFile, http.MethodPost, doc.ID.String(), `{"key":"`+keyB+`"}`)
 	assert.Equal(t, http.StatusAccepted, rec.Code, "once resolved, a new confirm is accepted: %s", rec.Body.String())
 	assert.Equal(t, 2, validateJobCount(t, h, doc.ID))
+}
+
+// waitForLockWaiter polls pg_stat_activity until a backend other than
+// holderPID waits on a lock in this database, failing after 10 seconds.
+func waitForLockWaiter(t *testing.T, h *DocumentHandler, holderPID int) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var waiting int
+		require.NoError(t, h.pool.QueryRow(context.Background(), `
+			SELECT count(*) FROM pg_stat_activity
+			WHERE datname = current_database() AND wait_event_type = 'Lock' AND pid <> $1`,
+			holderPID).Scan(&waiting))
+		if waiting > 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no backend started waiting on the row lock within 10s")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
