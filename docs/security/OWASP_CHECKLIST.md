@@ -102,8 +102,8 @@ un Bearer token que se valida en el servidor.
 | 3.5 | H | DTOs explícitos; sin asignación masiva | PASS | `request.JSON` rechaza campos desconocidos (`request/json_test.go`, `TestJSONWithLimit_UnknownField`); el dueño sale del principal, no del cuerpo (`examples/api/handler_integration_test.go`, `TestDocumentHandlerCreate_PersistsThePrincipalAsOwner`) |
 | 3.6 | H | Endpoints internos fuera de internet | PASS | `/metrics` en un listener aparte, loopback por defecto (`examples/api/config.go:80`, `examples/api/router_test.go`, `TestNewMetricsServer_ServesOnlyMetrics`); Swagger rechazado en producción (`examples/boilerplate/internal/infrastructure/config/config_swagger_test.go`, `TestLoad_SwaggerRefusedInProduction`) |
 | 3.7 | M | Fallos de autorización registrados con usuario, recurso y acción | PASS | `WriteAccessErrorFor` (`httpx/middleware/access.go:115`); `httpx/middleware/access_test.go` (`TestRequireAccess_Forbidden_LogsDenialWithActorResourceAndRequest`, `TestWriteAccessErrorFor_LogsResourceAndAction`) |
-| 3.8 | M | IDs impredecibles | PASS | UUID validados en params (`request/validate.go:71`); claves de objeto por UUID (`examples/api/document.go:111`) |
-| 3.9 | L | Archivos detrás de autorización | PASS | Descarga por URL firmada tras `requireRead` (`examples/api/router.go:104`), que `examples/api` firma por 5 min (`downloadURLExpiry`, `examples/api/handler.go:558`); el adaptador limita cualquier expiración a `MaxPresignExpiry` (1 h por defecto) y usa 15 min si no se indica una (`storage/s3/s3.go:63`) |
+| 3.8 | M | IDs impredecibles | PASS | UUID validados en params (`request/validate.go:71`); claves de objeto por UUID (`examples/api/document.go:120`) |
+| 3.9 | L | Archivos detrás de autorización | PASS | Descarga por URL firmada tras `requireRead` (`examples/api/router.go:104`), que `examples/api` firma por 5 min (`downloadURLExpiry`, `examples/api/handler.go:559`); el adaptador limita cualquier expiración a `MaxPresignExpiry` (1 h por defecto) y usa 15 min si no se indica una (`storage/s3/s3.go:63`) |
 
 ## 4. Validación de input e inyección
 
@@ -116,7 +116,7 @@ un Bearer token que se valida en el servidor.
 | 4.5 | H | Inyección de operadores NoSQL | N/A | Sin NoSQL |
 | 4.6 | H | SSRF en URLs del usuario | N/A | Ninguna URL saliente viene del cliente: emisor, PDP y S3 salen de la configuración |
 | 4.7 | M | LDAP, XPath, XML, cabeceras | PASS | Sin LDAP, XPath ni XML. Cabeceras: el `X-Request-Id` del cliente se sanea a ASCII visible y largo acotado (`httpx/middleware/requestid.go:67`, `httpx/middleware/requestid_test.go`, `TestSanitizeClientRequestID`) |
-| 4.8 | M | Path traversal | PASS | La librería no abre rutas derivadas de input; claves de objeto generadas en el servidor (`examples/api/document.go:111`) |
+| 4.8 | M | Path traversal | PASS | La librería no abre rutas derivadas de input; claves de objeto generadas en el servidor (`examples/api/document.go:120`) |
 | 4.9 | L | Normalización Unicode y límites de largo antes de validar | PARTIAL | `MaxLen` cuenta runas (`request/validate.go:244`), pero no hay normalización NFC antes de validar; `stringutil.Normalize` es para búsqueda, no para validación |
 
 ## 5. XSS y cliente
@@ -177,9 +177,9 @@ un Bearer token que se valida en el servidor.
 | ID | Sev. | Ítem | Estado | Evidencia |
 |---|---|---|---|---|
 | 9.1 | C | Archivos nunca ejecutados; en almacenamiento de objetos | PASS | Puerto `storage` sobre S3 (`storage/s3/s3.go`); descarga por URL firmada, nunca desde el proceso |
-| 9.2 | H | Tipo por contenido con lista permitida | PASS | `storage.SniffContentType` (`storage/sniff.go:40`, `storage/sniff_test.go`); `examples/api` lo aplica en el job `validate_upload`, después de la subida directa al bucket (`examples/api/jobs.go:207`, `TestValidateUpload`): un objeto no permitido se borra y el documento queda `rejected`, o vuelve a su archivo validado anterior si lo tenía; uno aceptado se copia a una key final que nadie puede firmar para `PUT`, así que reusar la URL de subida no reemplaza el archivo validado (`TestPresignedUploadFlow`) |
-| 9.3 | H | Nombre regenerado en el servidor | PASS | `newUploadKey(id)` genera `documents/{id}/uploads/{uuid}` en el servidor (`examples/api/document.go:111`); el archivo validado vive en `documents/{id}/file/{uuid}`, que sólo escribe el job (`examples/api/document.go:98`) |
-| 9.4 | H | Límite de tamaño antes de leer todo | PASS | La API ya no recibe el cuerpo: `upload-url` rechaza un tamaño fuera de 1..25 MiB antes de firmar (`examples/api/handler.go:620`) y firma el tamaño exacto con `storage.WithContentLength` (`examples/api/handler.go:646`), así que el bucket rechaza otro tamaño |
+| 9.2 | H | Tipo por contenido con lista permitida | PASS | `storage.SniffContentType` (`storage/sniff.go:40`, `storage/sniff_test.go`); `examples/api` lo aplica en el job `validate_upload`, después de la subida directa al bucket (`examples/api/jobs.go:218`, `TestValidateUpload`): un objeto no permitido se borra y el documento queda `rejected`, o vuelve a su archivo validado anterior si lo tenía; uno aceptado se copia a una key final que nadie puede firmar para `PUT`, así que reusar la URL de subida no reemplaza el archivo validado (`TestPresignedUploadFlow`) |
+| 9.3 | H | Nombre regenerado en el servidor | PASS | `newUploadKey(id)` genera `documents/{id}/uploads/{uuid}` en el servidor (`examples/api/document.go:120`); el archivo validado vive en `documents/{id}/file/{uuid}`, que sólo escribe el job (`examples/api/document.go:107`) |
+| 9.4 | H | Límite de tamaño antes de leer todo | PASS | La API ya no recibe el cuerpo: `upload-url` rechaza un tamaño fuera de 1..25 MiB antes de firmar (`examples/api/handler.go:621`) y firma el tamaño exacto con `storage.WithContentLength` (`examples/api/handler.go:647`), así que el bucket rechaza otro tamaño |
 | 9.5 | M | Reencodear imágenes | CONSUMER | Depende del dominio; `examples/api` acepta PNG y JPEG sin reencodear, mitigado por la descarga como adjunto con el tipo verificado por contenido (§9.7) |
 | 9.6 | M | Escaneo de malware | CONSUMER | Según el riesgo del servicio |
 | 9.7 | M | Descarga con `Content-Disposition: attachment` y tipo seguro | PASS | Valores por defecto `attachment` y `application/octet-stream` (`storage/presign.go:13`, `storage/presign.go:23`, `storage/presign_test.go`) |
@@ -261,7 +261,7 @@ despliegue real es de cada consumidor.
 | 15.4 | H | Envenenamiento de caché | PASS | Respuestas no cacheables por defecto (`httpx/middleware/security.go:33`) |
 | 15.5 | H | Engaño de caché | PASS | Igual que §15.4 |
 | 15.6 | H | Toma de subdominios | CONSUMER | DNS del consumidor |
-| 15.7 | H | DoS: límites de cuerpo, cabeceras y JSON; regex lineal; timeouts salientes | PASS | Cuerpo (§8.2); `MaxHeaderBytes` y timeouts del servidor (`examples/api/main.go:339`, `TestNewAPIServer_SetsTimeoutsAndHeaderLimit`); regex de Go (RE2) es lineal; timeouts salientes: Zitadel (`auth/zitadel/timeout_test.go`), Cerbos (`authz/cerbos/timeout_test.go`), SendGrid (`notification/sendgrid/sendgrid.go:33`), S3 (`storage/s3/timeout_test.go`), Postgres (`postgres/postgres_integration_test.go`) |
+| 15.7 | H | DoS: límites de cuerpo, cabeceras y JSON; regex lineal; timeouts salientes | PASS | Cuerpo (§8.2); `MaxHeaderBytes` y timeouts del servidor (`examples/api/main.go:346`, `TestNewAPIServer_SetsTimeoutsAndHeaderLimit`); regex de Go (RE2) es lineal; timeouts salientes: Zitadel (`auth/zitadel/timeout_test.go`), Cerbos (`authz/cerbos/timeout_test.go`), SendGrid (`notification/sendgrid/sendgrid.go:33`), S3 (`storage/s3/timeout_test.go`), Postgres (`postgres/postgres_integration_test.go`) |
 | 15.8 | M | Gestión de bots | CONSUMER | Sin registro ni login propios; rate limit en el borde (§6) |
 | 15.9 | M | DOM clobbering | N/A | Sin frontend |
 | 15.10 | M | XS-Leaks | PASS | COOP y CORP `same-origin` (`httpx/middleware/security.go:31`); sin cookies |
