@@ -33,14 +33,25 @@ func NewDocumentStore() *DocumentStore {
 	return &DocumentStore{}
 }
 
-const documentColumns = "id, title, kind, issued_at, storage_key, owner_id, created_at"
+const documentColumns = "id, title, kind, issued_at, storage_key, file_status, owner_id, created_at"
+
+// selectColumns is documentColumns plus file_content_type, read as "" when
+// NULL (no file validated yet), in the order scanDocument expects.
+const selectColumns = documentColumns + ", COALESCE(file_content_type, '')"
+
+// scanDocument scans one row selected with selectColumns, followed by any
+// extra destinations.
+func scanDocument(row pgx.Row, d *Document, extra ...any) error {
+	dest := append([]any{&d.ID, &d.Title, &d.Kind, &d.IssuedAt, &d.StorageKey, &d.FileStatus, &d.OwnerID, &d.CreatedAt, &d.FileContentType}, extra...)
+	return row.Scan(dest...)
+}
 
 // Create inserts a new document.
 func (s *DocumentStore) Create(ctx context.Context, db pgxtx.DBTX, d *Document) error {
 	_, err := db.Exec(ctx, `
 		INSERT INTO documents (`+documentColumns+`)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-		d.ID, d.Title, d.Kind, d.IssuedAt, d.StorageKey, d.OwnerID, d.CreatedAt,
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		d.ID, d.Title, d.Kind, d.IssuedAt, d.StorageKey, d.FileStatus, d.OwnerID, d.CreatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("document store: create %s: %w", d.ID, err)
@@ -51,10 +62,10 @@ func (s *DocumentStore) Create(ctx context.Context, db pgxtx.DBTX, d *Document) 
 // GetByID retrieves a single document by its primary key. It returns
 // ErrDocumentNotFound (checkable via errors.Is) when no row matches.
 func (s *DocumentStore) GetByID(ctx context.Context, db pgxtx.DBTX, id uuid.UUID) (*Document, error) {
-	row := db.QueryRow(ctx, `SELECT `+documentColumns+` FROM documents WHERE id = $1`, id)
+	row := db.QueryRow(ctx, `SELECT `+selectColumns+` FROM documents WHERE id = $1`, id)
 
 	var d Document
-	err := row.Scan(&d.ID, &d.Title, &d.Kind, &d.IssuedAt, &d.StorageKey, &d.OwnerID, &d.CreatedAt)
+	err := scanDocument(row, &d)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, fmt.Errorf("document store: get %s: %w", id, ErrDocumentNotFound)
@@ -70,7 +81,7 @@ func (s *DocumentStore) GetByID(ctx context.Context, db pgxtx.DBTX, id uuid.UUID
 // avoid a second round trip just for pagination metadata.
 func (s *DocumentStore) List(ctx context.Context, db pgxtx.DBTX, limit, offset int) ([]Document, int, error) {
 	rows, err := db.Query(ctx, `
-		SELECT `+documentColumns+`, count(*) OVER()::INT
+		SELECT `+selectColumns+`, count(*) OVER()::INT
 		FROM documents
 		ORDER BY created_at DESC
 		LIMIT $1 OFFSET $2`,
@@ -85,7 +96,7 @@ func (s *DocumentStore) List(ctx context.Context, db pgxtx.DBTX, limit, offset i
 	total := 0
 	for rows.Next() {
 		var d Document
-		if err := rows.Scan(&d.ID, &d.Title, &d.Kind, &d.IssuedAt, &d.StorageKey, &d.OwnerID, &d.CreatedAt, &total); err != nil {
+		if err := scanDocument(rows, &d, &total); err != nil {
 			return nil, 0, fmt.Errorf("document store: list scan: %w", err)
 		}
 		docs = append(docs, d)
@@ -104,6 +115,38 @@ func (s *DocumentStore) UpdateStorageKey(ctx context.Context, db pgxtx.DBTX, id 
 		return fmt.Errorf("document store: update storage key %s: %w", id, err)
 	}
 	return nil
+}
+
+// AttachPendingFile points id at the uploaded object key and marks its file
+// pending validation, clearing any previously validated content type: the
+// new object has not been sniffed yet. A later confirm replaces the key, so
+// a validation job still running for the old key no longer matches it (see
+// SetFileStatus).
+func (s *DocumentStore) AttachPendingFile(ctx context.Context, db pgxtx.DBTX, id uuid.UUID, key string) error {
+	_, err := db.Exec(ctx, `
+		UPDATE documents
+		SET storage_key = $1, file_status = 'pending', file_content_type = NULL
+		WHERE id = $2`, key, id)
+	if err != nil {
+		return fmt.Errorf("document store: attach pending file %s: %w", id, err)
+	}
+	return nil
+}
+
+// SetFileStatus records validate_upload's verdict on key: status, and the
+// sniffed contentType ("" stores NULL). It changes the row only while its
+// storage_key is still key and reports whether it did, so a stale job --
+// one whose key a newer confirm already replaced -- never overwrites the
+// newer upload's state.
+func (s *DocumentStore) SetFileStatus(ctx context.Context, db pgxtx.DBTX, id uuid.UUID, key, status, contentType string) (bool, error) {
+	tag, err := db.Exec(ctx, `
+		UPDATE documents
+		SET file_status = $1, file_content_type = NULLIF($2, '')
+		WHERE id = $3 AND storage_key = $4`, status, contentType, id, key)
+	if err != nil {
+		return false, fmt.Errorf("document store: set file status %s: %w", id, err)
+	}
+	return tag.RowsAffected() == 1, nil
 }
 
 // Delete removes a document by ID. See DocumentHandler.Delete for why this

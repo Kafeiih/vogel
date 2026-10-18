@@ -147,3 +147,23 @@ func TestDocumentHandlerCreate_PersistsThePrincipalAsOwner(t *testing.T) {
 		})
 	}
 }
+
+// createTestDocument creates a document through DocumentHandler.Create, as
+// user-alice, and returns it as the response carried it.
+func createTestDocument(t *testing.T, h *DocumentHandler) Document {
+	t.Helper()
+	body := `{"title":"Contrato","kind":"contract","issued_at":"2026-01-02"}`
+	req := httptest.NewRequest(http.MethodPost, "/documents", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(auth.WithPrincipal(req.Context(), &auth.Principal{UserID: "user-alice"}))
+	rec := httptest.NewRecorder()
+
+	h.Create(rec, req)
+
+	require.Equal(t, http.StatusCreated, rec.Code, "body %s", rec.Body.String())
+	var resp struct {
+		Data Document `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	return resp.Data
+}

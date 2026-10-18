@@ -165,12 +165,13 @@ func (h *DocumentHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	doc := &Document{
-		ID:        uuid.New(),
-		Title:     req.Title,
-		Kind:      req.Kind,
-		IssuedAt:  issuedAt,
-		OwnerID:   ownerID,
-		CreatedAt: time.Now(),
+		ID:         uuid.New(),
+		Title:      req.Title,
+		Kind:       req.Kind,
+		IssuedAt:   issuedAt,
+		FileStatus: FileStatusNone,
+		OwnerID:    ownerID,
+		CreatedAt:  time.Now(),
 	}
 
 	err := h.tx.WithTx(r.Context(), func(txCtx context.Context) error {
