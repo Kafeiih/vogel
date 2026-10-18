@@ -82,6 +82,7 @@ func TestDocumentHandlerUploadURL(t *testing.T) {
 		expires, err := strconv.ParseInt(q.Get("expires"), 10, 64)
 		require.NoError(t, err)
 		assert.LessOrEqual(t, expires, time.Now().Add(uploadURLExpiry).Unix(), "the URL lives at most uploadURLExpiry")
+		assert.InDelta(t, expires, got.ExpiresAt.Unix(), 1, "expires_at approximates the signed expiry")
 
 		stored, err := h.store.GetByID(ctx, h.pool, doc.ID)
 		require.NoError(t, err)

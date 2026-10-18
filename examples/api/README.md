@@ -118,7 +118,9 @@ directo al storage con una URL firmada, y la validación pesada corre en un job:
    Un tipo fuera de `allowedUploadTypes` responde `415`; un `size` menor que 1
    o mayor que `maxUploadBytes` (25 MiB), `400`. La respuesta trae `url`,
    `key` (`documents/{id}/uploads/{uuid}`, una por subida), `method` (`PUT`),
-   `headers` y `expires_at`. La URL vive 5 minutos y firma el `Content-Type` y
+   `headers` y `expires_at` (aproxima el vencimiento firmado: se calcula con
+   la misma expiración, pero con el reloj leído justo antes de firmar). La
+   URL vive 5 minutos y firma el `Content-Type` y
    el `Content-Length` exactos: el bucket rechaza otro tipo o un cuerpo de otro
    tamaño. No se persiste nada todavía.
 2. El cliente hace el `PUT` a esa `url` con esos `headers` y el archivo.

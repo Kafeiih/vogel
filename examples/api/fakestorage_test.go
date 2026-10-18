@@ -160,14 +160,18 @@ func TestFakeStorage_HandlerEnforcesTheSignedPut(t *testing.T) {
 }
 
 // A PUT URL signed without a length still cannot store more than
-// maxUploadBytes: the handler bounds the body like a bucket policy would.
+// fakeMaxUnsignedPutBytes: the handler bounds the body like a bucket policy
+// would, with its own limit rather than the API's maxUploadBytes.
 func TestFakeStorage_HandlerBoundsAnUnsignedLength(t *testing.T) {
+	if fakeMaxUnsignedPutBytes != 32<<20 {
+		t.Errorf("fakeMaxUnsignedPutBytes = %d, want 32 MiB", fakeMaxUnsignedPutBytes)
+	}
 	s := newFakeStorage(testFakeBase)
 	raw, err := s.PresignedPutURL(context.Background(), "k", "text/plain", time.Minute)
 	if err != nil {
 		t.Fatalf("PresignedPutURL: %v", err)
 	}
-	rec := sendSigned(t, s, http.MethodPut, raw, "text/plain", strings.Repeat("a", maxUploadBytes+1))
+	rec := sendSigned(t, s, http.MethodPut, raw, "text/plain", strings.Repeat("a", fakeMaxUnsignedPutBytes+1))
 	if rec.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("status = %d, want 413", rec.Code)
 	}

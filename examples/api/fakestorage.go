@@ -40,6 +40,12 @@ const fakeMaxPresignExpiry = time.Hour
 // and filling them.
 const fakeMaxTotalBytes = 256 << 20 // 256 MiB
 
+// fakeMaxUnsignedPutBytes bounds the body of a PUT whose URL signed no
+// Content-Length, the way a bucket policy caps object size. It is the
+// fake's own limit, independent of the API's maxUploadBytes: the API never
+// signs a PUT without a length, so this only guards other callers.
+const fakeMaxUnsignedPutBytes = 32 << 20 // 32 MiB
+
 // errFakeBucketFull is returned when a write would take the fake past
 // maxTotalBytes; Handler answers it with 507 Insufficient Storage.
 var errFakeBucketFull = errors.New("fake storage: total size cap reached")
@@ -280,7 +286,7 @@ func (s *fakeStorage) servePut(w http.ResponseWriter, r *http.Request, key strin
 		http.Error(w, "Content-Type does not match the signed value", http.StatusForbidden)
 		return
 	}
-	limit := int64(maxUploadBytes)
+	limit := int64(fakeMaxUnsignedPutBytes)
 	if length != "" {
 		n, err := strconv.ParseInt(length, 10, 64)
 		if err != nil || r.ContentLength != n {

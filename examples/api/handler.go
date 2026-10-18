@@ -582,7 +582,7 @@ type uploadURLResponse struct {
 	Key       string            `json:"key"`
 	Method    string            `json:"method"`
 	Headers   map[string]string `json:"headers"`
-	ExpiresAt time.Time         `json:"expires_at"`
+	ExpiresAt time.Time         `json:"expires_at"` // approximates the signed expiry
 }
 
 // UploadURL is step one of the presigned upload flow: it hands the client a
@@ -636,8 +636,14 @@ func (h *DocumentHandler) UploadURL(w http.ResponseWriter, r *http.Request) {
 	}
 
 	key := newUploadKey(doc.ID)
-	expiresAt := time.Now().Add(uploadURLExpiry)
-	url, err := h.storage.PresignedPutURL(r.Context(), key, req.ContentType, uploadURLExpiry, storage.WithContentLength(req.Size))
+	// expires_at is derived from the same expiry handed to the adapter and
+	// a clock read just before signing, so it approximates the signed expiry
+	// (the adapter reads its own clock; the two differ by the time signing
+	// takes). A client should treat it as a deadline to start the PUT, not
+	// as an exact instant.
+	expiry := uploadURLExpiry
+	signedAt := time.Now()
+	url, err := h.storage.PresignedPutURL(r.Context(), key, req.ContentType, expiry, storage.WithContentLength(req.Size))
 	if err != nil {
 		h.logger.ErrorContext(r.Context(), "upload url: presign", "key", key, "error", err)
 		response.Error(w, r, http.StatusInternalServerError, response.CodeInternalError, "failed to generate upload url")
@@ -649,7 +655,7 @@ func (h *DocumentHandler) UploadURL(w http.ResponseWriter, r *http.Request) {
 		Key:       key,
 		Method:    http.MethodPut,
 		Headers:   map[string]string{"Content-Type": req.ContentType},
-		ExpiresAt: expiresAt,
+		ExpiresAt: signedAt.Add(expiry),
 	})
 }
 
