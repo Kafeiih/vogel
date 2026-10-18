@@ -62,6 +62,14 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   `INFO` en vez de texto plano. Por eso el error con el que termina cada
   binario ya no usa `log.Fatal` sino `slog.Error`, y conserva el nivel
   `ERROR`.
+- **`examples/boilerplate`: `STORAGE_<NOMBRE>_PRESIGN_EXPIRY` se valida al
+  arrancar.** Antes, un valor que no era una duración se reemplazaba por `15m`
+  sin aviso y no había tope. Ahora un valor inválido, cero o negativo, o mayor
+  que `1h`, impide arrancar y nombra la variable (`STORAGE_DOCS_PRESIGN_EXPIRY:
+  must be at most 1h0m0s, got 2h0m0s`). Un despliegue con un valor así que hoy
+  arranca dejará de hacerlo. Los ejemplos de nombres de storage pasan de
+  `public`/`private` a `assets`/`documents`: todo bucket es privado y se accede
+  con URLs firmadas.
 
 ## [0.10.1] — 2026-10-16
 

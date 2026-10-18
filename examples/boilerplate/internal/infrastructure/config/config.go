@@ -186,7 +186,7 @@ func Load() (*Config, error) {
 		// vogel:component worker end
 		// vogel:component storage begin
 
-		Storages: parseStorageConfigs(),
+		Storages: parseStorageConfigs(&errs),
 		// vogel:component storage end
 		// vogel:component notification begin
 
@@ -406,20 +406,32 @@ func parseWorkerConfig() worker.Config {
 
 // vogel:component worker end
 // vogel:component storage begin
+// Bounds for STORAGE_<NAME>_PRESIGN_EXPIRY. A presigned URL is a bearer
+// credential for one object until it expires, and nothing can revoke it
+// earlier, so its lifetime is capped rather than left to whatever is set.
+const (
+	defaultPresignExpiry = 15 * time.Minute
+	maxPresignExpiry     = time.Hour
+)
+
 // parseStorageConfigs reads named storage configurations from environment
 // variables.
 //
 // Format:
 //
-//	STORAGE_CONFIGS=public,private
-//	STORAGE_PUBLIC_BUCKET=cdn-assets
-//	STORAGE_PUBLIC_REGION=us-east-1
-//	STORAGE_PRIVATE_BUCKET=documentos
-//	STORAGE_PRIVATE_ENDPOINT=http://minio:9000
-//	STORAGE_PRIVATE_PATH_STYLE=true
+//	STORAGE_CONFIGS=assets,documents
+//	STORAGE_ASSETS_BUCKET=app-assets
+//	STORAGE_ASSETS_REGION=us-east-1
+//	STORAGE_DOCUMENTS_BUCKET=documentos
+//	STORAGE_DOCUMENTS_ENDPOINT=http://minio:9000
+//	STORAGE_DOCUMENTS_PATH_STYLE=true
+//	STORAGE_DOCUMENTS_PRESIGN_EXPIRY=5m   (default 15m, at most 1h)
+//
+// Every bucket stays private (Block Public Access on): clients reach objects
+// only through presigned URLs, never through a public bucket policy or ACL.
 //
 // Returns an empty map if STORAGE_CONFIGS is not set.
-func parseStorageConfigs() map[string]s3.Config {
+func parseStorageConfigs(errs *config.Errors) map[string]s3.Config {
 	raw := os.Getenv("STORAGE_CONFIGS")
 	if raw == "" {
 		return map[string]s3.Config{}
@@ -434,11 +446,15 @@ func parseStorageConfigs() map[string]s3.Config {
 
 		prefix := "STORAGE_" + strings.ToUpper(name) + "_"
 
-		presignExpiry := 15 * time.Minute
-		if v := os.Getenv(prefix + "PRESIGN_EXPIRY"); v != "" {
-			if d, err := time.ParseDuration(v); err == nil {
-				presignExpiry = d
-			}
+		expiryKey := prefix + "PRESIGN_EXPIRY"
+		presignExpiry := errs.Duration(expiryKey, defaultPresignExpiry)
+		switch {
+		case presignExpiry <= 0:
+			errs.Addf("%s: must be greater than zero", expiryKey)
+			presignExpiry = defaultPresignExpiry
+		case presignExpiry > maxPresignExpiry:
+			errs.Addf("%s: must be at most %s, got %s", expiryKey, maxPresignExpiry, presignExpiry)
+			presignExpiry = defaultPresignExpiry
 		}
 
 		configs[name] = s3.Config{
