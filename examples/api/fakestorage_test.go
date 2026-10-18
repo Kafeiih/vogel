@@ -85,6 +85,12 @@ func TestFakeStorage_PresignRejectsWhatTheContractRejects(t *testing.T) {
 	if _, err := s.PresignedPutURL(ctx, "k", "text/plain", fakeMaxPresignExpiry+time.Second); !errors.Is(err, storage.ErrPresignExpiryTooLong) {
 		t.Errorf("PresignedPutURL above the maximum error = %v, want ErrPresignExpiryTooLong", err)
 	}
+	// Expiry is checked before the content length, the order storage/s3
+	// uses, so both adapters report the same error for a request that breaks
+	// both rules.
+	if _, err := s.PresignedPutURL(ctx, "k", "text/plain", fakeMaxPresignExpiry+time.Second, storage.WithContentLength(0)); !errors.Is(err, storage.ErrPresignExpiryTooLong) {
+		t.Errorf("PresignedPutURL breaking both rules error = %v, want ErrPresignExpiryTooLong first", err)
+	}
 	if _, err := s.PresignedGetURL(ctx, "k", fakeMaxPresignExpiry+time.Second); !errors.Is(err, storage.ErrPresignExpiryTooLong) {
 		t.Errorf("PresignedGetURL above the maximum error = %v, want ErrPresignExpiryTooLong", err)
 	}

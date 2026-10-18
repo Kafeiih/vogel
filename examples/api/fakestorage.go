@@ -186,13 +186,14 @@ func (s *fakeStorage) PresignedGetURL(_ context.Context, key string, expiry time
 }
 
 func (s *fakeStorage) PresignedPutURL(_ context.Context, key string, contentType string, expiry time.Duration, opts ...storage.PresignPutOption) (string, error) {
-	o := storage.ApplyPresignPutOptions(opts...)
-	if o.HasContentLength && o.ContentLength <= 0 {
-		return "", fmt.Errorf("fake storage: presign put %q: %w", key, storage.ErrInvalidContentLength)
-	}
+	// Expiry first, then length: the order storage/s3 checks them in.
 	expires, err := s.expiresAt(key, expiry)
 	if err != nil {
 		return "", err
+	}
+	o := storage.ApplyPresignPutOptions(opts...)
+	if o.HasContentLength && o.ContentLength <= 0 {
+		return "", fmt.Errorf("fake storage: presign put %q: %w", key, storage.ErrInvalidContentLength)
 	}
 	exp := strconv.FormatInt(expires, 10)
 	length := ""
