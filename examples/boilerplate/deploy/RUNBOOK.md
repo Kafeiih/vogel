@@ -366,7 +366,7 @@ ORDER BY seq_scan DESC;
    SELECT * FROM pg_locks WHERE NOT granted;
    ```
 
-**Prevencion:** Configurar alerta cuando `http_request_duration_seconds{quantile="0.99"}` supere 2s.
+**Prevencion:** Configurar alerta cuando el P99 de latencia supere 2s (ver "Latencia alta" en [Alertas recomendadas](#alertas-recomendadas-prometheus)).
 
 ---
 
@@ -751,12 +751,14 @@ advisory de seguridad (ver `SECURITY.md` en la raiz de `vogel`).
 |--------|-----------|-----------|
 | DB caida | `/healthz` retorna 503 por > 30s | CRITICA |
 | Pool agotado | `db_pool_connections_acquired == db_pool_connections_max` por > 1min | CRITICA |
-| Latencia alta | `http_request_duration_seconds{quantile="0.99"}` > 2s por > 5min | WARNING |
-| Error rate alto | `rate(http_requests_total{status=~"5.."}[5m])` > 5% del total | WARNING |
+| Latencia alta | `histogram_quantile(0.99, sum by (le, path) (rate(http_request_duration_seconds_bucket[5m]))) > 2` por > 5min | WARNING |
+| Error rate alto | `sum(rate(http_requests_total{status=~"5.."}[5m])) / sum(rate(http_requests_total[5m])) > 0.05` | WARNING |
 | Slow queries frecuentes | Mas de 10 logs "slow query" en 5 minutos | WARNING |
 | Rate limiting excesivo | `rate(http_requests_total{status="429"}[5m])` > 50/min | WARNING |
 | Goroutines creciendo | `go_goroutines` > 1000 por > 10min | WARNING |
-| Pool acquire lento | `rate(db_pool_acquire_duration_seconds[5m])` > 1s promedio | WARNING |
+| Pool acquire lento | `rate(db_pool_acquire_duration_seconds[5m]) / rate(db_pool_acquire_total[5m]) > 1` (promedio por acquire) | WARNING |
+
+`http_request_duration_seconds` es un histograma: no tiene etiqueta `quantile`, los percentiles se calculan con `histogram_quantile` sobre la serie `_bucket`. `db_pool_acquire_duration_seconds`, en cambio, es un acumulado de segundos, así que sólo da un promedio, no percentiles.
 
 ---
 
