@@ -31,7 +31,7 @@ func (h *minLevelHandler) Enabled(ctx context.Context, level slog.Level) bool {
 	return level >= h.min && h.inner.Enabled(ctx, level)
 }
 
-func (h *minLevelHandler) Handle(ctx context.Context, r slog.Record) error {
+func (h *minLevelHandler) Handle(ctx context.Context, r slog.Record) error { //nolint:gocritic // hugeParam: slog.Handler fixes the by-value Record signature
 	return h.inner.Handle(ctx, r)
 }
 
