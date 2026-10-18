@@ -406,7 +406,6 @@ func parseWorkerConfig() worker.Config {
 
 // vogel:component worker end
 // vogel:component storage begin
-
 // Bounds for STORAGE_<NAME>_PRESIGN_EXPIRY. A presigned URL is a bearer
 // credential for one object until it expires, and nothing can revoke it
 // earlier, so its lifetime is capped rather than left to whatever is set.
