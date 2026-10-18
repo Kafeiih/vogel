@@ -4,6 +4,24 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el versionado,
 [SemVer](https://semver.org/lang/es/).
 
+## [Unreleased]
+
+### Cambiado
+
+- **`logger`: los métodos `*Context` agregan `request_id` y `user_id` desde
+  `reqctx`.** Antes, `InfoContext(ctx, …)` ignoraba el contexto y una línea
+  dentro de una request salía sin `request_id` salvo que se usara
+  `Logger.WithContext`. Una clave que la línea o el logger ya llevan no se
+  repite y gana el valor explícito; fuera de una request no se agrega nada.
+  Las líneas que hoy se loguean con contexto pueden ganar esas dos claves.
+- **`worker`: el request ID viaja con el job.** `NewRiverQueue` instala un
+  middleware de River que copia el request ID del contexto que encola a la
+  metadata del job (`vogel_request_id`) y lo devuelve al contexto del worker.
+  Los logs del worker y las filas de `audit_log` grabadas con
+  `audit.SourceWorker` llevan ahora el `request_id` de la request de origen,
+  donde antes quedaba `NULL`. River recibe además el logger de la app en vez
+  de usar su propio handler de texto.
+
 ## [0.10.1] — 2026-10-16
 
 ### Agregado

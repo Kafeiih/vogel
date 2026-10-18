@@ -122,7 +122,7 @@ func TestBuildQueueConfig_CustomQueues(t *testing.T) {
 func TestBuildRiverConfig_SchemaPropagates(t *testing.T) {
 	cfg := Config{Schema: "custom_schema", DefaultMaxWorkers: 100}
 
-	rc := buildRiverConfig(cfg, nil, nil)
+	rc := buildRiverConfig(cfg, nil, nil, nil)
 
 	assert.Equal(t, "custom_schema", rc.Schema)
 }
@@ -130,7 +130,7 @@ func TestBuildRiverConfig_SchemaPropagates(t *testing.T) {
 func TestBuildRiverConfig_InsertOnlyMode_NoWorkersNoQueuesNoPeriodicJobs(t *testing.T) {
 	cfg := Config{Schema: "river", DefaultMaxWorkers: 100}
 
-	rc := buildRiverConfig(cfg, nil, nil)
+	rc := buildRiverConfig(cfg, nil, nil, nil)
 
 	assert.Nil(t, rc.Workers, "Workers must be nil in insert-only mode")
 	assert.Nil(t, rc.Queues, "Queues must be nil in insert-only mode")
@@ -141,7 +141,7 @@ func TestBuildRiverConfig_WorkerMode_HasQueues(t *testing.T) {
 	workers := river.NewWorkers()
 	cfg := Config{Schema: "river", DefaultMaxWorkers: 100}
 
-	rc := buildRiverConfig(cfg, workers, nil)
+	rc := buildRiverConfig(cfg, workers, nil, nil)
 
 	assert.Same(t, workers, rc.Workers, "Workers must be set in worker mode")
 	assert.NotEmpty(t, rc.Queues, "Queues must be set in worker mode")
@@ -192,7 +192,7 @@ func TestBuildRiverConfig_WorkerMode_WithPeriodicJobs(t *testing.T) {
 	jobs := []*river.PeriodicJob{testPeriodicJob()}
 	cfg := Config{Schema: "river", DefaultMaxWorkers: 100}
 
-	rc := buildRiverConfig(cfg, workers, jobs)
+	rc := buildRiverConfig(cfg, workers, jobs, nil)
 
 	assert.Equal(t, jobs, rc.PeriodicJobs, "periodic jobs must be registered in worker mode")
 }
@@ -204,7 +204,7 @@ func TestBuildRiverConfig_InsertOnlyMode_PeriodicJobsNotRegistered(t *testing.T)
 	jobs := []*river.PeriodicJob{testPeriodicJob()}
 	cfg := Config{Schema: "river", DefaultMaxWorkers: 100}
 
-	rc := buildRiverConfig(cfg, nil, jobs)
+	rc := buildRiverConfig(cfg, nil, jobs, nil)
 
 	assert.Nil(t, rc.PeriodicJobs)
 	assert.Nil(t, rc.Workers)
@@ -218,7 +218,7 @@ func TestBuildRiverConfig_WorkerMode_NoPeriodicJobsOption_MatchesLicenciasShape(
 	workers := river.NewWorkers()
 	cfg := Config{Schema: "river", DefaultMaxWorkers: 100}
 
-	rc := buildRiverConfig(cfg, workers, nil)
+	rc := buildRiverConfig(cfg, workers, nil, nil)
 
 	assert.Same(t, workers, rc.Workers)
 	assert.NotEmpty(t, rc.Queues)
