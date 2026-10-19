@@ -247,6 +247,16 @@ func TestAcceptedSigningAlgorithms(t *testing.T) {
 	}
 }
 
+// TestAcceptedSigningAlgorithms_ReturnsAFreshSlice proves a caller cannot
+// alter the allowlist through the slice it was given.
+func TestAcceptedSigningAlgorithms_ReturnsAFreshSlice(t *testing.T) {
+	first := acceptedSigningAlgorithms()
+	first[0] = "HS256"
+	if got := acceptedSigningAlgorithms(); got[0] != "RS256" {
+		t.Errorf("acceptedSigningAlgorithms() after mutating an earlier result = %v, want RS256 first", got)
+	}
+}
+
 // TestWithJWT_HonorsAcceptedSigningAlgorithms proves withJWT really hands its
 // algorithm list to the SDK verifier: acceptedSigningAlgorithms equals the
 // SDK default, so only a narrower list shows the option takes effect.

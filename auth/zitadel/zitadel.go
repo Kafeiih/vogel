@@ -139,9 +139,10 @@ func validateConfig(cfg Config) (Config, error) {
 }
 
 // acceptedSigningAlgorithms returns the only JWS algorithms the local JWT
-// verifier accepts, as a fresh slice so no caller can alter the allowlist. They equal zitadel/oidc's current default (used when no
-// list is given), pinned here so an SDK update cannot widen them silently;
-// "none" and the HMAC algorithms are never accepted, which rules out the
+// verifier accepts, as a fresh slice so no caller can alter the allowlist.
+// They equal zitadel/oidc's current default (used when no list is given),
+// pinned here so an SDK update cannot widen them silently; "none" and the
+// HMAC algorithms are never accepted, which rules out the
 // algorithm-confusion attack of an HS256 token keyed with the issuer's
 // public key.
 func acceptedSigningAlgorithms() []string {
@@ -182,7 +183,8 @@ func build(ctx context.Context, z *zitadel.Zitadel, cfg Config) (*Authenticator,
 // newFromAuthorizer builds an Authenticator around an already-constructed
 // authorizer, taking the claim-check settings (AllowedAuthorizedParties,
 // MaxTokenLifetime) from cfg. cache is the introspection result cache, nil
-// with local JWT verification; it switches on introspection mode. Unexported: it exists so this package's own tests can inject a
+// with local JWT verification; it switches on introspection mode.
+// Unexported: it exists so this package's own tests can inject a
 // fake authorization.Verifier and exercise the real error-mapping path
 // without a network call or a real Zitadel instance (see zitadel_test.go),
 // while keeping authorization.Authorizer[*oauth.IntrospectionContext] out of
@@ -212,7 +214,8 @@ func newFromAuthorizer(a *authorization.Authorizer[*oauth.IntrospectionContext],
 // needs to know that detail of the SDK's contract.
 //
 // After the SDK accepts the token, checkClaims rejects a non-string azp, an
-// azp outside Config.AllowedAuthorizedParties (when that list is set), a token whose nbf or iat is still in the future, and (when
+// azp outside Config.AllowedAuthorizedParties (when that list is set), a
+// token whose nbf or iat is still in the future, and (when
 // Config.MaxTokenLifetime is set) a token whose lifetime exceeds it; those
 // rejections wrap auth.ErrUnauthenticated like any other invalid token. In
 // introspection mode the same checks run on the introspection result, plus
