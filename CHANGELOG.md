@@ -79,6 +79,13 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ### Cambiado
 
+- **`postgres`: el SQL de las consultas lentas se acota.** El WARN
+  `slow query detected` corta el texto SQL en 2 KiB (sin partir un carácter
+  UTF-8) y en ese caso agrega `sql_truncated: true` y `sql_bytes` con el largo
+  real. `Config.HashSlowQuerySQL` (o `WithSlowQuerySQLHash()` en
+  `NewSlowQueryTracer`, que ahora acepta opciones variádicas) reemplaza el
+  texto por `sql_hash`, un prefijo del SHA-256, para no loguear literales
+  escritos dentro del SQL. Los valores de los parámetros nunca se loguean.
 - **`auth/zitadel`: se rechaza un `iat` futuro y los algoritmos JWT quedan
   fijados.** Un token cuyo `iat` sea posterior al instante actual más un minuto
   de tolerancia se rechaza con el mismo 401 genérico, aunque `exp - iat` quepa

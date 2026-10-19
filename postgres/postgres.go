@@ -131,6 +131,12 @@ type Config struct {
 	// value is a NewPool error.
 	LeakThreshold time.Duration
 
+	// HashSlowQuerySQL makes the slow-query WARN log sql_hash (a short SHA-256
+	// prefix of the SQL text) instead of the SQL text. Leave it false to see
+	// the statement, cut at 2 KiB; set it when statements may carry inlined
+	// literals that must not reach the logs. Bind values are never logged.
+	HashSlowQuerySQL bool
+
 	// AfterConnect, if set, runs after this package's own per-connection setup
 	// (TLS, timeouts, tracer) on every new physical connection. Use it for
 	// consumer-specific per-connection work — for example, registering a
@@ -189,6 +195,7 @@ func newPoolConfig(cfg Config, logger *slog.Logger) (*pgxpool.Config, error) {
 	poolConfig.ConnConfig.Tracer = newPoolTracer(poolTracerOptions{
 		logger:             logger,
 		slowQueryThreshold: slowQueryThreshold,
+		hashSlowQuerySQL:   cfg.HashSlowQuerySQL,
 		acquireTimeout:     cfg.AcquireTimeout,
 		leakThreshold:      cfg.LeakThreshold,
 		maxConns:           int(poolConfig.MaxConns),

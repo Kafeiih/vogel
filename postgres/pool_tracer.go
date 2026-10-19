@@ -54,6 +54,7 @@ const maxCallerFrames = 32
 type poolTracerOptions struct {
 	logger             *slog.Logger
 	slowQueryThreshold time.Duration
+	hashSlowQuerySQL   bool
 	acquireTimeout     time.Duration
 	leakThreshold      time.Duration
 	// maxConns is the pool's MaxConns: more tracked holds than that means
@@ -107,6 +108,14 @@ type acquireTrace struct {
 	callers []uintptr
 }
 
+func newSlowQueryTracer(opts poolTracerOptions) *SlowQueryTracer {
+	var sqOpts []SlowQueryOption
+	if opts.hashSlowQuerySQL {
+		sqOpts = append(sqOpts, WithSlowQuerySQLHash())
+	}
+	return NewSlowQueryTracer(opts.logger, opts.slowQueryThreshold, sqOpts...)
+}
+
 func newPoolTracer(opts poolTracerOptions) *poolTracer {
 	logger := opts.logger
 	if logger == nil {
@@ -117,7 +126,7 @@ func newPoolTracer(opts poolTracerOptions) *poolTracer {
 		prefixes = defaultInternalPrefixes
 	}
 	return &poolTracer{
-		SlowQueryTracer:  NewSlowQueryTracer(opts.logger, opts.slowQueryThreshold),
+		SlowQueryTracer:  newSlowQueryTracer(opts),
 		logger:           logger,
 		acquireTimeout:   opts.acquireTimeout,
 		leakThreshold:    opts.leakThreshold,
