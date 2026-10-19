@@ -24,6 +24,15 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ### Agregado
 
+- **`examples/boilerplate`: el worker sirve `/metrics` y tiene alertas.**
+  `cmd/worker` registra `worker.WithMetrics` y el collector del pool, y sirve
+  `/metrics` en `WORKER_METRICS_LISTEN_ADDR` (`:9091` por defecto, aparte del
+  `:9090` del API); una dirección inválida hace fallar el arranque.
+  `deploy/prometheus/alerts.yml` suma `WorkerDown`, `WorkerJobErrorRatioHigh`
+  (más del 10% de intentos en `error`/`panic` por `kind`) y `WorkerJobSlowP95`
+  (p95 por `kind` sobre 60 s), con tests en `alerts_test.yml`, y el RUNBOOK una
+  sección 13 para el worker. Todo queda fuera de un proyecto generado sin
+  worker.
 - **`httpx/middleware`: buckets configurables para la latencia HTTP.**
   `NewMetrics(reg, WithDurationBuckets(...))` fija los límites de
   `http_request_duration_seconds` (deben ser no vacíos y estrictamente
@@ -49,8 +58,8 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   `cancel`, `snooze`, `panic`) con un middleware de River que corre después del
   de request ID. Es opcional: sin la opción, o en un cliente sólo de inserción,
   no se instala ni se registra nada; registrar dos veces en el mismo
-  `Registerer` reutiliza el colector. El binario worker del boilerplate todavía
-  no sirve `/metrics`: el README explica cómo conectarlo.
+  `Registerer` reutiliza el colector. El worker del boilerplate la usa y sirve
+  `/metrics` en su propia dirección (ver la entrada de `examples/boilerplate`).
 - **`worker`: `Config.PollOnly`.** El worker busca jobs consultando cada
   `FetchPollInterval` (1 s por defecto) en vez de usar `LISTEN`/`NOTIFY`, así que
   puede ir detrás de PgBouncer en modo transacción, a costa de esa latencia al

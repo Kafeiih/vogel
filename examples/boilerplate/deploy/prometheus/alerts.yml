@@ -141,3 +141,40 @@ groups:
           severity: warning
         annotations:
           summary: "DBConnectionHeldTooLong cannot fire on {{ $labels.instance }}: no le=10 bucket"
+  # vogel:component worker begin
+
+  # River job metrics from the worker's /metrics (WORKER_METRICS_LISTEN_ADDR),
+  # recorded by worker.WithMetrics. Tune the thresholds to your jobs: a
+  # report generator legitimately runs longer than an email sender.
+  - name: worker-jobs
+    rules:
+      - alert: WorkerDown
+        expr: up{job="worker"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: The worker target is not being scraped
+          description: Jobs are not being processed or not observed. See RUNBOOK.md (worker).
+      - alert: WorkerJobErrorRatioHigh
+        # Share of attempts that end in error or panic, per job kind. River
+        # retries failed jobs, so a sustained ratio means jobs keep failing,
+        # not one bad attempt.
+        expr: |
+          sum by (kind) (rate(river_job_duration_seconds_count{job="worker",outcome=~"error|panic"}[5m]))
+          / sum by (kind) (rate(river_job_duration_seconds_count{job="worker"}[5m])) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "More than 10% of {{ $labels.kind }} job attempts fail"
+          description: The worker log has the job errors; see RUNBOOK.md (worker).
+      - alert: WorkerJobSlowP95
+        expr: |
+          histogram_quantile(0.95, sum by (kind, le) (rate(river_job_duration_seconds_bucket{job="worker"}[5m]))) > 60
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "p95 duration of {{ $labels.kind }} jobs above 60s"
+  # vogel:component worker end
