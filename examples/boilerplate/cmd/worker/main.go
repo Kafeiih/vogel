@@ -158,6 +158,11 @@ func run(migrateFirst bool) error {
 
 	// Create River queue. No periodic jobs are registered by this
 	// boilerplate -- if you add one, pass worker.WithPeriodicJobs(...) here.
+	// Job metrics are not exported either: this binary serves no /metrics.
+	// To publish river_job_duration_seconds, pass
+	// worker.WithMetrics(prometheus.DefaultRegisterer) here and start a
+	// metrics server like the api's (httpiface.NewMetricsServer) on an
+	// address of its own.
 	queue, err := worker.NewRiverQueue(pool, workers, cfg.Worker, appLogger.Logger)
 	if err != nil {
 		return fmt.Errorf("creating river queue: %w", err)

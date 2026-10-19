@@ -118,7 +118,8 @@ construye la imagen del PDP y prueba que las sirve (ver `cerbos/README.md`).
 > omiten; ver `internal/infrastructure/config/config.go` para el detalle
 > completo de cada una): `METRICS_LISTEN_ADDR`.
 <!-- vogel:component worker begin -->
-> Worker: `WORKER_SCHEMA`, `WORKER_DEFAULT_MAX_WORKERS`, `WORKER_QUEUES`.
+> Worker: `WORKER_SCHEMA`, `WORKER_DEFAULT_MAX_WORKERS`, `WORKER_QUEUES`,
+> `WORKER_POLL_ONLY`.
 <!-- vogel:component worker end -->
 <!-- vogel:component storage begin -->
 > Storage: `STORAGE_CONFIGS` (+ `STORAGE_<NOMBRE>_*`). Los buckets son
@@ -244,6 +245,23 @@ tiene sus propios subcomandos:
 |---|---|---|
 | `./worker server` (o `./worker` sin argumentos) | Procesa jobs; **no** crea el esquema de River ni lo migra | En despliegue, después de `migrate up`, con un rol sin permiso `CREATE` |
 | `./worker start-from-migrate` | Crea el esquema de River, aplica sus migraciones y luego procesa jobs | En desarrollo local (`make worker`) |
+
+`WORKER_POLL_ONLY=true` hace que el worker busque jobs nuevos consultando
+periódicamente en vez de usar `LISTEN`/`NOTIFY` de PostgreSQL, y así puede
+conectarse a través de PgBouncer en modo transacción. El costo es latencia:
+un job nuevo puede esperar hasta el `FetchPollInterval` de River (1 s por
+defecto) antes de tomarse. Un valor que no sea `true` o `false` hace fallar
+el arranque. Default `false`.
+
+El worker no expone `/metrics`: el servidor de métricas
+(`internal/interfaces/http/metrics_server.go`) solo lo arranca el API.
+`vogel/worker` sabe registrar la duración de cada job como
+`river_job_duration_seconds{kind,outcome}` (`outcome`: `success`, `error`,
+`cancel`, `snooze`, `panic`) con la opción `worker.WithMetrics`. Para
+publicarla, pase `worker.WithMetrics(prometheus.DefaultRegisterer)` a
+`worker.NewRiverQueue` en `cmd/worker/main.go` y arranque ahí un servidor de
+métricas con `httpiface.NewMetricsServer`, en una dirección propia que
+Prometheus pueda scrapear.
 <!-- vogel:component worker end -->
 
 `start-from-migrate` es una comodidad de desarrollo: el rol que migra queda
