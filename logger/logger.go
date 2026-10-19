@@ -24,6 +24,8 @@ import (
 // Logger wraps *slog.Logger.
 type Logger struct {
 	*slog.Logger
+
+	traceIDs TraceIDsFunc // from WithTraceIDs; read by WithContext
 }
 
 // New creates a Logger writing to w. Log level and format are derived from env:
@@ -70,7 +72,8 @@ func New(env string, w io.Writer, options ...Option) *Logger {
 	}
 
 	return &Logger{
-		Logger: slog.New(&contextHandler{inner: handler}),
+		Logger:   slog.New(&contextHandler{inner: handler, traceIDs: cfg.traceIDs}),
+		traceIDs: cfg.traceIDs,
 	}
 }
 
@@ -82,7 +85,8 @@ func NewDefault(env string, options ...Option) *Logger {
 // With returns a Logger that includes the given attributes on every record.
 func (l *Logger) With(args ...any) *Logger {
 	return &Logger{
-		Logger: l.Logger.With(args...),
+		Logger:   l.Logger.With(args...),
+		traceIDs: l.traceIDs,
 	}
 }
 
@@ -94,13 +98,26 @@ func (l *Logger) With(args ...any) *Logger {
 // filled by httpx/middleware.Authenticate), it is added as "user_id"; the key
 // is left out otherwise, so a line logged outside an authenticated request
 // keeps its shape.
+//
+// With WithTraceIDs, the trace_id and span_id of the span in ctx are bound
+// too, when there is one.
 func (l *Logger) WithContext(ctx context.Context) *Logger {
 	args := []any{requestIDKey, reqctx.RequestIDFromContext(ctx)}
 	if userID := reqctx.UserIDFromContext(ctx); userID != "" {
 		args = append(args, userIDKey, userID)
 	}
+	if l.traceIDs != nil {
+		traceID, spanID := l.traceIDs(ctx)
+		if traceID != "" {
+			args = append(args, traceIDKey, traceID)
+		}
+		if spanID != "" {
+			args = append(args, spanIDKey, spanID)
+		}
+	}
 	return &Logger{
-		Logger: l.Logger.With(args...),
+		Logger:   l.Logger.With(args...),
+		traceIDs: l.traceIDs,
 	}
 }
 
