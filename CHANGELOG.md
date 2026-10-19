@@ -79,6 +79,11 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ### Cambiado
 
+- **`httpx/middleware`: `Recovery` acota el valor del panic.** El log
+  `panic recovered` lleva en `error` el valor como texto, cortado en 1 KiB
+  (con `error_truncated: true` si se cortó), y en `panic_type` su tipo Go.
+  Antes `error` era el valor tal cual, que podía ser un struct con datos del
+  request; ahora es siempre un string.
 - **`audit/httpx`: el log de error de `List` ya no incluye la query.** En
   vez de `query` (la query cruda, que puede traer un `actor_id`), la línea
   lleva `filters`: los nombres de los filtros reconocidos que usó el request,
