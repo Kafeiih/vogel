@@ -67,6 +67,18 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ### Cambiado
 
+- **`logger`: los valores de claves sensibles se redactan.** `logger.New` y
+  `logger.NewDefault` reemplazan por `"[REDACTED]"` el valor de todo atributo
+  cuya clave es sensible (`password`, `token`, `secret`, `authorization`,
+  `api_key`, `cookie`, …; la misma lista y las mismas reglas que `audit`, y un
+  test falla si se separan), a cualquier profundidad de grupo y también en
+  atributos fijados con `With`. Un grupo cuyo nombre es sensible se redacta
+  entero. `logger.DefaultRedactedKeys()` expone la lista y
+  `logger.WithRedactedKeys(...)` agrega claves; las firmas existentes siguen
+  compilando. Un struct o un mapa logueado como un solo atributo no se
+  inspecciona. Las líneas sin claves sensibles no cambian (probado byte a
+  byte).
+
 - **`examples/api`: los archivos se suben directo al storage con una URL
   firmada.** `PUT /documents/{id}/file`, que recibía los bytes y los reenviaba
   al storage, ya no existe. El flujo nuevo:
