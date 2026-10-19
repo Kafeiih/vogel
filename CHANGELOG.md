@@ -21,6 +21,19 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   compresión, lotes, límites), y `Config.Headers` exige un endpoint
   `https://`. Es el único paquete que depende del SDK de OpenTelemetry (lo
   verifica el CI). Ver `docs/WIRING.md` §8.
+- **`otel`: `SampledTraceIDs`, `Transport` y `Notifier`.** `SampledTraceIDs`
+  es `TraceIDs` solo para spans muestreados, para exemplars. `Transport()`
+  encaja en el `WrapTransport` de Zitadel, SendGrid y S3: un span de cliente
+  por llamada que manda el `traceparent` pero no el baggage. `Notifier(n)`
+  envuelve un notificador (SMTP o SendGrid) con un span `notification.send`
+  sin destinatario, remitente, asunto ni texto del error.
+- **Exemplars en las métricas.** `httpx/middleware.WithExemplars(fn)` y
+  `postgres.Config.TraceIDs` guardan el `trace_id` y el `span_id` del request
+  como exemplar en `http_request_duration_seconds`,
+  `db_pool_acquire_wait_seconds` y `db_pool_conn_hold_seconds`; el aviso de
+  conexión retenida de más también lleva el `trace_id` de quien la pidió.
+  Los ejemplos sirven `/metrics` con OpenMetrics, el único formato que
+  transporta exemplars.
 - **`otel/otelpgx`: tracer de pgx.** `NewTracer()` se enchufa en
   `postgres.Config.Tracer` y crea un span de cliente por consulta, batch (uno
   solo, con un evento por consulta), `COPY FROM` y conexión, con las

@@ -10,7 +10,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// MiddlewareOption configures Middleware.
+// MiddlewareOption configures Middleware, Transport and Notifier.
 type MiddlewareOption func(*middlewareConfig)
 
 type middlewareConfig struct {

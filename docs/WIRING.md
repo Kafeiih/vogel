@@ -805,9 +805,37 @@ baggage no se guarda en la metadata.
 entra solo por `otel.Config`. `Config.Headers` (una clave del colector, por
 ejemplo) exige un `Endpoint` `https://`.
 
-Para trazar las llamadas salientes, los clientes de `vogel` aceptan
-`WrapTransport` (`otelhttp.NewTransport`) y Cerbos `StatsHandler`
-(`otelgrpc.NewClientHandler`). El propagador global incluye W3C Baggage: el
-baggage que ponga la aplicación viaja en las cabeceras hacia Zitadel, SendGrid
-o S3. Si no debe salir, envolver esos clientes con
-`otelhttp.NewTransport(base, otelhttp.WithPropagators(propagation.TraceContext{}))`.
+Para trazar las llamadas salientes, `otel.Transport()` encaja en el
+`WrapTransport` de Zitadel, SendGrid y S3: un span de cliente por llamada, que
+manda el `traceparent` pero no el baggage, porque del otro lado hay un
+tercero. Los emails se trazan envolviendo el notificador, con un span sin
+destinatario, remitente ni asunto:
+
+```go
+s3cfg.WrapTransport = otel.Transport()
+notifier := otel.Notifier(smtpNotifier) // o el de SendGrid
+```
+
+Cerbos acepta un `StatsHandler` de gRPC:
+`otelgrpc.NewClientHandler(otelgrpc.WithPropagators(propagation.TraceContext{}))`
+(`go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc`,
+que `vogel` no importa). Sin `WithPropagators`, otelgrpc usa el propagador
+global, que incluye el baggage.
+
+Las métricas se enlazan con las trazas por *exemplars*: el histograma de
+latencia HTTP y los dos del pool guardan el `trace_id` de un request
+muestreado en el bucket donde cayó.
+
+```go
+metrics, err := vmw.NewMetrics(reg, vmw.WithExemplars(otel.SampledTraceIDs))
+pool, err := postgres.NewPool(ctx, postgres.Config{
+	URL:      dsn,
+	TraceIDs: otel.SampledTraceIDs, // también agrega trace_id al aviso de fuga
+}, appLogger)
+mux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{EnableOpenMetrics: true}))
+```
+
+Prometheus solo lee exemplars en formato OpenMetrics y con
+`--enable-feature=exemplar-storage`. `SampledTraceIDs`, a diferencia de
+`TraceIDs`, no devuelve nada para un trace no muestreado: un exemplar tiene
+que apuntar a un trace que el backend tenga.
