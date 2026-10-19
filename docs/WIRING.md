@@ -786,9 +786,9 @@ separados de `otel` para que un servicio sin cola no enlace River:
 pool, err := postgres.NewPool(ctx, postgres.Config{
 	URL:    dsn,
 	Tracer: otelpgx.NewTracer(), // un span por consulta, batch, COPY y conexión
-})
+}, appLogger)
 
-queue, err := worker.NewRiverQueue(pool, workerCfg, appLogger, workers,
+queue, err := worker.NewRiverQueue(pool, workers, workerCfg, appLogger,
 	worker.WithMiddleware(otelriver.NewMiddleware()))
 ```
 

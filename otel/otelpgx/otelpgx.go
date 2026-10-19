@@ -5,7 +5,7 @@
 //	pool, err := postgres.NewPool(ctx, postgres.Config{
 //		URL:    dsn,
 //		Tracer: otelpgx.NewTracer(),
-//	})
+//	}, logger)
 //
 // A span carries the SQL text (db.query.text), never the query arguments,
 // the same rule as postgres's SlowQueryTracer: arguments are where user data

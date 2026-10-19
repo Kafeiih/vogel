@@ -2,7 +2,7 @@
 // trace from the process that enqueues a job to the one that works it. Plug
 // its Middleware into worker.WithMiddleware:
 //
-//	queue, err := worker.NewRiverQueue(pool, cfg, logger, workers,
+//	queue, err := worker.NewRiverQueue(pool, workers, cfg, logger,
 //		worker.WithMiddleware(otelriver.NewMiddleware()))
 //
 // On insert it records a producer span and stamps its W3C traceparent and
