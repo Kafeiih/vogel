@@ -355,8 +355,9 @@ func TestHandler_List_ErrorLogOmitsFilterValues(t *testing.T) {
 	if _, ok := line["query"]; ok {
 		t.Errorf("log line still carries the raw query: %s", buf.String())
 	}
-	var got []string
-	for _, v := range line["filters"].([]any) {
+	raw, _ := line["filters"].([]any)
+	got := make([]string, 0, len(raw))
+	for _, v := range raw {
 		got = append(got, v.(string))
 	}
 	if want := []string{"limit", "actor_id"}; !slices.Equal(got, want) {
