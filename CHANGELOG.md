@@ -100,8 +100,9 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   lleva como texto cortado en 1 KiB (con `error_truncated: true` si se cortó);
   para cualquier otro tipo, como un struct, `error` se omite, porque `fmt`
   imprimiría también sus campos no exportados. Un tipo propio de tipo string,
-  bool o numérico (un `type sentinel string`, por ejemplo) conserva su valor. Antes `error` era el valor tal
-  cual; ahora es un string o no está.
+  bool o numérico (un `type sentinel string`, por ejemplo) conserva su valor,
+  tomado del valor subyacente y no de su método `String`. Antes `error` era el
+  valor tal cual; ahora es un string o no está.
 - **`audit/httpx`: el log de error de `List` ya no incluye la query.** En
   vez de `query` (la query cruda, que puede traer un `actor_id`), la línea
   lleva `filters`: los nombres de los filtros reconocidos que usó el request,
