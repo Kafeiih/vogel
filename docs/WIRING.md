@@ -198,6 +198,18 @@ correlacionar líneas de servicios en zonas distintas (y con `audit_log`, cuyo
 el `time` del registro; un `time.Time` que el código loguea como atributo
 propio conserva su zona.
 
+`logger.New` / `logger.NewDefault` también redactan: el valor de todo
+atributo cuya clave coincide con la lista de `logger.DefaultRedactedKeys`
+(`password`, `token`, `secret`, `authorization`, `api_key`, `cookie`, …, la
+misma de `audit`, con las mismas reglas: sin distinguir mayúsculas, ignorando
+`_`, `-`, `.` y espacios, por subcadena) se escribe como `"[REDACTED]"`, a
+cualquier profundidad de grupo y también en lo que se fijó con `With`.
+`logger.WithRedactedKeys(...)` agrega claves. Alcanza a la línea de acceso y
+a todo log que pase por el `*slog.Logger` del `Logger` (o por `slog.Default()`
+tras `slog.SetDefault`). No inspecciona un struct o mapa logueado como un solo
+atributo, ni el SQL que registra el tracer de queries lentas de `postgres`
+(que nunca registra los argumentos).
+
 ## 2. Autenticación y autorización
 
 La cadena es `chi` → `RequestContext` → `Authenticate` → `RequirePermission`,
