@@ -24,6 +24,11 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ### Agregado
 
+- **`pgxtx`: `RequireTx` y `ErrNoTx`.** Para el código que debe correr dentro
+  de una transacción: devuelve la transacción del contexto o `ErrNoTx`, en vez
+  de caer al pool como `DBFromContext`. Así, olvidar `WithTx` o pasar el
+  contexto equivocado es un error y no una segunda conexión tomada en silencio
+  fuera de la transacción. `DBFromContext` no cambia.
 - **`storage`: `ErrNotFound`.** `Download` envuelve `storage.ErrNotFound`
   cuando la clave no tiene objeto (`storage/s3` traduce el `NoSuchKey` del SDK),
   así que quien llama distingue un objeto inexistente de una falla transitoria

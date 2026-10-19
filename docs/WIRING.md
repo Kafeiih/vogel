@@ -439,6 +439,15 @@ nunca necesite una variante "transaccional" y otra "standalone" de cada
 método: siempre recibe un `pgxtx.DBTX` (la interfaz común entre `pgx.Tx` y
 `*pgxpool.Pool`) y no le importa cuál de los dos es.
 
+Esa caída al pool es silenciosa: si alguien olvida `WithTx`, o pasa el
+contexto de afuera en vez del `txCtx` del callback, la sentencia corre en una
+**segunda conexión**, fuera de la transacción, mientras la primera sigue
+tomada. Con el pool agotado, dos requests así se bloquean entre sí. El código
+que sólo tiene sentido dentro de una transacción (un paso de una unidad de
+trabajo, un método que depende de un lock tomado antes en la misma
+transacción) usa `pgxtx.RequireTx(ctx)`, que devuelve `pgxtx.ErrNoTx` en vez
+de caer al pool.
+
 El ejemplo completo, adaptado de `examples/api/handler.go` (`DocumentHandler.Create`):
 
 ```go

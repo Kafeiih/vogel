@@ -15,6 +15,7 @@ package pgxtx
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
@@ -41,7 +42,9 @@ func dbFromContext(ctx context.Context, pool *pgxpool.Pool) DBTX {
 
 // DBFromContext returns the active transaction from context, or falls back to pool.
 // Exported for use by application-layer code that needs to run queries within
-// whatever transaction (if any) is active on ctx.
+// whatever transaction (if any) is active on ctx. Code that must not run
+// outside a transaction uses RequireTx instead: this fallback takes a second
+// pool connection when the transaction is missing.
 func DBFromContext(ctx context.Context, pool *pgxpool.Pool) DBTX {
 	return dbFromContext(ctx, pool)
 }
@@ -53,6 +56,24 @@ func TxFromContext(ctx context.Context) pgx.Tx {
 		return tx
 	}
 	return nil
+}
+
+// ErrNoTx is returned by RequireTx when ctx carries no active transaction.
+var ErrNoTx = errors.New("pgxtx: no transaction in context")
+
+// RequireTx returns the transaction active on ctx, or ErrNoTx when there is
+// none. Use it, instead of DBFromContext, in code that must run inside a
+// transaction (a step of a larger unit of work, a repository method that
+// relies on a lock taken earlier in the same transaction): DBFromContext
+// silently falls back to the pool, so a caller that forgot WithTx, or passed
+// the outer context instead of the callback's, would run the statement on a
+// second connection, outside the transaction, while the first one stays
+// checked out. With RequireTx that mistake is an error instead.
+func RequireTx(ctx context.Context) (pgx.Tx, error) {
+	if tx, ok := ctx.Value(ctxKey{}).(pgx.Tx); ok {
+		return tx, nil
+	}
+	return nil, ErrNoTx
 }
 
 // txBeginner is the subset of *pgxpool.Pool that PgxTxManager needs. It exists
