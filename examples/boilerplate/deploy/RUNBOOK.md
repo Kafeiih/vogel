@@ -334,7 +334,7 @@ El total entre todas las replicas no debe exceder `max_connections` de PostgreSQ
 replicas_api x DB_MAX_CONNS + replicas_worker x DB_MAX_CONNS + reserva < max_connections
 ```
 
-Ejemplo: servidor de 4 nucleos y 1 disco -> presupuesto de ~9 conexiones activas en total. Con 3 replicas del API y 1 worker: `DB_MAX_CONNS` en 2 para cada API y en 3 para el worker suman 9. Si un pool de 2 por replica no alcanza para su concurrencia, poner PgBouncer delante (los clientes abren muchas conexiones baratas y PgBouncer usa ~9 con el servidor) en vez de subir los pools o `max_connections`: ver `docs/WIRING.md` seccion 7 (que cambia en modo transaccion: timeouts con `ALTER ROLE` e iguales en `postgres.Config`, `default_query_exec_mode=exec` y el worker con conexion de sesion).
+Ejemplo: servidor de 4 nucleos y 1 disco -> presupuesto de ~9 conexiones activas en total. Con 3 replicas del API y 1 worker: `DB_MAX_CONNS` en 2 para cada API y en 3 para el worker suman 9, con `DB_MIN_CONNS` en 1 (nunca mayor que `DB_MAX_CONNS`: el arranque lo valida y falla). Si un pool de 2 por replica no alcanza para su concurrencia, poner PgBouncer delante del API en vez de subir los pools o `max_connections`. El worker no pasa por PgBouncer en modo transaccion (River necesita `LISTEN`), asi que el presupuesto se reparte entre los dos: por ejemplo, `default_pool_size` de PgBouncer en 6 para todo el API mas los 3 del worker suman 9 conexiones con el servidor. Ver `docs/WIRING.md` seccion 7 (que cambia en modo transaccion: timeouts con `ALTER ROLE` e iguales en `postgres.Config`, `default_query_exec_mode=exec` y el worker con conexion de sesion).
 
 ---
 
