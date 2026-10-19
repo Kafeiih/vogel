@@ -146,6 +146,8 @@ func Load() (*Config, error) {
 	maxConnLifetime := errs.Duration("DB_MAX_CONN_LIFETIME", time.Hour)
 	maxConnIdleTime := errs.Duration("DB_MAX_CONN_IDLE_TIME", 30*time.Minute)
 	connectTimeout := errs.Duration("DB_CONNECT_TIMEOUT", 10*time.Second)
+	acquireTimeout := positiveDuration(&errs, "DB_ACQUIRE_TIMEOUT", defaultAcquireTimeout)
+	leakThreshold := positiveDuration(&errs, "DB_LEAK_THRESHOLD", defaultLeakThreshold)
 
 	trustedProxies := parseTrustedProxies(&errs)
 	cerbosCfg := parseCerbosConfig(&errs)
@@ -171,6 +173,8 @@ func Load() (*Config, error) {
 			MaxConnIdleTime: maxConnIdleTime,
 			ConnectTimeout:  connectTimeout,
 			RequireTLS:      dbRequireTLS,
+			AcquireTimeout:  acquireTimeout,
+			LeakThreshold:   leakThreshold,
 		},
 		Zitadel: zitadelCfg,
 		Cerbos:  cerbosCfg,
@@ -248,6 +252,33 @@ func parseTrustedProxies(errs *config.Errors) []netip.Prefix {
 		return nil
 	}
 	return prefixes
+}
+
+// Defaults for the pool's acquire timeout and leak threshold (see
+// postgres.Config.AcquireTimeout and LeakThreshold).
+//
+// DB_ACQUIRE_TIMEOUT (default 3s): how long a request waits for a free
+// database connection before failing, so a saturated pool fails fast instead
+// of piling requests up until APP_TIMEOUT.
+//
+// DB_LEAK_THRESHOLD (default 10s): a connection released after being held
+// longer than this logs a WARN naming the code that acquired it.
+const (
+	defaultAcquireTimeout = 3 * time.Second
+	defaultLeakThreshold  = 10 * time.Second
+)
+
+// positiveDuration reads key as a duration that must be greater than zero,
+// returning def when it is unset. An unparsable, zero or negative value is
+// recorded in errs naming the variable: zero would silently disable a
+// protection the operator set the variable to tune.
+func positiveDuration(errs *config.Errors, key string, def time.Duration) time.Duration {
+	v := errs.Duration(key, def)
+	if v <= 0 {
+		errs.Addf("%s: must be greater than zero", key)
+		return def
+	}
+	return v
 }
 
 // parseSwaggerEnabled reads SWAGGER_ENABLED (default false). A value

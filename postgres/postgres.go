@@ -1,6 +1,8 @@
 // Package postgres provides a pgxpool.Pool constructor with the operational
 // defaults the source applications lacked: slow-query tracing (see
-// slow_query_tracer.go), Prometheus pool metrics (see metrics.go), a hard
+// slow_query_tracer.go), an optional acquire timeout, acquire-wait and
+// connection-hold histograms with optional leak detection (see
+// pool_tracer.go), Prometheus pool metrics (see metrics.go), a hard
 // startup failure instead of a silent no-op when TLS is required but the DSN
 // does not enable a verified TLS connection, and server-side statement/lock/idle-in-transaction
 // timeouts applied on every new connection.
@@ -91,6 +93,44 @@ type Config struct {
 	// disables it explicitly.
 	IdleInTransactionSessionTimeout time.Duration
 
+	// AcquireTimeout bounds how long Acquire (and every Pool method that
+	// acquires: Exec, Query, QueryRow, Begin, ...) waits for a free pool
+	// connection, so a full pool makes requests fail fast instead of queuing
+	// until the caller's own deadline. It applies through pgxpool's
+	// AcquireTracer: the acquire context gets this deadline (a shorter caller
+	// deadline still wins) and is canceled when Acquire returns.
+	//
+	// A wait cut by it fails with an error wrapping context.DeadlineExceeded:
+	// recognize it with errors.Is(err, context.DeadlineExceeded) while the
+	// caller's own ctx.Err() is still nil (the caller's deadline produces the
+	// same error, but then ctx.Err() is set too). The wait is observed in the
+	// db_pool_acquire_wait_seconds histogram either way.
+	//
+	// The deadline covers the whole acquire, so when the pool has room but no
+	// idle connection it also bounds dialing a new one (as HikariCP's
+	// connectionTimeout does): keep it above the time a healthy connect
+	// takes, or a request that has to open a connection fails before
+	// ConnectTimeout. NewPool's own startup Ping is exempt, so the boot still
+	// waits up to ConnectTimeout for a database that is waking up.
+	//
+	// Zero disables it (pgxpool's behavior: wait for the caller's context); a
+	// negative value is a NewPool error.
+	AcquireTimeout time.Duration
+
+	// LeakThreshold makes NewPool log a WARN when a connection is released
+	// after being held (acquired and not yet released) longer than this,
+	// naming the function and file:line that acquired it: the first frame
+	// outside pgx and this module's postgres and pgxtx packages. The WARN
+	// never includes SQL or arguments. Hold times are always observed in the
+	// db_pool_conn_hold_seconds histogram; this only adds the log and the
+	// per-acquire stack capture it needs, so leave it zero when unused.
+	//
+	// The check runs at release, so a connection that is never released is
+	// not reported by this log; db_pool_connections_acquired staying at
+	// db_pool_connections_max shows that case. Zero disables it; a negative
+	// value is a NewPool error.
+	LeakThreshold time.Duration
+
 	// AfterConnect, if set, runs after this package's own per-connection setup
 	// (TLS, timeouts, tracer) on every new physical connection. Use it for
 	// consumer-specific per-connection work — for example, registering a
@@ -105,6 +145,35 @@ type Config struct {
 // does not make pgx verify the server certificate, or if the initial ping
 // fails.
 func NewPool(ctx context.Context, cfg Config, logger *slog.Logger) (*pgxpool.Pool, error) {
+	poolConfig, err := newPoolConfig(cfg, logger)
+	if err != nil {
+		return nil, err
+	}
+
+	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
+	if err != nil {
+		return nil, fmt.Errorf("creating connection pool: %w", err)
+	}
+
+	if err := pool.Ping(withoutAcquireTimeout(ctx)); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("pinging database: %w", err)
+	}
+
+	return pool, nil
+}
+
+// newPoolConfig builds the *pgxpool.Config NewPool connects with, without
+// connecting: DSN parsing, pool settings, TLS policy, the pool tracer and the
+// per-connection setup.
+func newPoolConfig(cfg Config, logger *slog.Logger) (*pgxpool.Config, error) {
+	if cfg.AcquireTimeout < 0 {
+		return nil, fmt.Errorf("postgres: AcquireTimeout must not be negative, got %s (zero disables it)", cfg.AcquireTimeout)
+	}
+	if cfg.LeakThreshold < 0 {
+		return nil, fmt.Errorf("postgres: LeakThreshold must not be negative, got %s (zero disables it)", cfg.LeakThreshold)
+	}
+
 	poolConfig, err := pgxpool.ParseConfig(cfg.URL)
 	if err != nil {
 		return nil, fmt.Errorf("parsing database config: %w", err)
@@ -117,7 +186,13 @@ func NewPool(ctx context.Context, cfg Config, logger *slog.Logger) (*pgxpool.Poo
 		return nil, err
 	}
 
-	poolConfig.ConnConfig.Tracer = NewSlowQueryTracer(logger, slowQueryThreshold)
+	poolConfig.ConnConfig.Tracer = newPoolTracer(poolTracerOptions{
+		logger:             logger,
+		slowQueryThreshold: slowQueryThreshold,
+		acquireTimeout:     cfg.AcquireTimeout,
+		leakThreshold:      cfg.LeakThreshold,
+		maxConns:           int(poolConfig.MaxConns),
+	})
 
 	statementTimeoutMS := resolveTimeoutMillis(cfg.StatementTimeout, defaultStatementTimeout)
 	lockTimeoutMS := resolveTimeoutMillis(cfg.LockTimeout, defaultLockTimeout)
@@ -140,17 +215,7 @@ func NewPool(ctx context.Context, cfg Config, logger *slog.Logger) (*pgxpool.Poo
 		return nil
 	}
 
-	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
-	if err != nil {
-		return nil, fmt.Errorf("creating connection pool: %w", err)
-	}
-
-	if err := pool.Ping(ctx); err != nil {
-		pool.Close()
-		return nil, fmt.Errorf("pinging database: %w", err)
-	}
-
-	return pool, nil
+	return poolConfig, nil
 }
 
 // applyPoolSettings copies cfg's pool sizing and connection lifetime fields

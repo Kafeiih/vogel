@@ -99,6 +99,8 @@ construye la imagen del PDP y prueba que las sirve (ver `cerbos/README.md`).
 > DB_MAX_CONN_LIFETIME=1h
 > DB_MAX_CONN_IDLE_TIME=30m
 > DB_CONNECT_TIMEOUT=10s
+> DB_ACQUIRE_TIMEOUT=3s
+> DB_LEAK_THRESHOLD=10s
 > DB_REQUIRE_TLS=false   # solo para el Postgres local, que no sirve TLS
 >
 > ZITADEL_ISSUER=https://auth.institucion.gob
@@ -140,6 +142,20 @@ construye la imagen del PDP y prueba que las sirve (ver `cerbos/README.md`).
 > exige que `DB_URL` use `sslmode=verify-ca` o `verify-full`. Solo el `.env`
 > local y el compose de despliegue, cuyo Postgres no sirve TLS, la ponen en
 > `false`. Un valor que no sea `true` o `false` hace fallar el arranque.
+>
+> `DB_ACQUIRE_TIMEOUT` (opcional, `3s` por defecto) es cuánto espera una
+> petición por una conexión libre del pool antes de fallar con un error que
+> envuelve `context.DeadlineExceeded`: con el pool lleno la aplicación falla
+> rápido en vez de encolar peticiones hasta `APP_TIMEOUT`. El límite también
+> cubre abrir una conexión nueva cuando el pool tiene lugar, así que debe
+> superar lo que tarda un connect sano; el `Ping` de arranque queda fuera y
+> espera hasta `DB_CONNECT_TIMEOUT`.
+> `DB_LEAK_THRESHOLD` (opcional, `10s` por defecto) registra un WARN, con la
+> función y el `archivo:línea` que pidió la conexión, cuando una conexión se
+> devuelve después de retenerla más que ese umbral. Ambas deben ser
+> duraciones mayores que cero; un valor inválido, cero o negativo hace fallar
+> el arranque. Las esperas y retenciones se exponen en los histogramas
+> `db_pool_acquire_wait_seconds` y `db_pool_conn_hold_seconds`.
 >
 > Validación de tokens de Zitadel (todas opcionales; el arranque falla con un
 > valor inválido o una combinación incoherente, nombrando la variable):
