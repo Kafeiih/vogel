@@ -122,6 +122,7 @@ datos a ningún tercero por su cuenta: solo a los que el consumidor configura.
 | Ruta nueva sin autorización | `examples/api` tiene un test que recorre el router y falla si una ruta `/api/` no pasa por `RequirePermission` o `RequireAccess`; la plantilla de PR lo pregunta |
 | Acceso a un recurso ajeno con un ID válido (IDOR) | `access.Guard` por instancia; el consumidor debe usarlo en rutas con ID |
 | Falsificar la IP para evadir el rate limit o ensuciar `audit_log` | `RealIP` ignora cabeceras de pares no declarados |
+| `traceparent` o `baggage` falsos para forzar el muestreo, inflar el backend de traces o mezclar trazas | `otel.Middleware` no adopta el `traceparent` del cliente: arranca un trace propio con un link al del cliente, muestreado según la proporción del servicio, e ignora el `baggage`. `WithTrustedPropagation` solo detrás de un gateway que fije o limpie esas cabeceras |
 | Borrar o reescribir la auditoría | Triggers append-only y rol de ejecución que no es dueño; un superusuario o el dueño aún puede (riesgo aceptado, ver §7) |
 | Secretos en la auditoría | Redacción por defecto y configurable; falla cerrado |
 | Cuerpo enorme o JSON malicioso | Límite de bytes y decodificación estricta |

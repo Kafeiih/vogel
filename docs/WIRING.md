@@ -746,3 +746,35 @@ transacción, y eso rompe tres supuestos de este módulo:
 Con PgBouncer, `DB_MAX_CONNS` de cada réplica pasa a ser conexiones con
 PgBouncer (baratas), y lo que se calcula por hardware es `default_pool_size`
 de PgBouncer.
+
+## 8. Tracing con OpenTelemetry
+
+El tracing es opcional en todos los niveles: los puertos de `vogel` no
+importan OpenTelemetry, y `otel.Setup` sin `Endpoint` no instala nada. Para
+activarlo, el arranque arma las piezas en este orden:
+
+```go
+tp, err := otel.Setup(ctx, otel.Config{
+	Endpoint:    "http://otel-collector:4318", // vacío: tracing apagado
+	ServiceName: "api",
+	SampleRatio: 0.1,
+})
+if err != nil { /* fallar el arranque */ }
+defer tp.Shutdown(shutdownCtx) // último: después del servidor HTTP y de la cola
+
+appLogger := logger.New(env, os.Stdout, logger.WithTraceIDs(otel.TraceIDs))
+
+r := chi.NewRouter()
+r.Use(otel.Middleware()) // primero: todo lo demás corre dentro del span
+r.Use(vmw.RequestID)
+// ...
+```
+
+`otel.Middleware` no adopta el `traceparent` del cliente, por la misma razón
+que `RequestID` no adopta `X-Request-Id`: es entrada del cliente. Cada request
+arranca un trace propio con un *link* al del cliente, y el muestreo lo decide
+`SampleRatio`. Detrás de un gateway o service mesh que fije o limpie esas
+cabeceras, `otel.Middleware(otel.WithTrustedPropagation())` continúa el trace.
+
+Los logs con contexto (`InfoContext`, el `slog` por defecto) llevan `trace_id`
+y `span_id` del span activo, además de `request_id`.

@@ -8,6 +8,17 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ### Agregado
 
+- **`otel`: adaptador de OpenTelemetry.** `Setup(ctx, Config)` exporta trazas
+  por OTLP/HTTP (a `<Endpoint>/v1/traces`) con muestreo
+  `ParentBased(TraceIDRatioBased)`, 10 % por defecto (`DefaultSampleRatio`),
+  e instala el `TracerProvider` y el propagador W3C globales; sin `Endpoint`
+  no instala nada. `Provider.Shutdown` vacía lo pendiente. `Middleware` crea un
+  span por request (`otelhttp`) nombrado según el patrón de ruta de chi; por
+  defecto **no adopta el `traceparent` del cliente** (trace nuevo con un link
+  al del cliente, sin su `baggage`), `WithTrustedPropagation()` sí.
+  `TraceIDs` encaja en `logger.WithTraceIDs`. No lee variables de entorno, y
+  es el único paquete que depende del SDK de OpenTelemetry (lo verifica el
+  CI). Ver `docs/WIRING.md` §8.
 - **`logger`: `WithTraceIDs`.** Recibe una función que lee del contexto el
   `trace_id` y el `span_id` del span activo, y los agrega a cada línea logueada
   con contexto y a lo que fija `WithContext`, con las mismas reglas que
