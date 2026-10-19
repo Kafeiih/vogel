@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/cerbos/cerbos-sdk-go/cerbos"
+	"google.golang.org/grpc/stats"
 
 	"github.com/kafeiih/vogel/authz"
 )
@@ -34,6 +35,10 @@ type Config struct {
 	// no deadline. A timed-out call returns an error like any other PDP
 	// failure, which the access layer and RequirePermission map to 503.
 	CallTimeout time.Duration
+	// StatsHandler, if set, is installed on the gRPC connection to the PDP
+	// and sees every call (otelgrpc.NewClientHandler, for instance, traces
+	// them). nil installs none.
+	StatsHandler stats.Handler
 }
 
 // DefaultCallTimeout is the per-call deadline used when Config.CallTimeout
@@ -76,6 +81,9 @@ func clientOptions(cfg Config) []cerbos.Opt {
 	var opts []cerbos.Opt
 	if cfg.Plaintext {
 		opts = append(opts, cerbos.WithPlaintext())
+	}
+	if cfg.StatsHandler != nil {
+		opts = append(opts, cerbos.WithStatsHandler(cfg.StatsHandler))
 	}
 	return opts
 }

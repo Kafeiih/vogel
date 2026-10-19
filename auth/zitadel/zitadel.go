@@ -32,6 +32,12 @@ type Config struct {
 	// timeout, so a stalled issuer could hang token validation.
 	HTTPTimeout time.Duration
 
+	// WrapTransport, if set, wraps the http.RoundTripper of every call to the
+	// issuer (discovery, JWKS, introspection); it receives
+	// http.DefaultTransport. The HTTPTimeout still applies. vogel/otel's
+	// HTTP client helper fits it, to trace those calls.
+	WrapTransport func(http.RoundTripper) http.RoundTripper
+
 	// MaxTokenLifetime, when positive, rejects tokens whose lifetime
 	// (exp - iat) exceeds it, and tokens without an iat claim. Zero disables
 	// the check; negative is a construction error. It bounds how long a
@@ -70,7 +76,11 @@ func issuerHTTPClient(cfg Config) *http.Client {
 	if timeout == 0 {
 		timeout = DefaultHTTPTimeout
 	}
-	return &http.Client{Timeout: timeout}
+	c := &http.Client{Timeout: timeout}
+	if cfg.WrapTransport != nil {
+		c.Transport = cfg.WrapTransport(http.DefaultTransport)
+	}
+	return c
 }
 
 // Authenticator implements auth.Authenticator. By default it uses Zitadel's

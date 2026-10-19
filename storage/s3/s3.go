@@ -52,6 +52,12 @@ type Config struct {
 	// DefaultResponseHeaderTimeout; negative is a construction error.
 	// Presigning does no I/O and is unaffected.
 	ResponseHeaderTimeout time.Duration
+
+	// WrapTransport, if set, wraps the http.RoundTripper every S3 call goes
+	// through. It receives the *http.Transport this package bounds (see
+	// ResponseHeaderTimeout), so the bounds still apply. vogel/otel's HTTP
+	// client helper fits it, to trace S3 calls.
+	WrapTransport func(http.RoundTripper) http.RoundTripper
 }
 
 // DefaultResponseHeaderTimeout is the response-header bound used when
@@ -120,7 +126,7 @@ func NewS3Storage(cfg Config, logger *slog.Logger) (*S3Storage, error) {
 	opts := []func(*s3.Options){
 		func(o *s3.Options) {
 			o.Region = cfg.Region
-			o.HTTPClient = newHTTPClient(headerTimeout)
+			o.HTTPClient = httpClientFor(cfg, headerTimeout)
 		},
 	}
 
@@ -175,6 +181,17 @@ func newHTTPClient(bound time.Duration) *awshttp.BuildableClient {
 			tr.TLSHandshakeTimeout = min(tr.TLSHandshakeTimeout, bound)
 			tr.ResponseHeaderTimeout = bound
 		})
+}
+
+// httpClientFor returns the S3 client's HTTP client: newHTTPClient's, with
+// its transport wrapped by cfg.WrapTransport when set. The wrapped client
+// sets no Timeout either, for the reason newHTTPClient gives.
+func httpClientFor(cfg Config, bound time.Duration) aws.HTTPClient {
+	b := newHTTPClient(bound)
+	if cfg.WrapTransport == nil {
+		return b
+	}
+	return &http.Client{Transport: cfg.WrapTransport(b.GetTransport())}
 }
 
 // effectiveExpiry returns expiry, or the configured default when expiry is

@@ -26,6 +26,11 @@ type Config struct {
 	// a construction error. It applies even when the caller's context has
 	// no deadline, so a stalled API cannot hang the sender forever.
 	HTTPTimeout time.Duration
+
+	// WrapTransport, if set, wraps the http.RoundTripper every SendGrid API
+	// call goes through; it receives http.DefaultTransport. The HTTPTimeout
+	// still applies. vogel/otel's HTTP client helper fits it.
+	WrapTransport func(http.RoundTripper) http.RoundTripper
 }
 
 // DefaultHTTPTimeout is the per-request timeout used when
@@ -72,9 +77,14 @@ func NewSendGridNotifier(cfg Config, defaultFrom string, logger *slog.Logger) (*
 		timeout = DefaultHTTPTimeout
 	}
 
+	httpClient := &http.Client{Timeout: timeout}
+	if cfg.WrapTransport != nil {
+		httpClient.Transport = cfg.WrapTransport(http.DefaultTransport)
+	}
+
 	return &SendGridNotifier{
 		requestTemplate: sendgrid.NewSendClient(cfg.APIKey),
-		httpClient:      &http.Client{Timeout: timeout},
+		httpClient:      httpClient,
 		defaultFrom:     defaultFrom,
 		logger:          logger,
 	}, nil
