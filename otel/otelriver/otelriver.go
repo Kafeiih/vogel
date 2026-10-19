@@ -180,7 +180,12 @@ func withTraceContext(metadata []byte, carrier propagation.MapCarrier) []byte {
 			return metadata
 		}
 	}
+	// The explicit trace context is the pair: either key set by the caller
+	// keeps the metadata as it is.
 	if _, ok := fields[traceParentKey]; ok {
+		return metadata
+	}
+	if _, ok := fields[traceStateKey]; ok {
 		return metadata
 	}
 	for k, v := range carrier {

@@ -38,8 +38,10 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   `postgres.Config.Tracer` y crea un span de cliente por consulta, batch (uno
   solo, con un evento por consulta), `COPY FROM` y conexión, con las
   convenciones `db.*` de OpenTelemetry. Guarda el texto SQL, nunca los
-  argumentos; de un error de Postgres guarda solo el SQLSTATE, porque el
-  mensaje puede citar el valor rechazado.
+  argumentos. Nunca guarda el mensaje de un error, que puede citar el valor
+  rechazado: de un error de Postgres guarda el SQLSTATE, de uno de contexto
+  su texto fijo y de cualquier otro su tipo (la misma regla que
+  `HashSlowQuerySQL`).
 - **`otel/otelriver`: tracing de jobs de River.** `NewMiddleware()` se
   enchufa en `worker.WithMiddleware`: crea un span *producer* al encolar y
   deja su `traceparent`/`tracestate` en la metadata del job

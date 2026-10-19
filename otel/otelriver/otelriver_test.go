@@ -190,3 +190,17 @@ func TestWork_SnoozeIsNotAnError(t *testing.T) {
 	require.Len(t, s.Events(), 1)
 	assert.Equal(t, "snoozed", s.Events()[0].Name)
 }
+
+// An explicit tracestate alone is kept as well: the explicit trace context
+// is the pair, not just the traceparent.
+func TestInsert_ExplicitTracestateWins(t *testing.T) {
+	m, _, tp := newRecorder(t, sdktrace.AlwaysSample())
+	const explicit = `{"vogel_tracestate":"vendor=explicit"}`
+	p := &rivertype.JobInsertParams{Kind: "k", Metadata: []byte(explicit)}
+	ctx, span := tp.Tracer("test").Start(context.Background(), "req")
+	defer span.End()
+
+	insert(t, m, ctx, p)
+
+	assert.JSONEq(t, explicit, string(p.Metadata))
+}

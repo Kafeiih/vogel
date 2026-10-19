@@ -68,9 +68,8 @@ func TestQuery_RecordsTheError(t *testing.T) {
 	s := rec.Ended()[0]
 	assert.Equal(t, "INSERT", s.Name())
 	assert.Equal(t, codes.Error, s.Status().Code)
-	assert.Equal(t, "duplicate key", s.Status().Description)
-	require.Len(t, s.Events(), 1)
-	assert.Equal(t, "exception", s.Events()[0].Name)
+	assert.Equal(t, "*errors.errorString", s.Status().Description, "the message is never recorded")
+	assert.Empty(t, s.Events(), "no exception event carrying the message")
 }
 
 func TestQuery_NoRowsIsNotAnError(t *testing.T) {
@@ -211,6 +210,36 @@ func TestQuery_PgErrorRecordsOnlyItsCode(t *testing.T) {
 		for _, e := range s.Events() {
 			for _, kv := range e.Attributes {
 				assert.NotContains(t, kv.Value.String(), "hunter2", "%s event leaks the error message", s.Name())
+			}
+		}
+	}
+}
+
+type encodeError struct{ msg string }
+
+func (e *encodeError) Error() string { return e.msg }
+
+// Any other error is recorded by its Go type: pgx's own messages (failing to
+// encode an argument, for one) can quote the value. Context errors keep
+// their text, which is fixed.
+func TestQuery_NonPgErrorRecordsOnlyItsType(t *testing.T) {
+	tr, rec := newRecorder(t)
+
+	ctx := tr.TraceQueryStart(context.Background(), nil, pgx.TraceQueryStartData{SQL: "select $1"})
+	tr.TraceQueryEnd(ctx, nil, pgx.TraceQueryEndData{Err: fmt.Errorf("query: %w", &encodeError{`unable to encode "hunter2"`})})
+	ctx = tr.TraceQueryStart(context.Background(), nil, pgx.TraceQueryStartData{SQL: "select 1"})
+	tr.TraceQueryEnd(ctx, nil, pgx.TraceQueryEndData{Err: fmt.Errorf("query: %w", context.DeadlineExceeded)})
+
+	spans := rec.Ended()
+	require.Len(t, spans, 2)
+	assert.Equal(t, "*otelpgx.encodeError", spans[0].Status().Description)
+	assert.Equal(t, "*otelpgx.encodeError", attrs(spans[0])["error.type"].AsString())
+	assert.Equal(t, "context deadline exceeded", spans[1].Status().Description)
+	for _, s := range spans {
+		assert.Equal(t, codes.Error, s.Status().Code)
+		for _, e := range s.Events() {
+			for _, kv := range e.Attributes {
+				assert.NotContains(t, kv.Value.String(), "hunter2")
 			}
 		}
 	}
