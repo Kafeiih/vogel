@@ -24,6 +24,15 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ### Agregado
 
+- **`examples/boilerplate`: el worker sirve `/metrics` y tiene alertas.**
+  `cmd/worker` registra `worker.WithMetrics` y el collector del pool, y sirve
+  `/metrics` en `WORKER_METRICS_LISTEN_ADDR` (`:9091` por defecto, aparte del
+  `:9090` del API); una dirección inválida hace fallar el arranque.
+  `deploy/prometheus/alerts.yml` suma `WorkerDown`, `WorkerJobErrorRatioHigh`
+  (más del 10% de intentos en `error`/`panic` por `kind`) y `WorkerJobSlowP95`
+  (p95 por `kind` sobre 60 s), con tests en `alerts_test.yml`, y el RUNBOOK una
+  sección 13 para el worker. Todo queda fuera de un proyecto generado sin
+  worker.
 - **`httpx/middleware`: opciones de `StructuredLogger` para datos del
   cliente.** `remote_addr` y `user_agent` son datos personales bajo reglas
   tipo GDPR. `WithRemoteAddr(RemoteAddrTruncated)` loguea solo la red (/24 en

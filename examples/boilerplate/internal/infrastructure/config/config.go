@@ -94,6 +94,13 @@ type AppConfig struct {
 // server. vogel does not run one of its own -- see metrics_server.go.
 type MetricsConfig struct {
 	ListenAddr string // METRICS_LISTEN_ADDR, default ":9090"
+	// vogel:component worker begin
+
+	// WorkerListenAddr is the worker binary's own /metrics address
+	// (WORKER_METRICS_LISTEN_ADDR, default ":9091"), apart from the api's so
+	// both can run on one host.
+	WorkerListenAddr string
+	// vogel:component worker end
 }
 
 // vogel:component notification begin
@@ -556,5 +563,9 @@ func parseNotificationConfig() NotificationConfig {
 func parseMetricsConfig() MetricsConfig {
 	return MetricsConfig{
 		ListenAddr: config.String("METRICS_LISTEN_ADDR", ":9090"),
+		// vogel:component worker begin
+
+		WorkerListenAddr: config.String("WORKER_METRICS_LISTEN_ADDR", ":9091"),
+		// vogel:component worker end
 	}
 }
