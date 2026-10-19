@@ -25,8 +25,10 @@ package worker
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
 )
@@ -77,6 +79,17 @@ type Config struct {
 	// empty, a single default queue (river.QueueDefault) is used with
 	// DefaultMaxWorkers.
 	Queues map[string]int
+
+	// PollOnly makes a worker-mode client find new jobs by polling instead
+	// of waiting on PostgreSQL LISTEN/NOTIFY; it is passed to River's
+	// river.Config.PollOnly. LISTEN needs a session that stays on one server
+	// connection, so set it when the worker connects through PgBouncer in
+	// transaction pooling mode. The cost is latency: a new job may wait up
+	// to River's FetchPollInterval (1s by default) before it is locked for
+	// work, and a new leader takes up to five seconds to elect itself after
+	// the previous one resigns. Ignored in insert-only mode, which never
+	// listens. Default false: LISTEN/NOTIFY, as before.
+	PollOnly bool
 }
 
 // Option configures optional NewRiverQueue behavior.
@@ -85,6 +98,11 @@ type Option func(*options)
 // options collects the values set by Option funcs passed to NewRiverQueue.
 type options struct {
 	periodicJobs []*river.PeriodicJob
+
+	// metrics is set by WithMetrics; metricsRegisterer is where it
+	// registers, nil meaning prometheus.DefaultRegisterer.
+	metrics           bool
+	metricsRegisterer prometheus.Registerer
 }
 
 // newOptions applies opts in order and returns the resulting options.
@@ -109,4 +127,40 @@ func WithPeriodicJobs(jobs []*river.PeriodicJob) Option {
 	return func(o *options) {
 		o.periodicJobs = jobs
 	}
+}
+
+// WithMetrics records the duration of every job attempt the RiverQueue works
+// as the Prometheus histogram river_job_duration_seconds{kind,outcome},
+// registered on reg (prometheus.DefaultRegisterer if nil). outcome is
+// success, error, cancel (river.JobCancel), snooze (river.JobSnooze) or
+// panic; kind is the job's Kind(). The histogram's _count doubles as the
+// attempt counter by outcome. Registering twice on the same Registerer
+// reuses the collector.
+//
+// The metrics are a worker middleware, installed after the request ID one, so
+// they only exist in worker-binary mode: with a nil *river.Workers the option
+// is ignored and nothing is registered, as with WithPeriodicJobs. Without
+// this option no metrics middleware is installed.
+func WithMetrics(reg prometheus.Registerer) Option {
+	return func(o *options) {
+		o.metrics = true
+		o.metricsRegisterer = reg
+	}
+}
+
+// buildMetrics returns the metrics middleware WithMetrics asked for, or nil
+// when it was not passed or the client is insert-only (workers == nil).
+func (o *options) buildMetrics(workers *river.Workers) (*metricsMiddleware, error) {
+	if !o.metrics || workers == nil {
+		return nil, nil
+	}
+	reg := o.metricsRegisterer
+	if reg == nil {
+		reg = prometheus.DefaultRegisterer
+	}
+	mw, err := newMetricsMiddleware(reg)
+	if err != nil {
+		return nil, fmt.Errorf("worker: registering job metrics: %w", err)
+	}
+	return mw, nil
 }

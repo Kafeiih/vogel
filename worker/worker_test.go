@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/riverqueue/river"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -122,7 +123,7 @@ func TestBuildQueueConfig_CustomQueues(t *testing.T) {
 func TestBuildRiverConfig_SchemaPropagates(t *testing.T) {
 	cfg := Config{Schema: "custom_schema", DefaultMaxWorkers: 100}
 
-	rc := buildRiverConfig(cfg, nil, nil, nil)
+	rc := buildRiverConfig(cfg, nil, nil, nil, nil)
 
 	assert.Equal(t, "custom_schema", rc.Schema)
 }
@@ -130,7 +131,7 @@ func TestBuildRiverConfig_SchemaPropagates(t *testing.T) {
 func TestBuildRiverConfig_InsertOnlyMode_NoWorkersNoQueuesNoPeriodicJobs(t *testing.T) {
 	cfg := Config{Schema: "river", DefaultMaxWorkers: 100}
 
-	rc := buildRiverConfig(cfg, nil, nil, nil)
+	rc := buildRiverConfig(cfg, nil, nil, nil, nil)
 
 	assert.Nil(t, rc.Workers, "Workers must be nil in insert-only mode")
 	assert.Nil(t, rc.Queues, "Queues must be nil in insert-only mode")
@@ -141,7 +142,7 @@ func TestBuildRiverConfig_WorkerMode_HasQueues(t *testing.T) {
 	workers := river.NewWorkers()
 	cfg := Config{Schema: "river", DefaultMaxWorkers: 100}
 
-	rc := buildRiverConfig(cfg, workers, nil, nil)
+	rc := buildRiverConfig(cfg, workers, nil, nil, nil)
 
 	assert.Same(t, workers, rc.Workers, "Workers must be set in worker mode")
 	assert.NotEmpty(t, rc.Queues, "Queues must be set in worker mode")
@@ -192,7 +193,7 @@ func TestBuildRiverConfig_WorkerMode_WithPeriodicJobs(t *testing.T) {
 	jobs := []*river.PeriodicJob{testPeriodicJob()}
 	cfg := Config{Schema: "river", DefaultMaxWorkers: 100}
 
-	rc := buildRiverConfig(cfg, workers, jobs, nil)
+	rc := buildRiverConfig(cfg, workers, jobs, nil, nil)
 
 	assert.Equal(t, jobs, rc.PeriodicJobs, "periodic jobs must be registered in worker mode")
 }
@@ -204,7 +205,7 @@ func TestBuildRiverConfig_InsertOnlyMode_PeriodicJobsNotRegistered(t *testing.T)
 	jobs := []*river.PeriodicJob{testPeriodicJob()}
 	cfg := Config{Schema: "river", DefaultMaxWorkers: 100}
 
-	rc := buildRiverConfig(cfg, nil, jobs, nil)
+	rc := buildRiverConfig(cfg, nil, jobs, nil, nil)
 
 	assert.Nil(t, rc.PeriodicJobs)
 	assert.Nil(t, rc.Workers)
@@ -218,9 +219,88 @@ func TestBuildRiverConfig_WorkerMode_NoPeriodicJobsOption_MatchesLicenciasShape(
 	workers := river.NewWorkers()
 	cfg := Config{Schema: "river", DefaultMaxWorkers: 100}
 
-	rc := buildRiverConfig(cfg, workers, nil, nil)
+	rc := buildRiverConfig(cfg, workers, nil, nil, nil)
 
 	assert.Same(t, workers, rc.Workers)
 	assert.NotEmpty(t, rc.Queues)
 	assert.Nil(t, rc.PeriodicJobs)
+}
+
+// -----------------------------------------------------------------------
+// WithMetrics / PollOnly in buildRiverConfig
+// -----------------------------------------------------------------------
+
+// Metrics wrap the work after the request ID middleware has put the job's
+// request ID in the context: requestID first, metrics second.
+func TestBuildRiverConfig_WorkerMode_WithMetrics_OrderedAfterRequestID(t *testing.T) {
+	mw, err := newMetricsMiddleware(prometheus.NewRegistry())
+	require.NoError(t, err)
+
+	rc := buildRiverConfig(Config{Schema: "river"}, river.NewWorkers(), nil, mw, nil)
+
+	require.Len(t, rc.Middleware, 2)
+	assert.IsType(t, &requestIDMiddleware{}, rc.Middleware[0])
+	assert.Same(t, mw, rc.Middleware[1])
+}
+
+// An insert-only client works no jobs, so the metrics middleware is not
+// installed there even if one is passed, like periodic jobs.
+func TestBuildRiverConfig_InsertOnlyMode_MetricsNotInstalled(t *testing.T) {
+	mw, err := newMetricsMiddleware(prometheus.NewRegistry())
+	require.NoError(t, err)
+
+	rc := buildRiverConfig(Config{Schema: "river"}, nil, nil, mw, nil)
+
+	require.Len(t, rc.Middleware, 1)
+	assert.IsType(t, &requestIDMiddleware{}, rc.Middleware[0])
+}
+
+func TestBuildRiverConfig_WorkerMode_PollOnlyMapped(t *testing.T) {
+	for _, pollOnly := range []bool{false, true} {
+		rc := buildRiverConfig(Config{Schema: "river", PollOnly: pollOnly}, river.NewWorkers(), nil, nil, nil)
+		assert.Equal(t, pollOnly, rc.PollOnly)
+	}
+}
+
+// PollOnly only changes how a client that works jobs waits for them; an
+// insert-only client never listens, so it is left unset there.
+func TestBuildRiverConfig_InsertOnlyMode_PollOnlyNotSet(t *testing.T) {
+	rc := buildRiverConfig(Config{Schema: "river", PollOnly: true}, nil, nil, nil, nil)
+	assert.False(t, rc.PollOnly)
+}
+
+// Without WithMetrics no metrics middleware is built: the behavior before
+// the option existed.
+func TestOptionsBuildMetrics_WithoutOption_BuildsNothing(t *testing.T) {
+	o := newOptions()
+	mw, err := o.buildMetrics(river.NewWorkers())
+	require.NoError(t, err)
+	assert.Nil(t, mw)
+}
+
+func TestOptionsBuildMetrics_InsertOnly_RegistersNothing(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	mw, err := newOptions(WithMetrics(reg)).buildMetrics(nil)
+	require.NoError(t, err)
+	assert.Nil(t, mw)
+
+	families, err := reg.Gather()
+	require.NoError(t, err)
+	assert.Empty(t, families)
+	// Registering again must still work: nothing was registered.
+	_, err = newMetricsMiddleware(reg)
+	require.NoError(t, err)
+}
+
+func TestOptionsBuildMetrics_WorkerMode_RegistersOnRegisterer(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	mw, err := newOptions(WithMetrics(reg)).buildMetrics(river.NewWorkers())
+	require.NoError(t, err)
+	require.NotNil(t, mw)
+
+	// Already registered: a second identical registration is reported as
+	// such, proving the first one landed on reg.
+	err = reg.Register(newJobDurationHistogram())
+	var are prometheus.AlreadyRegisteredError
+	assert.ErrorAs(t, err, &are)
 }

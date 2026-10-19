@@ -603,10 +603,15 @@ func NewRiverQueue(pool *pgxpool.Pool, workers *river.Workers, cfg Config, logge
   `Enqueue`/`EnqueueTx`. Nunca llama a `Start`. `buildRiverConfig` deja
   `Workers`, `Queues` y `PeriodicJobs` sin fijar en ese caso, así que un
   cliente insert-only no procesa nada aunque alguien le pase trabajos
-  periódicos por error (ver `WithPeriodicJobs`).
+  periódicos por error (ver `WithPeriodicJobs`). `WithMetrics` y
+  `Config.PollOnly` también se ignoran ahí: no hay jobs que medir ni `LISTEN`
+  que evitar.
 - **Binario worker:** construye la cola con un `*river.Workers` real
   (registrado vía `river.AddWorker`), y llama a `Start`, que bloquea
-  procesando jobs hasta `Stop`.
+  procesando jobs hasta `Stop`. Con `WithMetrics(reg)` registra en `reg` el
+  histograma `river_job_duration_seconds{kind,outcome}` (`outcome`:
+  `success`, `error`, `cancel`, `snooze`, `panic`), medido por un middleware
+  que corre después del de request ID.
 
 `examples/api/` corre ambos roles en un solo proceso por simplicidad — pasa
 un `*river.Workers` no nulo y llama a `Start` — pero su propio comentario
@@ -726,11 +731,16 @@ transacción, y eso rompe tres supuestos de este módulo:
    sigue las sentencias preparadas por cliente.
 
 3. **`LISTEN`/`NOTIFY` de River.** El worker escucha notificaciones para
-   enterarse de jobs nuevos, y `LISTEN` necesita una sesión estable. River
-   tiene un modo `PollOnly`, pero `worker.Config` no lo expone todavía: el
-   binario worker se conecta directo a PostgreSQL, o a un pool de PgBouncer en
-   modo `session`. El API, que sólo encola, puede ir por el pool en modo
-   transacción.
+   enterarse de jobs nuevos, y `LISTEN` necesita una sesión estable. Con
+   `worker.Config.PollOnly = true` (en el boilerplate, `WORKER_POLL_ONLY=true`)
+   River no emite `LISTEN` y busca jobs nuevos consultando, así que el worker
+   puede ir por el pool de PgBouncer en modo transacción. El costo es
+   latencia: un job nuevo puede esperar hasta `FetchPollInterval` de River
+   (1 s por defecto) antes de tomarse, y si el líder renuncia, otro tarda
+   hasta cinco segundos en elegirse. Sin `PollOnly`, el worker se conecta
+   directo a PostgreSQL o a un pool de PgBouncer en modo `session`. El API,
+   que sólo encola, puede ir por el pool en modo transacción en cualquier
+   caso (`PollOnly` no aplica a un cliente insert-only).
 
 Con PgBouncer, `DB_MAX_CONNS` de cada réplica pasa a ser conexiones con
 PgBouncer (baratas), y lo que se calcula por hardware es `default_pool_size`

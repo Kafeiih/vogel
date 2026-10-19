@@ -186,7 +186,7 @@ func Load() (*Config, error) {
 		Metrics: parseMetricsConfig(),
 		// vogel:component worker begin
 
-		Worker: parseWorkerConfig(),
+		Worker: parseWorkerConfig(&errs),
 		// vogel:component worker end
 		// vogel:component storage begin
 
@@ -399,8 +399,10 @@ func MigrateRequiresTLS() (bool, error) {
 
 // vogel:component worker begin
 // parseWorkerConfig reads WORKER_* env vars and returns a worker.Config with
-// defaults.
-func parseWorkerConfig() worker.Config {
+// defaults. WORKER_POLL_ONLY (default false) is read with parseBool, so an
+// unparsable value is a config error: it decides whether the worker can run
+// behind PgBouncer in transaction mode (see worker.Config.PollOnly).
+func parseWorkerConfig(errs *config.Errors) worker.Config {
 	schema := WorkerSchema()
 
 	defaultMax := 100
@@ -432,6 +434,7 @@ func parseWorkerConfig() worker.Config {
 		Schema:            schema,
 		DefaultMaxWorkers: defaultMax,
 		Queues:            queues,
+		PollOnly:          parseBool(errs, "WORKER_POLL_ONLY", false),
 	}
 }
 

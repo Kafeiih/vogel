@@ -131,7 +131,7 @@ func TestBuildRiverConfig_InstallsRequestIDMiddlewareAndLogger(t *testing.T) {
 		"worker":      river.NewWorkers(),
 	} {
 		t.Run(name, func(t *testing.T) {
-			rc := buildRiverConfig(Config{Schema: "river"}, workers, nil, logger)
+			rc := buildRiverConfig(Config{Schema: "river"}, workers, nil, nil, logger)
 
 			require.NotNil(t, rc.Logger)
 			require.Len(t, rc.Middleware, 1)
@@ -147,7 +147,7 @@ func TestBuildRiverConfig_InstallsRequestIDMiddlewareAndLogger(t *testing.T) {
 func TestBuildRiverConfig_AcceptedByRiverClient(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	_, err := river.NewClient(riverpgxv5.New(nil), buildRiverConfig(Config{Schema: "river"}, nil, nil, logger))
+	_, err := river.NewClient(riverpgxv5.New(nil), buildRiverConfig(Config{Schema: "river"}, nil, nil, nil, logger))
 	require.NoError(t, err)
 }
 
@@ -158,7 +158,7 @@ func TestBuildRiverConfig_RiverLoggerStartsAtWarn(t *testing.T) {
 	var buf bytes.Buffer
 	appLogger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	rc := buildRiverConfig(Config{Schema: "river"}, nil, nil, appLogger)
+	rc := buildRiverConfig(Config{Schema: "river"}, nil, nil, nil, appLogger)
 	rc.Logger.Debug("river debug")
 	rc.Logger.Info("river info")
 	rc.Logger.Warn("river warn")
@@ -176,7 +176,7 @@ func TestBuildRiverConfig_RiverLoggerKeepsHigherAppLevel(t *testing.T) {
 	var buf bytes.Buffer
 	appLogger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError}))
 
-	rc := buildRiverConfig(Config{Schema: "river"}, nil, nil, appLogger)
+	rc := buildRiverConfig(Config{Schema: "river"}, nil, nil, nil, appLogger)
 	rc.Logger.Warn("river warn")
 
 	assert.Empty(t, buf.String())
@@ -184,7 +184,7 @@ func TestBuildRiverConfig_RiverLoggerKeepsHigherAppLevel(t *testing.T) {
 
 // With no logger River keeps its own default.
 func TestBuildRiverConfig_NilLogger_LeavesRiverDefault(t *testing.T) {
-	rc := buildRiverConfig(Config{Schema: "river"}, nil, nil, nil)
+	rc := buildRiverConfig(Config{Schema: "river"}, nil, nil, nil, nil)
 	assert.Nil(t, rc.Logger)
 }
 
