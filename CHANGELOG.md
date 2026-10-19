@@ -24,6 +24,14 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ### Agregado
 
+- **`examples/boilerplate`: reglas de Prometheus en `deploy/prometheus/alerts.yml`.**
+  Las alertas del RUNBOOK como reglas listas para cargar, más un SLO de
+  disponibilidad (99.5% de requests sin 5xx en 30 días) con alertas de
+  burn-rate en varias ventanas: rápida (14.4x en 1 h y 6x en 6 h, críticas) y
+  lenta (1x en 3 días, ticket). `alerts_test.yml` las prueba con `promtool test
+  rules`, y CI valida ambos archivos con `promtool` de una imagen de Prometheus
+  fijada por digest.
+
 - **`pgxtx`: `RequireTx` y `ErrNoTx`.** Para el código que debe correr dentro
   de una transacción: devuelve la transacción del contexto o `ErrNoTx`, en vez
   de caer al pool como `DBFromContext`. Así, olvidar `WithTx` o pasar el
