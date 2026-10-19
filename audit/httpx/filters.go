@@ -35,6 +35,26 @@ func stringsOf[T ~string](vals []T) []string {
 	return out
 }
 
+// filterParams lists every query parameter FiltersFromRequest reads, in the
+// order it reads them.
+var filterParams = []string{
+	"limit", "offset", "operation_category", "status", "from", "to", "resource_id",
+	"actor_id", "resource_type", "operation_name", "aggregate_type", "aggregate_id",
+}
+
+// usedFilterParams returns the names in filterParams present in r's query,
+// for logging: values and unrecognized keys are client data and are left out.
+func usedFilterParams(r *http.Request) []string {
+	q := r.URL.Query()
+	used := []string{}
+	for _, name := range filterParams {
+		if q.Has(name) {
+			used = append(used, name)
+		}
+	}
+	return used
+}
+
 // FiltersFromRequest parses audit.Filters from r's query parameters,
 // recording any validation error on v (an invalid resource_id, an
 // out-of-range operation_category or status, a malformed from/to, a
