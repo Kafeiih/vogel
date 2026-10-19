@@ -24,6 +24,23 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ### Agregado
 
+- **`postgres`: `Config.AcquireTimeout`.** Acota la espera por una conexión del
+  pool (vía `AcquireTracer` de pgxpool): con el pool lleno, la operación falla
+  dentro del límite con un error que envuelve `context.DeadlineExceeded`, en
+  vez de esperar todo el plazo del request. Cero lo desactiva (el
+  comportamiento anterior); negativo es un error de `NewPool`.
+- **`postgres`: `Config.LeakThreshold`.** Al devolver una conexión retenida más
+  que el umbral se registra un WARN con la duración y la función y
+  `archivo:línea` que la pidió (el primer frame fuera de pgx, `postgres` y
+  `pgxtx`); nunca incluye SQL ni argumentos. Cero lo desactiva.
+- **`postgres`: histogramas `db_pool_acquire_wait_seconds` y
+  `db_pool_conn_hold_seconds`** (sin labels, de 1 ms a 30 s), exportados por el
+  mismo `NewPoolMetricsCollector` para los pools creados con `NewPool`. Dan
+  percentiles reales de la espera por conexión, donde antes sólo había un
+  acumulado.
+- **`examples/boilerplate`: `DB_ACQUIRE_TIMEOUT` (default `3s`) y
+  `DB_LEAK_THRESHOLD` (default `10s`).** Un valor inválido, cero o negativo
+  impide arrancar y nombra la variable.
 - **`storage`: `ErrNotFound`.** `Download` envuelve `storage.ErrNotFound`
   cuando la clave no tiene objeto (`storage/s3` traduce el `NoSuchKey` del SDK),
   así que quien llama distingue un objeto inexistente de una falla transitoria
