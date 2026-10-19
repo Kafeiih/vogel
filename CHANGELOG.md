@@ -79,6 +79,10 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ### Cambiado
 
+- **`audit/httpx`: el log de error de `List` ya no incluye la query.** En
+  vez de `query` (la query cruda, que puede traer un `actor_id`), la línea
+  lleva `filters`: los nombres de los filtros reconocidos que usó el request,
+  sin sus valores ni claves desconocidas.
 - **`postgres`: el SQL de las consultas lentas se acota.** El WARN
   `slow query detected` corta el texto SQL en 2 KiB (sin partir un carácter
   UTF-8) y en ese caso agrega `sql_truncated: true` y `sql_bytes` con el largo

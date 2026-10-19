@@ -61,7 +61,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		h.logger.Error("listing audit entries", "error", err, "path", r.URL.Path, "query", r.URL.RawQuery)
+		h.logger.Error("listing audit entries", "error", err, "path", r.URL.Path, "filters", usedFilterParams(r))
 		response.Error(w, r, http.StatusInternalServerError, response.CodeInternalError, h.messages.ListFailed)
 		return
 	}

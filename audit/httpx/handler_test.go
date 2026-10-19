@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -327,5 +328,41 @@ func TestHandler_List_OffsetOutOfRangeReturns400(t *testing.T) {
 	}
 	if body["message"] != DefaultMessages().InvalidOffset {
 		t.Errorf("message = %v, want default %q", body["message"], DefaultMessages().InvalidOffset)
+	}
+}
+
+// TestHandler_List_ErrorLogOmitsFilterValues pins what the 500 log line may
+// carry: the names of the recognized filters the request used, never their
+// values (an actor_id is a user identifier) and never a client-chosen key.
+func TestHandler_List_ErrorLogOmitsFilterValues(t *testing.T) {
+	var buf strings.Builder
+	logger := slog.New(slog.NewJSONHandler(&buf, nil))
+	h, err := NewHandler(&fakeRepository{listErr: errors.New("boom")}, logger)
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+
+	r := httptest.NewRequest(http.MethodGet, "/audit?actor_id=alice%40example.com&limit=5&bob%40example.com=1", nil)
+	h.List(httptest.NewRecorder(), r)
+
+	var line map[string]any
+	if err := json.Unmarshal([]byte(buf.String()), &line); err != nil {
+		t.Fatalf("decode log line %q: %v", buf.String(), err)
+	}
+	if strings.Contains(buf.String(), "example.com") {
+		t.Errorf("log line leaks a filter value or client key: %s", buf.String())
+	}
+	if _, ok := line["query"]; ok {
+		t.Errorf("log line still carries the raw query: %s", buf.String())
+	}
+	var got []string
+	for _, v := range line["filters"].([]any) {
+		got = append(got, v.(string))
+	}
+	if want := []string{"limit", "actor_id"}; !slices.Equal(got, want) {
+		t.Errorf("filters = %v, want %v", got, want)
+	}
+	if line["path"] != "/audit" {
+		t.Errorf("path = %v, want /audit", line["path"])
 	}
 }
