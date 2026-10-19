@@ -39,12 +39,28 @@ type Logger struct {
 // without WithContext. Install the Logger with slog.SetDefault(l.Logger) to
 // extend that to package-level slog calls and to libraries logging through
 // slog.Default().
-func New(env string, w io.Writer) *Logger {
+//
+// The value of every attribute whose key is on the redaction denylist
+// (DefaultRedactedKeys, extended with WithRedactedKeys) is replaced with
+// RedactedValue, at any group depth, so passwords, tokens and similar
+// secrets passed as attributes never reach the output. Records without a
+// sensitive key are written exactly as before.
+func New(env string, w io.Writer, options ...Option) *Logger {
 	var handler slog.Handler
 
+	cfg := config{redactedKeys: DefaultRedactedKeys()}
+	for _, o := range options {
+		if o != nil {
+			o(&cfg)
+		}
+	}
+	redact := redactAttr(newKeyMatcher(cfg.redactedKeys))
+
 	opts := &slog.HandlerOptions{
-		Level:       getLogLevel(env),
-		ReplaceAttr: utcTime,
+		Level: getLogLevel(env),
+		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+			return redact(groups, utcTime(groups, a))
+		},
 	}
 
 	if env == "production" {
@@ -59,8 +75,8 @@ func New(env string, w io.Writer) *Logger {
 }
 
 // NewDefault creates a Logger writing to os.Stdout for the given env.
-func NewDefault(env string) *Logger {
-	return New(env, os.Stdout)
+func NewDefault(env string, options ...Option) *Logger {
+	return New(env, os.Stdout, options...)
 }
 
 // With returns a Logger that includes the given attributes on every record.

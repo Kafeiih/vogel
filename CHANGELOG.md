@@ -24,6 +24,13 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ### Agregado
 
+- **`examples/boilerplate`: reglas de Prometheus en `deploy/prometheus/alerts.yml`.**
+  Las alertas del RUNBOOK como reglas listas para cargar, más un SLO de
+  disponibilidad (99.5% de requests sin 5xx en 30 días) con alertas de
+  burn-rate en varias ventanas: rápida (14.4x en 1 h y 6x en 6 h, críticas) y
+  lenta (1x en 3 días, ticket). `alerts_test.yml` las prueba con `promtool test
+  rules`, y CI valida ambos archivos con `promtool` de una imagen de Prometheus
+  fijada por digest.
 - **`worker`: `WithMetrics(reg)`.** Registra el histograma
   `river_job_duration_seconds{kind,outcome}` (`outcome`: `success`, `error`,
   `cancel`, `snooze`, `panic`) con un middleware de River que corre después del
@@ -71,6 +78,18 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   largo ni el `Content-Type`.
 
 ### Cambiado
+
+- **`logger`: los valores de claves sensibles se redactan.** `logger.New` y
+  `logger.NewDefault` reemplazan por `"[REDACTED]"` el valor de todo atributo
+  cuya clave es sensible (`password`, `token`, `secret`, `authorization`,
+  `api_key`, `cookie`, …; la misma lista y las mismas reglas que `audit`, y un
+  test falla si se separan), a cualquier profundidad de grupo y también en
+  atributos fijados con `With`. Un grupo cuyo nombre es sensible se redacta
+  entero. `logger.DefaultRedactedKeys()` expone la lista y
+  `logger.WithRedactedKeys(...)` agrega claves; las firmas existentes siguen
+  compilando. Un struct o un mapa logueado como un solo atributo no se
+  inspecciona. Las líneas sin claves sensibles no cambian (probado byte a
+  byte).
 
 - **`examples/api`: los archivos se suben directo al storage con una URL
   firmada.** `PUT /documents/{id}/file`, que recibía los bytes y los reenviaba

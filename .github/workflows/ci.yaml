@@ -184,6 +184,20 @@ jobs:
       - name: Cerbos smoke test
         run: examples/boilerplate/cerbos/smoke.sh
 
+      # The alert and SLO rules the RUNBOOK points to must load in Prometheus
+      # and behave as their unit tests say (alerts_test.yml). promtool comes
+      # from the Prometheus image, pinned by digest like every other image.
+      - name: Prometheus rules
+        env:
+          PROMETHEUS_IMAGE: prom/prometheus:v3.5.0@sha256:63805ebb8d2b3920190daf1cb14a60871b16fd38bed42b857a3182bc621f4996
+        run: |
+          set -euo pipefail
+          promtool() {
+            docker run --rm --entrypoint promtool               -v "$PWD/examples/boilerplate/deploy/prometheus:/rules:ro" -w /rules               "$PROMETHEUS_IMAGE" "$@"
+          }
+          promtool check rules alerts.yml
+          promtool test rules alerts_test.yml
+
       # The template release workflow never runs in vogel; its tag and image
       # name logic is tested here instead.
       - name: Release template image names

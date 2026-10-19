@@ -1,0 +1,143 @@
+# Prometheus rules for the service: an availability SLO with multi-window
+# burn-rate alerts, plus the operational alerts listed in RUNBOOK.md
+# ("Alertas recomendadas"). Load it with `rule_files:` in prometheus.yml.
+#
+# Selectors: the rules assume the service is scraped under job="api" (and the
+# worker under job="worker"). Change the job matchers if your scrape config
+# names them otherwise. CI validates this file with `promtool check rules` and
+# runs alerts_test.yml with `promtool test rules`.
+#
+# SLO: 99.5% of requests over 30 days are not a 5xx. The error budget is
+# 0.5%; a burn rate of 1 spends it exactly in 30 days. The windows and
+# factors follow the Google SRE workbook ("Alerting on SLOs"):
+#   page:   14.4x over 1h (confirmed over 5m)  -> 2% of the budget in 1h
+#           6x    over 6h (confirmed over 30m) -> 5% of the budget in 6h
+#   ticket: 1x    over 3d (confirmed over 6h)  -> 10% of the budget in 3d
+#
+# The 3d ratio is the average of the 1h recording over 3 days, not a rate()
+# over 3 days of raw samples: that would re-read every series' full history on
+# each evaluation. The average is unweighted by traffic, which is the usual
+# trade-off for a ticket-level alert.
+groups:
+  - name: slo-availability-recording
+    rules:
+      - record: slo:http_errors:ratio_rate5m
+        expr: sum(rate(http_requests_total{job="api",status=~"5.."}[5m])) / sum(rate(http_requests_total{job="api"}[5m]))
+      - record: slo:http_errors:ratio_rate30m
+        expr: sum(rate(http_requests_total{job="api",status=~"5.."}[30m])) / sum(rate(http_requests_total{job="api"}[30m]))
+      - record: slo:http_errors:ratio_rate1h
+        expr: sum(rate(http_requests_total{job="api",status=~"5.."}[1h])) / sum(rate(http_requests_total{job="api"}[1h]))
+      - record: slo:http_errors:ratio_rate6h
+        expr: sum(rate(http_requests_total{job="api",status=~"5.."}[6h])) / sum(rate(http_requests_total{job="api"}[6h]))
+      - record: slo:http_errors:ratio_rate3d
+        expr: avg_over_time(slo:http_errors:ratio_rate1h[3d])
+
+  - name: slo-availability-alerts
+    rules:
+      - alert: SLOAvailabilityFastBurn
+        expr: |
+          (slo:http_errors:ratio_rate1h > (14.4 * 0.005) and slo:http_errors:ratio_rate5m > (14.4 * 0.005))
+          or
+          (slo:http_errors:ratio_rate6h > (6 * 0.005) and slo:http_errors:ratio_rate30m > (6 * 0.005))
+        labels:
+          severity: critical
+        annotations:
+          summary: The 99.5% availability SLO is burning its error budget fast
+          description: 5xx ratio would spend the 30-day budget in days, not weeks. See RUNBOOK.md (errores 5xx).
+      - alert: SLOAvailabilitySlowBurn
+        # With less than 3 days of history the 3d ratio is a shorter-window
+        # ratio; the for clause keeps a brief spike on a fresh Prometheus from
+        # opening a ticket.
+        expr: slo:http_errors:ratio_rate3d > 0.005 and slo:http_errors:ratio_rate6h > 0.005
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: The 99.5% availability SLO is spending its error budget faster than it accrues
+          description: Open a ticket; at this pace the 30-day budget runs out before the window ends.
+
+  - name: service-operational
+    rules:
+      - alert: ServiceDown
+        # The process is not reachable (crashed, not scheduled, network).
+        # A database outage with the process up is HealthCheckFailing.
+        expr: up{job="api"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: The API target is not being scraped
+      - alert: HealthCheckFailing
+        # RUNBOOK "DB caida": /v1/healthz answers 503 while a dependency (the
+        # database) is down. Relies on the orchestrator probing /v1/healthz,
+        # which goes through the metrics middleware like any route.
+        expr: sum(increase(http_requests_total{job="api",path="/v1/healthz",status="503"}[2m])) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: /v1/healthz is answering 503; see RUNBOOK.md (DB caida)
+      - alert: HighLatencyP99
+        expr: histogram_quantile(0.99, sum by (le, path) (rate(http_request_duration_seconds_bucket{job="api"}[5m]))) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "p99 latency above 2s on {{ $labels.path }}"
+      - alert: RateLimitingExcessive
+        expr: sum(rate(http_requests_total{job="api",status="429"}[5m])) * 60 > 50
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: More than 50 requests per minute answered 429
+      - alert: GoroutinesGrowing
+        expr: go_goroutines{job="api"} > 1000
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Goroutine count above 1000 for 10 minutes
+
+  - name: database-pool
+    rules:
+      - alert: DBPoolExhausted
+        expr: db_pool_connections_acquired >= db_pool_connections_max
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Every pool connection is in use on {{ $labels.instance }}"
+      - alert: DBPoolAcquireSlow
+        expr: histogram_quantile(0.99, sum by (le, instance) (rate(db_pool_acquire_wait_seconds_bucket[5m]))) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "p99 wait for a pool connection above 1s on {{ $labels.instance }}"
+          description: With the default DB_ACQUIRE_TIMEOUT (3s) this is close to requests failing with context.DeadlineExceeded.
+      - alert: DBConnectionHeldTooLong
+        # le must be a bucket bound equal to DB_LEAK_THRESHOLD (10s by
+        # default). Both spellings are matched because Prometheus 3
+        # normalizes le to float form. If no bucket matches, the subtraction
+        # is empty and this alert can never fire: DBLeakAlertBucketMissing
+        # catches that.
+        expr: |
+          sum by (instance) (rate(db_pool_conn_hold_seconds_count[5m]))
+          - sum by (instance) (rate(db_pool_conn_hold_seconds_bucket{le=~"10|10.0"}[5m])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Connections held longer than DB_LEAK_THRESHOLD on {{ $labels.instance }}"
+          description: The api/worker log has a WARN naming the code that acquired them.
+      - alert: DBLeakAlertBucketMissing
+        # The hold histogram is exported but has no 10s bucket, so
+        # DBConnectionHeldTooLong is silently disabled.
+        expr: |
+          count by (instance) (db_pool_conn_hold_seconds_count)
+          unless count by (instance) (db_pool_conn_hold_seconds_bucket{le=~"10|10.0"})
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "DBConnectionHeldTooLong cannot fire on {{ $labels.instance }}: no le=10 bucket"
