@@ -191,8 +191,9 @@ func TestNewMetrics_WithDurationBuckets(t *testing.T) {
 	if err := h.(prometheus.Histogram).Write(pb); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
-	var got []float64
-	for _, b := range pb.GetHistogram().GetBucket() {
+	buckets := pb.GetHistogram().GetBucket()
+	got := make([]float64, 0, len(buckets))
+	for _, b := range buckets {
 		got = append(got, b.GetUpperBound())
 	}
 	if len(got) != 3 || got[0] != 0.1 || got[1] != 1 || got[2] != 10 {
