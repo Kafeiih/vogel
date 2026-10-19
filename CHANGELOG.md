@@ -4,6 +4,38 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el versionado,
 [SemVer](https://semver.org/lang/es/).
 
+## [Unreleased]
+
+### Agregado
+
+- **`logger`: `WithTraceIDs`.** Recibe una función que lee del contexto el
+  `trace_id` y el `span_id` del span activo, y los agrega a cada línea logueada
+  con contexto y a lo que fija `WithContext`, con las mismas reglas que
+  `request_id`: solo si hay valor y si la línea no lo trae ya. `logger` no
+  depende de ninguna librería de tracing; sin la opción, las líneas no
+  cambian.
+- **`postgres`: `Config.Tracer`, un tracer de pgx extra.** `NewPool` lo
+  llama junto al suyo en cada hook que implemente (`pgx.QueryTracer` y,
+  opcionalmente, los de batch, `CopyFrom`, prepare, connect, acquire y
+  release). Sus `Start` corren antes que los de vogel y sus `End` después, así
+  que su span envuelve la línea de consulta lenta, que ahora se loguea con
+  `WarnContext` (lleva `request_id` y, con tracing, los IDs del span).
+- **`worker`: `WithMiddleware(...)`.** Agrega middlewares de River (de
+  inserción, de trabajo o ambos) después del de request ID y antes del de
+  métricas, en el orden dado. A diferencia de `WithMetrics`, también se
+  instalan en un cliente solo de inserción: un middleware de inserción es como
+  el proceso que encola deja su contexto (un trace, por ejemplo) en el job.
+- **`httpx/response`: `request_id` en las respuestas de error.**
+  `ErrorResponse` y `ValidationErrorResponse` llevan el request ID también
+  bajo `request_id`.
+
+### Obsoleto
+
+- **`httpx/response`: el campo `trace_id`.** Lleva el request ID, no un trace
+  ID de OpenTelemetry. Sigue presente con el mismo valor que `request_id`
+  durante v0.12.0 y se quita en v0.13.0: los clientes deben leer
+  `request_id`.
+
 ## [0.11.0] — 2026-10-19
 
 ### Cambios que rompen

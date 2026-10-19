@@ -103,6 +103,9 @@ type options struct {
 	// registers, nil meaning prometheus.DefaultRegisterer.
 	metrics           bool
 	metricsRegisterer prometheus.Registerer
+
+	// middleware is set by WithMiddleware.
+	middleware []rivertype.Middleware
 }
 
 // newOptions applies opts in order and returns the resulting options.
@@ -146,6 +149,41 @@ func WithMetrics(reg prometheus.Registerer) Option {
 		o.metrics = true
 		o.metricsRegisterer = reg
 	}
+}
+
+// WithMiddleware adds River middlewares (job insert middlewares, worker
+// middlewares, or both) to the RiverQueue, after the request ID middleware
+// and before the WithMetrics one, in the order given; calls accumulate. River
+// runs the first middleware outermost, so these see the job's request ID in
+// the context, and a span they open is in the context the metrics
+// middleware observes. Unlike WithMetrics they are installed in insert-only
+// mode too: an insert middleware is how the enqueuing process stamps its
+// context (a trace, say) into the job. vogel/otel provides a tracing one.
+func WithMiddleware(mw ...rivertype.Middleware) Option {
+	return func(o *options) {
+		o.middleware = append(o.middleware, mw...)
+	}
+}
+
+// applyMiddleware inserts the WithMiddleware middlewares into rc's chain
+// right after the request ID middleware, wherever buildRiverConfig put it
+// (first, today), or at the front if the chain has none.
+func (o *options) applyMiddleware(rc *river.Config) {
+	if len(o.middleware) == 0 {
+		return
+	}
+	at := 0
+	for i, mw := range rc.Middleware {
+		if _, ok := mw.(*requestIDMiddleware); ok {
+			at = i + 1
+			break
+		}
+	}
+	chain := make([]rivertype.Middleware, 0, len(rc.Middleware)+len(o.middleware))
+	chain = append(chain, rc.Middleware[:at]...)
+	chain = append(chain, o.middleware...)
+	chain = append(chain, rc.Middleware[at:]...)
+	rc.Middleware = chain
 }
 
 // buildMetrics returns the metrics middleware WithMetrics asked for, or nil

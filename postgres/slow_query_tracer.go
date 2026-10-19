@@ -105,7 +105,9 @@ func (t *SlowQueryTracer) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, data p
 		attrs = append(attrs, t.errorAttrs(data.Err)...)
 	}
 
-	t.logger.Warn("slow query detected", attrs...)
+	// WarnContext lets a context-aware handler (logger.New's) add the
+	// request_id, and the trace IDs of a span opened by Config.Tracer.
+	t.logger.WarnContext(ctx, "slow query detected", attrs...)
 }
 
 // sqlAttrs returns the log attributes describing sql: its hash, or its text

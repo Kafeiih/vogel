@@ -60,6 +60,8 @@ type poolTracerOptions struct {
 	// maxConns is the pool's MaxConns: more tracked holds than that means
 	// some were hijacked, which triggers pruning (see pruneLocked).
 	maxConns int
+	// extra is Config.Tracer.
+	extra pgx.QueryTracer
 	// internalPrefixes overrides defaultInternalPrefixes (tests only).
 	internalPrefixes []string
 }
@@ -74,6 +76,10 @@ type poolTracerOptions struct {
 //     after being held longer than leakThreshold (Config.LeakThreshold).
 type poolTracer struct {
 	*SlowQueryTracer
+
+	// extra is Config.Tracer, called around this tracer's own work on every
+	// hook it implements (see extra_tracer.go); nil when unset.
+	extra pgx.QueryTracer
 
 	logger           *slog.Logger
 	acquireTimeout   time.Duration
@@ -127,6 +133,7 @@ func newPoolTracer(opts poolTracerOptions) *poolTracer {
 	}
 	return &poolTracer{
 		SlowQueryTracer:  newSlowQueryTracer(opts),
+		extra:            opts.extra,
 		logger:           logger,
 		acquireTimeout:   opts.acquireTimeout,
 		leakThreshold:    opts.leakThreshold,
@@ -160,7 +167,9 @@ func withoutAcquireTimeout(ctx context.Context) context.Context {
 // returned context for the rest of Acquire, so a deadline added here bounds
 // the wait for a free connection. The cancel func travels in the context and
 // TraceAcquireEnd, which pgxpool always calls (deferred), runs it.
-func (t *poolTracer) TraceAcquireStart(ctx context.Context, _ *pgxpool.Pool, _ pgxpool.TraceAcquireStartData) context.Context {
+func (t *poolTracer) TraceAcquireStart(ctx context.Context, pool *pgxpool.Pool, data pgxpool.TraceAcquireStartData) context.Context {
+	// The extra tracer starts first, so its span encloses the wait below.
+	ctx = t.extraAcquireStart(ctx, pool, data)
 	trace := &acquireTrace{start: t.now()}
 	if t.acquireTimeout > 0 && ctx.Value(noAcquireTimeoutKey{}) == nil {
 		ctx, trace.cancel = context.WithTimeout(ctx, t.acquireTimeout)
@@ -174,7 +183,8 @@ func (t *poolTracer) TraceAcquireStart(ctx context.Context, _ *pgxpool.Pool, _ p
 }
 
 // TraceAcquireEnd implements pgxpool.AcquireTracer.
-func (t *poolTracer) TraceAcquireEnd(ctx context.Context, _ *pgxpool.Pool, data pgxpool.TraceAcquireEndData) {
+func (t *poolTracer) TraceAcquireEnd(ctx context.Context, pool *pgxpool.Pool, data pgxpool.TraceAcquireEndData) {
+	defer t.extraAcquireEnd(ctx, pool, data)
 	trace, ok := ctx.Value(acquireKey{}).(*acquireTrace)
 	if !ok {
 		return
@@ -215,7 +225,8 @@ func (t *poolTracer) pruneLocked() {
 // TraceRelease implements pgxpool.ReleaseTracer. It always removes the
 // connection's entry, records how long it was held and, past leakThreshold,
 // logs who acquired it. It never logs SQL or arguments.
-func (t *poolTracer) TraceRelease(_ *pgxpool.Pool, data pgxpool.TraceReleaseData) {
+func (t *poolTracer) TraceRelease(pool *pgxpool.Pool, data pgxpool.TraceReleaseData) {
+	defer t.extraRelease(pool, data)
 	if data.Conn == nil {
 		return
 	}

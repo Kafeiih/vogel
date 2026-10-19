@@ -49,6 +49,7 @@ func NewRiverQueue(pool *pgxpool.Pool, workers *river.Workers, cfg Config, logge
 		return nil, err
 	}
 	riverCfg := buildRiverConfig(cfg, workers, o.periodicJobs, metrics, logger)
+	o.applyMiddleware(riverCfg)
 
 	client, err := river.NewClient(riverpgxv5.New(pool), riverCfg)
 	if err != nil {

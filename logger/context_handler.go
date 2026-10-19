@@ -12,10 +12,13 @@ import (
 const (
 	requestIDKey = "request_id"
 	userIDKey    = "user_id"
+	traceIDKey   = "trace_id"
+	spanIDKey    = "span_id"
 )
 
 // contextHandler wraps a slog.Handler and adds request_id and user_id from
-// the record's context, read from reqctx, to every record. It makes the
+// the record's context, read from reqctx, to every record, plus trace_id and
+// span_id when WithTraceIDs installed a reader for them. It makes the
 // *Context methods (InfoContext, ErrorContext, and package-level slog ones
 // once the Logger is installed with slog.SetDefault) correlate a line with
 // its request without the caller remembering Logger.WithContext.
@@ -30,13 +33,36 @@ const (
 // from here. The duplicate check follows them there: only keys bound inside
 // the innermost open group collide with them.
 type contextHandler struct {
-	inner slog.Handler
+	inner    slog.Handler
+	traceIDs TraceIDsFunc // nil without WithTraceIDs
 
-	// hasRequestID and hasUserID record whether the key is already bound,
-	// through WithAttrs, at the level where Handle adds attributes: the top
-	// level, or the innermost group once WithGroup opened one.
+	// hasRequestID, hasUserID, hasTraceID and hasSpanID record whether the
+	// key is already bound, through WithAttrs, at the level where Handle adds
+	// attributes: the top level, or the innermost group once WithGroup
+	// opened one.
 	hasRequestID bool
 	hasUserID    bool
+	hasTraceID   bool
+	hasSpanID    bool
+}
+
+// complete reports whether every key Handle could add is already bound.
+func (h *contextHandler) complete() bool {
+	return h.hasRequestID && h.hasUserID && (h.traceIDs == nil || (h.hasTraceID && h.hasSpanID))
+}
+
+// bind records that key is bound at the current level.
+func (h *contextHandler) bind(key string) {
+	switch key {
+	case requestIDKey:
+		h.hasRequestID = true
+	case userIDKey:
+		h.hasUserID = true
+	case traceIDKey:
+		h.hasTraceID = true
+	case spanIDKey:
+		h.hasSpanID = true
+	}
 }
 
 func (h *contextHandler) Enabled(ctx context.Context, level slog.Level) bool {
@@ -44,29 +70,33 @@ func (h *contextHandler) Enabled(ctx context.Context, level slog.Level) bool {
 }
 
 func (h *contextHandler) Handle(ctx context.Context, r slog.Record) error { //nolint:gocritic // hugeParam: slog.Handler fixes the by-value Record signature
-	if ctx == nil || (h.hasRequestID && h.hasUserID) {
+	if ctx == nil || h.complete() {
 		return h.inner.Handle(ctx, r)
 	}
 
-	hasRequestID, hasUserID := h.hasRequestID, h.hasUserID
+	seen := *h
 	r.Attrs(func(a slog.Attr) bool {
-		switch a.Key {
-		case requestIDKey:
-			hasRequestID = true
-		case userIDKey:
-			hasUserID = true
-		}
-		return !hasRequestID || !hasUserID
+		seen.bind(a.Key)
+		return !seen.complete()
 	})
 
-	if !hasRequestID {
+	if !seen.hasRequestID {
 		if id := reqctx.RequestIDFromContext(ctx); id != "" {
 			r.AddAttrs(slog.String(requestIDKey, id))
 		}
 	}
-	if !hasUserID {
+	if !seen.hasUserID {
 		if id := reqctx.UserIDFromContext(ctx); id != "" {
 			r.AddAttrs(slog.String(userIDKey, id))
+		}
+	}
+	if h.traceIDs != nil && (!seen.hasTraceID || !seen.hasSpanID) {
+		traceID, spanID := h.traceIDs(ctx)
+		if !seen.hasTraceID && traceID != "" {
+			r.AddAttrs(slog.String(traceIDKey, traceID))
+		}
+		if !seen.hasSpanID && spanID != "" {
+			r.AddAttrs(slog.String(spanIDKey, spanID))
 		}
 	}
 	return h.inner.Handle(ctx, r)
@@ -76,12 +106,7 @@ func (h *contextHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	next := *h
 	next.inner = h.inner.WithAttrs(attrs)
 	for _, a := range attrs {
-		switch a.Key {
-		case requestIDKey:
-			next.hasRequestID = true
-		case userIDKey:
-			next.hasUserID = true
-		}
+		next.bind(a.Key)
 	}
 	return &next
 }
@@ -94,6 +119,8 @@ func (h *contextHandler) WithGroup(name string) slog.Handler {
 		// bound outside it no longer collide with the ones Handle adds.
 		next.hasRequestID = false
 		next.hasUserID = false
+		next.hasTraceID = false
+		next.hasSpanID = false
 	}
 	return &next
 }

@@ -304,3 +304,62 @@ func TestOptionsBuildMetrics_WorkerMode_RegistersOnRegisterer(t *testing.T) {
 	var are prometheus.AlreadyRegisteredError
 	assert.ErrorAs(t, err, &are)
 }
+
+// -----------------------------------------------------------------------
+// WithMiddleware
+// -----------------------------------------------------------------------
+
+type stubMiddleware struct {
+	river.MiddlewareDefaults
+	name string
+}
+
+// Extra middlewares go after the request ID one (so they see the job's
+// request ID) and before metrics (so a span they open is in the context
+// metrics observes), in the order given, in both modes.
+func TestWithMiddleware_OrderedBetweenRequestIDAndMetrics(t *testing.T) {
+	mw, err := newMetricsMiddleware(prometheus.NewRegistry())
+	require.NoError(t, err)
+	a, b := &stubMiddleware{name: "a"}, &stubMiddleware{name: "b"}
+	o := newOptions(WithMiddleware(a), WithMiddleware(b))
+
+	rc := buildRiverConfig(Config{Schema: "river"}, river.NewWorkers(), nil, mw, nil)
+	o.applyMiddleware(rc)
+
+	require.Len(t, rc.Middleware, 4)
+	assert.IsType(t, &requestIDMiddleware{}, rc.Middleware[0])
+	assert.Same(t, a, rc.Middleware[1])
+	assert.Same(t, b, rc.Middleware[2])
+	assert.Same(t, mw, rc.Middleware[3])
+}
+
+// An insert-only client keeps extra middlewares: insert middlewares stamp
+// the enqueuing context into the job, which is where tracing propagates.
+func TestWithMiddleware_InsertOnlyModeKeepsThem(t *testing.T) {
+	a := &stubMiddleware{name: "a"}
+	o := newOptions(WithMiddleware(a))
+
+	rc := buildRiverConfig(Config{Schema: "river"}, nil, nil, nil, nil)
+	o.applyMiddleware(rc)
+
+	require.Len(t, rc.Middleware, 2)
+	assert.IsType(t, &requestIDMiddleware{}, rc.Middleware[0])
+	assert.Same(t, a, rc.Middleware[1])
+}
+
+func TestWithMiddleware_NoneLeavesTheChainUnchanged(t *testing.T) {
+	rc := buildRiverConfig(Config{Schema: "river"}, river.NewWorkers(), nil, nil, nil)
+	newOptions().applyMiddleware(rc)
+	require.Len(t, rc.Middleware, 1)
+	assert.IsType(t, &requestIDMiddleware{}, rc.Middleware[0])
+}
+
+// Without a request ID middleware in the chain, the extra middlewares go
+// first instead of panicking or landing at an arbitrary position.
+func TestWithMiddleware_EmptyChain(t *testing.T) {
+	a := &stubMiddleware{name: "a"}
+	rc := &river.Config{}
+	newOptions(WithMiddleware(a)).applyMiddleware(rc)
+	require.Len(t, rc.Middleware, 1)
+	assert.Same(t, a, rc.Middleware[0])
+}
