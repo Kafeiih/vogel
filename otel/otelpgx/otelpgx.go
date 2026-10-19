@@ -208,7 +208,9 @@ func (t *Tracer) connAttrsOf(conn *pgx.Conn) []attribute.KeyValue {
 	}
 	key := weak.Make(conn)
 	if v, ok := t.conns.Load(key); ok {
-		return v.([]attribute.KeyValue)
+		if attrs, ok := v.([]attribute.KeyValue); ok {
+			return attrs
+		}
 	}
 	attrs := connAttrs(conn.Config())
 	if _, loaded := t.conns.LoadOrStore(key, attrs); !loaded {

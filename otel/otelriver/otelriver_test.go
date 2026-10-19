@@ -191,16 +191,26 @@ func TestWork_SnoozeIsNotAnError(t *testing.T) {
 	assert.Equal(t, "snoozed", s.Events()[0].Name)
 }
 
-// An explicit tracestate alone is kept as well: the explicit trace context
-// is the pair, not just the traceparent.
-func TestInsert_ExplicitTracestateWins(t *testing.T) {
+// An explicit tracestate alone is kept, but the traceparent is still
+// stamped: per W3C a tracestate means nothing without a traceparent, so
+// keeping the metadata unchanged would drop the trace instead.
+func TestInsert_ExplicitTracestateIsKeptAndTheTraceStillPropagates(t *testing.T) {
 	m, _, tp := newRecorder(t, sdktrace.AlwaysSample())
-	const explicit = `{"vogel_tracestate":"vendor=explicit"}`
-	p := &rivertype.JobInsertParams{Kind: "k", Metadata: []byte(explicit)}
+	p := &rivertype.JobInsertParams{Kind: "k", Metadata: []byte(`{"vogel_tracestate":"vendor=explicit"}`)}
 	ctx, span := tp.Tracer("test").Start(context.Background(), "req")
+	ctx = trace.ContextWithSpanContext(ctx, span.SpanContext().WithTraceState(mustTraceState(t, "vendor=stamped")))
 	defer span.End()
 
 	insert(t, m, ctx, p)
 
-	assert.JSONEq(t, explicit, string(p.Metadata))
+	fields := metadataFields(t, p.Metadata)
+	assert.Equal(t, "vendor=explicit", fields["vogel_tracestate"])
+	assert.Contains(t, fields["vogel_traceparent"], span.SpanContext().TraceID().String())
+}
+
+func mustTraceState(t *testing.T, s string) trace.TraceState {
+	t.Helper()
+	ts, err := trace.ParseTraceState(s)
+	require.NoError(t, err)
+	return ts
 }
