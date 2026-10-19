@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -26,11 +27,42 @@ type Metrics struct {
 	responseSize    *prometheus.HistogramVec
 }
 
+// DefaultDurationBuckets returns the http_request_duration_seconds buckets
+// NewMetrics uses when WithDurationBuckets is not given: 5 ms to 10 s.
+func DefaultDurationBuckets() []float64 {
+	return []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10}
+}
+
+// MetricsOption configures NewMetrics.
+type MetricsOption func(*metricsConfig)
+
+type metricsConfig struct {
+	durationBuckets []float64
+}
+
+// WithDurationBuckets sets the http_request_duration_seconds bucket upper
+// bounds, in seconds. They must be non-empty and strictly increasing, or
+// NewMetrics fails. Use it when the defaults do not bracket the service's
+// latency objective, so the SLO threshold falls on a bucket boundary.
+//
+// Buckets are fixed when the collector is first registered: a later NewMetrics
+// on the same Registerer reuses that collector and its buckets.
+func WithDurationBuckets(buckets ...float64) MetricsOption {
+	return func(c *metricsConfig) { c.durationBuckets = append([]float64(nil), buckets...) }
+}
+
 // NewMetrics creates a Metrics middleware, registering its collectors on reg.
 // If reg is nil, prometheus.DefaultRegisterer is used.
-func NewMetrics(reg prometheus.Registerer) (*Metrics, error) {
+func NewMetrics(reg prometheus.Registerer, opts ...MetricsOption) (*Metrics, error) {
 	if reg == nil {
 		reg = prometheus.DefaultRegisterer
+	}
+	cfg := metricsConfig{durationBuckets: DefaultDurationBuckets()}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	if err := validateBuckets(cfg.durationBuckets); err != nil {
+		return nil, err
 	}
 
 	requestsTotal, err := registerCounterVec(reg, prometheus.NewCounterVec(
@@ -48,7 +80,7 @@ func NewMetrics(reg prometheus.Registerer) (*Metrics, error) {
 		prometheus.HistogramOpts{
 			Name:    "http_request_duration_seconds",
 			Help:    "HTTP request latency in seconds.",
-			Buckets: []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10},
+			Buckets: cfg.durationBuckets,
 		},
 		[]string{"method", "path"},
 	))
@@ -107,25 +139,60 @@ func registerHistogramVec(reg prometheus.Registerer, hv *prometheus.HistogramVec
 
 // Middleware wraps next, recording request count, latency, and response size
 // labeled by method and chi route pattern.
+//
+// The request is recorded in a deferred call, so a handler that panics is
+// still counted, as a 500, before the panic continues to an outer Recovery
+// (the order the examples use). Outside a chi router, or for a request no
+// route matched, the path label is "unknown".
 func (m *Metrics) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		ww := chimw.NewWrapResponseWriter(w, r.ProtoMajor)
 
+		defer func() {
+			rec := recover()
+
+			code := ww.Status()
+			if rec != nil {
+				code = http.StatusInternalServerError
+			}
+			routePattern := routePatternOf(r)
+			m.requestsTotal.WithLabelValues(r.Method, routePattern, strconv.Itoa(code)).Inc()
+			m.requestDuration.WithLabelValues(r.Method, routePattern).Observe(time.Since(start).Seconds())
+			m.responseSize.WithLabelValues(r.Method, routePattern).Observe(float64(ww.BytesWritten()))
+
+			if rec != nil {
+				panic(rec)
+			}
+		}()
+
 		next.ServeHTTP(ww, r)
-
-		// Use the chi route pattern (e.g. "/v1/audit/{id}") instead of the
-		// actual path to avoid high-cardinality labels.
-		routePattern := chi.RouteContext(r.Context()).RoutePattern()
-		if routePattern == "" {
-			routePattern = "unknown"
-		}
-
-		status := strconv.Itoa(ww.Status())
-		elapsed := time.Since(start).Seconds()
-
-		m.requestsTotal.WithLabelValues(r.Method, routePattern, status).Inc()
-		m.requestDuration.WithLabelValues(r.Method, routePattern).Observe(elapsed)
-		m.responseSize.WithLabelValues(r.Method, routePattern).Observe(float64(ww.BytesWritten()))
 	})
+}
+
+// routePatternOf returns the chi route pattern (e.g. "/v1/audit/{id}") used
+// as the path label instead of the actual path, to avoid high-cardinality
+// labels, or "unknown" when there is none.
+func routePatternOf(r *http.Request) string {
+	rctx := chi.RouteContext(r.Context())
+	if rctx == nil {
+		return "unknown"
+	}
+	if p := rctx.RoutePattern(); p != "" {
+		return p
+	}
+	return "unknown"
+}
+
+// validateBuckets rejects bucket bounds prometheus would panic on.
+func validateBuckets(buckets []float64) error {
+	if len(buckets) == 0 {
+		return errors.New("httpx/middleware: duration buckets must not be empty")
+	}
+	for i := 1; i < len(buckets); i++ {
+		if buckets[i] <= buckets[i-1] {
+			return fmt.Errorf("httpx/middleware: duration buckets must be strictly increasing, got %v", buckets)
+		}
+	}
+	return nil
 }

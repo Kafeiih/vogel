@@ -24,6 +24,12 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ### Agregado
 
+- **`httpx/middleware`: buckets configurables para la latencia HTTP.**
+  `NewMetrics(reg, WithDurationBuckets(...))` fija los límites de
+  `http_request_duration_seconds` (deben ser no vacíos y estrictamente
+  crecientes, o `NewMetrics` falla); `DefaultDurationBuckets()` devuelve los de
+  siempre, que siguen siendo el valor por defecto. Las llamadas existentes
+  siguen compilando.
 - **`httpx/middleware`: opciones de `StructuredLogger` para datos del
   cliente.** `remote_addr` y `user_agent` son datos personales bajo reglas
   tipo GDPR. `WithRemoteAddr(RemoteAddrTruncated)` loguea solo la red (/24 en
@@ -86,6 +92,14 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ### Cambiado
 
+- **`httpx/middleware`: `Metrics` cuenta los requests que terminan en panic.**
+  Con `Recovery` por fuera de `Metrics` (el orden de los ejemplos), un handler
+  que hacía panic devolvía 500 pero no aparecía en `http_requests_total` ni en
+  los histogramas. Ahora se registra como 500 con su ruta antes de que el
+  panic siga hacia `Recovery`. Fuera de un router chi el path es `"unknown"`.
+- **`httpx/middleware`: el log de `Recovery` lleva el `request_id`.** Usa
+  `ErrorContext`, así el handler de `logger.New` le agrega `request_id` y
+  `user_id` como al resto de las líneas del request.
 - **`migrate`: la salida de goose es estructurada.** Cada línea usa el
   formato de goose como mensaje y sus valores como `args` (errores y
   duraciones como texto), en vez de un único texto armado con `Sprintf`.
