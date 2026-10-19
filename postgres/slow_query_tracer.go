@@ -4,10 +4,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/kafeiih/vogel/internal/logtext"
 )
@@ -19,6 +21,10 @@ type contextKey struct{}
 // sql_bytes giving the full length.
 const maxLoggedSQLBytes = 2048
 
+// sqlHashBytes is how many bytes of the SHA-256 of the SQL text sql_hash
+// carries, hex encoded (so twice as many characters).
+const sqlHashBytes = 8
+
 // SlowQueryTracer implements pgx.QueryTracer and logs queries that exceed the configured threshold.
 //
 // Bind values are never logged, only their count (args_count). The SQL text
@@ -26,6 +32,13 @@ const maxLoggedSQLBytes = 2048
 // diagnosed without it; a literal inlined in the SQL instead of bound would
 // therefore reach the log. WithSlowQuerySQLHash replaces the text with a
 // short hash (sql_hash) that still groups repeated queries.
+//
+// A failed query's error is logged bounded like the SQL. A PostgreSQL error
+// message can quote the value that failed (`invalid input syntax for type
+// uuid: "..."`), so with WithSlowQuerySQLHash a *pgconn.PgError is logged as
+// error_code (its SQLSTATE) and error_constraint only; other errors (a
+// canceled context, a broken connection) carry no query data and keep their
+// text.
 //
 // The hash is unsalted, so it pseudonymizes rather than hides: someone who
 // can read the logs and knows the query template can hash candidate values
@@ -41,8 +54,9 @@ type SlowQueryTracer struct {
 // SlowQueryOption configures a SlowQueryTracer.
 type SlowQueryOption func(*SlowQueryTracer)
 
-// WithSlowQuerySQLHash logs sql_hash, the first 8 bytes of the SHA-256 of the
-// SQL text in hex, instead of the text itself.
+// WithSlowQuerySQLHash logs sql_hash, the first sqlHashBytes bytes of the
+// SHA-256 of the SQL text in hex, instead of the text itself, and a
+// PostgreSQL error by its SQLSTATE instead of its message.
 func WithSlowQuerySQLHash() SlowQueryOption {
 	return func(t *SlowQueryTracer) { t.hashSQL = true }
 }
@@ -82,7 +96,7 @@ func (t *SlowQueryTracer) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, data p
 	attrs = append(attrs, t.sqlAttrs(trace.sql)...)
 	attrs = append(attrs, "args_count", trace.args)
 	if data.Err != nil {
-		attrs = append(attrs, "error", data.Err.Error())
+		attrs = append(attrs, t.errorAttrs(data.Err)...)
 	}
 
 	t.logger.Warn("slow query detected", attrs...)
@@ -93,13 +107,27 @@ func (t *SlowQueryTracer) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, data p
 func (t *SlowQueryTracer) sqlAttrs(sql string) []any {
 	if t.hashSQL {
 		sum := sha256.Sum256([]byte(sql))
-		return []any{"sql_hash", hex.EncodeToString(sum[:8])}
+		return []any{"sql_hash", hex.EncodeToString(sum[:sqlHashBytes])}
 	}
 	text, truncated := logtext.Truncate(sql, maxLoggedSQLBytes)
 	if !truncated {
 		return []any{"sql", text}
 	}
 	return []any{"sql", text, "sql_truncated", true, "sql_bytes", len(sql)}
+}
+
+// errorAttrs returns the log attributes describing a failed query's err.
+func (t *SlowQueryTracer) errorAttrs(err error) []any {
+	var pgErr *pgconn.PgError
+	if t.hashSQL && errors.As(err, &pgErr) {
+		attrs := []any{"error_code", pgErr.Code}
+		if pgErr.ConstraintName != "" {
+			attrs = append(attrs, "error_constraint", pgErr.ConstraintName)
+		}
+		return attrs
+	}
+	text, _ := logtext.Truncate(err.Error(), maxLoggedSQLBytes)
+	return []any{"error", text}
 }
 
 type queryTrace struct {

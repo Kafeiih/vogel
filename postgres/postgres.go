@@ -136,7 +136,9 @@ type Config struct {
 	// the statement, cut at 2 KiB. Bind values are never logged. The hash is
 	// unsalted: it keeps the statement text out of the logs, but a reader who
 	// knows the template can still confirm a low-entropy inlined literal by
-	// hashing guesses, so bind such values as parameters instead.
+	// hashing guesses, so bind such values as parameters instead. In this mode
+	// a PostgreSQL error is logged by SQLSTATE (error_code) and constraint
+	// name, not by its message, which can quote the failing value.
 	HashSlowQuerySQL bool
 
 	// AfterConnect, if set, runs after this package's own per-connection setup

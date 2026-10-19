@@ -6,11 +6,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -56,7 +59,7 @@ func TestSlowQueryTracer_WithSQLHashLogsOnlyTheHash(t *testing.T) {
 	line := slowQueryLine(t, NewSlowQueryTracer(jsonLogger(&buf), 0, WithSlowQuerySQLHash()), &buf, sql)
 
 	sum := sha256.Sum256([]byte(sql))
-	assert.Equal(t, hex.EncodeToString(sum[:8]), line["sql_hash"])
+	assert.Equal(t, hex.EncodeToString(sum[:sqlHashBytes]), line["sql_hash"])
 	assert.NotContains(t, line, "sql")
 	assert.NotContains(t, buf.String(), "alice@example.com")
 	assert.EqualValues(t, 1, line["args_count"])
@@ -72,4 +75,60 @@ func TestNewPoolConfig_HashSlowQuerySQL(t *testing.T) {
 	tr, ok := poolConfig.ConnConfig.Tracer.(*poolTracer)
 	require.True(t, ok)
 	assert.True(t, tr.hashSQL)
+}
+
+// slowQueryLineWithErr is slowQueryLine for a query that ends with err.
+func slowQueryLineWithErr(t *testing.T, tr *SlowQueryTracer, buf *bytes.Buffer, err error) map[string]any {
+	t.Helper()
+	ctx := tr.TraceQueryStart(context.Background(), nil, pgx.TraceQueryStartData{SQL: "SELECT $1::uuid"})
+	tr.TraceQueryEnd(ctx, nil, pgx.TraceQueryEndData{Err: err})
+	var line map[string]any
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &line), "log output: %s", buf.String())
+	return line
+}
+
+// A PostgreSQL error message can quote the offending value; hash mode keeps
+// it out by logging only the SQLSTATE and the constraint name.
+func TestSlowQueryTracer_WithSQLHashLogsOnlyTheSQLState(t *testing.T) {
+	var buf bytes.Buffer
+	pgErr := &pgconn.PgError{
+		Severity: "ERROR", Code: "22P02",
+		Message:        `invalid input syntax for type uuid: "alice@example.com"`,
+		Detail:         "Key (email)=(alice@example.com) already exists.",
+		ConstraintName: "users_email_key",
+	}
+	line := slowQueryLineWithErr(t, NewSlowQueryTracer(jsonLogger(&buf), 0, WithSlowQuerySQLHash()), &buf, fmt.Errorf("query: %w", pgErr))
+
+	assert.Equal(t, "22P02", line["error_code"])
+	assert.Equal(t, "users_email_key", line["error_constraint"])
+	assert.NotContains(t, line, "error")
+	assert.NotContains(t, buf.String(), "alice@example.com")
+}
+
+// A non-PostgreSQL error (a canceled context, a broken connection) carries
+// no query data and keeps its text in hash mode.
+func TestSlowQueryTracer_WithSQLHashKeepsNonPostgresErrors(t *testing.T) {
+	var buf bytes.Buffer
+	line := slowQueryLineWithErr(t, NewSlowQueryTracer(jsonLogger(&buf), 0, WithSlowQuerySQLHash()), &buf, context.Canceled)
+
+	assert.Equal(t, "context canceled", line["error"])
+	assert.NotContains(t, line, "error_code")
+}
+
+// Without hash mode the error text is kept, bounded like the SQL.
+func TestSlowQueryTracer_ErrorTextIsBounded(t *testing.T) {
+	var buf bytes.Buffer
+	long := errors.New(strings.Repeat("e", maxLoggedSQLBytes) + "tail")
+	line := slowQueryLineWithErr(t, NewSlowQueryTracer(jsonLogger(&buf), 0), &buf, long)
+
+	got, _ := line["error"].(string)
+	assert.LessOrEqual(t, len(got), maxLoggedSQLBytes)
+	assert.NotContains(t, got, "tail")
+}
+
+func TestSlowQueryTracer_SQLHashLength(t *testing.T) {
+	var buf bytes.Buffer
+	line := slowQueryLine(t, NewSlowQueryTracer(jsonLogger(&buf), 0, WithSlowQuerySQLHash()), &buf, "SELECT 1")
+	h, _ := line["sql_hash"].(string)
+	assert.Len(t, h, 2*sqlHashBytes)
 }

@@ -113,8 +113,11 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   texto por `sql_hash`, un prefijo del SHA-256, para no loguear literales
   escritos dentro del SQL. El hash no tiene sal: quien lea los logs y conozca
   la plantilla puede confirmar un literal de baja entropía probando valores,
-  así que la protección real es pasar esos valores como parámetros. Los
-  valores de los parámetros nunca se loguean.
+  así que la protección real es pasar esos valores como parámetros. Con el
+  hash, un error de PostgreSQL se loguea como `error_code` (SQLSTATE) y
+  `error_constraint`, sin su mensaje, que puede citar el valor que falló; sin
+  el hash, el texto del error se corta en 2 KiB como el SQL. Los valores de los
+  parámetros nunca se loguean.
 - **`auth/zitadel`: se rechaza un `iat` futuro y los algoritmos JWT quedan
   fijados.** Un token cuyo `iat` sea posterior al instante actual más un minuto
   de tolerancia se rechaza con el mismo 401 genérico, aunque `exp - iat` quepa
