@@ -757,7 +757,7 @@ advisory de seguridad (ver `SECURITY.md` en la raiz de `vogel`).
 | Rate limiting excesivo | `rate(http_requests_total{status="429"}[5m])` > 50/min | WARNING |
 | Goroutines creciendo | `go_goroutines` > 1000 por > 10min | WARNING |
 | Pool acquire lento | `histogram_quantile(0.99, sum by (le) (rate(db_pool_acquire_wait_seconds_bucket[5m]))) > 1` (p99 de la espera; con `DB_ACQUIRE_TIMEOUT=3s`, cerca de 1s ya es saturacion) | WARNING |
-| Conexion retenida | `sum(rate(db_pool_conn_hold_seconds_count[5m])) - sum(rate(db_pool_conn_hold_seconds_bucket{le="10"}[5m])) > 0` (conexiones devueltas despues de mas de `DB_LEAK_THRESHOLD`; el log WARN nombra el codigo que la pidio. Si cambias `DB_LEAK_THRESHOLD`, cambia tambien `le`: debe ser un limite de bucket del histograma, 0.001 a 30 segundos) | WARNING |
+| Conexion retenida | `sum(rate(db_pool_conn_hold_seconds_count[5m])) - sum(rate(db_pool_conn_hold_seconds_bucket{le=~"10(\.0)?"}[5m])) > 0` (conexiones devueltas despues de mas de `DB_LEAK_THRESHOLD`; el log WARN nombra el codigo que la pidio. Si cambias `DB_LEAK_THRESHOLD`, cambia tambien `le`: debe ser un limite de bucket del histograma, 0.001 a 30 segundos. El regex acepta `10` y `10.0` porque Prometheus 3.x normaliza `le` a decimal) | WARNING |
 
 `http_request_duration_seconds` es un histograma: no tiene etiqueta `quantile`, los percentiles se calculan con `histogram_quantile` sobre la serie `_bucket`. `db_pool_acquire_duration_seconds` es un acumulado de segundos (sólo da un promedio); para percentiles de la espera por conexión está el histograma `db_pool_acquire_wait_seconds`.
 
