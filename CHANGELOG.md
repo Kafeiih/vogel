@@ -24,6 +24,13 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ### Agregado
 
+- **`httpx/middleware`: opciones de `StructuredLogger` para datos del
+  cliente.** `remote_addr` y `user_agent` son datos personales bajo reglas
+  tipo GDPR. `WithRemoteAddr(RemoteAddrTruncated)` loguea solo la red (/24 en
+  IPv4, /48 en IPv6, sin puerto; una dirección que no se puede leer se omite),
+  `WithRemoteAddr(RemoteAddrOmitted)` la omite y `WithoutUserAgent()` omite el
+  user agent. Sin opciones la línea no cambia y las llamadas existentes
+  siguen compilando.
 - **`examples/boilerplate`: reglas de Prometheus en `deploy/prometheus/alerts.yml`.**
   Las alertas del RUNBOOK como reglas listas para cargar, más un SLO de
   disponibilidad (99.5% de requests sin 5xx en 30 días) con alertas de

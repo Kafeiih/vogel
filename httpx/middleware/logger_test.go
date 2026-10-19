@@ -15,13 +15,13 @@ import (
 
 // logLine runs h against one request and returns the single structured log
 // record StructuredLogger emitted for it.
-func logLine(t *testing.T, r *http.Request) map[string]any {
+func logLine(t *testing.T, r *http.Request, opts ...LoggerOption) map[string]any {
 	t.Helper()
 
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, nil))
 
-	h := StructuredLogger(logger)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	h := StructuredLogger(logger, opts...)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	h.ServeHTTP(httptest.NewRecorder(), r)
@@ -184,5 +184,66 @@ func TestStructuredLogger_NoUserSlot_AuthenticateStillWorks(t *testing.T) {
 	}
 	if v, ok := got["user_id"]; ok {
 		t.Errorf("user_id = %v, want the key absent without a user slot", v)
+	}
+}
+
+func TestStructuredLogger_ClientInfoDefaultsUnchanged(t *testing.T) {
+	r := httptest.NewRequest(http.MethodGet, "/x", nil)
+	r.RemoteAddr = "203.0.113.42:51234"
+	r.Header.Set("User-Agent", "curl/8.0")
+
+	got := logLine(t, r)
+	if got["remote_addr"] != "203.0.113.42:51234" {
+		t.Errorf("remote_addr = %v, want the full address", got["remote_addr"])
+	}
+	if got["user_agent"] != "curl/8.0" {
+		t.Errorf("user_agent = %v, want curl/8.0", got["user_agent"])
+	}
+}
+
+func TestStructuredLogger_RemoteAddrModes(t *testing.T) {
+	tests := []struct {
+		name   string
+		remote string
+		mode   RemoteAddrMode
+		want   any // nil means the key is absent
+	}{
+		{name: "full", remote: "203.0.113.42:51234", mode: RemoteAddrFull, want: "203.0.113.42:51234"},
+		{name: "truncated IPv4 with port", remote: "203.0.113.42:51234", mode: RemoteAddrTruncated, want: "203.0.113.0"},
+		{name: "truncated IPv4 without port (behind RealIP)", remote: "203.0.113.42", mode: RemoteAddrTruncated, want: "203.0.113.0"},
+		{name: "truncated IPv6", remote: "[2001:db8:abcd:12:1:2:3:4]:443", mode: RemoteAddrTruncated, want: "2001:db8:abcd::"},
+		{name: "truncated IPv4-mapped IPv6", remote: "[::ffff:203.0.113.42]:443", mode: RemoteAddrTruncated, want: "203.0.113.0"},
+		{name: "truncated unparsable address is dropped", remote: "not-an-ip", mode: RemoteAddrTruncated, want: nil},
+		{name: "omitted", remote: "203.0.113.42:51234", mode: RemoteAddrOmitted, want: nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodGet, "/x", nil)
+			r.RemoteAddr = tt.remote
+			got := logLine(t, r, WithRemoteAddr(tt.mode))
+			v, ok := got["remote_addr"]
+			if tt.want == nil {
+				if ok {
+					t.Errorf("remote_addr = %v, want it absent", v)
+				}
+				return
+			}
+			if v != tt.want {
+				t.Errorf("remote_addr = %v, want %v", v, tt.want)
+			}
+		})
+	}
+}
+
+func TestStructuredLogger_WithoutUserAgent(t *testing.T) {
+	r := httptest.NewRequest(http.MethodGet, "/x", nil)
+	r.Header.Set("User-Agent", "curl/8.0")
+
+	got := logLine(t, r, WithoutUserAgent())
+	if v, ok := got["user_agent"]; ok {
+		t.Errorf("user_agent = %v, want it absent", v)
+	}
+	if got["path"] != "/x" {
+		t.Errorf("path = %v, want /x (the rest of the line is unchanged)", got["path"])
 	}
 }
