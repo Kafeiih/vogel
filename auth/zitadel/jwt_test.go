@@ -113,7 +113,7 @@ func (ti *testIssuer) signingInput(t *testing.T, alg string, claims map[string]a
 // discovery is the same code path New uses.
 func (ti *testIssuer) authenticator(t *testing.T, cfg Config) *Authenticator {
 	t.Helper()
-	return ti.authenticatorAccepting(t, cfg, acceptedSigningAlgorithms)
+	return ti.authenticatorAccepting(t, cfg, acceptedSigningAlgorithms())
 }
 
 // authenticatorAccepting is authenticator with the verifier limited to algs.
@@ -206,10 +206,17 @@ func TestAuthenticate_VerifiedJWT_ExposesAzpInClaims(t *testing.T) {
 // only accepts acceptedSigningAlgorithms: an unsigned token (alg none) and an
 // HS256 token keyed with the issuer's public RSA modulus (the classic
 // algorithm-confusion attack) are both refused before any claim is trusted.
+// The same authenticator accepts a correctly signed RS256 token, so the pin
+// is proven in both directions and not only through the SDK's error text.
 func TestAuthenticate_VerifiedJWT_RejectsUnpinnedAlgorithms(t *testing.T) {
 	ti := newTestIssuer(t)
+	a := ti.authenticator(t, Config{ClientID: "api-client"})
 	claims := map[string]any{"sub": "user-1", "aud": []string{"api-client"}}
 	b64 := base64.RawURLEncoding
+
+	if _, err := a.Authenticate(context.Background(), ti.sign(t, claims)); err != nil {
+		t.Fatalf("RS256 control token: unexpected error: %v", err)
+	}
 
 	hsInput := ti.signingInput(t, "HS256", claims)
 	mac := hmac.New(sha256.New, ti.key.N.Bytes())
@@ -221,7 +228,6 @@ func TestAuthenticate_VerifiedJWT_RejectsUnpinnedAlgorithms(t *testing.T) {
 	}
 	for alg, token := range tokens {
 		t.Run(alg, func(t *testing.T) {
-			a := ti.authenticator(t, Config{ClientID: "api-client"})
 			// The SDK flattens its error chain, so the reason is matched on
 			// the message rather than with errors.Is.
 			_, err := a.Authenticate(context.Background(), token)
@@ -236,8 +242,8 @@ func TestAuthenticate_VerifiedJWT_RejectsUnpinnedAlgorithms(t *testing.T) {
 // deliberate, reviewed decision rather than an SDK default drifting.
 func TestAcceptedSigningAlgorithms(t *testing.T) {
 	want := []string{"RS256", "ES256", "PS256"}
-	if !slices.Equal(acceptedSigningAlgorithms, want) {
-		t.Errorf("acceptedSigningAlgorithms = %v, want %v", acceptedSigningAlgorithms, want)
+	if got := acceptedSigningAlgorithms(); !slices.Equal(got, want) {
+		t.Errorf("acceptedSigningAlgorithms() = %v, want %v", got, want)
 	}
 }
 

@@ -138,16 +138,18 @@ func validateConfig(cfg Config) (Config, error) {
 	return cfg, nil
 }
 
-// acceptedSigningAlgorithms are the only JWS algorithms the local JWT
-// verifier accepts. They equal zitadel/oidc's current default (used when no
+// acceptedSigningAlgorithms returns the only JWS algorithms the local JWT
+// verifier accepts, as a fresh slice so no caller can alter the allowlist. They equal zitadel/oidc's current default (used when no
 // list is given), pinned here so an SDK update cannot widen them silently;
 // "none" and the HMAC algorithms are never accepted, which rules out the
 // algorithm-confusion attack of an HS256 token keyed with the issuer's
 // public key.
-var acceptedSigningAlgorithms = []string{"RS256", "ES256", "PS256"}
+func acceptedSigningAlgorithms() []string {
+	return []string{"RS256", "ES256", "PS256"}
+}
 
 // withJWT is the local JWT verifier accepting only algs; build passes
-// acceptedSigningAlgorithms. oauth.WithJWT is what DefaultJWTAuthorization
+// acceptedSigningAlgorithms(). oauth.WithJWT is what DefaultJWTAuthorization
 // wraps, with a nil client that it replaces by http.DefaultClient; pass a
 // bounded one instead.
 func withJWT(clientID string, httpClient *http.Client, algs []string) authorization.VerifierInitializer[*oauth.IntrospectionContext] {
@@ -167,7 +169,7 @@ func build(ctx context.Context, z *zitadel.Zitadel, cfg Config) (*Authenticator,
 		cache = newIntrospectionCache(cfg.Introspection.CacheMaxEntries)
 		initVerifier = withIntrospection(*cfg.Introspection, cfg.ClientID, httpClient, cache)
 	} else {
-		initVerifier = withJWT(cfg.ClientID, httpClient, acceptedSigningAlgorithms)
+		initVerifier = withJWT(cfg.ClientID, httpClient, acceptedSigningAlgorithms())
 	}
 	authorizer, err := authorization.New(ctx, z, initVerifier)
 	if err != nil {
