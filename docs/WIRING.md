@@ -808,7 +808,9 @@ ejemplo) exige un `Endpoint` `https://`.
 Para trazar las llamadas salientes, `otel.Transport()` encaja en el
 `WrapTransport` de Zitadel, SendGrid y S3: un span de cliente por llamada, que
 manda el `traceparent` pero no el baggage, porque del otro lado hay un
-tercero. Los emails se trazan envolviendo el notificador, con un span sin
+tercero. El span guarda la URL completa (`url.full`), con su query string:
+otelhttp oculta las credenciales de la URL y las firmas conocidas, pero no un
+identificador que viaje en la query. Los emails se trazan envolviendo el notificador, con un span sin
 destinatario, remitente ni asunto:
 
 ```go
@@ -836,6 +838,8 @@ mux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{EnableOpenM
 ```
 
 Prometheus solo lee exemplars en formato OpenMetrics y con
-`--enable-feature=exemplar-storage`. `SampledTraceIDs`, a diferencia de
+`--enable-feature=exemplar-storage`. Los exemplars HTTP necesitan que
+`otel.Middleware` esté montado antes que `Metrics.Middleware`: si no, no hay
+span en el contexto cuando se mide la latencia. `SampledTraceIDs`, a diferencia de
 `TraceIDs`, no devuelve nada para un trace no muestreado: un exemplar tiene
 que apuntar a un trace que el backend tenga.

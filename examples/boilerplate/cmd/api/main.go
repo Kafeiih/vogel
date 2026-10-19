@@ -27,6 +27,11 @@ import (
 	vmw "github.com/kafeiih/vogel/httpx/middleware"
 	"github.com/kafeiih/vogel/logger"
 	"github.com/kafeiih/vogel/migrate"
+	// vogel:component tracing begin
+	"github.com/kafeiih/vogel/otel"
+	"github.com/kafeiih/vogel/otel/otelpgx"
+
+	// vogel:component tracing end
 	"github.com/kafeiih/vogel/postgres"
 
 	// vogel:component worker begin
@@ -37,6 +42,10 @@ import (
 	"github.com/kafeiih/vogel/examples/boilerplate/internal/infrastructure/config"
 	appmigrate "github.com/kafeiih/vogel/examples/boilerplate/internal/infrastructure/database/migrate"
 	"github.com/kafeiih/vogel/examples/boilerplate/internal/infrastructure/database/migrations"
+	// vogel:component tracing begin
+	"github.com/kafeiih/vogel/examples/boilerplate/internal/infrastructure/tracing"
+
+	// vogel:component tracing end
 	httpiface "github.com/kafeiih/vogel/examples/boilerplate/internal/interfaces/http"
 	"github.com/kafeiih/vogel/examples/boilerplate/internal/interfaces/http/handler"
 )
@@ -249,7 +258,12 @@ func runServer(migrateFirst bool) error {
 		return fmt.Errorf("loading config: %w", err)
 	}
 
-	appLogger := logger.NewDefault(cfg.App.Env).With("component", "api")
+	var logOpts []logger.Option
+	// vogel:component tracing begin
+	// Log lines written with a context carry the span's trace_id/span_id.
+	logOpts = append(logOpts, logger.WithTraceIDs(otel.TraceIDs))
+	// vogel:component tracing end
+	appLogger := logger.NewDefault(cfg.App.Env, logOpts...).With("component", "api")
 	// Installed as the default too, so package-level slog calls, River's
 	// migrations and libraries logging through slog.Default() share its JSON
 	// format, component attribute and request_id from context. It also routes
@@ -263,6 +277,19 @@ func runServer(migrateFirst bool) error {
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.Database.ConnectTimeout)
 	defer cancel()
 
+	// vogel:component tracing begin
+	// Deferred before everything else, so it runs last: the spans of the
+	// HTTP server's final requests are flushed after it has drained.
+	tp, err := tracing.Setup(ctx, cfg.Tracing, "api", appLogger.Logger)
+	if err != nil {
+		return err
+	}
+	defer tracing.Shutdown(tp, appLogger.Logger)
+	// A span per query, batch, COPY and connection, and the acquiring
+	// request's trace as an exemplar on the pool histograms.
+	cfg.Database.Tracer = otelpgx.NewTracer()
+	cfg.Database.TraceIDs = otel.SampledTraceIDs
+	// vogel:component tracing end
 	pool, err := postgres.NewPool(ctx, cfg.Database, appLogger.Logger)
 	if err != nil {
 		return fmt.Errorf("connecting to database: %w", err)
@@ -302,7 +329,11 @@ func runServer(migrateFirst bool) error {
 	if _, err := postgres.NewPoolMetricsCollector(pool, prometheus.DefaultRegisterer); err != nil {
 		return fmt.Errorf("registering pool metrics: %w", err)
 	}
-	metrics, err := vmw.NewMetrics(prometheus.DefaultRegisterer)
+	var metricsOpts []vmw.MetricsOption
+	// vogel:component tracing begin
+	metricsOpts = append(metricsOpts, vmw.WithExemplars(otel.SampledTraceIDs))
+	// vogel:component tracing end
+	metrics, err := vmw.NewMetrics(prometheus.DefaultRegisterer, metricsOpts...)
 	if err != nil {
 		return fmt.Errorf("building http metrics: %w", err)
 	}
@@ -320,6 +351,9 @@ func runServer(migrateFirst bool) error {
 	zitadelCtx, zitadelCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer zitadelCancel()
 
+	// vogel:component tracing begin
+	cfg.Zitadel.WrapTransport = otel.Transport()
+	// vogel:component tracing end
 	authenticator, err := zitadel.New(zitadelCtx, cfg.Zitadel)
 	if err != nil {
 		return fmt.Errorf("initializing zitadel: %w", err)
@@ -366,6 +400,12 @@ func runServer(migrateFirst bool) error {
 	//   // storage.WithContentDisposition("inline").
 	//   getURL, err := docs.PresignedGetURL(ctx, "docs/licencia.pdf", 0, storage.AsAttachment("licencia.pdf"))
 	if len(cfg.Storages) > 0 {
+		// vogel:component tracing begin
+		for name, sc := range cfg.Storages {
+			sc.WrapTransport = otel.Transport()
+			cfg.Storages[name] = sc
+		}
+		// vogel:component tracing end
 		storageReg, err := s3.NewStorageRegistry(cfg.Storages, appLogger.Logger)
 		if err != nil {
 			return fmt.Errorf("initializing storage: %w", err)
@@ -400,6 +440,9 @@ func runServer(migrateFirst bool) error {
 		HealthHandler: healthHandler,
 		AuditHandler:  auditHandler,
 	}
+	// vogel:component tracing begin
+	deps.Tracing = otel.Middleware()
+	// vogel:component tracing end
 
 	router := httpiface.NewRouter(deps)
 

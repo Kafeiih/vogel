@@ -21,6 +21,13 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   compresión, lotes, límites), y `Config.Headers` exige un endpoint
   `https://`. Es el único paquete que depende del SDK de OpenTelemetry (lo
   verifica el CI). Ver `docs/WIRING.md` §8.
+- **Boilerplate: componente `tracing`.** `create-vogel-app` lo incluye por
+  defecto (`--without tracing` lo saca). Lee `OTEL_EXPORTER_OTLP_ENDPOINT`,
+  `OTEL_SERVICE_NAME` y `OTEL_TRACES_SAMPLER_ARG`, validadas al arrancar, y
+  queda apagado sin endpoint. Conecta `otel.Middleware`, `otelpgx`,
+  `otelriver`, `otel.Transport` (Zitadel, S3), `otel.Notifier`, los
+  `trace_id` en los logs y los exemplars, y vacía las trazas al final del
+  apagado, después del servidor HTTP y de la cola.
 - **`otel`: `SampledTraceIDs`, `Transport` y `Notifier`.** `SampledTraceIDs`
   es `TraceIDs` solo para spans muestreados, para exemplars. `Transport()`
   encaja en el `WrapTransport` de Zitadel, SendGrid y S3: un span de cliente
