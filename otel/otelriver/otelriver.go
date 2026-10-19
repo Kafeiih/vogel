@@ -33,8 +33,9 @@ import (
 const instrumentationName = "github.com/kafeiih/vogel/otel/otelriver"
 
 // metadataPrefix namespaces the propagation keys in the job metadata, as
-// vogel_request_id is, so they cannot collide with metadata a consumer sets
-// through river.InsertOpts.Metadata.
+// vogel_request_id is, so they do not collide by accident with metadata a
+// consumer sets through river.InsertOpts.Metadata. A consumer that sets
+// vogel_traceparent on purpose wins (see withTraceContext).
 const (
 	metadataPrefix = "vogel_"
 	traceParentKey = metadataPrefix + "traceparent"
