@@ -142,6 +142,16 @@ type Config struct {
 	// name, any other error by its Go type.
 	HashSlowQuerySQL bool
 
+	// Tracer, if set, is called alongside the tracer NewPool always installs
+	// (slow queries, acquire timeout, pool histograms, leak detection), on
+	// every hook it implements: pgx.QueryTracer, and optionally
+	// pgx.BatchTracer, pgx.CopyFromTracer, pgx.PrepareTracer,
+	// pgx.ConnectTracer, pgxpool.AcquireTracer and pgxpool.ReleaseTracer.
+	// Its Start hooks run before vogel's and its End hooks after, so a span
+	// it opens encloses the slow-query log line. vogel/otel provides an
+	// OpenTelemetry one; this package depends on no tracing library.
+	Tracer pgx.QueryTracer
+
 	// AfterConnect, if set, runs after this package's own per-connection setup
 	// (TLS, timeouts, tracer) on every new physical connection. Use it for
 	// consumer-specific per-connection work — for example, registering a
@@ -201,6 +211,7 @@ func newPoolConfig(cfg Config, logger *slog.Logger) (*pgxpool.Config, error) {
 		logger:             logger,
 		slowQueryThreshold: slowQueryThreshold,
 		hashSlowQuerySQL:   cfg.HashSlowQuerySQL,
+		extra:              cfg.Tracer,
 		acquireTimeout:     cfg.AcquireTimeout,
 		leakThreshold:      cfg.LeakThreshold,
 		maxConns:           int(poolConfig.MaxConns),

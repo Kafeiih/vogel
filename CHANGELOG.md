@@ -14,6 +14,12 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   `request_id`: solo si hay valor y si la línea no lo trae ya. `logger` no
   depende de ninguna librería de tracing; sin la opción, las líneas no
   cambian.
+- **`postgres`: `Config.Tracer`, un tracer de pgx extra.** `NewPool` lo
+  llama junto al suyo en cada hook que implemente (`pgx.QueryTracer` y,
+  opcionalmente, los de batch, `CopyFrom`, prepare, connect, acquire y
+  release). Sus `Start` corren antes que los de vogel y sus `End` después, así
+  que su span envuelve la línea de consulta lenta, que ahora se loguea con
+  `WarnContext` (lleva `request_id` y, con tracing, los IDs del span).
 - **`httpx/response`: `request_id` en las respuestas de error.**
   `ErrorResponse` y `ValidationErrorResponse` llevan el request ID también
   bajo `request_id`.
