@@ -662,3 +662,64 @@ ya existe, es seguro: `EnsureSchema` → `NewRiverQueue` → `queue.Migrate` →
   ninguna queja, sólo que sin la protección que uno cree tener. Es una
   decisión explícita de cada consumidor, no algo que el paquete infiera
   del DSN.
+
+## 7. Varias réplicas y PgBouncer
+
+Cada réplica del API y del worker abre su propio pool. El total no puede
+pasar de `max_connections` de PostgreSQL (100 por defecto), menos las que
+reservan las herramientas de administración y las migraciones:
+
+```
+réplicas_api × DB_MAX_CONNS(api) + réplicas_worker × DB_MAX_CONNS(worker) + reserva < max_connections
+```
+
+Lo que se calcula por el hardware del **servidor de base de datos**, no por
+la cantidad de usuarios ni de goroutines, es el **presupuesto total** de
+conexiones activas del servidor: el punto de partida habitual es
+`(núcleos × 2) + discos`. Más conexiones activas que eso no aumentan el
+throughput; sólo agregan contexto que conmutar y memoria por sesión. Ese
+presupuesto se **reparte** entre todas las réplicas: la suma de sus
+`DB_MAX_CONNS` debe quedar cerca de él, no cada pool por separado. Cuando el
+reparto deja a cada réplica con un pool demasiado chico para su
+concurrencia, lo que corresponde es poner un pooler (PgBouncer) delante, no
+subir los pools ni `max_connections`.
+
+**PgBouncer en modo `transaction`** reparte una conexión del servidor por
+transacción, y eso rompe tres supuestos de este módulo:
+
+1. **Los `SET` por conexión de `postgres.NewPool`.** `statement_timeout`,
+   `lock_timeout` e `idle_in_transaction_session_timeout` se aplican con `SET`
+   en `AfterConnect`, sobre la conexión con PgBouncer, no con el servidor: la
+   transacción siguiente puede caer en otra conexión del servidor que no los
+   tiene. Fijarlos en el rol, que PgBouncer no puede perder:
+
+   ```sql
+   ALTER ROLE app_runtime SET statement_timeout = '30s';
+   ALTER ROLE app_runtime SET lock_timeout = '5s';
+   ALTER ROLE app_runtime SET idle_in_transaction_session_timeout = '60s';
+   ```
+
+   `NewPool` sigue enviando sus `SET` igual, y detrás de PgBouncer quedan
+   pegados en la conexión del servidor que después atiende a otro cliente. Por
+   eso los tres campos de `postgres.Config` deben tener **los mismos valores**
+   que el `ALTER ROLE` (así el `SET` es redundante e inofensivo), y **nunca un
+   valor negativo**: negativo envía `SET ... = 0`, que desactiva el timeout
+   para cualquier cliente que reciba después esa conexión.
+
+2. **La caché de sentencias preparadas de pgx.** pgx prepara cada consulta en
+   la conexión (`cache_statement`). En modo transacción la sentencia preparada
+   queda en otra conexión del servidor y falla con `prepared statement ...
+   does not exist`. Opciones: `default_query_exec_mode=exec` en el DSN (pgx lo
+   lee de ahí), o PgBouncer ≥ 1.21 con `max_prepared_statements` > 0, que
+   sigue las sentencias preparadas por cliente.
+
+3. **`LISTEN`/`NOTIFY` de River.** El worker escucha notificaciones para
+   enterarse de jobs nuevos, y `LISTEN` necesita una sesión estable. River
+   tiene un modo `PollOnly`, pero `worker.Config` no lo expone todavía: el
+   binario worker se conecta directo a PostgreSQL, o a un pool de PgBouncer en
+   modo `session`. El API, que sólo encola, puede ir por el pool en modo
+   transacción.
+
+Con PgBouncer, `DB_MAX_CONNS` de cada réplica pasa a ser conexiones con
+PgBouncer (baratas), y lo que se calcula por hardware es `default_pool_size`
+de PgBouncer.

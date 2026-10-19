@@ -321,12 +321,20 @@ curl -s http://localhost:8080/metrics | grep db_pool
 
 **Ajustar pool:**
 
-| Variable | Default | Cuando subir |
+El presupuesto de conexiones activas se calcula por el hardware del servidor de base de datos, no por usuarios ni requests concurrentes: punto de partida `(nucleos x 2) + discos` del servidor PostgreSQL, **en total**. Ese presupuesto se reparte entre todas las replicas: la suma de sus `DB_MAX_CONNS` debe quedar cerca de el. Mas conexiones no dan mas throughput; un pool siempre lleno con queries lentas se arregla en las queries (ver seccion 3), no subiendo el pool.
+
+| Variable | Default | Cuando cambiar |
 |----------|---------|-------------|
-| `DB_MAX_CONNS` | 25 | Pool constantemente lleno |
+| `DB_MAX_CONNS` | 25 | Repartir el presupuesto entre replicas (ver abajo); subirlo solo si el servidor tiene CPU libre y el pool esta lleno con queries rapidas |
 | `DB_MIN_CONNS` | 5 | Muchos `acquire_empty` (creando conexiones nuevas frecuentemente) |
 
-Tener en cuenta: el total de conexiones entre todas las replicas no debe exceder `max_connections` de PostgreSQL (default: 100).
+El total entre todas las replicas no debe exceder `max_connections` de PostgreSQL (default: 100), con margen para administracion y migraciones:
+
+```
+replicas_api x DB_MAX_CONNS + replicas_worker x DB_MAX_CONNS + reserva < max_connections
+```
+
+Ejemplo: servidor de 4 nucleos y 1 disco -> presupuesto de ~9 conexiones activas en total. Con 3 replicas del API y 1 worker: `DB_MAX_CONNS` en 2 para cada API y en 3 para el worker suman 9, con `DB_MIN_CONNS` en 1 (nunca mayor que `DB_MAX_CONNS`: el arranque lo valida y falla). Si un pool de 2 por replica no alcanza para su concurrencia, poner PgBouncer delante del API en vez de subir los pools o `max_connections`. El worker no pasa por PgBouncer en modo transaccion (River necesita `LISTEN`), asi que el presupuesto se reparte entre los dos: por ejemplo, `default_pool_size` de PgBouncer en 6 para todo el API mas los 3 del worker suman 9 conexiones con el servidor. Ver `docs/WIRING.md` seccion 7 (que cambia en modo transaccion: timeouts con `ALTER ROLE` e iguales en `postgres.Config`, `default_query_exec_mode=exec` y el worker con conexion de sesion).
 
 ---
 
