@@ -131,7 +131,7 @@ func TestMiddleware_HandlerSeesTheSpan(t *testing.T) {
 func attr(kvs []attribute.KeyValue, key string) string {
 	for _, kv := range kvs {
 		if string(kv.Key) == key {
-			return kv.Value.Emit()
+			return kv.Value.String()
 		}
 	}
 	return ""
