@@ -120,12 +120,14 @@ func WithoutUserAgent() LoggerOption {
 // when the key must be left out.
 func (c loggerConfig) remoteAddrValue(raw string) (string, bool) {
 	switch c.remoteAddr {
-	case RemoteAddrOmitted:
-		return "", false
+	case RemoteAddrFull:
+		return raw, true
 	case RemoteAddrTruncated:
 		return truncateAddr(raw)
 	default:
-		return raw, true
+		// RemoteAddrOmitted, and any value outside the declared modes: an
+		// unknown privacy setting fails closed.
+		return "", false
 	}
 }
 

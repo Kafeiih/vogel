@@ -10,9 +10,10 @@ import (
 )
 
 // TestSlogAdapter_PrintfIsStructured pins that goose's output keeps its
-// format string as the message and its values as structured attributes, so
-// the logger's key-based redaction and log queries apply to it instead of
-// one pre-formatted string.
+// format string as the message and its values under "args", so the message
+// stays constant for log queries. The values are positional, not keyed, so
+// key-based redaction does not apply to them; goose only passes migration
+// names, versions, durations and errors.
 func TestSlogAdapter_PrintfIsStructured(t *testing.T) {
 	var buf bytes.Buffer
 	a := newSlogAdapter(slog.New(slog.NewJSONHandler(&buf, nil)))
@@ -66,5 +67,28 @@ func TestSlogAdapter_RendersErrorsAndStringersAsText(t *testing.T) {
 	args, _ := line["args"].([]any)
 	if len(args) != 3 || args[1] != "1.5s" || args[2] != "lock held" {
 		t.Errorf("args = %v, want [0001_init.sql 1.5s lock held]", line["args"])
+	}
+}
+
+type nilStringer struct{ s string }
+
+func (n *nilStringer) String() string { return n.s }
+
+// A typed-nil Stringer whose String method dereferences its receiver is
+// rendered by fmt as <nil> instead of crashing the migration logger.
+func TestSlogAdapter_TypedNilStringerDoesNotCrash(t *testing.T) {
+	var buf bytes.Buffer
+	a := newSlogAdapter(slog.New(slog.NewJSONHandler(&buf, nil)))
+
+	var n *nilStringer
+	a.Printf("goose: %v", n)
+
+	var line map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &line); err != nil {
+		t.Fatalf("decode log line %q: %v", buf.String(), err)
+	}
+	args, _ := line["args"].([]any)
+	if len(args) != 1 || args[0] != "<nil>" {
+		t.Errorf("args = %v, want [<nil>]", line["args"])
 	}
 }

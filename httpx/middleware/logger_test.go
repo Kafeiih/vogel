@@ -247,3 +247,13 @@ func TestStructuredLogger_WithoutUserAgent(t *testing.T) {
 		t.Errorf("path = %v, want /x (the rest of the line is unchanged)", got["path"])
 	}
 }
+
+// An unknown RemoteAddrMode fails closed: the address is left out.
+func TestStructuredLogger_UnknownRemoteAddrModeOmitsAddress(t *testing.T) {
+	r := httptest.NewRequest(http.MethodGet, "/x", nil)
+	r.RemoteAddr = "203.0.113.42:51234"
+	got := logLine(t, r, WithRemoteAddr(RemoteAddrMode(99)))
+	if v, ok := got["remote_addr"]; ok {
+		t.Errorf("remote_addr = %v, want it absent for an unknown mode", v)
+	}
+}

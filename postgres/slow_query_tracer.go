@@ -6,9 +6,10 @@ import (
 	"encoding/hex"
 	"log/slog"
 	"time"
-	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/kafeiih/vogel/internal/logtext"
 )
 
 type contextKey struct{}
@@ -25,6 +26,12 @@ const maxLoggedSQLBytes = 2048
 // diagnosed without it; a literal inlined in the SQL instead of bound would
 // therefore reach the log. WithSlowQuerySQLHash replaces the text with a
 // short hash (sql_hash) that still groups repeated queries.
+//
+// The hash is unsalted, so it pseudonymizes rather than hides: someone who
+// can read the logs and knows the query template can hash candidate values
+// (an email, a user ID) and confirm a low-entropy literal. Binding values as
+// parameters is what keeps them out of the logs; the hash only keeps the
+// statement text out.
 type SlowQueryTracer struct {
 	threshold time.Duration
 	logger    *slog.Logger
@@ -88,14 +95,11 @@ func (t *SlowQueryTracer) sqlAttrs(sql string) []any {
 		sum := sha256.Sum256([]byte(sql))
 		return []any{"sql_hash", hex.EncodeToString(sum[:8])}
 	}
-	if len(sql) <= maxLoggedSQLBytes {
-		return []any{"sql", sql}
+	text, truncated := logtext.Truncate(sql, maxLoggedSQLBytes)
+	if !truncated {
+		return []any{"sql", text}
 	}
-	cut := maxLoggedSQLBytes
-	for cut > 0 && !utf8.RuneStart(sql[cut]) {
-		cut--
-	}
-	return []any{"sql", sql[:cut], "sql_truncated", true, "sql_bytes", len(sql)}
+	return []any{"sql", text, "sql_truncated", true, "sql_bytes", len(sql)}
 }
 
 type queryTrace struct {

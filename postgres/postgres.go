@@ -133,8 +133,10 @@ type Config struct {
 
 	// HashSlowQuerySQL makes the slow-query WARN log sql_hash (a short SHA-256
 	// prefix of the SQL text) instead of the SQL text. Leave it false to see
-	// the statement, cut at 2 KiB; set it when statements may carry inlined
-	// literals that must not reach the logs. Bind values are never logged.
+	// the statement, cut at 2 KiB. Bind values are never logged. The hash is
+	// unsalted: it keeps the statement text out of the logs, but a reader who
+	// knows the template can still confirm a low-entropy inlined literal by
+	// hashing guesses, so bind such values as parameters instead.
 	HashSlowQuerySQL bool
 
 	// AfterConnect, if set, runs after this package's own per-connection setup

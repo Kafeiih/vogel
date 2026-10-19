@@ -44,7 +44,9 @@ func gooseMessage(format string) string {
 // gooseArgs returns the "args" attribute for goose's values, or none. An
 // error or fmt.Stringer (a time.Duration, for instance) is rendered as its
 // text, which a JSON handler would otherwise encode as an opaque object or a
-// bare number.
+// bare number. fmt.Sprint renders it, as fmt.Sprintf did before, so a panic
+// inside an Error or String method is recovered by fmt (a typed-nil pointer
+// prints as <nil>) instead of crashing the migration.
 func gooseArgs(v []any) []any {
 	if len(v) == 0 {
 		return nil
@@ -52,10 +54,8 @@ func gooseArgs(v []any) []any {
 	args := make([]any, len(v))
 	for i, x := range v {
 		switch x := x.(type) {
-		case error:
-			args[i] = x.Error()
-		case fmt.Stringer:
-			args[i] = x.String()
+		case error, fmt.Stringer:
+			args[i] = fmt.Sprint(x)
 		default:
 			args[i] = x
 		}

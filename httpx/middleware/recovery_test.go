@@ -119,3 +119,59 @@ func TestRecovery_TruncatesLongPanicValue(t *testing.T) {
 		t.Errorf("panic_type = %v, want string", line["panic_type"])
 	}
 }
+
+func TestRecovery_TruncatesOnARuneBoundary(t *testing.T) {
+	v := strings.Repeat("x", maxLoggedPanicBytes-1) + "é" + "tail"
+	line := recoveryLogLine(t, v)
+
+	got, _ := line["error"].(string)
+	if got != strings.Repeat("x", maxLoggedPanicBytes-1) {
+		t.Errorf("error = %d bytes, want the %d bytes before the split rune", len(got), maxLoggedPanicBytes-1)
+	}
+	if line["error_truncated"] != true {
+		t.Errorf("error_truncated = %v, want true", line["error_truncated"])
+	}
+}
+
+type panicPayload struct {
+	Route  string
+	secret string
+}
+
+// A struct panic value is logged by type only: fmt would print its
+// unexported fields, which can hold request data or credentials.
+func TestRecovery_StructPanicLogsOnlyItsType(t *testing.T) {
+	line := recoveryLogLine(t, panicPayload{Route: "/x", secret: "hunter2"})
+
+	if v, ok := line["error"]; ok {
+		t.Errorf("error = %v, want it absent for a struct value", v)
+	}
+	if line["panic_type"] != "middleware.panicPayload" {
+		t.Errorf("panic_type = %v, want middleware.panicPayload", line["panic_type"])
+	}
+}
+
+func TestRecovery_NumberPanicLogsItsValue(t *testing.T) {
+	line := recoveryLogLine(t, 42)
+	if line["error"] != "42" || line["panic_type"] != "int" {
+		t.Errorf("(error, panic_type) = (%v, %v), want (42, int)", line["error"], line["panic_type"])
+	}
+}
+
+type nilErr struct{ msg string }
+
+func (e *nilErr) Error() string { return e.msg }
+
+// A typed-nil error whose Error method dereferences its receiver must not
+// crash the recovery path.
+func TestRecovery_TypedNilErrorDoesNotCrash(t *testing.T) {
+	var e *nilErr
+	line := recoveryLogLine(t, error(e))
+	if line["panic_type"] != "*middleware.nilErr" {
+		t.Errorf("panic_type = %v, want *middleware.nilErr", line["panic_type"])
+	}
+	// fmt recovers the nil dereference and prints a nil receiver as <nil>.
+	if line["error"] != "<nil>" {
+		t.Errorf("error = %v, want <nil>", line["error"])
+	}
+}

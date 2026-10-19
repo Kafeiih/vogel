@@ -90,10 +90,12 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   formato de goose como mensaje y sus valores como `args` (errores y
   duraciones como texto), en vez de un único texto armado con `Sprintf`.
 - **`httpx/middleware`: `Recovery` acota el valor del panic.** El log
-  `panic recovered` lleva en `error` el valor como texto, cortado en 1 KiB
-  (con `error_truncated: true` si se cortó), y en `panic_type` su tipo Go.
-  Antes `error` era el valor tal cual, que podía ser un struct con datos del
-  request; ahora es siempre un string.
+  `panic recovered` lleva siempre `panic_type` con el tipo Go del valor. Si el
+  valor es un error (su `Error()`), un string, un bool o un número, `error` lo
+  lleva como texto cortado en 1 KiB (con `error_truncated: true` si se cortó);
+  para cualquier otro tipo, como un struct, `error` se omite, porque `fmt`
+  imprimiría también sus campos no exportados. Antes `error` era el valor tal
+  cual; ahora es un string o no está.
 - **`audit/httpx`: el log de error de `List` ya no incluye la query.** En
   vez de `query` (la query cruda, que puede traer un `actor_id`), la línea
   lleva `filters`: los nombres de los filtros reconocidos que usó el request,
@@ -104,7 +106,10 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   real. `Config.HashSlowQuerySQL` (o `WithSlowQuerySQLHash()` en
   `NewSlowQueryTracer`, que ahora acepta opciones variádicas) reemplaza el
   texto por `sql_hash`, un prefijo del SHA-256, para no loguear literales
-  escritos dentro del SQL. Los valores de los parámetros nunca se loguean.
+  escritos dentro del SQL. El hash no tiene sal: quien lea los logs y conozca
+  la plantilla puede confirmar un literal de baja entropía probando valores,
+  así que la protección real es pasar esos valores como parámetros. Los
+  valores de los parámetros nunca se loguean.
 - **`auth/zitadel`: se rechaza un `iat` futuro y los algoritmos JWT quedan
   fijados.** Un token cuyo `iat` sea posterior al instante actual más un minuto
   de tolerancia se rechaza con el mismo 401 genérico, aunque `exp - iat` quepa

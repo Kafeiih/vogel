@@ -285,3 +285,37 @@ func TestFiltersFromRequest_FreeTextFilterLengthCountsRunes(t *testing.T) {
 		})
 	}
 }
+
+// TestFilterParams_EveryNameIsRead keeps filterParams in step with
+// FiltersFromRequest: each listed name, sent with an invalid value, must
+// produce a validation error under that same name, so a filter renamed or
+// removed from the parser fails here. A filter added to the parser must also
+// be added to filterParams, or it is missing from the List error log.
+func TestFilterParams_EveryNameIsRead(t *testing.T) {
+	invalid := map[string]string{
+		"limit": "x", "offset": "x", "operation_category": "x", "status": "x",
+		"from": "x", "to": "x", "resource_id": "x",
+		"actor_id":       strings.Repeat("a", MaxFilterLength+1),
+		"resource_type":  strings.Repeat("a", MaxFilterLength+1),
+		"operation_name": strings.Repeat("a", MaxFilterLength+1),
+		"aggregate_type": strings.Repeat("a", MaxFilterLength+1),
+		"aggregate_id":   strings.Repeat("a", MaxFilterLength+1),
+	}
+	if len(invalid) != len(filterParams) {
+		t.Fatalf("test covers %d names, filterParams has %d", len(invalid), len(filterParams))
+	}
+	for _, name := range filterParams {
+		t.Run(name, func(t *testing.T) {
+			bad, ok := invalid[name]
+			if !ok {
+				t.Fatalf("no invalid value for %q", name)
+			}
+			r := httptest.NewRequest(http.MethodGet, "/audit?"+url.Values{name: {bad}}.Encode(), nil)
+			v := request.NewValidator()
+			FiltersFromRequest(v, r)
+			if _, ok := v.Errors()[name]; !ok {
+				t.Errorf("FiltersFromRequest did not read %q: errors %v", name, v.Errors())
+			}
+		})
+	}
+}
