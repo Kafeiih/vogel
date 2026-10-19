@@ -22,10 +22,12 @@ const maxLoggedPanicBytes = 1024
 // The log line carries the panic value's Go type under "panic_type", the
 // path, the method and the stack trace. "error" holds the value as text,
 // bounded by maxLoggedPanicBytes, only when the value is an error (its
-// Error() text) or of a string, bool or numeric kind, named types included,
-// rendered from the underlying value so a String method cannot change what
-// is logged: for any other value, such as a struct, fmt would print its
-// unexported fields too, so only the type is logged.
+// Error() text) or of a string, bool or numeric kind with no methods, named
+// types included: for any other value only the type is logged. A struct
+// would print its unexported fields; a scalar type with methods (a String
+// that redacts a secret, say) may hold something its author did not mean to
+// print, and logging either its raw value or its String output could be
+// wrong.
 func Recovery(logger *slog.Logger) func(next http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -69,6 +71,9 @@ func panicText(v any) (string, bool) {
 		return fmt.Sprint(v), true
 	}
 	rv := reflect.ValueOf(v)
+	if rv.IsValid() && rv.Type().NumMethod() > 0 {
+		return "", false
+	}
 	switch rv.Kind() {
 	case reflect.String:
 		return rv.String(), true
