@@ -166,16 +166,23 @@ func WithMiddleware(mw ...rivertype.Middleware) Option {
 }
 
 // applyMiddleware inserts the WithMiddleware middlewares into rc's chain
-// right after the request ID middleware, which buildRiverConfig always puts
-// first.
+// right after the request ID middleware, wherever buildRiverConfig put it
+// (first, today), or at the front if the chain has none.
 func (o *options) applyMiddleware(rc *river.Config) {
 	if len(o.middleware) == 0 {
 		return
 	}
+	at := 0
+	for i, mw := range rc.Middleware {
+		if _, ok := mw.(*requestIDMiddleware); ok {
+			at = i + 1
+			break
+		}
+	}
 	chain := make([]rivertype.Middleware, 0, len(rc.Middleware)+len(o.middleware))
-	chain = append(chain, rc.Middleware[0])
+	chain = append(chain, rc.Middleware[:at]...)
 	chain = append(chain, o.middleware...)
-	chain = append(chain, rc.Middleware[1:]...)
+	chain = append(chain, rc.Middleware[at:]...)
 	rc.Middleware = chain
 }
 
