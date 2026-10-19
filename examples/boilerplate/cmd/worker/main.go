@@ -205,14 +205,14 @@ func run(migrateFirst bool) error {
 	// river_job_duration_seconds{kind,outcome}. No periodic jobs are
 	// registered by this boilerplate -- if you add one, pass
 	// worker.WithPeriodicJobs(...) here.
-	queueOpts := make([]worker.Option, 0, 2)
-	queueOpts = append(queueOpts, worker.WithMetrics(prometheus.DefaultRegisterer))
-	// vogel:component tracing begin
-	// A span per job attempt, continuing the trace of the request that
-	// enqueued it (carried in the job metadata).
-	queueOpts = append(queueOpts, worker.WithMiddleware(otelriver.NewMiddleware()))
-	// vogel:component tracing end
-	queue, err := worker.NewRiverQueue(pool, workers, cfg.Worker, appLogger.Logger, queueOpts...)
+	queue, err := worker.NewRiverQueue(pool, workers, cfg.Worker, appLogger.Logger,
+		worker.WithMetrics(prometheus.DefaultRegisterer),
+		// vogel:component tracing begin
+		// A span per job attempt, continuing the trace of the request that
+		// enqueued it (carried in the job metadata).
+		worker.WithMiddleware(otelriver.NewMiddleware()),
+		// vogel:component tracing end
+	)
 	if err != nil {
 		return fmt.Errorf("creating river queue: %w", err)
 	}
