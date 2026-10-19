@@ -86,7 +86,7 @@ un Bearer token que se valida en el servidor.
 | 2.6 | H | Logout invalida en el servidor | N/A | Sin sesiones; la revocación de tokens está en §2.9 |
 | 2.7 | H | Invalidar sesiones al cambiar contraseña | N/A | Zitadel |
 | 2.8 | M | IDs de sesión fuera de URLs y logs | N/A | Sin sesiones (para el token, ver §1.10) |
-| 2.9 | M | JWT: algoritmo fijado, expiración corta, firma verificada, revocación | PASS | Firma, emisor, audiencia y `exp` contra el JWKS del emisor (`auth/zitadel/zitadel.go:206`, `auth/zitadel/jwt_test.go`); `nbf`, `azp` y vida máxima (`auth/zitadel/claims_test.go`, `TestAuthenticate_RejectsClaimsTheSDKDoesNotCheck`); revocación con introspección RFC 7662 (`auth/zitadel/introspection.go`, `auth/zitadel/introspection_test.go`). El modo JWT local no revoca antes de `exp`: riesgo aceptado en `docs/THREAT_MODEL.md` §7 |
+| 2.9 | M | JWT: algoritmo fijado, expiración corta, firma verificada, revocación | PASS | Firma, emisor, audiencia y `exp` contra el JWKS del emisor (`auth/zitadel/zitadel.go`, `auth/zitadel/jwt_test.go`); algoritmos fijados a `RS256`/`ES256`/`PS256`, `none` y `HS256` rechazados (`TestAuthenticate_VerifiedJWT_RejectsUnpinnedAlgorithms`); `nbf`, `iat` futuro, `azp` y vida máxima (`auth/zitadel/claims_test.go`, `TestAuthenticate_RejectsClaimsTheSDKDoesNotCheck`); revocación con introspección RFC 7662 (`auth/zitadel/introspection.go`, `auth/zitadel/introspection_test.go`). El modo JWT local no revoca antes de `exp`: riesgo aceptado en `docs/THREAT_MODEL.md` §7 |
 | 2.10 | M | JWT fuera de `localStorage` | CONSUMER | Lo decide el cliente que obtiene el token, no la API |
 | 2.11 | M | Detección de robo de cookies | N/A | Sin cookies |
 | 2.12 | L | Device Bound Session Credentials | N/A | Sin cookies |
