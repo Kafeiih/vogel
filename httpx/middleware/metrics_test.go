@@ -1,13 +1,14 @@
 package middleware
 
 import (
-	"context"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
@@ -292,6 +293,27 @@ func TestMetrics_Exemplars_OnlyWithATrace(t *testing.T) {
 			ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/x", nil))
 		if got := histogramExemplars(t, reg, "http_request_duration_seconds"); len(got) != 0 {
 			t.Errorf("%s: exemplars = %v, want none", name, got)
+		}
+	}
+}
+
+// An exemplar Prometheus would reject (over 128 runes, or not UTF-8) makes
+// client_golang panic; the observation is recorded without it instead.
+func TestMetrics_InvalidExemplarIsDroppedNotPanicked(t *testing.T) {
+	for name, id := range map[string]string{"too long": strings.Repeat("a", 200), "not UTF-8": "\xff\xfe"} {
+		reg := prometheus.NewRegistry()
+		m, err := NewMetrics(reg, WithExemplars(func(context.Context) (string, string) { return id, "b7ad6b7169203331" }))
+		if err != nil {
+			t.Fatalf("NewMetrics: %v", err)
+		}
+		m.Middleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).
+			ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/x", nil))
+
+		if got := histogramExemplars(t, reg, "http_request_duration_seconds"); len(got) != 0 {
+			t.Errorf("%s: exemplars = %v, want none", name, got)
+		}
+		if n := testutil.CollectAndCount(m.requestDuration); n != 1 {
+			t.Errorf("%s: duration series = %d, want the request still observed", name, n)
 		}
 	}
 }

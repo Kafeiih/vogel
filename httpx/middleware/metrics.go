@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
@@ -219,7 +220,7 @@ func validateBuckets(buckets []float64) error {
 // one.
 func observe(ctx context.Context, o prometheus.Observer, v float64, fn ExemplarFunc) {
 	if fn != nil {
-		if traceID, spanID := fn(ctx); traceID != "" {
+		if traceID, spanID := fn(ctx); traceID != "" && validExemplar(traceID, spanID) {
 			if eo, ok := o.(prometheus.ExemplarObserver); ok {
 				eo.ObserveWithExemplar(v, prometheus.Labels{"trace_id": traceID, "span_id": spanID})
 				return
@@ -227,4 +228,12 @@ func observe(ctx context.Context, o prometheus.Observer, v float64, fn ExemplarF
 		}
 	}
 	o.Observe(v)
+}
+
+// validExemplar reports whether client_golang accepts traceID and spanID as
+// exemplar labels: ObserveWithExemplar panics on invalid UTF-8 or past
+// prometheus.ExemplarMaxRunes runes of names and values.
+func validExemplar(traceID, spanID string) bool {
+	return utf8.ValidString(traceID) && utf8.ValidString(spanID) &&
+		utf8.RuneCountInString("trace_id"+traceID+"span_id"+spanID) <= prometheus.ExemplarMaxRunes
 }

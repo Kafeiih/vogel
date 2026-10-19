@@ -433,3 +433,16 @@ func TestPoolTracer_NoTrace_NoExemplarNorTraceKeys(t *testing.T) {
 		assert.NotContains(t, buf.String(), "trace_id", name)
 	}
 }
+
+// An exemplar Prometheus would reject is dropped, not panicked on.
+func TestPoolTracer_InvalidExemplarIsDropped(t *testing.T) {
+	tr, _ := newTestTracer(t, poolTracerOptions{traceIDs: func(context.Context) (string, string) {
+		return strings.Repeat("a", 200), "b7ad6b7169203331"
+	}})
+	ctx := tr.TraceAcquireStart(context.Background(), nil, pgxpool.TraceAcquireStartData{})
+	tr.TraceAcquireEnd(ctx, nil, pgxpool.TraceAcquireEndData{Conn: new(pgx.Conn)})
+
+	count, _ := histogramSnapshot(t, tr.acquireWait)
+	assert.Equal(t, uint64(1), count)
+	assert.Nil(t, histogramExemplar(t, tr.acquireWait))
+}

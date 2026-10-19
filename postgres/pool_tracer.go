@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 	"weak"
 
 	"github.com/jackc/pgx/v5"
@@ -273,7 +274,7 @@ func (t *poolTracer) TraceRelease(pool *pgxpool.Pool, data pgxpool.TraceReleaseD
 // observe records v on h, with the given trace as an exemplar when there is
 // one.
 func observe(h prometheus.Histogram, v float64, traceID, spanID string) {
-	if eo, ok := h.(prometheus.ExemplarObserver); ok && traceID != "" {
+	if eo, ok := h.(prometheus.ExemplarObserver); ok && traceID != "" && validExemplar(traceID, spanID) {
 		eo.ObserveWithExemplar(v, prometheus.Labels{"trace_id": traceID, "span_id": spanID})
 		return
 	}
@@ -305,4 +306,12 @@ func isInternalFrame(function string, internalPrefixes []string) bool {
 		}
 	}
 	return false
+}
+
+// validExemplar reports whether client_golang accepts traceID and spanID as
+// exemplar labels: ObserveWithExemplar panics on invalid UTF-8 or past
+// prometheus.ExemplarMaxRunes runes of names and values.
+func validExemplar(traceID, spanID string) bool {
+	return utf8.ValidString(traceID) && utf8.ValidString(spanID) &&
+		utf8.RuneCountInString("trace_id"+traceID+"span_id"+spanID) <= prometheus.ExemplarMaxRunes
 }
