@@ -8,14 +8,20 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // NewMetricsServer creates an http.Server that exposes only /metrics.
 // Timeouts mirror the main server (see NewServer).
+//
+// It is promhttp.Handler() with OpenMetrics enabled: a scraper that asks for
+// OpenMetrics gets the exemplars (the trace IDs on the latency histograms),
+// which the classic text format cannot carry. Other scrapers are unaffected.
 func NewMetricsServer(addr string, logger *slog.Logger) *http.Server {
 	mux := http.NewServeMux()
-	mux.Handle("/metrics", promhttp.Handler())
+	mux.Handle("/metrics", promhttp.InstrumentMetricHandler(prometheus.DefaultRegisterer,
+		promhttp.HandlerFor(prometheus.DefaultGatherer, promhttp.HandlerOpts{EnableOpenMetrics: true})))
 	return &http.Server{
 		Addr:              addr,
 		Handler:           mux,

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 	"weak"
 
 	"github.com/jackc/pgx/v5"
@@ -62,6 +63,8 @@ type poolTracerOptions struct {
 	maxConns int
 	// extra is Config.Tracer.
 	extra pgx.QueryTracer
+	// traceIDs is Config.TraceIDs.
+	traceIDs func(ctx context.Context) (traceID, spanID string)
 	// internalPrefixes overrides defaultInternalPrefixes (tests only).
 	internalPrefixes []string
 }
@@ -80,6 +83,8 @@ type poolTracer struct {
 	// extra is Config.Tracer, called around this tracer's own work on every
 	// hook it implements (see extra_tracer.go); nil when unset.
 	extra pgx.QueryTracer
+	// traceIDs is Config.TraceIDs; nil when unset.
+	traceIDs func(ctx context.Context) (traceID, spanID string)
 
 	logger           *slog.Logger
 	acquireTimeout   time.Duration
@@ -102,6 +107,9 @@ type poolTracer struct {
 type heldConn struct {
 	acquiredAt time.Time
 	callers    []uintptr
+	// traceID and spanID identify the span that acquired the connection,
+	// read at acquire because the release has no context.
+	traceID, spanID string
 }
 
 // acquireKey carries the per-Acquire acquireTrace from TraceAcquireStart to
@@ -134,6 +142,7 @@ func newPoolTracer(opts poolTracerOptions) *poolTracer {
 	return &poolTracer{
 		SlowQueryTracer:  newSlowQueryTracer(opts),
 		extra:            opts.extra,
+		traceIDs:         opts.traceIDs,
 		logger:           logger,
 		acquireTimeout:   opts.acquireTimeout,
 		leakThreshold:    opts.leakThreshold,
@@ -193,14 +202,18 @@ func (t *poolTracer) TraceAcquireEnd(ctx context.Context, pool *pgxpool.Pool, da
 		trace.cancel()
 	}
 	end := t.now()
-	t.acquireWait.Observe(end.Sub(trace.start).Seconds())
+	var traceID, spanID string
+	if t.traceIDs != nil {
+		traceID, spanID = t.traceIDs(ctx)
+	}
+	observe(t.acquireWait, end.Sub(trace.start).Seconds(), traceID, spanID)
 
 	if data.Err != nil || data.Conn == nil {
 		return
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.held[weak.Make(data.Conn)] = heldConn{acquiredAt: end, callers: trace.callers}
+	t.held[weak.Make(data.Conn)] = heldConn{acquiredAt: end, callers: trace.callers, traceID: traceID, spanID: spanID}
 	t.pruneLocked()
 }
 
@@ -240,18 +253,32 @@ func (t *poolTracer) TraceRelease(pool *pgxpool.Pool, data pgxpool.TraceReleaseD
 	}
 
 	hold := t.now().Sub(entry.acquiredAt)
-	t.connHold.Observe(hold.Seconds())
+	observe(t.connHold, hold.Seconds(), entry.traceID, entry.spanID)
 	if t.leakThreshold <= 0 || hold <= t.leakThreshold {
 		return
 	}
 
 	fn, file, line := firstExternalFrame(entry.callers, t.internalPrefixes)
-	t.logger.Warn("database connection held longer than the leak threshold",
+	attrs := []any{
 		"hold", hold,
 		"threshold", t.leakThreshold,
 		"caller_func", fn,
 		"caller", fmt.Sprintf("%s:%d", file, line),
-	)
+	}
+	if entry.traceID != "" {
+		attrs = append(attrs, "trace_id", entry.traceID, "span_id", entry.spanID)
+	}
+	t.logger.Warn("database connection held longer than the leak threshold", attrs...)
+}
+
+// observe records v on h, with the given trace as an exemplar when there is
+// one.
+func observe(h prometheus.Histogram, v float64, traceID, spanID string) {
+	if eo, ok := h.(prometheus.ExemplarObserver); ok && traceID != "" && validExemplar(traceID, spanID) {
+		eo.ObserveWithExemplar(v, prometheus.Labels{"trace_id": traceID, "span_id": spanID})
+		return
+	}
+	h.Observe(v)
 }
 
 // firstExternalFrame resolves pcs and returns the first frame outside the
@@ -279,4 +306,12 @@ func isInternalFrame(function string, internalPrefixes []string) bool {
 		}
 	}
 	return false
+}
+
+// validExemplar reports whether client_golang accepts traceID and spanID as
+// exemplar labels: ObserveWithExemplar panics on invalid UTF-8 or past
+// prometheus.ExemplarMaxRunes runes of names and values.
+func validExemplar(traceID, spanID string) bool {
+	return utf8.ValidString(traceID) && utf8.ValidString(spanID) &&
+		utf8.RuneCountInString("trace_id"+traceID+"span_id"+spanID) <= prometheus.ExemplarMaxRunes
 }

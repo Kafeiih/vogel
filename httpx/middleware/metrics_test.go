@@ -2,11 +2,13 @@ package middleware
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
@@ -225,5 +227,93 @@ func TestNewMetrics_RejectsInvalidDurationBuckets(t *testing.T) {
 				t.Errorf("NewMetrics(WithDurationBuckets(%v)) = nil error, want an error", buckets)
 			}
 		})
+	}
+}
+
+// histogramExemplars returns the exemplar labels attached to the buckets of
+// the named histogram family.
+func histogramExemplars(t *testing.T, reg *prometheus.Registry, name string) []map[string]string {
+	t.Helper()
+	families, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	var out []map[string]string
+	for _, f := range families {
+		if f.GetName() != name {
+			continue
+		}
+		for _, m := range f.GetMetric() {
+			for _, b := range m.GetHistogram().GetBucket() {
+				if e := b.GetExemplar(); e != nil {
+					labels := map[string]string{}
+					for _, l := range e.GetLabel() {
+						labels[l.GetName()] = l.GetValue()
+					}
+					out = append(out, labels)
+				}
+			}
+		}
+	}
+	return out
+}
+
+// With WithExemplars, the latency observation carries the request's trace
+// ID as an exemplar, linking a slow bucket to a trace.
+func TestMetrics_WithExemplars_TagsTheLatencyWithTheTraceID(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m, err := NewMetrics(reg, WithExemplars(func(context.Context) (string, string) {
+		return "0af7651916cd43dd8448eb211c80319c", "b7ad6b7169203331"
+	}))
+	if err != nil {
+		t.Fatalf("NewMetrics: %v", err)
+	}
+	m.Middleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).
+		ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/x", nil))
+
+	got := histogramExemplars(t, reg, "http_request_duration_seconds")
+	if len(got) != 1 || got[0]["trace_id"] != "0af7651916cd43dd8448eb211c80319c" || got[0]["span_id"] != "b7ad6b7169203331" {
+		t.Errorf("exemplars = %v, want one with the trace and span IDs", got)
+	}
+}
+
+// Without the option, or when the function finds no trace, no exemplar is
+// recorded.
+func TestMetrics_Exemplars_OnlyWithATrace(t *testing.T) {
+	for name, opts := range map[string][]MetricsOption{
+		"no option": nil,
+		"no trace":  {WithExemplars(func(context.Context) (string, string) { return "", "" })},
+	} {
+		reg := prometheus.NewRegistry()
+		m, err := NewMetrics(reg, opts...)
+		if err != nil {
+			t.Fatalf("NewMetrics: %v", err)
+		}
+		m.Middleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).
+			ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/x", nil))
+		if got := histogramExemplars(t, reg, "http_request_duration_seconds"); len(got) != 0 {
+			t.Errorf("%s: exemplars = %v, want none", name, got)
+		}
+	}
+}
+
+// An exemplar Prometheus would reject (over 128 runes, or not UTF-8) makes
+// client_golang panic; the observation is recorded without it instead.
+func TestMetrics_InvalidExemplarIsDroppedNotPanicked(t *testing.T) {
+	for name, id := range map[string]string{"too long": strings.Repeat("a", 200), "not UTF-8": "\xff\xfe"} {
+		reg := prometheus.NewRegistry()
+		m, err := NewMetrics(reg, WithExemplars(func(context.Context) (string, string) { return id, "b7ad6b7169203331" }))
+		if err != nil {
+			t.Fatalf("NewMetrics: %v", err)
+		}
+		m.Middleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).
+			ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/x", nil))
+
+		if got := histogramExemplars(t, reg, "http_request_duration_seconds"); len(got) != 0 {
+			t.Errorf("%s: exemplars = %v, want none", name, got)
+		}
+		if n := testutil.CollectAndCount(m.requestDuration); n != 1 {
+			t.Errorf("%s: duration series = %d, want the request still observed", name, n)
+		}
 	}
 }

@@ -183,7 +183,12 @@ func withTraceContext(metadata []byte, carrier propagation.MapCarrier) []byte {
 	if _, ok := fields[traceParentKey]; ok {
 		return metadata
 	}
+	// A key the caller set is never overwritten. A tracestate alone does not
+	// stop the traceparent being stamped: without one, the trace is lost.
 	for k, v := range carrier {
+		if _, ok := fields[metadataPrefix+k]; ok {
+			continue
+		}
 		encoded, err := json.Marshal(v)
 		if err != nil {
 			return metadata

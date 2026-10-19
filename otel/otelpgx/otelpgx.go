@@ -10,15 +10,20 @@
 // A span carries the SQL text (db.query.text), never the query arguments,
 // the same rule as postgres's SlowQueryTracer: arguments are where user data
 // and secrets live. SQL that inlines values instead of passing them as $n
-// arguments puts those values in the span; pass them as arguments. A failed
-// statement records its SQLSTATE (db.response.status_code), not the error
-// message, which can quote the value Postgres rejected.
+// arguments puts those values in the span; pass them as arguments. Error
+// messages are never recorded either, since they can quote the rejected
+// value: a Postgres error records its SQLSTATE (db.response.status_code),
+// any other error its Go type (error.type).
 package otelpgx
 
 import (
 	"context"
 	"errors"
+	"fmt"
+	"runtime"
 	"strings"
+	"sync"
+	"weak"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -45,6 +50,11 @@ func WithTracerProvider(tp trace.TracerProvider) Option {
 // of their own: they are already covered by the query span that follows.
 type Tracer struct {
 	tp trace.TracerProvider // nil: the global one, read on every span
+
+	// conns caches each connection's server and database attributes, keyed
+	// weakly so a closed connection's entry is dropped once it is collected:
+	// pgx.Conn.Config copies the whole config, too costly per query.
+	conns sync.Map // weak.Pointer[pgx.Conn] -> []attribute.KeyValue
 }
 
 var (
@@ -72,11 +82,11 @@ func (t *Tracer) tracer() trace.Tracer {
 	return tp.Tracer(instrumentationName)
 }
 
-func (t *Tracer) start(ctx context.Context, name string, cfg *pgx.ConnConfig, attrs ...attribute.KeyValue) context.Context {
-	attrs = append(attrs, semconv.DBSystemNamePostgreSQL)
-	if cfg != nil {
-		attrs = append(attrs, connAttrs(cfg)...)
-	}
+func (t *Tracer) start(ctx context.Context, name string, conn []attribute.KeyValue, attrs ...attribute.KeyValue) context.Context {
+	// A fresh slice: conn is shared through the cache and must not be
+	// appended to.
+	all := make([]attribute.KeyValue, 0, len(attrs)+len(conn)+1)
+	attrs = append(append(append(all, attrs...), semconv.DBSystemNamePostgreSQL), conn...)
 	ctx, _ = t.tracer().Start(ctx, name,
 		trace.WithSpanKind(trace.SpanKindClient),
 		trace.WithAttributes(attrs...))
@@ -93,19 +103,36 @@ func endSpan(ctx context.Context, err error) {
 	span.End()
 }
 
-// recordError marks span as failed by err. A Postgres error is recorded by
-// its SQLSTATE alone: its message can quote the offending value ("invalid
-// input syntax for type integer: ..."), which is query data like the
-// arguments. Any other error (a timeout, a broken connection) keeps its
-// message.
+// recordError marks span as failed by err, by the rule postgres's
+// SlowQueryTracer follows with HashSlowQuerySQL: a Postgres error by its
+// SQLSTATE, a context error by its fixed text, any other error by its Go
+// type. Error messages are never recorded: Postgres's can quote the value it
+// rejected ("invalid input syntax for type integer: ...") and pgx's the
+// argument it failed to encode, which is query data like the arguments.
 func recordError(span trace.Span, err error) {
 	if code := sqlState(err); code != "" {
 		span.SetAttributes(semconv.DBResponseStatusCode(code))
 		span.SetStatus(codes.Error, "SQLSTATE "+code)
 		return
 	}
-	span.RecordError(err)
-	span.SetStatus(codes.Error, err.Error())
+	desc := errorDescription(err)
+	span.SetAttributes(semconv.ErrorTypeKey.String(desc))
+	span.SetStatus(codes.Error, desc)
+}
+
+// errorDescription describes a non-Postgres error without its message: the
+// fixed text of a context error, or the Go type of the innermost error.
+func errorDescription(err error) string {
+	switch {
+	case errors.Is(err, context.Canceled):
+		return context.Canceled.Error()
+	case errors.Is(err, context.DeadlineExceeded):
+		return context.DeadlineExceeded.Error()
+	}
+	for next := errors.Unwrap(err); next != nil; next = errors.Unwrap(next) {
+		err = next
+	}
+	return fmt.Sprintf("%T", err)
 }
 
 // sqlState returns the SQLSTATE of the Postgres error in err's chain, or "".
@@ -119,7 +146,7 @@ func sqlState(err error) string {
 
 func (t *Tracer) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
 	op := operationName(data.SQL)
-	return t.start(ctx, spanName(op), connConfig(conn), queryAttrs(op, data.SQL)...)
+	return t.start(ctx, spanName(op), t.connAttrsOf(conn), queryAttrs(op, data.SQL)...)
 }
 
 func (t *Tracer) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryEndData) {
@@ -131,7 +158,7 @@ func (t *Tracer) TraceBatchStart(ctx context.Context, conn *pgx.Conn, data pgx.T
 	if data.Batch != nil {
 		attrs = append(attrs, semconv.DBOperationBatchSize(data.Batch.Len()))
 	}
-	return t.start(ctx, "BATCH", connConfig(conn), append(attrs, semconv.DBOperationName("BATCH"))...)
+	return t.start(ctx, "BATCH", t.connAttrsOf(conn), append(attrs, semconv.DBOperationName("BATCH"))...)
 }
 
 // TraceBatchQuery records each query of the batch as an event on the batch
@@ -142,7 +169,7 @@ func (t *Tracer) TraceBatchQuery(ctx context.Context, _ *pgx.Conn, data pgx.Trac
 	if code := sqlState(data.Err); code != "" {
 		attrs = append(attrs, semconv.DBResponseStatusCode(code))
 	} else if data.Err != nil {
-		attrs = append(attrs, attribute.String("exception.message", data.Err.Error()))
+		attrs = append(attrs, semconv.ErrorTypeKey.String(errorDescription(data.Err)))
 	}
 	span.AddEvent("query", trace.WithAttributes(attrs...))
 }
@@ -153,7 +180,7 @@ func (t *Tracer) TraceBatchEnd(ctx context.Context, _ *pgx.Conn, data pgx.TraceB
 
 func (t *Tracer) TraceCopyFromStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceCopyFromStartData) context.Context {
 	table := data.TableName.Sanitize()
-	return t.start(ctx, "COPY "+table, connConfig(conn),
+	return t.start(ctx, "COPY "+table, t.connAttrsOf(conn),
 		semconv.DBOperationName("COPY"), semconv.DBCollectionName(table))
 }
 
@@ -162,20 +189,34 @@ func (t *Tracer) TraceCopyFromEnd(ctx context.Context, _ *pgx.Conn, data pgx.Tra
 }
 
 func (t *Tracer) TraceConnectStart(ctx context.Context, data pgx.TraceConnectStartData) context.Context {
-	return t.start(ctx, "connect", data.ConnConfig)
+	var conn []attribute.KeyValue
+	if data.ConnConfig != nil {
+		conn = connAttrs(data.ConnConfig)
+	}
+	return t.start(ctx, "connect", conn)
 }
 
 func (t *Tracer) TraceConnectEnd(ctx context.Context, data pgx.TraceConnectEndData) {
 	endSpan(ctx, data.Err)
 }
 
-// connConfig returns conn's config. pgx hands out a copy, an allocation per
-// span; it has no cheaper accessor for the database name.
-func connConfig(conn *pgx.Conn) *pgx.ConnConfig {
+// connAttrsOf returns conn's server and database attributes, computed once
+// per connection.
+func (t *Tracer) connAttrsOf(conn *pgx.Conn) []attribute.KeyValue {
 	if conn == nil {
 		return nil
 	}
-	return conn.Config()
+	key := weak.Make(conn)
+	if v, ok := t.conns.Load(key); ok {
+		if attrs, ok := v.([]attribute.KeyValue); ok {
+			return attrs
+		}
+	}
+	attrs := connAttrs(conn.Config())
+	if _, loaded := t.conns.LoadOrStore(key, attrs); !loaded {
+		runtime.AddCleanup(conn, func(k weak.Pointer[pgx.Conn]) { t.conns.Delete(k) }, key)
+	}
+	return attrs
 }
 
 func connAttrs(cfg *pgx.ConnConfig) []attribute.KeyValue {

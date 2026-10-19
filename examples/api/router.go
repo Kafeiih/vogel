@@ -129,7 +129,8 @@ func NewRouter(
 // explicit for the same reason as the API server's (gosec G112).
 func newMetricsServer(addr string, reg *prometheus.Registry) *http.Server {
 	mux := http.NewServeMux()
-	mux.Handle("GET /metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
+	// OpenMetrics carries the exemplars the classic text format cannot.
+	mux.Handle("GET /metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{EnableOpenMetrics: true}))
 	return &http.Server{
 		Addr:              addr,
 		Handler:           mux,
