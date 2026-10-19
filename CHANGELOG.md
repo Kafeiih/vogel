@@ -21,6 +21,17 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   compresión, lotes, límites), y `Config.Headers` exige un endpoint
   `https://`. Es el único paquete que depende del SDK de OpenTelemetry (lo
   verifica el CI). Ver `docs/WIRING.md` §8.
+- **`otel/otelpgx`: tracer de pgx.** `NewTracer()` se enchufa en
+  `postgres.Config.Tracer` y crea un span de cliente por consulta, batch (uno
+  solo, con un evento por consulta), `COPY FROM` y conexión, con las
+  convenciones `db.*` de OpenTelemetry. Guarda el texto SQL, nunca los
+  argumentos.
+- **`otel/otelriver`: tracing de jobs de River.** `NewMiddleware()` se
+  enchufa en `worker.WithMiddleware`: crea un span *producer* al encolar y
+  deja su `traceparent`/`tracestate` en la metadata del job
+  (`vogel_traceparent`, `vogel_tracestate`), y un span *consumer* al trabajar
+  que continúa ese trace. Un valor explícito en `InsertOpts.Metadata` gana; el
+  baggage no se guarda.
 - **`logger`: `WithTraceIDs`.** Recibe una función que lee del contexto el
   `trace_id` y el `span_id` del span activo, y los agrega a cada línea logueada
   con contexto y a lo que fija `WithContext`, con las mismas reglas que

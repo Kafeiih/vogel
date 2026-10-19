@@ -779,6 +779,27 @@ cabeceras, `otel.Middleware(otel.WithTrustedPropagation())` continúa el trace.
 Los logs con contexto (`InfoContext`, el `slog` por defecto) llevan `trace_id`
 y `span_id` del span activo, además de `request_id`.
 
+Las consultas a Postgres y los jobs de River se trazan con dos subpaquetes,
+separados de `otel` para que un servicio sin cola no enlace River:
+
+```go
+pool, err := postgres.NewPool(ctx, postgres.Config{
+	URL:    dsn,
+	Tracer: otelpgx.NewTracer(), // un span por consulta, batch, COPY y conexión
+})
+
+queue, err := worker.NewRiverQueue(pool, workerCfg, appLogger, workers,
+	worker.WithMiddleware(otelriver.NewMiddleware()))
+```
+
+`otelpgx` guarda el texto SQL (`db.query.text`), nunca los argumentos.
+`otelriver` registra un span al encolar y deja su `traceparent` y `tracestate`
+en la metadata del job (`vogel_traceparent`, `vogel_tracestate`, junto a
+`vogel_request_id`); el span del worker continúa ese trace, así que el job
+aparece bajo el request que lo encoló, con su misma decisión de muestreo. Va
+en las dos instancias: la que solo encola (la API) y la que trabaja. El
+baggage no se guarda en la metadata.
+
 `otel.Setup` no lee variables de entorno: las `OTEL_*` que el SDK leería
 (headers, compresión, lotes, límites) no cambian nada, y la configuración
 entra solo por `otel.Config`. `Config.Headers` (una clave del colector, por

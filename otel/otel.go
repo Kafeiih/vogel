@@ -1,10 +1,11 @@
 // Package otel is vogel's OpenTelemetry adapter: it exports traces over
 // OTLP/HTTP (Setup), traces incoming HTTP requests (Middleware), and reads
-// the active span's IDs for logger.WithTraceIDs (TraceIDs). The other ports
-// vogel exposes for tracing (postgres.Config.Tracer, worker.WithMiddleware,
-// the WrapTransport and StatsHandler fields of the outbound clients) take
-// any implementation, e.g. otelhttp.NewTransport and
-// otelgrpc.NewClientHandler.
+// the active span's IDs for logger.WithTraceIDs (TraceIDs). Its subpackages
+// fill the other tracing ports vogel exposes: otelpgx for
+// postgres.Config.Tracer and otelriver for worker.WithMiddleware, kept apart
+// so importing otel links neither pgx's tracer nor River. The WrapTransport
+// and StatsHandler fields of the outbound clients take any implementation,
+// e.g. otelhttp.NewTransport and otelgrpc.NewClientHandler.
 //
 // Tracing is opt-in at every level: a service that does not import this
 // package links no OpenTelemetry SDK, and Setup without an endpoint installs
