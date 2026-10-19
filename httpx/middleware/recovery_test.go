@@ -175,3 +175,14 @@ func TestRecovery_TypedNilErrorDoesNotCrash(t *testing.T) {
 		t.Errorf("error = %v, want <nil>", line["error"])
 	}
 }
+
+type sentinel string
+
+// A named scalar type that is not an error keeps its value: it has no fields
+// to leak.
+func TestRecovery_NamedScalarPanicLogsItsValue(t *testing.T) {
+	line := recoveryLogLine(t, sentinel("queue closed"))
+	if line["error"] != "queue closed" || line["panic_type"] != "middleware.sentinel" {
+		t.Errorf("(error, panic_type) = (%v, %v), want (queue closed, middleware.sentinel)", line["error"], line["panic_type"])
+	}
+}

@@ -35,11 +35,29 @@ func stringsOf[T ~string](vals []T) []string {
 	return out
 }
 
+// The query parameters FiltersFromRequest reads. Both it and filterParams
+// use these names, so a new filter needs a constant here and an entry in
+// filterParams.
+const (
+	paramLimit             = "limit"
+	paramOffset            = "offset"
+	paramOperationCategory = "operation_category"
+	paramStatus            = "status"
+	paramFrom              = "from"
+	paramTo                = "to"
+	paramResourceID        = "resource_id"
+	paramActorID           = "actor_id"
+	paramResourceType      = "resource_type"
+	paramOperationName     = "operation_name"
+	paramAggregateType     = "aggregate_type"
+	paramAggregateID       = "aggregate_id"
+)
+
 // filterParams lists every query parameter FiltersFromRequest reads, in the
 // order it reads them.
 var filterParams = []string{
-	"limit", "offset", "operation_category", "status", "from", "to", "resource_id",
-	"actor_id", "resource_type", "operation_name", "aggregate_type", "aggregate_id",
+	paramLimit, paramOffset, paramOperationCategory, paramStatus, paramFrom, paramTo, paramResourceID,
+	paramActorID, paramResourceType, paramOperationName, paramAggregateType, paramAggregateID,
 }
 
 // usedFilterParams returns the names in filterParams present in r's query,
@@ -76,18 +94,18 @@ func usedFilterParams(r *http.Request) []string {
 func FiltersFromRequest(v *request.Validator, r *http.Request) audit.Filters {
 	q := r.URL.Query()
 
-	limit := v.MaxInt("limit", v.IntQuery(r, "limit", 20), 100)
-	offset := v.IntQuery(r, "offset", 0)
-	category := v.Enum("operation_category", q.Get("operation_category"), operationCategories)
-	status := v.Enum("status", q.Get("status"), statuses)
-	from := v.TimeQuery(r, "from")
-	to := v.TimeQuery(r, "to")
-	resourceID := v.UUIDQuery(r, "resource_id")
-	actorID := v.MaxLen("actor_id", q.Get("actor_id"), MaxFilterLength)
-	resourceType := v.MaxLen("resource_type", q.Get("resource_type"), MaxFilterLength)
-	operationName := v.MaxLen("operation_name", q.Get("operation_name"), MaxFilterLength)
-	aggregateType := v.MaxLen("aggregate_type", q.Get("aggregate_type"), MaxFilterLength)
-	aggregateID := v.MaxLen("aggregate_id", q.Get("aggregate_id"), MaxFilterLength)
+	limit := v.MaxInt(paramLimit, v.IntQuery(r, paramLimit, 20), 100)
+	offset := v.IntQuery(r, paramOffset, 0)
+	category := v.Enum(paramOperationCategory, q.Get(paramOperationCategory), operationCategories)
+	status := v.Enum(paramStatus, q.Get(paramStatus), statuses)
+	from := v.TimeQuery(r, paramFrom)
+	to := v.TimeQuery(r, paramTo)
+	resourceID := v.UUIDQuery(r, paramResourceID)
+	actorID := v.MaxLen(paramActorID, q.Get(paramActorID), MaxFilterLength)
+	resourceType := v.MaxLen(paramResourceType, q.Get(paramResourceType), MaxFilterLength)
+	operationName := v.MaxLen(paramOperationName, q.Get(paramOperationName), MaxFilterLength)
+	aggregateType := v.MaxLen(paramAggregateType, q.Get(paramAggregateType), MaxFilterLength)
+	aggregateID := v.MaxLen(paramAggregateID, q.Get(paramAggregateID), MaxFilterLength)
 
 	return audit.Filters{
 		ActorID:           actorID,
