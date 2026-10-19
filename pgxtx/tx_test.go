@@ -132,3 +132,50 @@ func TestPgxTxManager_WithTx_PanicInCallback_RollsBackAndPropagates(t *testing.T
 
 	t.Fatal("expected panic to unwind this test before reaching here")
 }
+
+// Code that must run inside a transaction gets ErrNoTx instead of silently
+// taking a second pool connection the way DBFromContext would.
+func TestRequireTx_WithoutTx_ReturnsErrNoTx(t *testing.T) {
+	tx, err := RequireTx(context.Background())
+	if !errors.Is(err, ErrNoTx) {
+		t.Fatalf("err = %v, want ErrNoTx", err)
+	}
+	if tx != nil {
+		t.Errorf("tx = %v, want nil", tx)
+	}
+}
+
+func TestRequireTx_WithTx_ReturnsIt(t *testing.T) {
+	want := pgx.Tx(mockTx{})
+	ctx := context.WithValue(context.Background(), ctxKey{}, want)
+
+	tx, err := RequireTx(ctx)
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if tx != want {
+		t.Errorf("tx = %v, want the context's transaction", tx)
+	}
+}
+
+// Inside WithTx the callback's context carries the transaction RequireTx
+// returns, and it satisfies DBTX for repository code.
+func TestRequireTx_InsideWithTx_ReturnsTheManagersTx(t *testing.T) {
+	ftx := &fakeTx{}
+	m := &PgxTxManager{pool: fakeBeginner{tx: ftx}}
+
+	err := m.WithTx(context.Background(), func(ctx context.Context) error {
+		tx, err := RequireTx(ctx)
+		if err != nil {
+			return err
+		}
+		var _ DBTX = tx
+		if tx != pgx.Tx(ftx) {
+			t.Errorf("tx = %v, want the manager's transaction", tx)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("WithTx: %v", err)
+	}
+}
