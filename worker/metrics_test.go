@@ -184,3 +184,28 @@ type wrapErr struct{ err error }
 
 func (w *wrapErr) Error() string { return "wrapped: " + w.err.Error() }
 func (w *wrapErr) Unwrap() error { return w.err }
+
+// WithMetrics(nil) registers on prometheus.DefaultRegisterer, as documented.
+// The default is swapped for a fresh registry so the test does not touch the
+// process-wide one.
+func TestWithMetrics_NilRegisterer_UsesDefaultRegisterer(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	prevReg, prevGatherer := prometheus.DefaultRegisterer, prometheus.DefaultGatherer
+	prometheus.DefaultRegisterer, prometheus.DefaultGatherer = reg, reg
+	t.Cleanup(func() {
+		prometheus.DefaultRegisterer, prometheus.DefaultGatherer = prevReg, prevGatherer
+	})
+
+	m, err := newOptions(WithMetrics(nil)).buildMetrics(river.NewWorkers())
+	require.NoError(t, err)
+	require.NotNil(t, m)
+
+	m.duration.WithLabelValues("probe", "success").Observe(0.1)
+	families, err := reg.Gather()
+	require.NoError(t, err)
+	var names []string
+	for _, f := range families {
+		names = append(names, f.GetName())
+	}
+	assert.Contains(t, names, jobDurationMetricName)
+}
