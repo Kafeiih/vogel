@@ -86,6 +86,9 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ### Cambiado
 
+- **`migrate`: la salida de goose es estructurada.** Cada línea usa el
+  formato de goose como mensaje y sus valores como `args` (errores y
+  duraciones como texto), en vez de un único texto armado con `Sprintf`.
 - **`httpx/middleware`: `Recovery` acota el valor del panic.** El log
   `panic recovered` lleva en `error` el valor como texto, cortado en 1 KiB
   (con `error_truncated: true` si se cortó), y en `panic_type` su tipo Go.
