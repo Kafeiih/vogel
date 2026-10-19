@@ -34,21 +34,23 @@ func TestWithTraceIDs_InfoContextAddsTraceAndSpanID(t *testing.T) {
 	}
 }
 
-// Without the option, or outside a span, the keys are left out and the line
-// keeps today's shape.
+// Without the option, with a nil one, or outside a span, the keys are left
+// out and the line keeps today's shape.
 func TestWithTraceIDs_AbsentKeepsTheLineShape(t *testing.T) {
-	for name, l := range map[string]func(*bytes.Buffer) *Logger{
-		"no option":  func(b *bytes.Buffer) *Logger { return New("production", b) },
-		"no span":    func(b *bytes.Buffer) *Logger { return New("production", b, WithTraceIDs(fakeTraceIDs)) },
-		"nil option": func(b *bytes.Buffer) *Logger { return New("production", b, WithTraceIDs(nil)) },
-	} {
-		t.Run(name, func(t *testing.T) {
+	withSpan := withTrace(context.Background(), "t-1", "s-1")
+	tests := []struct {
+		name string
+		opts []Option
+		ctx  context.Context
+	}{
+		{name: "no option, span present", ctx: withSpan},
+		{name: "nil option, span present", opts: []Option{WithTraceIDs(nil)}, ctx: withSpan},
+		{name: "option, no span", opts: []Option{WithTraceIDs(fakeTraceIDs)}, ctx: context.Background()},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
 			var buf bytes.Buffer
-			ctx := context.Background()
-			if name == "no option" {
-				ctx = withTrace(ctx, "t-1", "s-1")
-			}
-			l(&buf).InfoContext(ctx, "hello")
+			New("production", &buf, tt.opts...).InfoContext(tt.ctx, "hello")
 			got := decodeJSONLine(t, &buf)
 			for _, key := range []string{"trace_id", "span_id"} {
 				if v, ok := got[key]; ok {

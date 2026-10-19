@@ -74,7 +74,7 @@ func TestErrorWith_Options(t *testing.T) {
 	}
 }
 
-func TestErrorWith_PropagatesTraceID(t *testing.T) {
+func TestErrorWith_PropagatesRequestID(t *testing.T) {
 	h := middleware.RequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		response.ErrorWith(w, r, http.StatusConflict, response.CodeConflict, "m", response.WithErrorID("X"))
 	}))
@@ -90,7 +90,7 @@ func TestErrorWith_PropagatesTraceID(t *testing.T) {
 	assert.Equal(t, "X", got.Error)
 }
 
-func TestValidationError_PropagatesTraceID(t *testing.T) {
+func TestValidationError_PropagatesRequestID(t *testing.T) {
 	h := middleware.RequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		response.ValidationError(w, r, map[string]string{"a": "required"})
 	}))

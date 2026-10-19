@@ -353,3 +353,13 @@ func TestWithMiddleware_NoneLeavesTheChainUnchanged(t *testing.T) {
 	require.Len(t, rc.Middleware, 1)
 	assert.IsType(t, &requestIDMiddleware{}, rc.Middleware[0])
 }
+
+// Without a request ID middleware in the chain, the extra middlewares go
+// first instead of panicking or landing at an arbitrary position.
+func TestWithMiddleware_EmptyChain(t *testing.T) {
+	a := &stubMiddleware{name: "a"}
+	rc := &river.Config{}
+	newOptions(WithMiddleware(a)).applyMiddleware(rc)
+	require.Len(t, rc.Middleware, 1)
+	assert.Same(t, a, rc.Middleware[0])
+}
