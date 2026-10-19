@@ -239,8 +239,9 @@ func RequirePermission(checker authz.Checker, resourceKind, action string, logge
 ### Revocación de tokens: introspección opcional en `auth/zitadel`
 
 Por defecto `auth/zitadel` verifica el access token localmente (firma con el
-JWKS de Zitadel, `iss`, `exp`, `aud`, más los chequeos propios de `nbf`,
-`MaxTokenLifetime` y `AllowedAuthorizedParties`). Es rápido y no depende de
+JWKS de Zitadel, solo con `RS256`, `ES256` o `PS256`; `iss`, `exp`, `aud`,
+más los chequeos propios de `nbf`, `iat` no futuro, `MaxTokenLifetime` y
+`AllowedAuthorizedParties`). Es rápido y no depende de
 Zitadel en cada request, pero un token revocado o una sesión cerrada siguen
 valiendo hasta su `exp`.
 
@@ -286,7 +287,7 @@ authn, err := zitadel.New(ctx, zitadel.Config{
   esa ventana a cambio de más llamadas a Zitadel. La caché es por proceso:
   cada réplica hace sus propias llamadas.
 - **Chequeos:** sobre el resultado de la introspección siguen corriendo
-  `nbf`, `MaxTokenLifetime` y `AllowedAuthorizedParties`, y además se exige
+  `nbf`, `iat` no futuro, `MaxTokenLifetime` y `AllowedAuthorizedParties`, y además se exige
   que `aud` incluya `Config.ClientID`, igual que en la verificación local.
   Un token inactivo es el mismo 401 genérico que cualquier token inválido.
 

@@ -79,6 +79,14 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ### Cambiado
 
+- **`auth/zitadel`: se rechaza un `iat` futuro y los algoritmos JWT quedan
+  fijados.** Un token cuyo `iat` sea posterior al instante actual más un minuto
+  de tolerancia se rechaza con el mismo 401 genérico, aunque `exp - iat` quepa
+  en `MaxTokenLifetime` o no haya máximo configurado (aplica también al
+  resultado de la introspección). La verificación local de JWT acepta solo
+  `RS256`, `ES256` y `PS256`: es el mismo conjunto que zitadel/oidc usa por
+  defecto, ahora explícito para que una actualización del SDK no lo amplíe;
+  `none` y `HS256` se rechazan (probado).
 - **`logger`: los valores de claves sensibles se redactan.** `logger.New` y
   `logger.NewDefault` reemplazan por `"[REDACTED]"` el valor de todo atributo
   cuya clave es sensible (`password`, `token`, `secret`, `authorization`,

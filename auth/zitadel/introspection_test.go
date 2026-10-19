@@ -473,6 +473,7 @@ func TestIntrospection_ClaimChecksStillApply(t *testing.T) {
 	now := time.Now()
 	ti.set("tok-long-lived", activeResponse(map[string]any{"iat": now.Unix(), "exp": now.Add(48 * time.Hour).Unix()}))
 	ti.set("tok-future", activeResponse(map[string]any{"nbf": now.Add(time.Hour).Unix()}))
+	ti.set("tok-future-iat", activeResponse(map[string]any{"iat": now.Add(time.Hour).Unix(), "exp": now.Add(2 * time.Hour).Unix()}))
 	ti.set("tok-other-azp", activeResponse(map[string]any{"azp": "other-client"}))
 
 	tests := []struct {
@@ -483,6 +484,7 @@ func TestIntrospection_ClaimChecksStillApply(t *testing.T) {
 	}{
 		{name: "lifetime above MaxTokenLifetime", token: "tok-long-lived", cfg: Config{MaxTokenLifetime: 24 * time.Hour}, wantErr: errLifetimeExceeded},
 		{name: "nbf in the future", token: "tok-future", wantErr: errNotYetValid},
+		{name: "iat in the future", token: "tok-future-iat", wantErr: errIssuedInFuture},
 		{name: "azp outside the allowlist", token: "tok-other-azp", cfg: Config{AllowedAuthorizedParties: []string{"spa-client"}}, wantErr: errAuthorizedParty},
 	}
 	for _, tt := range tests {

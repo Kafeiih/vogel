@@ -3,6 +3,7 @@ package zitadel
 import (
 	"context"
 	"crypto"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -13,11 +14,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/zitadel/oidc/v3/pkg/oidc"
 	"github.com/zitadel/zitadel-go/v3/pkg/authorization"
-	"github.com/zitadel/zitadel-go/v3/pkg/authorization/oauth"
 	"github.com/zitadel/zitadel-go/v3/pkg/zitadel"
 
 	"github.com/kafeiih/vogel/auth"
@@ -70,6 +73,19 @@ func newTestIssuer(t *testing.T) *testIssuer {
 // iat/exp window.
 func (ti *testIssuer) sign(t *testing.T, claims map[string]any) string {
 	t.Helper()
+	signingInput := ti.signingInput(t, "RS256", claims)
+	digest := sha256.Sum256([]byte(signingInput))
+	sig, err := rsa.SignPKCS1v15(rand.Reader, ti.key, crypto.SHA256, digest[:])
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	return signingInput + "." + base64.RawURLEncoding.EncodeToString(sig)
+}
+
+// signingInput returns the encoded header and payload of a JWT whose header
+// names alg, carrying claims plus iss and a one-hour iat/exp window.
+func (ti *testIssuer) signingInput(t *testing.T, alg string, claims map[string]any) string {
+	t.Helper()
 	now := time.Now()
 	payload := map[string]any{
 		"iss": ti.srv.URL,
@@ -80,7 +96,7 @@ func (ti *testIssuer) sign(t *testing.T, claims map[string]any) string {
 		payload[k] = v
 	}
 	b64 := base64.RawURLEncoding
-	header, err := json.Marshal(map[string]string{"alg": "RS256", "typ": "JWT", "kid": testKeyID})
+	header, err := json.Marshal(map[string]string{"alg": alg, "typ": "JWT", "kid": testKeyID})
 	if err != nil {
 		t.Fatalf("marshal header: %v", err)
 	}
@@ -88,13 +104,7 @@ func (ti *testIssuer) sign(t *testing.T, claims map[string]any) string {
 	if err != nil {
 		t.Fatalf("marshal payload: %v", err)
 	}
-	signingInput := b64.EncodeToString(header) + "." + b64.EncodeToString(body)
-	digest := sha256.Sum256([]byte(signingInput))
-	sig, err := rsa.SignPKCS1v15(rand.Reader, ti.key, crypto.SHA256, digest[:])
-	if err != nil {
-		t.Fatalf("sign: %v", err)
-	}
-	return signingInput + "." + b64.EncodeToString(sig)
+	return b64.EncodeToString(header) + "." + b64.EncodeToString(body)
 }
 
 // authenticator builds an Authenticator around the SDK's real JWT verifier
@@ -103,12 +113,18 @@ func (ti *testIssuer) sign(t *testing.T, claims map[string]any) string {
 // discovery is the same code path New uses.
 func (ti *testIssuer) authenticator(t *testing.T, cfg Config) *Authenticator {
 	t.Helper()
+	return ti.authenticatorAccepting(t, cfg, acceptedSigningAlgorithms())
+}
+
+// authenticatorAccepting is authenticator with the verifier limited to algs.
+func (ti *testIssuer) authenticatorAccepting(t *testing.T, cfg Config, algs []string) *Authenticator {
+	t.Helper()
 	u, err := url.Parse(ti.srv.URL)
 	if err != nil {
 		t.Fatalf("parse issuer URL: %v", err)
 	}
 	z := zitadel.New(u.Hostname(), zitadel.WithInsecure(u.Port()))
-	az, err := authorization.New(context.Background(), z, oauth.WithJWT(cfg.ClientID, issuerHTTPClient(cfg)))
+	az, err := authorization.New(context.Background(), z, withJWT(cfg.ClientID, issuerHTTPClient(cfg), algs))
 	if err != nil {
 		t.Fatalf("authorization.New: %v", err)
 	}
@@ -183,5 +199,78 @@ func TestAuthenticate_VerifiedJWT_ExposesAzpInClaims(t *testing.T) {
 	}
 	if got := authCtx.Claims["azp"]; got != "spa-client" {
 		t.Errorf(`Claims["azp"] = %v, want spa-client`, got)
+	}
+}
+
+// TestAuthenticate_VerifiedJWT_RejectsUnpinnedAlgorithms proves the verifier
+// only accepts acceptedSigningAlgorithms: an unsigned token (alg none) and an
+// HS256 token keyed with the issuer's public RSA modulus (the classic
+// algorithm-confusion attack) are both refused before any claim is trusted.
+// The same authenticator accepts a correctly signed RS256 token, so the pin
+// is proven in both directions and not only through the SDK's error text.
+func TestAuthenticate_VerifiedJWT_RejectsUnpinnedAlgorithms(t *testing.T) {
+	ti := newTestIssuer(t)
+	a := ti.authenticator(t, Config{ClientID: "api-client"})
+	claims := map[string]any{"sub": "user-1", "aud": []string{"api-client"}}
+	b64 := base64.RawURLEncoding
+
+	if _, err := a.Authenticate(context.Background(), ti.sign(t, claims)); err != nil {
+		t.Fatalf("RS256 control token: unexpected error: %v", err)
+	}
+
+	hsInput := ti.signingInput(t, "HS256", claims)
+	mac := hmac.New(sha256.New, ti.key.N.Bytes())
+	mac.Write([]byte(hsInput))
+
+	tokens := map[string]string{
+		"none":  ti.signingInput(t, "none", claims) + ".",
+		"HS256": hsInput + "." + b64.EncodeToString(mac.Sum(nil)),
+	}
+	for alg, token := range tokens {
+		t.Run(alg, func(t *testing.T) {
+			// The SDK flattens its error chain, so the reason is matched on
+			// the message rather than with errors.Is.
+			_, err := a.Authenticate(context.Background(), token)
+			if !errors.Is(err, auth.ErrUnauthenticated) || !strings.Contains(err.Error(), oidc.ErrSignatureUnsupportedAlg.Error()) {
+				t.Fatalf("error = %v, want wrapping auth.ErrUnauthenticated with reason %q", err, oidc.ErrSignatureUnsupportedAlg)
+			}
+		})
+	}
+}
+
+// TestAcceptedSigningAlgorithms pins the accepted list so a change to it is a
+// deliberate, reviewed decision rather than an SDK default drifting.
+func TestAcceptedSigningAlgorithms(t *testing.T) {
+	want := []string{"RS256", "ES256", "PS256"}
+	if got := acceptedSigningAlgorithms(); !slices.Equal(got, want) {
+		t.Errorf("acceptedSigningAlgorithms() = %v, want %v", got, want)
+	}
+}
+
+// TestWithJWT_HonorsAcceptedSigningAlgorithms proves withJWT really hands its
+// algorithm list to the SDK verifier: acceptedSigningAlgorithms equals the
+// SDK default, so only a narrower list shows the option takes effect.
+func TestWithJWT_HonorsAcceptedSigningAlgorithms(t *testing.T) {
+	ti := newTestIssuer(t)
+	a := ti.authenticatorAccepting(t, Config{ClientID: "api-client"}, []string{"ES256"})
+	_, err := a.Authenticate(context.Background(), ti.sign(t, map[string]any{"sub": "user-1", "aud": []string{"api-client"}}))
+	if !errors.Is(err, auth.ErrUnauthenticated) || !strings.Contains(err.Error(), oidc.ErrSignatureUnsupportedAlg.Error()) {
+		t.Fatalf("error = %v, want an RS256 token refused when only ES256 is accepted", err)
+	}
+}
+
+// TestAuthenticate_VerifiedJWT_RejectsFutureIssuedAt proves a really verified
+// JWT whose iat lies beyond the clock-skew leeway is refused, even with no
+// MaxTokenLifetime configured.
+func TestAuthenticate_VerifiedJWT_RejectsFutureIssuedAt(t *testing.T) {
+	ti := newTestIssuer(t)
+	a := ti.authenticator(t, Config{ClientID: "api-client"})
+	future := time.Now().Add(time.Hour)
+	_, err := a.Authenticate(context.Background(), ti.sign(t, map[string]any{
+		"sub": "user-1", "aud": []string{"api-client"},
+		"iat": future.Unix(), "exp": future.Add(time.Hour).Unix(),
+	}))
+	if !errors.Is(err, auth.ErrUnauthenticated) || !errors.Is(err, errIssuedInFuture) {
+		t.Fatalf("error = %v, want wrapping auth.ErrUnauthenticated and errIssuedInFuture", err)
 	}
 }

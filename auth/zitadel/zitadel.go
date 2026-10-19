@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/zitadel/oidc/v3/pkg/oidc"
+	"github.com/zitadel/oidc/v3/pkg/op"
 	"github.com/zitadel/zitadel-go/v3/pkg/authorization"
 	"github.com/zitadel/zitadel-go/v3/pkg/authorization/oauth"
 	"github.com/zitadel/zitadel-go/v3/pkg/zitadel"
@@ -137,6 +138,24 @@ func validateConfig(cfg Config) (Config, error) {
 	return cfg, nil
 }
 
+// acceptedSigningAlgorithms returns the only JWS algorithms the local JWT
+// verifier accepts, as a fresh slice so no caller can alter the allowlist. They equal zitadel/oidc's current default (used when no
+// list is given), pinned here so an SDK update cannot widen them silently;
+// "none" and the HMAC algorithms are never accepted, which rules out the
+// algorithm-confusion attack of an HS256 token keyed with the issuer's
+// public key.
+func acceptedSigningAlgorithms() []string {
+	return []string{"RS256", "ES256", "PS256"}
+}
+
+// withJWT is the local JWT verifier accepting only algs; build passes
+// acceptedSigningAlgorithms(). oauth.WithJWT is what DefaultJWTAuthorization
+// wraps, with a nil client that it replaces by http.DefaultClient; pass a
+// bounded one instead.
+func withJWT(clientID string, httpClient *http.Client, algs []string) authorization.VerifierInitializer[*oauth.IntrospectionContext] {
+	return oauth.WithJWT(clientID, httpClient, op.WithSupportedAccessTokenSigningAlgorithms(algs...))
+}
+
 // build constructs the Authenticator for an already validated cfg against z.
 // New passes zitadel.New(cfg.Issuer); this package's tests pass a plain-HTTP
 // zitadel.Zitadel pointed at an httptest issuer.
@@ -150,10 +169,7 @@ func build(ctx context.Context, z *zitadel.Zitadel, cfg Config) (*Authenticator,
 		cache = newIntrospectionCache(cfg.Introspection.CacheMaxEntries)
 		initVerifier = withIntrospection(*cfg.Introspection, cfg.ClientID, httpClient, cache)
 	} else {
-		// oauth.WithJWT is what DefaultJWTAuthorization wraps, with a nil
-		// client that it replaces by http.DefaultClient; pass a bounded one
-		// instead.
-		initVerifier = oauth.WithJWT(cfg.ClientID, httpClient)
+		initVerifier = withJWT(cfg.ClientID, httpClient, acceptedSigningAlgorithms())
 	}
 	authorizer, err := authorization.New(ctx, z, initVerifier)
 	if err != nil {
@@ -196,7 +212,7 @@ func newFromAuthorizer(a *authorization.Authorizer[*oauth.IntrospectionContext],
 // needs to know that detail of the SDK's contract.
 //
 // After the SDK accepts the token, checkClaims rejects a non-string azp, an
-// azp outside Config.AllowedAuthorizedParties (when that list is set), a token whose nbf is still in the future, and (when
+// azp outside Config.AllowedAuthorizedParties (when that list is set), a token whose nbf or iat is still in the future, and (when
 // Config.MaxTokenLifetime is set) a token whose lifetime exceeds it; those
 // rejections wrap auth.ErrUnauthenticated like any other invalid token. In
 // introspection mode the same checks run on the introspection result, plus
