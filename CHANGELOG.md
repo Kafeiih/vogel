@@ -24,6 +24,19 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ### Agregado
 
+- **`worker`: `WithMetrics(reg)`.** Registra el histograma
+  `river_job_duration_seconds{kind,outcome}` (`outcome`: `success`, `error`,
+  `cancel`, `snooze`, `panic`) con un middleware de River que corre después del
+  de request ID. Es opcional: sin la opción, o en un cliente sólo de inserción,
+  no se instala ni se registra nada; registrar dos veces en el mismo
+  `Registerer` reutiliza el colector. El binario worker del boilerplate todavía
+  no sirve `/metrics`: el README explica cómo conectarlo.
+- **`worker`: `Config.PollOnly`.** El worker busca jobs consultando cada
+  `FetchPollInterval` (1 s por defecto) en vez de usar `LISTEN`/`NOTIFY`, así que
+  puede ir detrás de PgBouncer en modo transacción, a costa de esa latencia al
+  tomar un job. El boilerplate lo lee de `WORKER_POLL_ONLY`; un valor inválido
+  impide arrancar.
+
 - **`pgxtx`: `RequireTx` y `ErrNoTx`.** Para el código que debe correr dentro
   de una transacción: devuelve la transacción del contexto o `ErrNoTx`, en vez
   de caer al pool como `DBFromContext`. Así, olvidar `WithTx` o pasar el
