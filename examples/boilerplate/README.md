@@ -131,6 +131,14 @@ construye la imagen del PDP y prueba que las sirve (ver `cerbos/README.md`).
 > Notificaciones: `NOTIFICATION_PROVIDER`, `NOTIFICATION_DEFAULT_FROM`,
 > `SMTP_*`, `SENDGRID_API_KEY`.
 <!-- vogel:component notification end -->
+<!-- vogel:component tracing begin -->
+> Tracing (OpenTelemetry): `OTEL_EXPORTER_OTLP_ENDPOINT` (la URL base
+> OTLP/HTTP del colector, p. ej. `http://otel-collector:4318`; vacía, el
+> tracing queda apagado), `OTEL_SERVICE_NAME` (default `api` o `worker`) y
+> `OTEL_TRACES_SAMPLER_ARG` (la fracción de traces nuevos que se muestrean,
+> mayor que 0 y hasta 1; default `0.1`). Ninguna otra variable `OTEL_*` tiene
+> efecto: `vogel/otel` no lee el entorno.
+<!-- vogel:component tracing end -->
 >
 > `SWAGGER_ENABLED` (opcional, `false` por defecto) sirve la UI y la spec de
 > Swagger en `/v1/swagger/`. Es un opt-in explícito, independiente de
@@ -335,6 +343,16 @@ migrate-up`, `make lint`, `make docker-build`, ...).
 <!-- vogel:component storage begin -->
 - **Storage S3-compatible**: `vogel/storage` + `vogel/storage/s3`.
 <!-- vogel:component storage end -->
+<!-- vogel:component tracing begin -->
+- **Tracing con OpenTelemetry**: `vogel/otel` (+ `otelpgx`, `otelriver`),
+  arrancado y cerrado por `internal/infrastructure/tracing`. Un span por
+  request (nombrado por la ruta de chi), por consulta a Postgres, por job de
+  River (en el mismo trace que el request que lo encoló), por llamada a
+  Zitadel o S3 y por email. Los logs con contexto llevan `trace_id`, y los
+  histogramas HTTP y del pool, exemplars. Apagado mientras
+  `OTEL_EXPORTER_OTLP_ENDPOINT` esté vacía; `--without tracing` lo saca del
+  todo.
+<!-- vogel:component tracing end -->
 
 Sobre `internal/infrastructure/database/migrate/create.go`: es un scaffolder
 de CLI (`go run ./cmd/api migrate create <nombre>`) que escribe un archivo

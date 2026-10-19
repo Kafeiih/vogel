@@ -19,11 +19,12 @@ go build -o "$WORK/create-vogel-app" "$ROOT/cmd/create-vogel-app"
 # name|flags
 combos=(
 	"all|"
-	"minimal|--without worker --without cerbos --without storage"
+	"minimal|--without worker --without cerbos --without storage --without tracing"
 	"no-worker|--without worker"
 	"no-notification|--without notification"
 	"no-cerbos|--without cerbos"
 	"no-storage|--without storage"
+	"no-tracing|--without tracing"
 )
 
 for combo in "${combos[@]}"; do

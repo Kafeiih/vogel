@@ -19,10 +19,20 @@ import (
 	"github.com/kafeiih/vogel/notification/smtp"
 
 	// vogel:component notification end
+	// vogel:component tracing begin
+	"github.com/kafeiih/vogel/otel"
+	"github.com/kafeiih/vogel/otel/otelpgx"
+	"github.com/kafeiih/vogel/otel/otelriver"
+
+	// vogel:component tracing end
 	"github.com/kafeiih/vogel/logger"
 	"github.com/kafeiih/vogel/postgres"
 	"github.com/kafeiih/vogel/worker"
 
+	// vogel:component tracing begin
+	"github.com/kafeiih/vogel/examples/boilerplate/internal/infrastructure/tracing"
+
+	// vogel:component tracing end
 	"github.com/kafeiih/vogel/examples/boilerplate/internal/application/jobs"
 	"github.com/kafeiih/vogel/examples/boilerplate/internal/infrastructure/config"
 	"github.com/kafeiih/vogel/examples/boilerplate/internal/infrastructure/riverschema"
@@ -99,7 +109,12 @@ func run(migrateFirst bool) error {
 		return fmt.Errorf("loading config: %w", err)
 	}
 
-	appLogger := logger.NewDefault(cfg.App.Env).With("component", "worker")
+	logOpts := make([]logger.Option, 0, 1)
+	// vogel:component tracing begin
+	// Log lines written with a context carry the span's trace_id/span_id.
+	logOpts = append(logOpts, logger.WithTraceIDs(otel.TraceIDs))
+	// vogel:component tracing end
+	appLogger := logger.NewDefault(cfg.App.Env, logOpts...).With("component", "worker")
 	// Installed as the default too, so package-level slog calls, River's
 	// migrations and libraries logging through slog.Default() share its JSON
 	// format, component attribute and request_id from context. It also routes
@@ -114,6 +129,17 @@ func run(migrateFirst bool) error {
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.Database.ConnectTimeout)
 	defer cancel()
 
+	// vogel:component tracing begin
+	// Deferred before everything else, so it runs last: the spans of the
+	// jobs the queue finishes while stopping are flushed after it stops.
+	tp, err := tracing.Setup(ctx, cfg.Tracing, "worker", appLogger.Logger)
+	if err != nil {
+		return err
+	}
+	defer tracing.Shutdown(tp, appLogger.Logger)
+	cfg.Database.Tracer = otelpgx.NewTracer()
+	cfg.Database.TraceIDs = otel.SampledTraceIDs
+	// vogel:component tracing end
 	pool, err := postgres.NewPool(ctx, cfg.Database, appLogger.Logger)
 	if err != nil {
 		return fmt.Errorf("connecting to database: %w", err)
@@ -143,6 +169,12 @@ func run(migrateFirst bool) error {
 		appLogger.Warn("notification disabled — notifier not configured", "error", err)
 		notifier = nil
 	}
+	// vogel:component tracing begin
+	if notifier != nil {
+		// A notification.send span per email, with no address or subject.
+		notifier = otel.Notifier(notifier)
+	}
+	// vogel:component tracing end
 
 	// vogel:component notification end
 	// Register job workers
@@ -174,7 +206,13 @@ func run(migrateFirst bool) error {
 	// registered by this boilerplate -- if you add one, pass
 	// worker.WithPeriodicJobs(...) here.
 	queue, err := worker.NewRiverQueue(pool, workers, cfg.Worker, appLogger.Logger,
-		worker.WithMetrics(prometheus.DefaultRegisterer))
+		worker.WithMetrics(prometheus.DefaultRegisterer),
+		// vogel:component tracing begin
+		// A span per job attempt, continuing the trace of the request that
+		// enqueued it (carried in the job metadata).
+		worker.WithMiddleware(otelriver.NewMiddleware()),
+		// vogel:component tracing end
+	)
 	if err != nil {
 		return fmt.Errorf("creating river queue: %w", err)
 	}

@@ -17,6 +17,9 @@ package config
 
 import (
 	"net/netip"
+	// vogel:component tracing begin
+	"net/url"
+	// vogel:component tracing end
 	"os"
 	"strconv"
 	"strings"
@@ -37,6 +40,10 @@ import (
 	"github.com/kafeiih/vogel/storage/s3"
 
 	// vogel:component storage end
+	// vogel:component tracing begin
+	"github.com/kafeiih/vogel/otel"
+
+	// vogel:component tracing end
 	"github.com/kafeiih/vogel/auth/zitadel"
 	"github.com/kafeiih/vogel/authz/cerbos"
 	"github.com/kafeiih/vogel/config"
@@ -64,6 +71,13 @@ type Config struct {
 
 	Notification NotificationConfig
 	// vogel:component notification end
+	// vogel:component tracing begin
+
+	// Tracing is off when its Endpoint is empty (OTEL_EXPORTER_OTLP_ENDPOINT
+	// unset). ServiceName may be empty: each binary defaults it to its own
+	// name ("api", "worker").
+	Tracing otel.Config
+	// vogel:component tracing end
 }
 
 // AppConfig holds settings with no vogel equivalent: this application's own
@@ -203,6 +217,10 @@ func Load() (*Config, error) {
 
 		Notification: parseNotificationConfig(),
 		// vogel:component notification end
+		// vogel:component tracing begin
+
+		Tracing: parseTracingConfig(&errs, config.String("APP_ENV", "development"), config.String("APP_VERSION", "0.1.0")),
+		// vogel:component tracing end
 	}
 
 	cfg.validate(&errs)
@@ -513,6 +531,51 @@ func parseStorageConfigs(errs *config.Errors) map[string]s3.Config {
 }
 
 // vogel:component storage end
+// vogel:component tracing begin
+// parseTracingConfig reads the standard OpenTelemetry variable names. vogel's
+// otel.Setup reads no environment itself, so these are the only OTEL_*
+// variables that take effect:
+//
+//   - OTEL_EXPORTER_OTLP_ENDPOINT: the collector's OTLP/HTTP base URL
+//     (e.g. http://otel-collector:4318); empty turns tracing off.
+//   - OTEL_SERVICE_NAME: the service name on every span; empty uses the
+//     binary's name.
+//   - OTEL_TRACES_SAMPLER_ARG: the fraction of new traces sampled, in
+//     (0, 1]; empty uses otel.DefaultSampleRatio (0.1). Zero is rejected,
+//     since otel.Config reads it as "the default": to turn tracing off,
+//     leave the endpoint empty. A trace continued
+//     from a sampled parent (a job enqueued by a sampled request) is always
+//     sampled.
+//
+// Environment and ServiceVersion come from APP_ENV and APP_VERSION.
+func parseTracingConfig(errs *config.Errors, env, version string) otel.Config {
+	const (
+		endpointKey = "OTEL_EXPORTER_OTLP_ENDPOINT"
+		ratioKey    = "OTEL_TRACES_SAMPLER_ARG"
+	)
+	cfg := otel.Config{
+		Endpoint:       config.String(endpointKey, ""),
+		ServiceName:    config.String("OTEL_SERVICE_NAME", ""),
+		ServiceVersion: version,
+		Environment:    env,
+	}
+	if cfg.Endpoint != "" {
+		if u, err := url.Parse(cfg.Endpoint); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			errs.Addf("%s: must be an http:// or https:// URL with a host", endpointKey)
+		}
+	}
+	if raw := config.String(ratioKey, ""); raw != "" {
+		ratio, err := strconv.ParseFloat(raw, 64)
+		if err != nil || !(ratio > 0 && ratio <= 1) {
+			errs.Addf("%s: must be a number greater than 0 and at most 1 (to turn tracing off, leave %s empty)", ratioKey, endpointKey)
+		} else {
+			cfg.SampleRatio = ratio
+		}
+	}
+	return cfg
+}
+
+// vogel:component tracing end
 // parseCerbosConfig reads the Cerbos PDP connection. TLS is the default;
 // CERBOS_PLAINTEXT=true opts out, for the local development container only;
 // like every flag read with parseBool, a value it cannot read is an error.

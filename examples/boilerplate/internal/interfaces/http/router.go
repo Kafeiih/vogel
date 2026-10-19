@@ -83,11 +83,27 @@ type Dependencies struct {
 	Logger        *slog.Logger
 	HealthHandler *handler.HealthHandler
 	AuditHandler  *handler.AuditHandler
+	// vogel:component tracing begin
+
+	// Tracing, if set, is mounted before every other middleware, so the
+	// whole request (and its log lines and metrics) runs inside its span.
+	Tracing func(http.Handler) http.Handler
+	// vogel:component tracing end
 }
 
 func NewRouter(deps Dependencies) *chi.Mux {
 	r := chi.NewRouter()
 
+	// vogel:component tracing begin
+	// The request span first, so everything below runs inside it: the
+	// request ID, the access log line and the latency exemplar all carry the
+	// trace. Mounted inside the router, not around it, so the span is named
+	// after the matched chi route.
+	if deps.Tracing != nil {
+		r.Use(deps.Tracing)
+	}
+
+	// vogel:component tracing end
 	// Security headers first, before any middleware that can write a
 	// response: Recovery's 500, the rate limiters' 429, Timeout's 504,
 	// Authenticate's 401, RequirePermission's 403 and chi's 404/405 all

@@ -45,6 +45,16 @@
       "paths": [
         "internal/infrastructure/config/config_storage_test.go"
       ]
+    },
+    {
+      "name": "tracing",
+      "prompt": "¿Incluir tracing con OpenTelemetry? (apagado mientras no se configure OTEL_EXPORTER_OTLP_ENDPOINT)",
+      "default": true,
+      "requires": [],
+      "paths": [
+        "internal/infrastructure/tracing",
+        "internal/infrastructure/config/config_tracing_test.go"
+      ]
     }
   ],
   "alwaysRemove": [
