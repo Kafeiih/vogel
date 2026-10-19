@@ -199,3 +199,25 @@ func TestWorkerSchema_ReadsWorkerSchemaEnv(t *testing.T) {
 		t.Errorf("parseWorkerConfig().Schema = %q, want %q", got, "jobs")
 	}
 }
+
+// WORKER_METRICS_LISTEN_ADDR is the worker's own /metrics address. Its
+// default differs from METRICS_LISTEN_ADDR's so api and worker can run on one
+// host, and setting one never moves the other.
+func TestParseMetricsConfig_WorkerListenAddr(t *testing.T) {
+	t.Run("defaults to :9091, apart from the api's :9090", func(t *testing.T) {
+		unsetEnv(t, "WORKER_METRICS_LISTEN_ADDR")
+		unsetEnv(t, "METRICS_LISTEN_ADDR")
+		got := parseMetricsConfig()
+		if got.WorkerListenAddr != ":9091" || got.ListenAddr != ":9090" {
+			t.Errorf("(WorkerListenAddr, ListenAddr) = (%q, %q), want (\":9091\", \":9090\")", got.WorkerListenAddr, got.ListenAddr)
+		}
+	})
+	t.Run("is read from its own variable", func(t *testing.T) {
+		t.Setenv("WORKER_METRICS_LISTEN_ADDR", "127.0.0.1:9191")
+		unsetEnv(t, "METRICS_LISTEN_ADDR")
+		got := parseMetricsConfig()
+		if got.WorkerListenAddr != "127.0.0.1:9191" || got.ListenAddr != ":9090" {
+			t.Errorf("(WorkerListenAddr, ListenAddr) = (%q, %q), want (\"127.0.0.1:9191\", \":9090\")", got.WorkerListenAddr, got.ListenAddr)
+		}
+	})
+}

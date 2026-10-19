@@ -119,7 +119,7 @@ construye la imagen del PDP y prueba que las sirve (ver `cerbos/README.md`).
 > completo de cada una): `METRICS_LISTEN_ADDR`.
 <!-- vogel:component worker begin -->
 > Worker: `WORKER_SCHEMA`, `WORKER_DEFAULT_MAX_WORKERS`, `WORKER_QUEUES`,
-> `WORKER_POLL_ONLY`.
+> `WORKER_POLL_ONLY`, `WORKER_METRICS_LISTEN_ADDR`.
 <!-- vogel:component worker end -->
 <!-- vogel:component storage begin -->
 > Storage: `STORAGE_CONFIGS` (+ `STORAGE_<NOMBRE>_*`). Los buckets son
@@ -253,15 +253,15 @@ un job nuevo puede esperar hasta el `FetchPollInterval` de River (1 s por
 defecto) antes de tomarse. Un valor que no sea `true` o `false` hace fallar
 el arranque. Default `false`.
 
-El worker no expone `/metrics`: el servidor de métricas
-(`internal/interfaces/http/metrics_server.go`) solo lo arranca el API.
-`vogel/worker` sabe registrar la duración de cada job como
+El worker sirve su propio `/metrics` en `WORKER_METRICS_LISTEN_ADDR`
+(`:9091` por defecto, aparte del `:9090` del API para que ambos puedan correr
+en el mismo host). Expone la duración de cada job como
 `river_job_duration_seconds{kind,outcome}` (`outcome`: `success`, `error`,
-`cancel`, `snooze`, `panic`) con la opción `worker.WithMetrics`. Para
-publicarla, pase `worker.WithMetrics(prometheus.DefaultRegisterer)` a
-`worker.NewRiverQueue` en `cmd/worker/main.go` y arranque ahí un servidor de
-métricas con `httpiface.NewMetricsServer`, en una dirección propia que
-Prometheus pueda scrapear.
+`cancel`, `snooze`, `panic`), registrada con `worker.WithMetrics`, y las
+métricas del pool (`db_pool_*`). Scrapéelo con `job="worker"`: las alertas de
+`deploy/prometheus/alerts.yml` (`WorkerDown`, `WorkerJobErrorRatioHigh`,
+`WorkerJobSlowP95`) asumen ese nombre. Una dirección inválida hace fallar el
+arranque.
 <!-- vogel:component worker end -->
 
 `start-from-migrate` es una comodidad de desarrollo: el rol que migra queda

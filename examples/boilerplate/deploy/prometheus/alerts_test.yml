@@ -254,3 +254,81 @@ tests:
               instance: nobucket:9090
             exp_annotations:
               summary: "DBConnectionHeldTooLong cannot fire on nobucket:9090: no le=10 bucket"
+  # vogel:component worker begin
+
+  # Worker target down for 3 minutes; an up worker is silent.
+  - interval: 1m
+    input_series:
+      - series: 'up{job="worker",instance="worker:9091"}'
+        values: '0x5'
+      - series: 'up{job="worker",instance="worker2:9091"}'
+        values: '1x5'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: WorkerDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: worker
+              instance: worker:9091
+            exp_annotations:
+              summary: The worker target is not being scraped
+              description: Jobs are not being processed or not observed. See RUNBOOK.md (worker).
+
+  # send_email fails 3 of 10 attempts; example fails 1 of 100. Only
+  # send_email crosses 10%. Error and panic both count.
+  - interval: 1m
+    input_series:
+      - series: 'river_job_duration_seconds_count{job="worker",kind="send_email",outcome="success"}'
+        values: '0+7x20'
+      - series: 'river_job_duration_seconds_count{job="worker",kind="send_email",outcome="error"}'
+        values: '0+2x20'
+      - series: 'river_job_duration_seconds_count{job="worker",kind="send_email",outcome="panic"}'
+        values: '0+1x20'
+      - series: 'river_job_duration_seconds_count{job="worker",kind="example",outcome="success"}'
+        values: '0+99x20'
+      - series: 'river_job_duration_seconds_count{job="worker",kind="example",outcome="error"}'
+        values: '0+1x20'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: WorkerJobErrorRatioHigh
+        exp_alerts: []
+      - eval_time: 18m
+        alertname: WorkerJobErrorRatioHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              kind: send_email
+            exp_annotations:
+              summary: "More than 10% of send_email job attempts fail"
+              description: The worker log has the job errors; see RUNBOOK.md (worker).
+
+  # report jobs all take between 60s and 120s; email jobs finish under 1s.
+  - interval: 1m
+    input_series:
+      - series: 'river_job_duration_seconds_bucket{job="worker",kind="report",le="1"}'
+        values: '0x20'
+      - series: 'river_job_duration_seconds_bucket{job="worker",kind="report",le="60"}'
+        values: '0x20'
+      - series: 'river_job_duration_seconds_bucket{job="worker",kind="report",le="120"}'
+        values: '0+5x20'
+      - series: 'river_job_duration_seconds_bucket{job="worker",kind="report",le="+Inf"}'
+        values: '0+5x20'
+      - series: 'river_job_duration_seconds_bucket{job="worker",kind="send_email",le="1"}'
+        values: '0+5x20'
+      - series: 'river_job_duration_seconds_bucket{job="worker",kind="send_email",le="60"}'
+        values: '0+5x20'
+      - series: 'river_job_duration_seconds_bucket{job="worker",kind="send_email",le="120"}'
+        values: '0+5x20'
+      - series: 'river_job_duration_seconds_bucket{job="worker",kind="send_email",le="+Inf"}'
+        values: '0+5x20'
+    alert_rule_test:
+      - eval_time: 18m
+        alertname: WorkerJobSlowP95
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              kind: report
+            exp_annotations:
+              summary: "p95 duration of report jobs above 60s"
+  # vogel:component worker end

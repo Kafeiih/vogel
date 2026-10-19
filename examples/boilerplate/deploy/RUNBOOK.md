@@ -54,7 +54,8 @@ estan fijadas por version exacta y digest; ver «Parches» abajo.
 Healthchecks: la imagen de la API consulta `/v1/healthz`.
 <!-- vogel:component worker begin -->
 La del worker,
-que no expone puertos, corre `./worker healthcheck`, que falla si el worker
+que no publica puertos (su `/metrics` escucha en `WORKER_METRICS_LISTEN_ADDR`,
+`:9091` por defecto, dentro de la red del compose), corre `./worker healthcheck`, que falla si el worker
 no reescribio su archivo de heartbeat (en `/tmp`, cada 10s mientras procesa
 trabajos; ver `cmd/worker/heartbeat.go`) en los ultimos 30s. Un worker `unhealthy` esta
 colgado o deteniendose; no indica por si solo que la base este caida.
@@ -753,9 +754,39 @@ advisory de seguridad (ver `SECURITY.md` en la raiz de `vogel`).
 
 ---
 
+<!-- vogel:component worker begin -->
+## 13. Worker: jobs que fallan o tardan
+
+**Sintoma:** alertas `WorkerDown`, `WorkerJobErrorRatioHigh` o `WorkerJobSlowP95`.
+
+El worker sirve sus metricas en `/metrics` sobre `WORKER_METRICS_LISTEN_ADDR`
+(`:9091` por defecto), aparte del API: `river_job_duration_seconds{kind,outcome}`
+(`outcome`: `success`, `error`, `cancel`, `snooze`, `panic`) y las del pool
+(`db_pool_*`). Scrapealo con `job="worker"`.
+
+**Verificar:**
+
+```bash
+# Desde la red del compose (el puerto no se publica)
+docker compose exec worker wget -qO- http://localhost:9091/metrics | grep river_job_duration_seconds_count
+docker logs worker --since 30m | grep -i error
+```
+
+- `WorkerDown`: el target no responde. Revisar si el contenedor esta
+  `unhealthy` (heartbeat) o reiniciando; ver la seccion 6 si no arranca.
+- `WorkerJobErrorRatioHigh`: mas del 10% de los intentos de un `kind` termina
+  en `error` o `panic`. River reintenta, asi que un ratio sostenido es un job
+  que sigue fallando: el log del worker tiene el error de cada intento.
+- `WorkerJobSlowP95`: el p95 de un `kind` supera 60s. Revisar dependencias
+  externas del job (SMTP, S3) y slow queries (seccion 3). El umbral es un
+  punto de partida: ajustalo a la duracion esperada de cada job.
+
+---
+
+<!-- vogel:component worker end -->
 ## Alertas recomendadas (Prometheus)
 
-Estas alertas, mas un SLO de disponibilidad (99.5% sin 5xx en 30 dias) con alertas de burn-rate en varias ventanas, estan listas para cargar en `deploy/prometheus/alerts.yml` (con `rule_files:` en `prometheus.yml`). Asumen `job="api"` en el scrape: ajusta los selectores si tu configuracion usa otro nombre. CI las valida con `promtool check rules` y corre sus tests (`alerts_test.yml`) con `promtool test rules`.
+Estas alertas, mas un SLO de disponibilidad (99.5% sin 5xx en 30 dias) con alertas de burn-rate en varias ventanas, estan listas para cargar en `deploy/prometheus/alerts.yml` (con `rule_files:` en `prometheus.yml`). Asumen `job="api"` (y `job="worker"` para el worker) en el scrape: ajusta los selectores si tu configuracion usa otro nombre. CI las valida con `promtool check rules` y corre sus tests (`alerts_test.yml`) con `promtool test rules`.
 
 | Alerta | Condicion | Severidad |
 |--------|-----------|-----------|
@@ -769,6 +800,16 @@ Estas alertas, mas un SLO de disponibilidad (99.5% sin 5xx en 30 dias) con alert
 | Pool acquire lento | `histogram_quantile(0.99, sum by (le) (rate(db_pool_acquire_wait_seconds_bucket[5m]))) > 1` (p99 de la espera; con `DB_ACQUIRE_TIMEOUT=3s`, cerca de 1s ya es saturacion) | WARNING |
 | Conexion retenida | `sum(rate(db_pool_conn_hold_seconds_count[5m])) - sum(rate(db_pool_conn_hold_seconds_bucket{le=~"10|10.0"}[5m])) > 0` (conexiones devueltas despues de mas de `DB_LEAK_THRESHOLD`; el log WARN nombra el codigo que la pidio. Si cambias `DB_LEAK_THRESHOLD`, cambia tambien `le`: debe ser un limite de bucket del histograma, 0.001 a 30 segundos. El regex acepta `10` y `10.0` porque Prometheus 3.x normaliza `le` a decimal) | WARNING |
 
+<!-- vogel:component worker begin -->
+Del worker (`job="worker"`, ver seccion 13):
+
+| Alerta | Condicion | Severidad |
+|--------|-----------|-----------|
+| Worker caido | `up{job="worker"} == 0` por > 1min | CRITICA |
+| Jobs fallando | mas del 10% de intentos en `error`/`panic` por `kind`, por > 10min | WARNING |
+| Jobs lentos | p95 de `river_job_duration_seconds` por `kind` > 60s por > 10min | WARNING |
+
+<!-- vogel:component worker end -->
 `http_request_duration_seconds` es un histograma: no tiene etiqueta `quantile`, los percentiles se calculan con `histogram_quantile` sobre la serie `_bucket`. `db_pool_acquire_duration_seconds` es un acumulado de segundos (sólo da un promedio); para percentiles de la espera por conexión está el histograma `db_pool_acquire_wait_seconds`.
 
 ---

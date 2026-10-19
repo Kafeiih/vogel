@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/riverqueue/river"
 
 	// vogel:component notification begin
@@ -156,14 +157,24 @@ func run(migrateFirst bool) error {
 	// Register additional workers here:
 	// river.AddWorker(workers, &jobs.GeneratePDFWorker{})
 
-	// Create River queue. No periodic jobs are registered by this
-	// boilerplate -- if you add one, pass worker.WithPeriodicJobs(...) here.
-	// Job metrics are not exported either: this binary serves no /metrics.
-	// To publish river_job_duration_seconds, pass
-	// worker.WithMetrics(prometheus.DefaultRegisterer) here and start a
-	// metrics server like the api's (httpiface.NewMetricsServer) on an
-	// address of its own.
-	queue, err := worker.NewRiverQueue(pool, workers, cfg.Worker, appLogger.Logger)
+	// Job and pool metrics, served on the worker's own /metrics listener
+	// (WORKER_METRICS_LISTEN_ADDR, default :9091) from the default registry.
+	if _, err := postgres.NewPoolMetricsCollector(pool, prometheus.DefaultRegisterer); err != nil {
+		return fmt.Errorf("registering pool metrics: %w", err)
+	}
+	metricsSrv, stopMetrics, err := startMetricsServer(cfg.Metrics.WorkerListenAddr, appLogger.Logger)
+	if err != nil {
+		return fmt.Errorf("starting metrics server: %w", err)
+	}
+	defer stopMetrics()
+	appLogger.Info("worker metrics server listening", "addr", metricsSrv.Addr)
+
+	// Create River queue. worker.WithMetrics records
+	// river_job_duration_seconds{kind,outcome}. No periodic jobs are
+	// registered by this boilerplate -- if you add one, pass
+	// worker.WithPeriodicJobs(...) here.
+	queue, err := worker.NewRiverQueue(pool, workers, cfg.Worker, appLogger.Logger,
+		worker.WithMetrics(prometheus.DefaultRegisterer))
 	if err != nil {
 		return fmt.Errorf("creating river queue: %w", err)
 	}
