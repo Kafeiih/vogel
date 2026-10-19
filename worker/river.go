@@ -32,8 +32,9 @@ var _ Queue = (*RiverQueue)(nil)
 //
 // If workers is nil, the client operates in insert-only mode (API process).
 // If workers is provided, the client can be started to process jobs (worker
-// binary). Pass WithPeriodicJobs to register periodic jobs — see its doc
-// comment for how that interacts with insert-only mode.
+// binary). Pass WithPeriodicJobs to register periodic jobs and WithMetrics to
+// export job metrics — see their doc comments for how they interact with
+// insert-only mode.
 func NewRiverQueue(pool *pgxpool.Pool, workers *river.Workers, cfg Config, logger *slog.Logger, opts ...Option) (*RiverQueue, error) {
 	if pool == nil {
 		return nil, fmt.Errorf("worker: pgxpool.Pool is required")
@@ -43,7 +44,11 @@ func NewRiverQueue(pool *pgxpool.Pool, workers *river.Workers, cfg Config, logge
 	}
 
 	o := newOptions(opts...)
-	riverCfg := buildRiverConfig(cfg, workers, o.periodicJobs, logger)
+	metrics, err := o.buildMetrics(workers)
+	if err != nil {
+		return nil, err
+	}
+	riverCfg := buildRiverConfig(cfg, workers, o.periodicJobs, metrics, logger)
 
 	client, err := river.NewClient(riverpgxv5.New(pool), riverCfg)
 	if err != nil {
@@ -112,17 +117,22 @@ func (q *RiverQueue) Stop(ctx context.Context) error {
 // search_path (public) and Start fails with `relation "river_queue" does not
 // exist`.
 //
-// Workers, Queues, and periodicJobs are only relevant in worker-binary mode.
-// The API process creates the client in insert-only mode (workers == nil) to
-// enqueue jobs without consuming them, so none of the three are set then —
-// periodicJobs included, even if the caller passed some in: an insert-only
-// client processes nothing, so there is nothing to run them.
+// Workers, Queues, periodicJobs, metrics and cfg.PollOnly are only relevant
+// in worker-binary mode. The API process creates the client in insert-only
+// mode (workers == nil) to enqueue jobs without consuming them, so none of
+// them are set then — periodicJobs and metrics included, even if the caller
+// passed some in: an insert-only client processes nothing, so there is
+// nothing to run or time, and it never LISTENs, so PollOnly changes nothing.
+//
+// The metrics middleware goes after the request ID one: River runs the first
+// middleware outermost, so the request ID is in the context before the
+// metrics middleware times the rest of the chain and the worker's Work.
 //
 // Logger and the request ID middleware are set in both modes: River's own
 // log lines go through the app's logger instead of River's default text
 // handler, from warn up as before (see riverLogger), and the request ID is written by the enqueuing process and read by
 // the working one (see requestIDMiddleware).
-func buildRiverConfig(cfg Config, workers *river.Workers, periodicJobs []*river.PeriodicJob, logger *slog.Logger) *river.Config {
+func buildRiverConfig(cfg Config, workers *river.Workers, periodicJobs []*river.PeriodicJob, metrics *metricsMiddleware, logger *slog.Logger) *river.Config {
 	rc := &river.Config{
 		Schema:     cfg.Schema,
 		Logger:     riverLogger(logger),
@@ -131,6 +141,10 @@ func buildRiverConfig(cfg Config, workers *river.Workers, periodicJobs []*river.
 	if workers != nil {
 		rc.Workers = workers
 		rc.Queues = buildQueueConfig(cfg)
+		rc.PollOnly = cfg.PollOnly
+		if metrics != nil {
+			rc.Middleware = append(rc.Middleware, metrics)
+		}
 		if len(periodicJobs) > 0 {
 			rc.PeriodicJobs = periodicJobs
 		}
