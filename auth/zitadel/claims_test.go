@@ -38,6 +38,8 @@ func TestCheckClaims(t *testing.T) {
 		{name: "nbf in the future is rejected", claims: tokenClaims{notBefore: now.Add(time.Hour)}, wantErr: errNotYetValid},
 		{name: "iat in the past is accepted", claims: tokenClaims{issuedAt: now.Add(-time.Hour)}},
 		{name: "iat within the clock-skew leeway is accepted", claims: tokenClaims{issuedAt: now.Add(clockSkewLeeway / 2)}},
+		{name: "iat exactly at the clock-skew leeway is accepted", claims: tokenClaims{issuedAt: now.Add(clockSkewLeeway)}},
+		{name: "iat one second past the clock-skew leeway is rejected", claims: tokenClaims{issuedAt: now.Add(clockSkewLeeway + time.Second)}, wantErr: errIssuedInFuture},
 		{name: "iat in the future is rejected", claims: tokenClaims{issuedAt: now.Add(time.Hour)}, wantErr: errIssuedInFuture},
 		{
 			name:        "iat in the future is rejected even when the lifetime fits",

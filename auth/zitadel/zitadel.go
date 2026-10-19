@@ -146,11 +146,12 @@ func validateConfig(cfg Config) (Config, error) {
 // public key.
 var acceptedSigningAlgorithms = []string{"RS256", "ES256", "PS256"}
 
-// withJWT is the local JWT verifier with acceptedSigningAlgorithms pinned.
-// oauth.WithJWT is what DefaultJWTAuthorization wraps, with a nil client that
-// it replaces by http.DefaultClient; pass a bounded one instead.
-func withJWT(clientID string, httpClient *http.Client) authorization.VerifierInitializer[*oauth.IntrospectionContext] {
-	return oauth.WithJWT(clientID, httpClient, op.WithSupportedAccessTokenSigningAlgorithms(acceptedSigningAlgorithms...))
+// withJWT is the local JWT verifier accepting only algs; build passes
+// acceptedSigningAlgorithms. oauth.WithJWT is what DefaultJWTAuthorization
+// wraps, with a nil client that it replaces by http.DefaultClient; pass a
+// bounded one instead.
+func withJWT(clientID string, httpClient *http.Client, algs []string) authorization.VerifierInitializer[*oauth.IntrospectionContext] {
+	return oauth.WithJWT(clientID, httpClient, op.WithSupportedAccessTokenSigningAlgorithms(algs...))
 }
 
 // build constructs the Authenticator for an already validated cfg against z.
@@ -166,7 +167,7 @@ func build(ctx context.Context, z *zitadel.Zitadel, cfg Config) (*Authenticator,
 		cache = newIntrospectionCache(cfg.Introspection.CacheMaxEntries)
 		initVerifier = withIntrospection(*cfg.Introspection, cfg.ClientID, httpClient, cache)
 	} else {
-		initVerifier = withJWT(cfg.ClientID, httpClient)
+		initVerifier = withJWT(cfg.ClientID, httpClient, acceptedSigningAlgorithms)
 	}
 	authorizer, err := authorization.New(ctx, z, initVerifier)
 	if err != nil {

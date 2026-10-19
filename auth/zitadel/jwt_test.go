@@ -113,12 +113,18 @@ func (ti *testIssuer) signingInput(t *testing.T, alg string, claims map[string]a
 // discovery is the same code path New uses.
 func (ti *testIssuer) authenticator(t *testing.T, cfg Config) *Authenticator {
 	t.Helper()
+	return ti.authenticatorAccepting(t, cfg, acceptedSigningAlgorithms)
+}
+
+// authenticatorAccepting is authenticator with the verifier limited to algs.
+func (ti *testIssuer) authenticatorAccepting(t *testing.T, cfg Config, algs []string) *Authenticator {
+	t.Helper()
 	u, err := url.Parse(ti.srv.URL)
 	if err != nil {
 		t.Fatalf("parse issuer URL: %v", err)
 	}
 	z := zitadel.New(u.Hostname(), zitadel.WithInsecure(u.Port()))
-	az, err := authorization.New(context.Background(), z, withJWT(cfg.ClientID, issuerHTTPClient(cfg)))
+	az, err := authorization.New(context.Background(), z, withJWT(cfg.ClientID, issuerHTTPClient(cfg), algs))
 	if err != nil {
 		t.Fatalf("authorization.New: %v", err)
 	}
@@ -235,16 +241,12 @@ func TestAcceptedSigningAlgorithms(t *testing.T) {
 	}
 }
 
-// TestWithJWT_HonorsAcceptedSigningAlgorithms proves withJWT really hands
-// acceptedSigningAlgorithms to the SDK verifier: the pinned list equals the
-// SDK default, so only narrowing it shows the option takes effect.
+// TestWithJWT_HonorsAcceptedSigningAlgorithms proves withJWT really hands its
+// algorithm list to the SDK verifier: acceptedSigningAlgorithms equals the
+// SDK default, so only a narrower list shows the option takes effect.
 func TestWithJWT_HonorsAcceptedSigningAlgorithms(t *testing.T) {
-	saved := acceptedSigningAlgorithms
-	acceptedSigningAlgorithms = []string{"ES256"}
-	t.Cleanup(func() { acceptedSigningAlgorithms = saved })
-
 	ti := newTestIssuer(t)
-	a := ti.authenticator(t, Config{ClientID: "api-client"})
+	a := ti.authenticatorAccepting(t, Config{ClientID: "api-client"}, []string{"ES256"})
 	_, err := a.Authenticate(context.Background(), ti.sign(t, map[string]any{"sub": "user-1", "aud": []string{"api-client"}}))
 	if !errors.Is(err, auth.ErrUnauthenticated) || !strings.Contains(err.Error(), oidc.ErrSignatureUnsupportedAlg.Error()) {
 		t.Fatalf("error = %v, want an RS256 token refused when only ES256 is accepted", err)
