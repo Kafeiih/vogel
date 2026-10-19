@@ -42,7 +42,9 @@ func Recovery(logger *slog.Logger) func(next http.Handler) http.Handler {
 						"method", r.Method,
 						"stack", string(debug.Stack()),
 					)
-					logger.Error("panic recovered", attrs...)
+					// ErrorContext lets a context-aware handler (logger.New's)
+					// add the request_id and user_id of the request.
+					logger.ErrorContext(r.Context(), "panic recovered", attrs...)
 
 					// Return a 500 to the client.
 					response.Error(w, r, http.StatusInternalServerError,

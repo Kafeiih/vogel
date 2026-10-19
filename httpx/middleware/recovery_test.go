@@ -10,6 +10,9 @@ import (
 	"strings"
 	"testing"
 	"unicode/utf8"
+
+	"github.com/kafeiih/vogel/logger"
+	"github.com/kafeiih/vogel/reqctx"
 )
 
 func TestRecovery_NoPanic_PassesThrough(t *testing.T) {
@@ -173,5 +176,29 @@ func TestRecovery_TypedNilErrorDoesNotCrash(t *testing.T) {
 	// fmt recovers the nil dereference and prints a nil receiver as <nil>.
 	if line["error"] != "<nil>" {
 		t.Errorf("error = %v, want <nil>", line["error"])
+	}
+}
+
+// With logger.New's context-aware handler, the panic line carries the
+// request's request_id, so it can be joined with the access log line.
+func TestRecovery_LogsTheRequestID(t *testing.T) {
+	var buf bytes.Buffer
+	l := logger.New("production", &buf)
+	h := Recovery(l.Logger)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		panic("boom")
+	}))
+	r := httptest.NewRequest(http.MethodGet, "/boom", nil)
+	r = r.WithContext(reqctx.WithRequestID(r.Context(), "req-123"))
+	h.ServeHTTP(httptest.NewRecorder(), r)
+
+	var line map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &line); err != nil {
+		t.Fatalf("decode log line %q: %v", buf.String(), err)
+	}
+	if line["request_id"] != "req-123" {
+		t.Errorf("request_id = %v, want req-123", line["request_id"])
+	}
+	if line["path"] != "/boom" || line["method"] != http.MethodGet {
+		t.Errorf("(path, method) = (%v, %v), want (/boom, GET)", line["path"], line["method"])
 	}
 }
