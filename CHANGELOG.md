@@ -20,6 +20,11 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   release). Sus `Start` corren antes que los de vogel y sus `End` después, así
   que su span envuelve la línea de consulta lenta, que ahora se loguea con
   `WarnContext` (lleva `request_id` y, con tracing, los IDs del span).
+- **`worker`: `WithMiddleware(...)`.** Agrega middlewares de River (de
+  inserción, de trabajo o ambos) después del de request ID y antes del de
+  métricas, en el orden dado. A diferencia de `WithMetrics`, también se
+  instalan en un cliente solo de inserción: un middleware de inserción es como
+  el proceso que encola deja su contexto (un trace, por ejemplo) en el job.
 - **`httpx/response`: `request_id` en las respuestas de error.**
   `ErrorResponse` y `ValidationErrorResponse` llevan el request ID también
   bajo `request_id`.
