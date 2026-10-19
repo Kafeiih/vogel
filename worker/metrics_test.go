@@ -203,7 +203,7 @@ func TestWithMetrics_NilRegisterer_UsesDefaultRegisterer(t *testing.T) {
 	m.duration.WithLabelValues("probe", "success").Observe(0.1)
 	families, err := reg.Gather()
 	require.NoError(t, err)
-	var names []string
+	names := make([]string, 0, len(families))
 	for _, f := range families {
 		names = append(names, f.GetName())
 	}
