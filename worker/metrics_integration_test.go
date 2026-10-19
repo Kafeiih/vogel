@@ -4,9 +4,12 @@ package worker_test
 
 import (
 	"context"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/riverqueue/river"
@@ -119,11 +122,55 @@ func TestWithMetrics_WorkedJobIsObserved(t *testing.T) {
 	}, 10*time.Second, 50*time.Millisecond)
 }
 
-// PollOnly drops LISTEN/NOTIFY, so the worker must find a job enqueued after
-// it started by polling alone.
-func TestPollOnly_WorkerStillProcessesJobs(t *testing.T) {
-	pool := startTestPool(t)
-	cfg := worker.Config{Schema: "river", DefaultMaxWorkers: 2, PollOnly: true}
+// statementRecorder is a pgx.QueryTracer that keeps every SQL statement the
+// pool's connections run, so a test can assert on what was ever sent, not
+// only on the last statement pg_stat_activity shows per session.
+type statementRecorder struct {
+	mu   sync.Mutex
+	sqls []string
+}
+
+func (r *statementRecorder) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	r.mu.Lock()
+	r.sqls = append(r.sqls, data.SQL)
+	r.mu.Unlock()
+	return ctx
+}
+
+func (r *statementRecorder) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
+// listens reports whether any recorded statement was a LISTEN.
+func (r *statementRecorder) listens() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, sql := range r.sqls {
+		if strings.HasPrefix(strings.ToUpper(strings.TrimSpace(sql)), "LISTEN") {
+			return true
+		}
+	}
+	return false
+}
+
+// startTracedPool opens a pool on its own container whose every statement is
+// recorded.
+func startTracedPool(t *testing.T) (*pgxpool.Pool, *statementRecorder) {
+	t.Helper()
+	cfg, err := pgxpool.ParseConfig(startTestPostgres(t))
+	require.NoError(t, err)
+	rec := &statementRecorder{}
+	cfg.ConnConfig.Tracer = rec
+	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
+	require.NoError(t, err)
+	t.Cleanup(pool.Close)
+	return pool, rec
+}
+
+// runPolledJob starts a worker with cfg on a traced pool, works one job
+// enqueued after it started, and returns what the pool's connections ran.
+func runPolledJob(t *testing.T, pollOnly bool) *statementRecorder {
+	t.Helper()
+	pool, rec := startTracedPool(t)
+	cfg := worker.Config{Schema: "river", DefaultMaxWorkers: 2, PollOnly: pollOnly}
 	api := migratedQueue(t, pool, cfg)
 
 	w := &signalWorker{done: make(chan string, 1)}
@@ -132,13 +179,21 @@ func TestPollOnly_WorkerStillProcessesJobs(t *testing.T) {
 	_, err := api.Enqueue(context.Background(), signalArgs{Tag: "polled"}, nil)
 	require.NoError(t, err)
 	waitForJob(t, w.done, "polled")
+	return rec
+}
 
-	// No session of this database ever issued LISTEN: the worker did not
-	// rely on a session-pinned connection, which is what makes it usable
-	// behind PgBouncer in transaction mode.
-	var listening int
-	require.NoError(t, pool.QueryRow(context.Background(),
-		`SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND query ILIKE 'listen%'`,
-	).Scan(&listening))
-	assert.Zero(t, listening, "a PollOnly worker must not LISTEN")
+// PollOnly drops LISTEN/NOTIFY: the worker still finds a job enqueued after
+// it started, by polling alone, and no connection of its pool ever runs
+// LISTEN, which is what makes it usable behind transaction-mode PgBouncer.
+func TestPollOnly_WorkerProcessesJobsWithoutListen(t *testing.T) {
+	rec := runPolledJob(t, true)
+	assert.False(t, rec.listens(), "a PollOnly worker must never run LISTEN")
+}
+
+// The same probe sees LISTEN when PollOnly is off, so the assertion above is
+// not vacuous.
+func TestPollOnlyOff_WorkerListens(t *testing.T) {
+	rec := runPolledJob(t, false)
+	require.Eventually(t, rec.listens, 10*time.Second, 50*time.Millisecond,
+		"without PollOnly the worker's notifier runs LISTEN")
 }
