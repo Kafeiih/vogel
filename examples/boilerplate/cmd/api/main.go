@@ -19,6 +19,11 @@ import (
 	"github.com/kafeiih/vogel/storage/s3"
 
 	// vogel:component storage end
+	// vogel:component tracing begin
+	"github.com/kafeiih/vogel/otel"
+	"github.com/kafeiih/vogel/otel/otelpgx"
+
+	// vogel:component tracing end
 	auditpkg "github.com/kafeiih/vogel/audit"
 	auditmigrations "github.com/kafeiih/vogel/audit/migrations"
 	auditpg "github.com/kafeiih/vogel/audit/postgres"
@@ -27,25 +32,20 @@ import (
 	vmw "github.com/kafeiih/vogel/httpx/middleware"
 	"github.com/kafeiih/vogel/logger"
 	"github.com/kafeiih/vogel/migrate"
-	// vogel:component tracing begin
-	"github.com/kafeiih/vogel/otel"
-	"github.com/kafeiih/vogel/otel/otelpgx"
-
-	// vogel:component tracing end
 	"github.com/kafeiih/vogel/postgres"
 
 	// vogel:component worker begin
 	"github.com/kafeiih/vogel/examples/boilerplate/internal/infrastructure/riverschema"
 
 	// vogel:component worker end
-	"github.com/kafeiih/vogel/examples/boilerplate/docs"
-	"github.com/kafeiih/vogel/examples/boilerplate/internal/infrastructure/config"
-	appmigrate "github.com/kafeiih/vogel/examples/boilerplate/internal/infrastructure/database/migrate"
-	"github.com/kafeiih/vogel/examples/boilerplate/internal/infrastructure/database/migrations"
 	// vogel:component tracing begin
 	"github.com/kafeiih/vogel/examples/boilerplate/internal/infrastructure/tracing"
 
 	// vogel:component tracing end
+	"github.com/kafeiih/vogel/examples/boilerplate/docs"
+	"github.com/kafeiih/vogel/examples/boilerplate/internal/infrastructure/config"
+	appmigrate "github.com/kafeiih/vogel/examples/boilerplate/internal/infrastructure/database/migrate"
+	"github.com/kafeiih/vogel/examples/boilerplate/internal/infrastructure/database/migrations"
 	httpiface "github.com/kafeiih/vogel/examples/boilerplate/internal/interfaces/http"
 	"github.com/kafeiih/vogel/examples/boilerplate/internal/interfaces/http/handler"
 )
@@ -258,7 +258,7 @@ func runServer(migrateFirst bool) error {
 		return fmt.Errorf("loading config: %w", err)
 	}
 
-	var logOpts []logger.Option
+	logOpts := make([]logger.Option, 0, 1)
 	// vogel:component tracing begin
 	// Log lines written with a context carry the span's trace_id/span_id.
 	logOpts = append(logOpts, logger.WithTraceIDs(otel.TraceIDs))
@@ -329,7 +329,7 @@ func runServer(migrateFirst bool) error {
 	if _, err := postgres.NewPoolMetricsCollector(pool, prometheus.DefaultRegisterer); err != nil {
 		return fmt.Errorf("registering pool metrics: %w", err)
 	}
-	var metricsOpts []vmw.MetricsOption
+	metricsOpts := make([]vmw.MetricsOption, 0, 1)
 	// vogel:component tracing begin
 	metricsOpts = append(metricsOpts, vmw.WithExemplars(otel.SampledTraceIDs))
 	// vogel:component tracing end

@@ -19,22 +19,23 @@ import (
 	"github.com/kafeiih/vogel/notification/smtp"
 
 	// vogel:component notification end
-	"github.com/kafeiih/vogel/logger"
 	// vogel:component tracing begin
 	"github.com/kafeiih/vogel/otel"
 	"github.com/kafeiih/vogel/otel/otelpgx"
 	"github.com/kafeiih/vogel/otel/otelriver"
 
 	// vogel:component tracing end
+	"github.com/kafeiih/vogel/logger"
 	"github.com/kafeiih/vogel/postgres"
 	"github.com/kafeiih/vogel/worker"
 
+	// vogel:component tracing begin
+	"github.com/kafeiih/vogel/examples/boilerplate/internal/infrastructure/tracing"
+
+	// vogel:component tracing end
 	"github.com/kafeiih/vogel/examples/boilerplate/internal/application/jobs"
 	"github.com/kafeiih/vogel/examples/boilerplate/internal/infrastructure/config"
 	"github.com/kafeiih/vogel/examples/boilerplate/internal/infrastructure/riverschema"
-	// vogel:component tracing begin
-	"github.com/kafeiih/vogel/examples/boilerplate/internal/infrastructure/tracing"
-	// vogel:component tracing end
 )
 
 func main() {
@@ -108,7 +109,7 @@ func run(migrateFirst bool) error {
 		return fmt.Errorf("loading config: %w", err)
 	}
 
-	var logOpts []logger.Option
+	logOpts := make([]logger.Option, 0, 1)
 	// vogel:component tracing begin
 	// Log lines written with a context carry the span's trace_id/span_id.
 	logOpts = append(logOpts, logger.WithTraceIDs(otel.TraceIDs))
@@ -204,7 +205,8 @@ func run(migrateFirst bool) error {
 	// river_job_duration_seconds{kind,outcome}. No periodic jobs are
 	// registered by this boilerplate -- if you add one, pass
 	// worker.WithPeriodicJobs(...) here.
-	queueOpts := []worker.Option{worker.WithMetrics(prometheus.DefaultRegisterer)}
+	queueOpts := make([]worker.Option, 0, 2)
+	queueOpts = append(queueOpts, worker.WithMetrics(prometheus.DefaultRegisterer))
 	// vogel:component tracing begin
 	// A span per job attempt, continuing the trace of the request that
 	// enqueued it (carried in the job metadata).

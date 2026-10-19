@@ -40,13 +40,14 @@ import (
 	"github.com/kafeiih/vogel/storage/s3"
 
 	// vogel:component storage end
+	// vogel:component tracing begin
+	"github.com/kafeiih/vogel/otel"
+
+	// vogel:component tracing end
 	"github.com/kafeiih/vogel/auth/zitadel"
 	"github.com/kafeiih/vogel/authz/cerbos"
 	"github.com/kafeiih/vogel/config"
 	vmw "github.com/kafeiih/vogel/httpx/middleware"
-	// vogel:component tracing begin
-	"github.com/kafeiih/vogel/otel"
-	// vogel:component tracing end
 	"github.com/kafeiih/vogel/postgres"
 )
 
