@@ -57,7 +57,15 @@ type ErrorResponse struct {
 	Error string `json:"error,omitempty"`
 	// Field names the offending input field, when the error belongs to one.
 	// Omitted when not set.
-	Field   string `json:"field,omitempty"`
+	Field string `json:"field,omitempty"`
+	// RequestID is the request's ID (the X-Request-Id response header), for
+	// matching an error report with its log lines. Omitted without
+	// httpx/middleware.RequestID.
+	RequestID string `json:"request_id,omitempty"`
+	// TraceID carries the same request ID under its former name.
+	//
+	// Deprecated: read RequestID ("request_id"); "trace_id" is not an
+	// OpenTelemetry trace ID and is removed in v0.13.0.
 	TraceID string `json:"trace_id,omitempty"`
 } //	@name	ErrorResponse
 
@@ -67,7 +75,10 @@ type ValidationErrorResponse struct {
 	Message string            `json:"message"`
 	Code    string            `json:"code"`
 	Fields  map[string]string `json:"fields"`
-	TraceID string            `json:"trace_id,omitempty"`
+	// RequestID is the request's ID, as in ErrorResponse.
+	RequestID string `json:"request_id,omitempty"`
+	// Deprecated: read RequestID ("request_id"); removed in v0.13.0.
+	TraceID string `json:"trace_id,omitempty"`
 } //	@name	ValidationErrorResponse
 
 // ErrorOption customizes an ErrorResponse built by ErrorWith.
@@ -92,11 +103,13 @@ func Error(w http.ResponseWriter, r *http.Request, status int, code, message str
 // ErrorWith writes the standard error envelope, applying opts to add a stable
 // error identifier and/or the offending field.
 func ErrorWith(w http.ResponseWriter, r *http.Request, status int, code, message string, opts ...ErrorOption) {
+	requestID := middleware.GetReqID(r.Context())
 	resp := ErrorResponse{
-		Success: false,
-		Message: message,
-		Code:    code,
-		TraceID: middleware.GetReqID(r.Context()),
+		Success:   false,
+		Message:   message,
+		Code:      code,
+		RequestID: requestID,
+		TraceID:   requestID,
 	}
 	for _, opt := range opts {
 		opt(&resp)
@@ -112,12 +125,14 @@ func ErrorWith(w http.ResponseWriter, r *http.Request, status int, code, message
 func ValidationError(w http.ResponseWriter, r *http.Request, fields map[string]string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusBadRequest)
+	requestID := middleware.GetReqID(r.Context())
 	if err := json.NewEncoder(w).Encode(ValidationErrorResponse{
-		Success: false,
-		Message: "Validation failed",
-		Code:    "VALIDATION_ERROR",
-		Fields:  fields,
-		TraceID: middleware.GetReqID(r.Context()),
+		Success:   false,
+		Message:   "Validation failed",
+		Code:      "VALIDATION_ERROR",
+		Fields:    fields,
+		RequestID: requestID,
+		TraceID:   requestID,
 	}); err != nil {
 		slog.Error("failed to encode validation error response", "error", err)
 	}

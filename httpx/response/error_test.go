@@ -86,7 +86,7 @@ func TestErrorWith_PropagatesTraceID(t *testing.T) {
 
 	var got response.ErrorResponse
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
-	assert.Equal(t, "trace-1", got.TraceID)
+	assert.Equal(t, "trace-1", got.RequestID)
 	assert.Equal(t, "X", got.Error)
 }
 
@@ -102,7 +102,7 @@ func TestValidationError_PropagatesTraceID(t *testing.T) {
 
 	var got response.ValidationErrorResponse
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
-	assert.Equal(t, "trace-2", got.TraceID)
+	assert.Equal(t, "trace-2", got.RequestID)
 }
 
 func TestValidationError_NoTraceIDWithoutMiddleware(t *testing.T) {
@@ -112,4 +112,38 @@ func TestValidationError_NoTraceIDWithoutMiddleware(t *testing.T) {
 	response.ValidationError(rec, req, map[string]string{"a": "required"})
 
 	assert.NotContains(t, rec.Body.String(), "trace_id")
+}
+
+// request_id carries the request ID under its own name; trace_id keeps the
+// same value until it is removed (deprecated in v0.12.0).
+func TestErrorWith_RequestIDMatchesDeprecatedTraceID(t *testing.T) {
+	h := middleware.RequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		response.Error(w, r, http.StatusNotFound, response.CodeNotFound, "not found")
+	}))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	var got map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	assert.NotEmpty(t, got["request_id"])
+	assert.Equal(t, got["request_id"], got["trace_id"])
+}
+
+func TestValidationError_RequestIDMatchesDeprecatedTraceID(t *testing.T) {
+	h := middleware.RequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		response.ValidationError(w, r, map[string]string{"a": "required"})
+	}))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	var got map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	assert.NotEmpty(t, got["request_id"])
+	assert.Equal(t, got["request_id"], got["trace_id"])
+}
+
+func TestError_NoRequestIDWithoutMiddleware(t *testing.T) {
+	rec := httptest.NewRecorder()
+	response.Error(rec, httptest.NewRequest(http.MethodGet, "/", nil), http.StatusNotFound, response.CodeNotFound, "x")
+	assert.NotContains(t, rec.Body.String(), "request_id")
 }
