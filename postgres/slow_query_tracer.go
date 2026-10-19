@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -21,6 +22,10 @@ type contextKey struct{}
 // sql_bytes giving the full length.
 const maxLoggedSQLBytes = 2048
 
+// maxLoggedErrorBytes bounds a failed query's error text; a longer one is cut
+// at a rune boundary and flagged with error_truncated.
+const maxLoggedErrorBytes = 1024
+
 // sqlHashBytes is how many bytes of the SHA-256 of the SQL text sql_hash
 // carries, hex encoded (so twice as many characters).
 const sqlHashBytes = 8
@@ -33,12 +38,13 @@ const sqlHashBytes = 8
 // therefore reach the log. WithSlowQuerySQLHash replaces the text with a
 // short hash (sql_hash) that still groups repeated queries.
 //
-// A failed query's error is logged bounded like the SQL. A PostgreSQL error
-// message can quote the value that failed (`invalid input syntax for type
-// uuid: "..."`), so with WithSlowQuerySQLHash a *pgconn.PgError is logged as
-// error_code (its SQLSTATE) and error_constraint only; other errors (a
-// canceled context, a broken connection) carry no query data and keep their
-// text.
+// A failed query's error text is logged bounded by maxLoggedErrorBytes. An
+// error message can quote a value: PostgreSQL's (`invalid input syntax for
+// type uuid: "..."`) and pgx's own when it encodes an argument or scans a
+// result. So with WithSlowQuerySQLHash the text is dropped: a
+// *pgconn.PgError is logged as error_code (its SQLSTATE) and
+// error_constraint, a canceled or timed-out context keeps its fixed text, and
+// any other error is logged by its Go type only (error_type).
 //
 // The hash is unsalted, so it pseudonymizes rather than hides: someone who
 // can read the logs and knows the query template can hash candidate values
@@ -118,16 +124,28 @@ func (t *SlowQueryTracer) sqlAttrs(sql string) []any {
 
 // errorAttrs returns the log attributes describing a failed query's err.
 func (t *SlowQueryTracer) errorAttrs(err error) []any {
+	if !t.hashSQL {
+		text, truncated := logtext.Truncate(err.Error(), maxLoggedErrorBytes)
+		if !truncated {
+			return []any{"error", text}
+		}
+		return []any{"error", text, "error_truncated", true}
+	}
 	var pgErr *pgconn.PgError
-	if t.hashSQL && errors.As(err, &pgErr) {
+	switch {
+	case errors.As(err, &pgErr):
 		attrs := []any{"error_code", pgErr.Code}
 		if pgErr.ConstraintName != "" {
 			attrs = append(attrs, "error_constraint", pgErr.ConstraintName)
 		}
 		return attrs
+	case errors.Is(err, context.Canceled):
+		return []any{"error", context.Canceled.Error()}
+	case errors.Is(err, context.DeadlineExceeded):
+		return []any{"error", context.DeadlineExceeded.Error()}
+	default:
+		return []any{"error_type", fmt.Sprintf("%T", err)}
 	}
-	text, _ := logtext.Truncate(err.Error(), maxLoggedSQLBytes)
-	return []any{"error", text}
 }
 
 type queryTrace struct {

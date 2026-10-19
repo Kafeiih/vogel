@@ -137,8 +137,9 @@ type Config struct {
 	// unsalted: it keeps the statement text out of the logs, but a reader who
 	// knows the template can still confirm a low-entropy inlined literal by
 	// hashing guesses, so bind such values as parameters instead. In this mode
+	// a failed query's error text is dropped too, since it can quote a value:
 	// a PostgreSQL error is logged by SQLSTATE (error_code) and constraint
-	// name, not by its message, which can quote the failing value.
+	// name, any other error by its Go type.
 	HashSlowQuerySQL bool
 
 	// AfterConnect, if set, runs after this package's own per-connection setup

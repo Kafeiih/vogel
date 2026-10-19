@@ -88,42 +88,82 @@ func slowQueryLineWithErr(t *testing.T, tr *SlowQueryTracer, buf *bytes.Buffer, 
 }
 
 // A PostgreSQL error message can quote the offending value; hash mode keeps
-// it out by logging only the SQLSTATE and the constraint name.
+// it out by logging only the SQLSTATE.
 func TestSlowQueryTracer_WithSQLHashLogsOnlyTheSQLState(t *testing.T) {
 	var buf bytes.Buffer
 	pgErr := &pgconn.PgError{
 		Severity: "ERROR", Code: "22P02",
-		Message:        `invalid input syntax for type uuid: "alice@example.com"`,
-		Detail:         "Key (email)=(alice@example.com) already exists.",
-		ConstraintName: "users_email_key",
+		Message: `invalid input syntax for type uuid: "alice@example.com"`,
 	}
 	line := slowQueryLineWithErr(t, NewSlowQueryTracer(jsonLogger(&buf), 0, WithSlowQuerySQLHash()), &buf, fmt.Errorf("query: %w", pgErr))
 
 	assert.Equal(t, "22P02", line["error_code"])
-	assert.Equal(t, "users_email_key", line["error_constraint"])
+	assert.NotContains(t, line, "error_constraint")
 	assert.NotContains(t, line, "error")
 	assert.NotContains(t, buf.String(), "alice@example.com")
 }
 
-// A non-PostgreSQL error (a canceled context, a broken connection) carries
-// no query data and keeps its text in hash mode.
-func TestSlowQueryTracer_WithSQLHashKeepsNonPostgresErrors(t *testing.T) {
+// A unique violation names its constraint; its Detail quotes the row values
+// and is never logged in hash mode.
+func TestSlowQueryTracer_WithSQLHashLogsTheConstraint(t *testing.T) {
 	var buf bytes.Buffer
-	line := slowQueryLineWithErr(t, NewSlowQueryTracer(jsonLogger(&buf), 0, WithSlowQuerySQLHash()), &buf, context.Canceled)
+	pgErr := &pgconn.PgError{
+		Severity: "ERROR", Code: "23505",
+		Message:        `duplicate key value violates unique constraint "users_email_key"`,
+		Detail:         "Key (email)=(alice@example.com) already exists.",
+		ConstraintName: "users_email_key",
+	}
+	line := slowQueryLineWithErr(t, NewSlowQueryTracer(jsonLogger(&buf), 0, WithSlowQuerySQLHash()), &buf, pgErr)
 
-	assert.Equal(t, "context canceled", line["error"])
-	assert.NotContains(t, line, "error_code")
+	assert.Equal(t, "23505", line["error_code"])
+	assert.Equal(t, "users_email_key", line["error_constraint"])
+	assert.NotContains(t, buf.String(), "alice@example.com")
 }
 
-// Without hash mode the error text is kept, bounded like the SQL.
+// A pgx client-side error (encoding an argument, scanning a result) can quote
+// a value too, so in hash mode any other error is logged by type only.
+func TestSlowQueryTracer_WithSQLHashLogsOtherErrorsByType(t *testing.T) {
+	var buf bytes.Buffer
+	encErr := fmt.Errorf("failed to encode args[0]: unable to encode %q into binary format for uuid", "alice@example.com")
+	line := slowQueryLineWithErr(t, NewSlowQueryTracer(jsonLogger(&buf), 0, WithSlowQuerySQLHash()), &buf, encErr)
+
+	assert.Equal(t, "*errors.errorString", line["error_type"])
+	assert.NotContains(t, line, "error")
+	assert.NotContains(t, buf.String(), "alice@example.com")
+}
+
+// A canceled or timed-out context carries no query data and keeps its fixed
+// text in hash mode.
+func TestSlowQueryTracer_WithSQLHashKeepsContextErrors(t *testing.T) {
+	for _, err := range []error{context.Canceled, fmt.Errorf("query: %w", context.DeadlineExceeded)} {
+		var buf bytes.Buffer
+		line := slowQueryLineWithErr(t, NewSlowQueryTracer(jsonLogger(&buf), 0, WithSlowQuerySQLHash()), &buf, err)
+		want := context.Canceled.Error()
+		if errors.Is(err, context.DeadlineExceeded) {
+			want = context.DeadlineExceeded.Error()
+		}
+		assert.Equal(t, want, line["error"])
+		assert.NotContains(t, line, "error_type")
+	}
+}
+
+// Without hash mode the error text is kept, bounded and flagged when cut.
 func TestSlowQueryTracer_ErrorTextIsBounded(t *testing.T) {
 	var buf bytes.Buffer
-	long := errors.New(strings.Repeat("e", maxLoggedSQLBytes) + "tail")
+	long := errors.New(strings.Repeat("e", maxLoggedErrorBytes) + "tail")
 	line := slowQueryLineWithErr(t, NewSlowQueryTracer(jsonLogger(&buf), 0), &buf, long)
 
 	got, _ := line["error"].(string)
-	assert.LessOrEqual(t, len(got), maxLoggedSQLBytes)
+	assert.LessOrEqual(t, len(got), maxLoggedErrorBytes)
 	assert.NotContains(t, got, "tail")
+	assert.Equal(t, true, line["error_truncated"])
+}
+
+func TestSlowQueryTracer_ShortErrorIsNotFlagged(t *testing.T) {
+	var buf bytes.Buffer
+	line := slowQueryLineWithErr(t, NewSlowQueryTracer(jsonLogger(&buf), 0), &buf, errors.New("boom"))
+	assert.Equal(t, "boom", line["error"])
+	assert.NotContains(t, line, "error_truncated")
 }
 
 func TestSlowQueryTracer_SQLHashLength(t *testing.T) {

@@ -186,3 +186,16 @@ func TestRecovery_NamedScalarPanicLogsItsValue(t *testing.T) {
 		t.Errorf("(error, panic_type) = (%v, %v), want (queue closed, middleware.sentinel)", line["error"], line["panic_type"])
 	}
 }
+
+type loudSentinel string
+
+func (loudSentinel) String() string { return "token=hunter2" }
+
+// A named scalar is logged from its underlying value, not through its String
+// method, which could return anything.
+func TestRecovery_NamedScalarIgnoresItsStringMethod(t *testing.T) {
+	line := recoveryLogLine(t, loudSentinel("queue closed"))
+	if line["error"] != "queue closed" {
+		t.Errorf("error = %v, want the underlying value", line["error"])
+	}
+}
