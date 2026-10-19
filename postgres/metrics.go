@@ -21,8 +21,17 @@ import (
 // to the first pool. If a consumer genuinely needs metrics for two distinct,
 // simultaneously-live pools, register each with its own prometheus.Registerer
 // (e.g. a dedicated prometheus.NewRegistry()) rather than sharing one.
+//
+// For a pool built by NewPool the collector also exports the pool tracer's
+// histograms, db_pool_acquire_wait_seconds and db_pool_conn_hold_seconds (see
+// pool_tracer.go), through this same registration. Their descriptors are
+// described for every pool, so the duplicate-registration handling above
+// covers them too; a pool built without NewPool simply exports no samples for
+// them.
 type PoolMetricsCollector struct {
 	pool *pgxpool.Pool
+	// tracer is the pool's NewPool tracer, nil for a pool built elsewhere.
+	tracer *poolTracer
 
 	totalConns           *prometheus.Desc
 	idleConns            *prometheus.Desc
@@ -33,6 +42,8 @@ type PoolMetricsCollector struct {
 	canceledAcquireCount *prometheus.Desc
 	acquireDuration      *prometheus.Desc
 	maxConns             *prometheus.Desc
+	acquireWait          *prometheus.Desc
+	connHold             *prometheus.Desc
 }
 
 // NewPoolMetricsCollector creates a collector for pool and registers it on reg.
@@ -42,8 +53,11 @@ func NewPoolMetricsCollector(pool *pgxpool.Pool, reg prometheus.Registerer) (*Po
 		reg = prometheus.DefaultRegisterer
 	}
 
+	tracer, _ := pool.Config().ConnConfig.Tracer.(*poolTracer)
+
 	c := &PoolMetricsCollector{
-		pool: pool,
+		pool:   pool,
+		tracer: tracer,
 		totalConns: prometheus.NewDesc(
 			"db_pool_connections_total",
 			"Total number of connections in the pool.",
@@ -89,6 +103,8 @@ func NewPoolMetricsCollector(pool *pgxpool.Pool, reg prometheus.Registerer) (*Po
 			"Maximum number of connections allowed in the pool.",
 			nil, nil,
 		),
+		acquireWait: prometheus.NewDesc(acquireWaitMetricName, acquireWaitMetricHelp, nil, nil),
+		connHold:    prometheus.NewDesc(connHoldMetricName, connHoldMetricHelp, nil, nil),
 	}
 
 	registered, err := registerCollector(reg, c)
@@ -124,6 +140,8 @@ func (c *PoolMetricsCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.canceledAcquireCount
 	ch <- c.acquireDuration
 	ch <- c.maxConns
+	ch <- c.acquireWait
+	ch <- c.connHold
 }
 
 func (c *PoolMetricsCollector) Collect(ch chan<- prometheus.Metric) {
@@ -138,4 +156,9 @@ func (c *PoolMetricsCollector) Collect(ch chan<- prometheus.Metric) {
 	ch <- prometheus.MustNewConstMetric(c.canceledAcquireCount, prometheus.CounterValue, float64(stats.CanceledAcquireCount()))
 	ch <- prometheus.MustNewConstMetric(c.acquireDuration, prometheus.CounterValue, stats.AcquireDuration().Seconds())
 	ch <- prometheus.MustNewConstMetric(c.maxConns, prometheus.GaugeValue, float64(stats.MaxConns()))
+
+	if c.tracer != nil {
+		ch <- c.tracer.acquireWait
+		ch <- c.tracer.connHold
+	}
 }

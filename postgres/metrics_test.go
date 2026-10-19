@@ -59,9 +59,10 @@ func TestNewPoolMetricsCollector_NilRegistererUsesDefault(t *testing.T) {
 	t.Cleanup(func() { prometheus.DefaultRegisterer.Unregister(c) })
 }
 
-// TestPoolMetricsCollector_DescribeAndCollect verifies the collector emits all
-// nine expected descriptors and metrics without touching a live database
-// (pgxpool.Stat() works against an unconnected pool).
+// TestPoolMetricsCollector_DescribeAndCollect verifies the collector describes
+// all eleven descriptors and, for a pool built without NewPool (so without the
+// pool tracer and its histograms), emits the nine stat metrics without
+// touching a live database (pgxpool.Stat() works against an unconnected pool).
 func TestPoolMetricsCollector_DescribeAndCollect(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	pool := fakePool(t)
@@ -76,7 +77,7 @@ func TestPoolMetricsCollector_DescribeAndCollect(t *testing.T) {
 	for range descCh {
 		descCount++
 	}
-	assert.Equal(t, 9, descCount)
+	assert.Equal(t, 11, descCount)
 
 	metricCh := make(chan prometheus.Metric, 16)
 	c.Collect(metricCh)
@@ -86,4 +87,35 @@ func TestPoolMetricsCollector_DescribeAndCollect(t *testing.T) {
 		metricCount++
 	}
 	assert.Equal(t, 9, metricCount)
+}
+
+// TestPoolMetricsCollector_ExportsTracerHistograms verifies a pool built from
+// newPoolConfig (as NewPool builds it) gets the acquire-wait and hold
+// histograms through the same NewPoolMetricsCollector registration, and that a
+// second such pool on the same registry still does not error.
+func TestPoolMetricsCollector_ExportsTracerHistograms(t *testing.T) {
+	newTracedPool := func() *pgxpool.Pool {
+		poolConfig, err := newPoolConfig(Config{URL: "postgres://u:p@localhost:5432/db?sslmode=disable"}, nil)
+		require.NoError(t, err)
+		pool, err := pgxpool.NewWithConfig(t.Context(), poolConfig)
+		require.NoError(t, err)
+		t.Cleanup(pool.Close)
+		return pool
+	}
+	reg := prometheus.NewRegistry()
+
+	_, err := NewPoolMetricsCollector(newTracedPool(), reg)
+	require.NoError(t, err)
+	_, err = NewPoolMetricsCollector(newTracedPool(), reg)
+	require.NoError(t, err, "a second traced pool must reuse the registration, not fail")
+
+	families, err := reg.Gather()
+	require.NoError(t, err)
+	names := map[string]bool{}
+	for _, f := range families {
+		names[f.GetName()] = true
+	}
+	assert.True(t, names["db_pool_acquire_wait_seconds"], "gathered: %v", names)
+	assert.True(t, names["db_pool_conn_hold_seconds"], "gathered: %v", names)
+	assert.True(t, names["db_pool_connections_max"], "gathered: %v", names)
 }
