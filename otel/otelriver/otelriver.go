@@ -35,7 +35,11 @@ const instrumentationName = "github.com/kafeiih/vogel/otel/otelriver"
 // metadataPrefix namespaces the propagation keys in the job metadata, as
 // vogel_request_id is, so they cannot collide with metadata a consumer sets
 // through river.InsertOpts.Metadata.
-const metadataPrefix = "vogel_"
+const (
+	metadataPrefix = "vogel_"
+	traceParentKey = metadataPrefix + "traceparent"
+	traceStateKey  = metadataPrefix + "tracestate"
+)
 
 var propagator = propagation.TraceContext{}
 
@@ -88,10 +92,14 @@ func (m *Middleware) InsertMany(ctx context.Context, manyParams []*rivertype.Job
 		semconv.MessagingOperationTypeSend,
 		semconv.MessagingBatchMessageCount(len(manyParams)),
 	}
+	// The span name must stay low-cardinality: the job kind when the insert
+	// has one, "jobs" when it mixes kinds.
+	target := "jobs"
 	if kind := commonKind(manyParams); kind != "" {
 		attrs = append(attrs, attribute.String("river.job.kind", kind))
+		target = kind
 	}
-	ctx, span := m.tracer().Start(ctx, "insert "+spanTarget(manyParams),
+	ctx, span := m.tracer().Start(ctx, "insert "+target,
 		trace.WithSpanKind(trace.SpanKindProducer),
 		trace.WithAttributes(attrs...))
 	defer span.End()
@@ -152,15 +160,6 @@ func commonKind(manyParams []*rivertype.JobInsertParams) string {
 	return kind
 }
 
-// spanTarget names the insert span after the job kind, or "jobs" for an
-// insert of several kinds: the span name must stay low-cardinality.
-func spanTarget(manyParams []*rivertype.JobInsertParams) string {
-	if kind := commonKind(manyParams); kind != "" {
-		return kind
-	}
-	return "jobs"
-}
-
 // withTraceContext returns metadata with the carrier's keys added under
 // metadataPrefix. Metadata that is not a JSON object, or that already
 // carries a traceparent (set explicitly through river.InsertOpts.Metadata),
@@ -173,7 +172,7 @@ func withTraceContext(metadata []byte, carrier propagation.MapCarrier) []byte {
 			return metadata
 		}
 	}
-	if _, ok := fields[metadataPrefix+"traceparent"]; ok {
+	if _, ok := fields[traceParentKey]; ok {
 		return metadata
 	}
 	for k, v := range carrier {
@@ -198,18 +197,15 @@ func traceContextFromMetadata(metadata []byte) propagation.MapCarrier {
 	if len(metadata) == 0 {
 		return carrier
 	}
-	var fields struct {
-		TraceParent string `json:"vogel_traceparent"`
-		TraceState  string `json:"vogel_tracestate"`
-	}
+	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(metadata, &fields); err != nil {
 		return carrier
 	}
-	if fields.TraceParent != "" {
-		carrier["traceparent"] = fields.TraceParent
-	}
-	if fields.TraceState != "" {
-		carrier["tracestate"] = fields.TraceState
+	for carrierKey, metadataKey := range map[string]string{"traceparent": traceParentKey, "tracestate": traceStateKey} {
+		var v string
+		if json.Unmarshal(fields[metadataKey], &v) == nil && v != "" {
+			carrier[carrierKey] = v
+		}
 	}
 	return carrier
 }

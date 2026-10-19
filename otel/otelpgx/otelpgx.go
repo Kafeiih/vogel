@@ -9,11 +9,13 @@
 //
 // A span carries the SQL text (db.query.text), never the query arguments,
 // the same rule as postgres's SlowQueryTracer: arguments are where user data
-// and secrets live.
+// and secrets live. SQL that inlines values instead of passing them as $n
+// arguments puts those values in the span; pass them as arguments.
 package otelpgx
 
 import (
 	"context"
+	"errors"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -78,11 +80,11 @@ func (t *Tracer) start(ctx context.Context, name string, cfg *pgx.ConnConfig, at
 	return ctx
 }
 
-// end ends the span started by start, recording err. pgx.ErrNoRows is a
-// normal outcome of QueryRow, not a failure.
-func end(ctx context.Context, err error) {
+// endSpan ends the span started by start, recording err. pgx.ErrNoRows is
+// a normal outcome of QueryRow, not a failure.
+func endSpan(ctx context.Context, err error) {
 	span := trace.SpanFromContext(ctx)
-	if err != nil && err != pgx.ErrNoRows {
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 	}
@@ -95,7 +97,7 @@ func (t *Tracer) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.T
 }
 
 func (t *Tracer) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryEndData) {
-	end(ctx, data.Err)
+	endSpan(ctx, data.Err)
 }
 
 func (t *Tracer) TraceBatchStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceBatchStartData) context.Context {
@@ -118,7 +120,7 @@ func (t *Tracer) TraceBatchQuery(ctx context.Context, _ *pgx.Conn, data pgx.Trac
 }
 
 func (t *Tracer) TraceBatchEnd(ctx context.Context, _ *pgx.Conn, data pgx.TraceBatchEndData) {
-	end(ctx, data.Err)
+	endSpan(ctx, data.Err)
 }
 
 func (t *Tracer) TraceCopyFromStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceCopyFromStartData) context.Context {
@@ -128,7 +130,7 @@ func (t *Tracer) TraceCopyFromStart(ctx context.Context, conn *pgx.Conn, data pg
 }
 
 func (t *Tracer) TraceCopyFromEnd(ctx context.Context, _ *pgx.Conn, data pgx.TraceCopyFromEndData) {
-	end(ctx, data.Err)
+	endSpan(ctx, data.Err)
 }
 
 func (t *Tracer) TraceConnectStart(ctx context.Context, data pgx.TraceConnectStartData) context.Context {
@@ -136,9 +138,11 @@ func (t *Tracer) TraceConnectStart(ctx context.Context, data pgx.TraceConnectSta
 }
 
 func (t *Tracer) TraceConnectEnd(ctx context.Context, data pgx.TraceConnectEndData) {
-	end(ctx, data.Err)
+	endSpan(ctx, data.Err)
 }
 
+// connConfig returns conn's config. pgx hands out a copy, an allocation per
+// span; it has no cheaper accessor for the database name.
 func connConfig(conn *pgx.Conn) *pgx.ConnConfig {
 	if conn == nil {
 		return nil
@@ -183,13 +187,13 @@ func spanName(op string) string {
 // it does not start with a word.
 func operationName(sql string) string {
 	sql = skipComments(sql)
-	end := strings.IndexFunc(sql, func(r rune) bool {
+	n := strings.IndexFunc(sql, func(r rune) bool {
 		return (r < 'a' || r > 'z') && (r < 'A' || r > 'Z')
 	})
-	if end == -1 {
-		end = len(sql)
+	if n == -1 {
+		n = len(sql)
 	}
-	return strings.ToUpper(sql[:end])
+	return strings.ToUpper(sql[:n])
 }
 
 func skipComments(sql string) string {

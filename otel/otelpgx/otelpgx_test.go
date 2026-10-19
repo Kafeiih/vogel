@@ -3,6 +3,7 @@ package otelpgx
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -53,7 +54,7 @@ func TestQuery_RecordsAClientSpanWithTheSQLText(t *testing.T) {
 	assert.Equal(t, "SELECT", a["db.operation.name"].AsString())
 	assert.Equal(t, codes.Unset, s.Status().Code)
 	for _, kv := range s.Attributes() {
-		assert.NotContains(t, kv.Value.Emit(), "secret-arg", "query arguments must never be recorded")
+		assert.NotContains(t, kv.Value.String(), "secret-arg", "query arguments must never be recorded")
 	}
 }
 
@@ -76,8 +77,12 @@ func TestQuery_NoRowsIsNotAnError(t *testing.T) {
 
 	ctx := tr.TraceQueryStart(context.Background(), nil, pgx.TraceQueryStartData{SQL: "select 1"})
 	tr.TraceQueryEnd(ctx, nil, pgx.TraceQueryEndData{Err: pgx.ErrNoRows})
+	ctx = tr.TraceQueryStart(context.Background(), nil, pgx.TraceQueryStartData{SQL: "select 2"})
+	tr.TraceQueryEnd(ctx, nil, pgx.TraceQueryEndData{Err: fmt.Errorf("find user: %w", pgx.ErrNoRows)})
 
-	assert.Equal(t, codes.Unset, rec.Ended()[0].Status().Code)
+	for _, s := range rec.Ended() {
+		assert.Equal(t, codes.Unset, s.Status().Code, "%s: ErrNoRows, wrapped or not, is not a failure", s.Name())
+	}
 }
 
 func TestQuery_IsAChildOfTheCallersSpan(t *testing.T) {
@@ -151,7 +156,7 @@ func TestConnect_CarriesTheServerAndDatabase(t *testing.T) {
 	assert.Equal(t, int64(6432), a["server.port"].AsInt64())
 	assert.Equal(t, codes.Error, s.Status().Code)
 	for _, kv := range s.Attributes() {
-		assert.NotContains(t, kv.Value.Emit(), "hunter2", "the password must never be recorded")
+		assert.NotContains(t, kv.Value.String(), "hunter2", "the password must never be recorded")
 	}
 }
 
