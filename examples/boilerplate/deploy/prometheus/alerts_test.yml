@@ -1,0 +1,72 @@
+# Unit tests for alerts.yml, run in CI with `promtool test rules`.
+rule_files:
+  - alerts.yml
+
+evaluation_interval: 1m
+
+tests:
+  # 10% of requests fail: far above 14.4x the 0.5% budget, so the fast burn
+  # alert fires; the slow burn alert needs 3 days of data and stays silent.
+  - interval: 1m
+    input_series:
+      - series: 'http_requests_total{job="api",status="200"}'
+        values: '0+90x120'
+      - series: 'http_requests_total{job="api",status="500"}'
+        values: '0+10x120'
+    alert_rule_test:
+      - eval_time: 90m
+        alertname: SLOAvailabilityFastBurn
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: The 99.5% availability SLO is burning its error budget fast
+              description: 5xx ratio would spend the 30-day budget in days, not weeks. See RUNBOOK.md (errores 5xx).
+
+  # 0.1% of requests fail: inside the budget, nothing fires.
+  - interval: 1m
+    input_series:
+      - series: 'http_requests_total{job="api",status="200"}'
+        values: '0+999x120'
+      - series: 'http_requests_total{job="api",status="500"}'
+        values: '0+1x120'
+    alert_rule_test:
+      - eval_time: 90m
+        alertname: SLOAvailabilityFastBurn
+        exp_alerts: []
+
+  # A connection held past the 10s bucket fires the leak alert, with the
+  # bucket spelled the Prometheus 3 way.
+  - interval: 1m
+    input_series:
+      - series: 'db_pool_conn_hold_seconds_count{instance="api:9090"}'
+        values: '0+5x10'
+      - series: 'db_pool_conn_hold_seconds_bucket{instance="api:9090",le="10.0"}'
+        values: '0+4x10'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: DBConnectionHeldTooLong
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: api:9090
+            exp_annotations:
+              summary: "Connections held longer than DB_LEAK_THRESHOLD on api:9090"
+              description: The api/worker log has a WARN naming the code that acquired them.
+
+  # Every pool connection in use for over a minute.
+  - interval: 1m
+    input_series:
+      - series: 'db_pool_connections_acquired{instance="api:9090"}'
+        values: '25x5'
+      - series: 'db_pool_connections_max{instance="api:9090"}'
+        values: '25x5'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: DBPoolExhausted
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              instance: api:9090
+            exp_annotations:
+              summary: "Every pool connection is in use on api:9090"

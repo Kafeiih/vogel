@@ -755,6 +755,8 @@ advisory de seguridad (ver `SECURITY.md` en la raiz de `vogel`).
 
 ## Alertas recomendadas (Prometheus)
 
+Estas alertas, mas un SLO de disponibilidad (99.5% sin 5xx en 30 dias) con alertas de burn-rate en varias ventanas, estan listas para cargar en `deploy/prometheus/alerts.yml` (con `rule_files:` en `prometheus.yml`). Asumen `job="api"` en el scrape: ajusta los selectores si tu configuracion usa otro nombre. CI las valida con `promtool check rules` y corre sus tests (`alerts_test.yml`) con `promtool test rules`.
+
 | Alerta | Condicion | Severidad |
 |--------|-----------|-----------|
 | DB caida | `/healthz` retorna 503 por > 30s | CRITICA |
