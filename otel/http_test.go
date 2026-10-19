@@ -70,12 +70,19 @@ func TestMiddleware_TrustedPropagationContinuesTheTrace(t *testing.T) {
 	rec, tp := newRecorder(t)
 	req := httptest.NewRequest(http.MethodGet, "/items/42", nil)
 	req.Header.Set("traceparent", clientTraceparent)
+	req.Header.Set("baggage", "user=alice")
+	var member string
 
-	serve(t, Middleware(WithTracerProvider(tp), WithTrustedPropagation()), req, func(http.ResponseWriter, *http.Request) {})
+	serve(t, Middleware(WithTracerProvider(tp), WithTrustedPropagation()), req, func(w http.ResponseWriter, r *http.Request) {
+		member = baggageMember(r.Context(), "user")
+	})
 
 	s := rec.Ended()[0]
 	if s.SpanContext().TraceID().String() != "0af7651916cd43dd8448eb211c80319c" || s.Parent().SpanID().String() != "b7ad6b7169203331" {
 		t.Errorf("span = trace %s parent %s, want the client's trace and span as parent", s.SpanContext().TraceID(), s.Parent().SpanID())
+	}
+	if member != "alice" {
+		t.Errorf("baggage user = %q, want alice: trusted propagation accepts incoming baggage", member)
 	}
 }
 

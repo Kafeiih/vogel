@@ -3,6 +3,7 @@ package otel
 import (
 	"context"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -31,6 +32,7 @@ func TestSetup_ValidatesConfig(t *testing.T) {
 		{name: "missing service name", cfg: Config{Endpoint: "http://collector:4318"}, want: "service name"},
 		{name: "negative ratio", cfg: Config{Endpoint: "http://collector:4318", ServiceName: "api", SampleRatio: -0.1}, want: "sample ratio"},
 		{name: "ratio above one", cfg: Config{Endpoint: "http://collector:4318", ServiceName: "api", SampleRatio: 1.5}, want: "sample ratio"},
+		{name: "NaN ratio", cfg: Config{Endpoint: "http://collector:4318", ServiceName: "api", SampleRatio: math.NaN()}, want: "sample ratio"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

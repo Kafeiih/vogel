@@ -80,7 +80,9 @@ type Provider struct {
 // Context and Baggage as the global propagator. Without an endpoint it
 // returns a disabled Provider and changes nothing.
 func Setup(ctx context.Context, cfg Config) (*Provider, error) {
-	if cfg.SampleRatio < 0 || cfg.SampleRatio > 1 {
+	// Written as a negated range check so NaN, for which every comparison is
+	// false, is rejected too.
+	if !(cfg.SampleRatio >= 0 && cfg.SampleRatio <= 1) {
 		return nil, fmt.Errorf("otel: sample ratio must be within [0, 1], got %v", cfg.SampleRatio)
 	}
 	if cfg.Endpoint == "" {
