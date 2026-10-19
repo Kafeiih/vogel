@@ -2,45 +2,89 @@ package s3
 
 import (
 	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 )
 
-type wrappedTransport struct{ base http.RoundTripper }
-
-func (w *wrappedTransport) RoundTrip(r *http.Request) (*http.Response, error) {
-	return w.base.RoundTrip(r)
+type countingTransport struct {
+	base http.RoundTripper
+	n    atomic.Int32
 }
 
-// WrapTransport receives the transport vogel bounds (response headers, dial
-// and TLS handshake), and the client uses what it returns.
-func TestHTTPClientFor_WrapTransport(t *testing.T) {
-	var got *wrappedTransport
-	cfg := Config{WrapTransport: func(base http.RoundTripper) http.RoundTripper {
-		got = &wrappedTransport{base: base}
-		return got
-	}}
+func (c *countingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	c.n.Add(1)
+	return c.base.RoundTrip(r)
+}
 
-	c, ok := httpClientFor(cfg, 5*time.Second).(*http.Client)
+// WrapTransport wraps the SDK's own client, which keeps vogel's bounds
+// (response headers, dial and TLS handshake) and no client timeout.
+func TestHTTPClientFor_WrapTransportKeepsTheBoundedSDKClient(t *testing.T) {
+	var base http.RoundTripper
+	cfg := Config{WrapTransport: func(b http.RoundTripper) http.RoundTripper {
+		base = b
+		return b
+	}}
+	httpClientFor(cfg, 5*time.Second)
+
+	d, ok := base.(clientRoundTripper)
 	if !ok {
-		t.Fatalf("httpClientFor with WrapTransport = %T, want *http.Client", httpClientFor(cfg, 5*time.Second))
+		t.Fatalf("WrapTransport base = %T, want clientRoundTripper", base)
 	}
-	if c.Transport != got {
-		t.Fatalf("client Transport = %T, want the wrapper", c.Transport)
+	b, ok := d.client.(*awshttp.BuildableClient)
+	if !ok {
+		t.Fatalf("wrapped client = %T, want *awshttp.BuildableClient", d.client)
 	}
-	base, ok := got.base.(*http.Transport)
-	if !ok || base.ResponseHeaderTimeout != 5*time.Second {
-		t.Fatalf("wrapped base = %T (ResponseHeaderTimeout %v), want vogel's bounded *http.Transport", got.base, base.ResponseHeaderTimeout)
+	if got := b.GetTransport().ResponseHeaderTimeout; got != 5*time.Second {
+		t.Errorf("ResponseHeaderTimeout = %v, want 5s", got)
 	}
-	if c.Timeout != 0 {
-		t.Errorf("client Timeout = %v, want 0 (body streaming must not be capped)", c.Timeout)
+	if got := b.GetTimeout(); got != 0 {
+		t.Errorf("client Timeout = %v, want 0 (body streaming must not be capped)", got)
+	}
+}
+
+// Requests go through the wrapper, and the SDK's redirect policy still
+// applies: a 301 is returned to the SDK, not followed.
+func TestHTTPClientFor_WrapTransportKeepsTheSDKRedirectPolicy(t *testing.T) {
+	var followed atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/moved" {
+			followed.Store(true)
+			return
+		}
+		http.Redirect(w, r, "/moved", http.StatusMovedPermanently)
+	}))
+	t.Cleanup(srv.Close)
+
+	counting := &countingTransport{}
+	c := httpClientFor(Config{WrapTransport: func(b http.RoundTripper) http.RoundTripper {
+		counting.base = b
+		return counting
+	}}, 5*time.Second)
+
+	req, err := http.NewRequest(http.MethodPut, srv.URL+"/bucket/key", http.NoBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := c.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	if resp.StatusCode != http.StatusMovedPermanently || followed.Load() {
+		t.Errorf("status = %d, followed = %v; want the 301 returned unfollowed", resp.StatusCode, followed.Load())
+	}
+	if counting.n.Load() != 1 {
+		t.Errorf("requests through the wrapper = %d, want 1", counting.n.Load())
 	}
 }
 
 func TestHTTPClientFor_NoWrapTransportKeepsTheBuildableClient(t *testing.T) {
-	if _, ok := httpClientFor(Config{}, time.Second).(*awshttp.BuildableClient); !ok {
-		t.Errorf("httpClientFor without WrapTransport = %T, want *awshttp.BuildableClient", httpClientFor(Config{}, time.Second))
+	if c, ok := httpClientFor(Config{}, time.Second).(*awshttp.BuildableClient); !ok {
+		t.Errorf("httpClientFor without WrapTransport = %T, want *awshttp.BuildableClient", c)
 	}
 }

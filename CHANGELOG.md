@@ -29,8 +29,9 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   `notification/sendgrid.Config` y `storage/s3.Config` aceptan
   `WrapTransport func(http.RoundTripper) http.RoundTripper`, que envuelve el
   transporte de cada llamada (Zitadel y SendGrid reciben
-  `http.DefaultTransport`; S3, el transporte con los límites de vogel, que se
-  mantienen), y `authz/cerbos.Config` acepta `StatsHandler` de gRPC. Sirven
+  `http.DefaultTransport`; S3, el propio cliente del SDK, así que se mantienen
+  los límites de vogel y la política de redirects de AWS), y
+  `authz/cerbos.Config` acepta `StatsHandler` de gRPC. Sirven
   para trazar esas llamadas (`otelhttp.NewTransport`,
   `otelgrpc.NewClientHandler`); sin ellos nada cambia.
 - **`httpx/response`: `request_id` en las respuestas de error.**

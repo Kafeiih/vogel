@@ -53,10 +53,13 @@ type Config struct {
 	// Presigning does no I/O and is unaffected.
 	ResponseHeaderTimeout time.Duration
 
-	// WrapTransport, if set, wraps the http.RoundTripper every S3 call goes
-	// through. It receives the *http.Transport this package bounds (see
-	// ResponseHeaderTimeout), so the bounds still apply. vogel/otel's HTTP
-	// client helper fits it, to trace S3 calls.
+	// WrapTransport, if set, wraps every S3 call. It receives a
+	// RoundTripper backed by the SDK's own HTTP client, so this package's
+	// bounds (see ResponseHeaderTimeout) and the SDK's redirect policy (only
+	// 307 and 308 are followed) still apply. vogel/otel's HTTP client helper
+	// fits it, to trace S3 calls. With it set the SDK's AWS_DEFAULTS_MODE
+	// timeout tuning, which only applies to its own client type, is skipped;
+	// the default mode tunes nothing.
 	WrapTransport func(http.RoundTripper) http.RoundTripper
 }
 
@@ -183,15 +186,31 @@ func newHTTPClient(bound time.Duration) *awshttp.BuildableClient {
 		})
 }
 
-// httpClientFor returns the S3 client's HTTP client: newHTTPClient's, with
-// its transport wrapped by cfg.WrapTransport when set. The wrapped client
-// sets no Timeout either, for the reason newHTTPClient gives.
+// httpClientFor returns the S3 client's HTTP client: newHTTPClient's, or,
+// with cfg.WrapTransport set, that same client seen as a RoundTripper and
+// wrapped. Wrapping the client instead of its *http.Transport keeps
+// everything the SDK's client adds on top of the transport, such as its
+// redirect policy.
 func httpClientFor(cfg Config, bound time.Duration) aws.HTTPClient {
 	b := newHTTPClient(bound)
 	if cfg.WrapTransport == nil {
 		return b
 	}
-	return &http.Client{Transport: cfg.WrapTransport(b.GetTransport())}
+	return roundTripperClient{rt: cfg.WrapTransport(clientRoundTripper{client: b})}
+}
+
+// clientRoundTripper is an aws.HTTPClient seen as an http.RoundTripper.
+type clientRoundTripper struct{ client aws.HTTPClient }
+
+func (c clientRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) {
+	return c.client.Do(r)
+}
+
+// roundTripperClient is an http.RoundTripper seen as an aws.HTTPClient.
+type roundTripperClient struct{ rt http.RoundTripper }
+
+func (c roundTripperClient) Do(r *http.Request) (*http.Response, error) {
+	return c.rt.RoundTrip(r)
 }
 
 // effectiveExpiry returns expiry, or the configured default when expiry is
