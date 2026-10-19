@@ -29,7 +29,7 @@ type Config struct {
 
 	// WrapTransport, if set, wraps the http.RoundTripper every SendGrid API
 	// call goes through; it receives http.DefaultTransport. The HTTPTimeout
-	// still applies. vogel/otel's HTTP client helper fits it.
+	// still applies. otelhttp.NewTransport fits it, to trace those calls.
 	WrapTransport func(http.RoundTripper) http.RoundTripper
 }
 

@@ -13,7 +13,10 @@ import (
 
 	gootel "go.opentelemetry.io/otel"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace/noop"
+
+	"github.com/kafeiih/vogel/logger"
 )
 
 func TestSetup_ValidatesConfig(t *testing.T) {
@@ -76,7 +79,7 @@ func TestSetup_ExportsOverOTLPHTTP(t *testing.T) {
 	t.Cleanup(srv.Close)
 	restoreGlobals(t)
 
-	p, err := Setup(context.Background(), Config{Endpoint: srv.URL, ServiceName: "api", SampleRatio: 1, Headers: map[string]string{"x-team": "core"}})
+	p, err := Setup(context.Background(), Config{Endpoint: srv.URL, ServiceName: "api", SampleRatio: 1})
 	if err != nil {
 		t.Fatalf("Setup: %v", err)
 	}
@@ -145,3 +148,95 @@ func restoreGlobals(t *testing.T) {
 	})
 	gootel.SetTracerProvider(noop.NewTracerProvider())
 }
+
+// collector is an httptest OTLP/HTTP collector recording each export's
+// headers.
+type collector struct {
+	srv     *httptest.Server
+	posts   atomic.Int32
+	headers atomic.Value // http.Header of the last export
+}
+
+func newCollector(t *testing.T) *collector {
+	t.Helper()
+	c := &collector{}
+	c.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		c.headers.Store(r.Header.Clone())
+		c.posts.Add(1)
+	}))
+	t.Cleanup(c.srv.Close)
+	return c
+}
+
+func exportSpans(t *testing.T, cfg Config, n int) {
+	t.Helper()
+	restoreGlobals(t)
+	p, err := Setup(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+	for range n {
+		_, span := gootel.Tracer("test").Start(context.Background(), "op")
+		span.End()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := p.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+}
+
+// Setup reads no environment: the OTEL_* variables the SDK honors by default
+// (headers, compression, batching) change nothing about what Config set.
+func TestSetup_IgnoresOTELEnvironment(t *testing.T) {
+	t.Setenv("OTEL_EXPORTER_OTLP_HEADERS", "authorization=Bearer%20other-collector")
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_HEADERS", "x-env=1")
+	t.Setenv("OTEL_EXPORTER_OTLP_COMPRESSION", "gzip")
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_COMPRESSION", "gzip")
+	t.Setenv("OTEL_BSP_MAX_EXPORT_BATCH_SIZE", "1")
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:1")
+	t.Setenv("OTEL_TRACES_SAMPLER", "always_off")
+	c := newCollector(t)
+
+	exportSpans(t, Config{Endpoint: c.srv.URL, ServiceName: "api", SampleRatio: 1}, 20)
+
+	if c.posts.Load() != 1 {
+		t.Errorf("exports = %d, want 1 batch (OTEL_BSP_MAX_EXPORT_BATCH_SIZE must be ignored)", c.posts.Load())
+	}
+	h, _ := c.headers.Load().(http.Header)
+	if h.Get("Authorization") != "" || h.Get("X-Env") != "" {
+		t.Errorf("export carried headers from the environment: %v", h)
+	}
+	if h.Get("Content-Encoding") != "" {
+		t.Errorf("Content-Encoding = %q, want none (OTEL_EXPORTER_OTLP_COMPRESSION must be ignored)", h.Get("Content-Encoding"))
+	}
+}
+
+// Config.Headers are sent; over https only, since they usually carry a
+// collector credential.
+func TestSetup_Headers(t *testing.T) {
+	if _, err := Setup(context.Background(), Config{Endpoint: "http://collector:4318", ServiceName: "api", Headers: map[string]string{"authorization": "k"}}); err == nil || !strings.Contains(err.Error(), "https") {
+		t.Fatalf("Setup with Headers over http:// = %v, want an error requiring https", err)
+	}
+}
+
+// An untrusted client's sampled flag cannot force sampling: at a tiny ratio
+// almost no request is sampled even though every traceparent says "-01".
+func TestMiddleware_UntrustedSampledFlagDoesNotForceSampling(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec), sdktrace.WithSampler(sampler(Config{SampleRatio: 0.001})))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	h := Middleware(WithTracerProvider(tp))(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+
+	for range 500 {
+		req := httptest.NewRequest(http.MethodGet, "/x", nil)
+		req.Header.Set("traceparent", "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01")
+		h.ServeHTTP(httptest.NewRecorder(), req)
+	}
+	if n := len(rec.Ended()); n > 10 {
+		t.Errorf("sampled spans = %d of 500 at ratio 0.001, want the service's ratio to decide", n)
+	}
+}
+
+var _ logger.TraceIDsFunc = TraceIDs

@@ -16,9 +16,11 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   span por request (`otelhttp`) nombrado según el patrón de ruta de chi; por
   defecto **no adopta el `traceparent` del cliente** (trace nuevo con un link
   al del cliente, sin su `baggage`), `WithTrustedPropagation()` sí.
-  `TraceIDs` encaja en `logger.WithTraceIDs`. No lee variables de entorno, y
-  es el único paquete que depende del SDK de OpenTelemetry (lo verifica el
-  CI). Ver `docs/WIRING.md` §8.
+  `TraceIDs` encaja en `logger.WithTraceIDs`. No lee variables de entorno:
+  pasa explícitas todas las opciones que el SDK tomaría de `OTEL_*` (headers,
+  compresión, lotes, límites), y `Config.Headers` exige un endpoint
+  `https://`. Es el único paquete que depende del SDK de OpenTelemetry (lo
+  verifica el CI). Ver `docs/WIRING.md` §8.
 - **`logger`: `WithTraceIDs`.** Recibe una función que lee del contexto el
   `trace_id` y el `span_id` del span activo, y los agrega a cada línea logueada
   con contexto y a lo que fija `WithContext`, con las mismas reglas que

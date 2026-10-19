@@ -34,8 +34,8 @@ type Config struct {
 
 	// WrapTransport, if set, wraps the http.RoundTripper of every call to the
 	// issuer (discovery, JWKS, introspection); it receives
-	// http.DefaultTransport. The HTTPTimeout still applies. vogel/otel's
-	// HTTP client helper fits it, to trace those calls.
+	// http.DefaultTransport. The HTTPTimeout still applies.
+	// otelhttp.NewTransport fits it, to trace those calls.
 	WrapTransport func(http.RoundTripper) http.RoundTripper
 
 	// MaxTokenLifetime, when positive, rejects tokens whose lifetime

@@ -1,24 +1,30 @@
 // Package otel is vogel's OpenTelemetry adapter: it exports traces over
-// OTLP/HTTP and provides the tracing pieces that plug into vogel's
-// dependency-free ports (logger.WithTraceIDs, postgres.Config.Tracer,
-// worker.WithMiddleware, the WrapTransport and StatsHandler fields of the
-// outbound clients).
+// OTLP/HTTP (Setup), traces incoming HTTP requests (Middleware), and reads
+// the active span's IDs for logger.WithTraceIDs (TraceIDs). The other ports
+// vogel exposes for tracing (postgres.Config.Tracer, worker.WithMiddleware,
+// the WrapTransport and StatsHandler fields of the outbound clients) take
+// any implementation, e.g. otelhttp.NewTransport and
+// otelgrpc.NewClientHandler.
 //
 // Tracing is opt-in at every level: a service that does not import this
 // package links no OpenTelemetry SDK, and Setup without an endpoint installs
 // nothing, leaving the global tracer a no-op.
 //
 // Like the rest of vogel it reads no environment variable: Setup takes an
-// explicit Config, and its options take precedence over the OTEL_* variables
-// the SDK would otherwise read. The caller maps its own configuration (the
-// standard OTEL_* names, for instance) into Config.
+// explicit Config and passes every exporter, batching and span-limit setting
+// the SDK would otherwise take from OTEL_* variables, so those variables
+// change nothing. The caller maps its own configuration (the standard OTEL_*
+// names, for instance) into Config. HTTPS_PROXY and the other proxy
+// variables of net/http still apply to the export connection.
 package otel
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net/url"
+	"time"
 
 	gootel "go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -57,7 +63,9 @@ type Config struct {
 	// traceparent by default, this ratio, not the client, decides.
 	SampleRatio float64
 
-	// Headers are sent with every export, e.g. a collector API key.
+	// Headers are sent with every export, e.g. a collector API key. They
+	// require an https:// Endpoint, so a credential never travels in
+	// cleartext.
 	Headers map[string]string
 }
 
@@ -85,13 +93,26 @@ func Setup(ctx context.Context, cfg Config) (*Provider, error) {
 	if cfg.ServiceName == "" {
 		return nil, errors.New("otel: service name is required with an endpoint")
 	}
-
+	if len(cfg.Headers) > 0 && u.Scheme != "https" {
+		return nil, errors.New("otel: headers require an https:// endpoint")
+	}
 	if u.Path == "" || u.Path == "/" {
 		u.Path = "/v1/traces"
 	}
-	opts := []otlptracehttp.Option{otlptracehttp.WithEndpointURL(u.String())}
-	if len(cfg.Headers) > 0 {
-		opts = append(opts, otlptracehttp.WithHeaders(cfg.Headers))
+	headers := cfg.Headers
+	if headers == nil {
+		headers = map[string]string{} // explicit: OTEL_EXPORTER_OTLP_HEADERS must not apply
+	}
+	// Every option the SDK would otherwise read from OTEL_* is passed
+	// explicitly, with the SDK's own defaults.
+	opts := []otlptracehttp.Option{
+		otlptracehttp.WithEndpointURL(u.String()),
+		otlptracehttp.WithHeaders(headers),
+		otlptracehttp.WithCompression(otlptracehttp.NoCompression),
+		otlptracehttp.WithTimeout(exportTimeout),
+	}
+	if u.Scheme == "https" {
+		opts = append(opts, otlptracehttp.WithTLSClientConfig(&tls.Config{MinVersion: tls.VersionTLS12}))
 	}
 	exporter, err := otlptracehttp.New(ctx, opts...)
 	if err != nil {
@@ -107,7 +128,13 @@ func Setup(ctx context.Context, cfg Config) (*Provider, error) {
 	}
 
 	tp := sdktrace.NewTracerProvider(
-		sdktrace.WithBatcher(exporter),
+		sdktrace.WithBatcher(exporter,
+			sdktrace.WithBatchTimeout(sdktrace.DefaultScheduleDelay*time.Millisecond),
+			sdktrace.WithExportTimeout(sdktrace.DefaultExportTimeout*time.Millisecond),
+			sdktrace.WithMaxQueueSize(sdktrace.DefaultMaxQueueSize),
+			sdktrace.WithMaxExportBatchSize(sdktrace.DefaultMaxExportBatchSize),
+		),
+		sdktrace.WithRawSpanLimits(spanLimits()),
 		sdktrace.WithSampler(sampler(cfg)),
 		sdktrace.WithResource(resource.NewWithAttributes(semconv.SchemaURL, attrs...)),
 	)
@@ -129,6 +156,23 @@ func (p *Provider) Shutdown(ctx context.Context) error {
 		return fmt.Errorf("otel: shutting down the tracer provider: %w", err)
 	}
 	return nil
+}
+
+// exportTimeout bounds each export request, the SDK's default.
+const exportTimeout = 10 * time.Second
+
+// spanLimits returns the SDK's default span limits without reading the
+// OTEL_SPAN_* and OTEL_*_COUNT_LIMIT variables sdktrace.NewSpanLimits reads.
+func spanLimits() sdktrace.SpanLimits {
+	return sdktrace.SpanLimits{
+		AttributeValueLengthLimit:   sdktrace.DefaultAttributeValueLengthLimit,
+		AttributeValueDepthLimit:    sdktrace.DefaultAttributeValueDepthLimit,
+		AttributeCountLimit:         sdktrace.DefaultAttributeCountLimit,
+		EventCountLimit:             sdktrace.DefaultEventCountLimit,
+		LinkCountLimit:              sdktrace.DefaultLinkCountLimit,
+		AttributePerEventCountLimit: sdktrace.DefaultAttributePerEventCountLimit,
+		AttributePerLinkCountLimit:  sdktrace.DefaultAttributePerLinkCountLimit,
+	}
 }
 
 // sampler returns ParentBased(TraceIDRatioBased(ratio)) for cfg.

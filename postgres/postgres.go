@@ -148,8 +148,8 @@ type Config struct {
 	// pgx.BatchTracer, pgx.CopyFromTracer, pgx.PrepareTracer,
 	// pgx.ConnectTracer, pgxpool.AcquireTracer and pgxpool.ReleaseTracer.
 	// Its Start hooks run before vogel's and its End hooks after, so a span
-	// it opens encloses the slow-query log line. vogel/otel provides an
-	// OpenTelemetry one; this package depends on no tracing library.
+	// it opens encloses the slow-query log line. Any OpenTelemetry pgx
+	// tracer fits it; this package depends on no tracing library.
 	Tracer pgx.QueryTracer
 
 	// AfterConnect, if set, runs after this package's own per-connection setup

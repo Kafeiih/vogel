@@ -158,7 +158,7 @@ func WithMetrics(reg prometheus.Registerer) Option {
 // the context, and a span they open is in the context the metrics
 // middleware observes. Unlike WithMetrics they are installed in insert-only
 // mode too: an insert middleware is how the enqueuing process stamps its
-// context (a trace, say) into the job. vogel/otel provides a tracing one.
+// context (a trace, say) into the job.
 func WithMiddleware(mw ...rivertype.Middleware) Option {
 	return func(o *options) {
 		o.middleware = append(o.middleware, mw...)

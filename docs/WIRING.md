@@ -778,3 +778,15 @@ cabeceras, `otel.Middleware(otel.WithTrustedPropagation())` continúa el trace.
 
 Los logs con contexto (`InfoContext`, el `slog` por defecto) llevan `trace_id`
 y `span_id` del span activo, además de `request_id`.
+
+`otel.Setup` no lee variables de entorno: las `OTEL_*` que el SDK leería
+(headers, compresión, lotes, límites) no cambian nada, y la configuración
+entra solo por `otel.Config`. `Config.Headers` (una clave del colector, por
+ejemplo) exige un `Endpoint` `https://`.
+
+Para trazar las llamadas salientes, los clientes de `vogel` aceptan
+`WrapTransport` (`otelhttp.NewTransport`) y Cerbos `StatsHandler`
+(`otelgrpc.NewClientHandler`). El propagador global incluye W3C Baggage: el
+baggage que ponga la aplicación viaja en las cabeceras hacia Zitadel, SendGrid
+o S3. Si no debe salir, envolver esos clientes con
+`otelhttp.NewTransport(base, otelhttp.WithPropagators(propagation.TraceContext{}))`.

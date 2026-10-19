@@ -50,7 +50,12 @@ func Middleware(opts ...MiddlewareOption) func(http.Handler) http.Handler {
 	for _, opt := range opts {
 		opt(&cfg)
 	}
-	hopts := []otelhttp.Option{}
+	// spanName is the only source of the span's name: otelhttp calls it when
+	// the span starts and again after the handler when r.Pattern is set
+	// (chi sets it), so it must give the same answer as nameAfterRoute.
+	hopts := []otelhttp.Option{
+		otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string { return spanName(r) }),
+	}
 	if cfg.tp != nil {
 		hopts = append(hopts, otelhttp.WithTracerProvider(cfg.tp))
 	}
@@ -68,21 +73,34 @@ func Middleware(opts ...MiddlewareOption) func(http.Handler) http.Handler {
 	}
 }
 
-// nameAfterRoute runs next, then renames the request's span after the chi
+// nameAfterRoute runs next, then names the request's span after the chi
 // route pattern and sets http.route.
 func nameAfterRoute(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		next.ServeHTTP(w, r)
-		rctx := chi.RouteContext(r.Context())
-		if rctx == nil {
-			return
-		}
-		pattern := rctx.RoutePattern()
+		pattern := routePattern(r)
 		if pattern == "" {
 			return
 		}
 		span := trace.SpanFromContext(r.Context())
-		span.SetName(r.Method + " " + pattern)
+		span.SetName(spanName(r))
 		span.SetAttributes(attribute.String("http.route", pattern))
 	})
+}
+
+// spanName is "METHOD /route/{pattern}" once chi has matched a route, and
+// the method alone before that or when no route matched.
+func spanName(r *http.Request) string {
+	if pattern := routePattern(r); pattern != "" {
+		return r.Method + " " + pattern
+	}
+	return r.Method
+}
+
+// routePattern returns the chi route pattern matched for r, or "".
+func routePattern(r *http.Request) string {
+	if rctx := chi.RouteContext(r.Context()); rctx != nil {
+		return rctx.RoutePattern()
+	}
+	return ""
 }

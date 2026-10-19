@@ -1,7 +1,9 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"log/slog"
 	"testing"
 	"time"
@@ -10,6 +12,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/kafeiih/vogel/logger"
+	"github.com/kafeiih/vogel/reqctx"
 )
 
 type extraKey struct{}
@@ -208,4 +213,28 @@ func (d *deadlineProbe) TraceAcquireStart(ctx context.Context, _ *pgxpool.Pool, 
 	return context.WithValue(ctx, extraKey{}, "acquire")
 }
 func (d *deadlineProbe) TraceAcquireEnd(context.Context, *pgxpool.Pool, pgxpool.TraceAcquireEndData) {
+}
+
+// With logger.New's context handler, the slow-query line carries the request
+// ID and the IDs of the span the extra tracer opened.
+func TestPoolTracer_SlowQueryLineCarriesRequestAndTraceIDs(t *testing.T) {
+	var buf bytes.Buffer
+	l := logger.New("production", &buf, logger.WithTraceIDs(func(ctx context.Context) (string, string) {
+		if v, _ := ctx.Value(extraKey{}).(string); v != "" {
+			return "trace-" + v, "span-" + v
+		}
+		return "", ""
+	}))
+	tr, _ := newTestTracer(t, poolTracerOptions{extra: &recordingTracer{}, logger: l.Logger})
+
+	ctx := reqctx.WithRequestID(context.Background(), "req-1")
+	ctx = tr.TraceQueryStart(ctx, nil, pgx.TraceQueryStartData{SQL: "SELECT 1"})
+	tr.TraceQueryEnd(ctx, nil, pgx.TraceQueryEndData{})
+
+	var line map[string]any
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &line), buf.String())
+	assert.Equal(t, "slow query detected", line["msg"])
+	assert.Equal(t, "req-1", line["request_id"])
+	assert.Equal(t, "trace-query-start", line["trace_id"])
+	assert.Equal(t, "span-query-start", line["span_id"])
 }
