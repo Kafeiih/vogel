@@ -179,6 +179,62 @@ func TestRecovery_TypedNilErrorDoesNotCrash(t *testing.T) {
 	}
 }
 
+type sentinel string
+
+// A named scalar type that is not an error keeps its value: it has no fields
+// to leak.
+func TestRecovery_NamedScalarPanicLogsItsValue(t *testing.T) {
+	line := recoveryLogLine(t, sentinel("queue closed"))
+	if line["error"] != "queue closed" || line["panic_type"] != "middleware.sentinel" {
+		t.Errorf("(error, panic_type) = (%v, %v), want (queue closed, middleware.sentinel)", line["error"], line["panic_type"])
+	}
+}
+
+type loudSentinel string
+
+func (loudSentinel) String() string { return "token=hunter2" }
+
+// A scalar type with methods is logged by type only: neither its raw value
+// (its String may exist to redact it) nor its String output is trusted.
+func TestRecovery_ScalarWithMethodsLogsOnlyItsType(t *testing.T) {
+	line := recoveryLogLine(t, loudSentinel("hunter2"))
+	if v, ok := line["error"]; ok {
+		t.Errorf("error = %v, want it absent for a type with methods", v)
+	}
+	if line["panic_type"] != "middleware.loudSentinel" {
+		t.Errorf("panic_type = %v, want middleware.loudSentinel", line["panic_type"])
+	}
+}
+
+type (
+	namedBool  bool
+	namedInt   int8
+	namedUint  uint16
+	namedFloat float32
+)
+
+func TestRecovery_ScalarKindsLogTheirValue(t *testing.T) {
+	tests := []struct {
+		v    any
+		want string
+	}{
+		{true, "true"},
+		{namedBool(false), "false"},
+		{-7, "-7"},
+		{namedInt(-128), "-128"},
+		{uint(7), "7"},
+		{namedUint(65535), "65535"},
+		{1.5, "1.5"},
+		{namedFloat(0.1), "0.1"},
+	}
+	for _, tt := range tests {
+		line := recoveryLogLine(t, tt.v)
+		if line["error"] != tt.want {
+			t.Errorf("panic(%T(%v)): error = %v, want %q", tt.v, tt.v, line["error"], tt.want)
+		}
+	}
+}
+
 // With logger.New's context-aware handler, the panic line carries the
 // request's request_id, so it can be joined with the access log line.
 func TestRecovery_LogsTheRequestID(t *testing.T) {

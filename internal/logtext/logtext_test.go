@@ -36,3 +36,12 @@ func TestTruncate(t *testing.T) {
 		})
 	}
 }
+
+// On invalid UTF-8 the back-off is bounded, so the text is not lost.
+func TestTruncate_InvalidUTF8KeepsMostOfTheText(t *testing.T) {
+	s := strings.Repeat("\x80", 100)
+	got, truncated := Truncate(s, 50)
+	if !truncated || len(got) < 50-(utf8.UTFMax-1) {
+		t.Errorf("Truncate(100 continuation bytes, 50) = %d bytes, want at least %d", len(got), 50-(utf8.UTFMax-1))
+	}
+}

@@ -24,6 +24,11 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ### Agregado
 
+- **`examples/boilerplate`: el CI de los proyectos generados valida las
+  reglas de Prometheus.** La plantilla `.github/workflows/ci.yaml` suma el job
+  `Prometheus rules`, que corre `promtool check rules` y `promtool test rules`
+  sobre `deploy/prometheus/` con la imagen fijada por digest, como el CI de
+  vogel.
 - **`examples/boilerplate`: el worker sirve `/metrics` y tiene alertas.**
   `cmd/worker` registra `worker.WithMetrics` y el collector del pool, y sirve
   `/metrics` en `WORKER_METRICS_LISTEN_ADDR` (`:9091` por defecto, aparte del
@@ -117,8 +122,11 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   valor es un error (su `Error()`), un string, un bool o un número, `error` lo
   lleva como texto cortado en 1 KiB (con `error_truncated: true` si se cortó);
   para cualquier otro tipo, como un struct, `error` se omite, porque `fmt`
-  imprimiría también sus campos no exportados. Antes `error` era el valor tal
-  cual; ahora es un string o no está.
+  imprimiría también sus campos no exportados. Un tipo propio de tipo string,
+  bool o numérico sin métodos (un `type sentinel string`, por ejemplo)
+  conserva su valor; si tiene métodos (un `String` que tapa un secreto, por
+  ejemplo), se loguea solo su tipo. Antes `error` era el
+  valor tal cual; ahora es un string o no está.
 - **`audit/httpx`: el log de error de `List` ya no incluye la query.** En
   vez de `query` (la query cruda, que puede traer un `actor_id`), la línea
   lleva `filters`: los nombres de los filtros reconocidos que usó el request,
@@ -131,8 +139,13 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   texto por `sql_hash`, un prefijo del SHA-256, para no loguear literales
   escritos dentro del SQL. El hash no tiene sal: quien lea los logs y conozca
   la plantilla puede confirmar un literal de baja entropía probando valores,
-  así que la protección real es pasar esos valores como parámetros. Los
-  valores de los parámetros nunca se loguean.
+  así que la protección real es pasar esos valores como parámetros. Con el
+  hash tampoco se loguea el texto del error, que puede citar un valor: un
+  error de PostgreSQL va como `error_code` (SQLSTATE) y `error_constraint`, un
+  contexto cancelado o vencido conserva su texto fijo y cualquier otro error
+  va solo como `error_type`. Sin el hash, el texto del error se corta en
+  1 KiB (con `error_truncated: true` si se cortó). Los valores de los
+  parámetros nunca se loguean.
 - **`auth/zitadel`: se rechaza un `iat` futuro y los algoritmos JWT quedan
   fijados.** Un token cuyo `iat` sea posterior al instante actual más un minuto
   de tolerancia se rechaza con el mismo 401 genérico, aunque `exp - iat` quepa

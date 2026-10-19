@@ -14,9 +14,10 @@ import (
 // issuer, the signature and exp, and oauth.JWTVerification then checks aud.
 // It does not check azp, nbf or a future iat, and has no notion of a maximum
 // lifetime, so checkClaims adds those after the SDK has accepted the token.
-// The azp check is opt-in (Config.AllowedAuthorizedParties): the OIDC rule "azp equals the
-// client ID" is for ID tokens at the relying party; an access token presented
-// to a resource server carries the azp of the client that requested it.
+// The azp check is opt-in (Config.AllowedAuthorizedParties): the OIDC rule
+// "azp equals the client ID" is for ID tokens at the relying party; an access
+// token presented to a resource server carries the azp of the client that
+// requested it.
 //
 // Every rejection wraps errClaimsRejected plus one specific sentinel; the
 // Authenticator wraps both under auth.ErrUnauthenticated, so clients see the

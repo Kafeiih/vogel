@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"reflect"
 	"runtime/debug"
+	"strconv"
 
 	"github.com/kafeiih/vogel/httpx/response"
 	"github.com/kafeiih/vogel/internal/logtext"
@@ -20,9 +22,12 @@ const maxLoggedPanicBytes = 1024
 // The log line carries the panic value's Go type under "panic_type", the
 // path, the method and the stack trace. "error" holds the value as text,
 // bounded by maxLoggedPanicBytes, only when the value is an error (its
-// Error() text), a string, or a bool or number: for any other value, such as
-// a struct, fmt would print its unexported fields too, so only the type is
-// logged.
+// Error() text) or of a string, bool or numeric kind with no methods, named
+// types included: for any other value only the type is logged. A struct
+// would print its unexported fields; a scalar type with methods (a String
+// that redacts a secret, say) may hold something its author did not mean to
+// print, and logging either its raw value or its String output could be
+// wrong.
 func Recovery(logger *slog.Logger) func(next http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -64,12 +69,24 @@ func Recovery(logger *slog.Logger) func(next http.Handler) http.Handler {
 // recovers a panic raised inside an Error method, so a typed-nil error
 // cannot crash the recovery path.
 func panicText(v any) (string, bool) {
-	switch v.(type) {
-	case error, string, bool,
-		int, int8, int16, int32, int64,
-		uint, uint8, uint16, uint32, uint64, uintptr,
-		float32, float64:
+	if _, ok := v.(error); ok {
 		return fmt.Sprint(v), true
+	}
+	rv := reflect.ValueOf(v)
+	if rv.IsValid() && rv.Type().NumMethod() > 0 {
+		return "", false
+	}
+	switch rv.Kind() {
+	case reflect.String:
+		return rv.String(), true
+	case reflect.Bool:
+		return strconv.FormatBool(rv.Bool()), true
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return strconv.FormatInt(rv.Int(), 10), true
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return strconv.FormatUint(rv.Uint(), 10), true
+	case reflect.Float32, reflect.Float64:
+		return strconv.FormatFloat(rv.Float(), 'g', -1, rv.Type().Bits()), true
 	default:
 		return "", false
 	}

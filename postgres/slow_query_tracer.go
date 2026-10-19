@@ -4,10 +4,13 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/kafeiih/vogel/internal/logtext"
 )
@@ -19,6 +22,14 @@ type contextKey struct{}
 // sql_bytes giving the full length.
 const maxLoggedSQLBytes = 2048
 
+// maxLoggedErrorBytes bounds a failed query's error text; a longer one is cut
+// at a rune boundary and flagged with error_truncated.
+const maxLoggedErrorBytes = 1024
+
+// sqlHashBytes is how many bytes of the SHA-256 of the SQL text sql_hash
+// carries, hex encoded (so twice as many characters).
+const sqlHashBytes = 8
+
 // SlowQueryTracer implements pgx.QueryTracer and logs queries that exceed the configured threshold.
 //
 // Bind values are never logged, only their count (args_count). The SQL text
@@ -26,6 +37,14 @@ const maxLoggedSQLBytes = 2048
 // diagnosed without it; a literal inlined in the SQL instead of bound would
 // therefore reach the log. WithSlowQuerySQLHash replaces the text with a
 // short hash (sql_hash) that still groups repeated queries.
+//
+// A failed query's error text is logged bounded by maxLoggedErrorBytes. An
+// error message can quote a value: PostgreSQL's (`invalid input syntax for
+// type uuid: "..."`) and pgx's own when it encodes an argument or scans a
+// result. So with WithSlowQuerySQLHash the text is dropped: a
+// *pgconn.PgError is logged as error_code (its SQLSTATE) and
+// error_constraint, a canceled or timed-out context keeps its fixed text, and
+// any other error is logged by its Go type only (error_type).
 //
 // The hash is unsalted, so it pseudonymizes rather than hides: someone who
 // can read the logs and knows the query template can hash candidate values
@@ -41,8 +60,9 @@ type SlowQueryTracer struct {
 // SlowQueryOption configures a SlowQueryTracer.
 type SlowQueryOption func(*SlowQueryTracer)
 
-// WithSlowQuerySQLHash logs sql_hash, the first 8 bytes of the SHA-256 of the
-// SQL text in hex, instead of the text itself.
+// WithSlowQuerySQLHash logs sql_hash, the first sqlHashBytes bytes of the
+// SHA-256 of the SQL text in hex, instead of the text itself, and a
+// PostgreSQL error by its SQLSTATE instead of its message.
 func WithSlowQuerySQLHash() SlowQueryOption {
 	return func(t *SlowQueryTracer) { t.hashSQL = true }
 }
@@ -82,7 +102,7 @@ func (t *SlowQueryTracer) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, data p
 	attrs = append(attrs, t.sqlAttrs(trace.sql)...)
 	attrs = append(attrs, "args_count", trace.args)
 	if data.Err != nil {
-		attrs = append(attrs, "error", data.Err.Error())
+		attrs = append(attrs, t.errorAttrs(data.Err)...)
 	}
 
 	t.logger.Warn("slow query detected", attrs...)
@@ -93,13 +113,39 @@ func (t *SlowQueryTracer) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, data p
 func (t *SlowQueryTracer) sqlAttrs(sql string) []any {
 	if t.hashSQL {
 		sum := sha256.Sum256([]byte(sql))
-		return []any{"sql_hash", hex.EncodeToString(sum[:8])}
+		return []any{"sql_hash", hex.EncodeToString(sum[:sqlHashBytes])}
 	}
 	text, truncated := logtext.Truncate(sql, maxLoggedSQLBytes)
 	if !truncated {
 		return []any{"sql", text}
 	}
 	return []any{"sql", text, "sql_truncated", true, "sql_bytes", len(sql)}
+}
+
+// errorAttrs returns the log attributes describing a failed query's err.
+func (t *SlowQueryTracer) errorAttrs(err error) []any {
+	if !t.hashSQL {
+		text, truncated := logtext.Truncate(err.Error(), maxLoggedErrorBytes)
+		if !truncated {
+			return []any{"error", text}
+		}
+		return []any{"error", text, "error_truncated", true}
+	}
+	var pgErr *pgconn.PgError
+	switch {
+	case errors.As(err, &pgErr):
+		attrs := []any{"error_code", pgErr.Code}
+		if pgErr.ConstraintName != "" {
+			attrs = append(attrs, "error_constraint", pgErr.ConstraintName)
+		}
+		return attrs
+	case errors.Is(err, context.Canceled):
+		return []any{"error", context.Canceled.Error()}
+	case errors.Is(err, context.DeadlineExceeded):
+		return []any{"error", context.DeadlineExceeded.Error()}
+	default:
+		return []any{"error_type", fmt.Sprintf("%T", err)}
+	}
 }
 
 type queryTrace struct {
