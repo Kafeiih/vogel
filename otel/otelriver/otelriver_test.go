@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
+	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -173,4 +175,18 @@ func TestWork_MalformedMetadataStartsANewTrace(t *testing.T) {
 		assert.False(t, s.Parent().IsValid())
 	}
 	assert.Len(t, rec.Ended(), 3)
+}
+
+// Snoozing is River's way to retry later on purpose: not a failure.
+func TestWork_SnoozeIsNotAnError(t *testing.T) {
+	m, rec, _ := newRecorder(t, sdktrace.AlwaysSample())
+
+	err := m.Work(context.Background(), &rivertype.JobRow{Kind: "k"}, func(context.Context) error { return river.JobSnooze(time.Minute) })
+
+	var snooze *rivertype.JobSnoozeError
+	require.ErrorAs(t, err, &snooze, "the snooze must still reach River")
+	s := rec.Ended()[0]
+	assert.Equal(t, codes.Unset, s.Status().Code)
+	require.Len(t, s.Events(), 1)
+	assert.Equal(t, "snoozed", s.Events()[0].Name)
 }

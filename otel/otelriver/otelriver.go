@@ -18,6 +18,7 @@ package otelriver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strconv"
 
 	"github.com/riverqueue/river"
@@ -139,7 +140,13 @@ func (m *Middleware) Work(ctx context.Context, job *rivertype.JobRow, doInner fu
 	defer span.End()
 
 	err := doInner(ctx)
-	if err != nil {
+	var snooze *rivertype.JobSnoozeError
+	switch {
+	case err == nil:
+	case errors.As(err, &snooze):
+		// River's way to retry later on purpose, not a failure.
+		span.AddEvent("snoozed", trace.WithAttributes(attribute.String("river.job.snooze", snooze.Duration.String())))
+	default:
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 	}

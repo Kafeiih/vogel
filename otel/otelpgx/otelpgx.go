@@ -10,7 +10,9 @@
 // A span carries the SQL text (db.query.text), never the query arguments,
 // the same rule as postgres's SlowQueryTracer: arguments are where user data
 // and secrets live. SQL that inlines values instead of passing them as $n
-// arguments puts those values in the span; pass them as arguments.
+// arguments puts those values in the span; pass them as arguments. A failed
+// statement records its SQLSTATE (db.response.status_code), not the error
+// message, which can quote the value Postgres rejected.
 package otelpgx
 
 import (
@@ -19,6 +21,7 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	gootel "go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -85,10 +88,33 @@ func (t *Tracer) start(ctx context.Context, name string, cfg *pgx.ConnConfig, at
 func endSpan(ctx context.Context, err error) {
 	span := trace.SpanFromContext(ctx)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
+		recordError(span, err)
 	}
 	span.End()
+}
+
+// recordError marks span as failed by err. A Postgres error is recorded by
+// its SQLSTATE alone: its message can quote the offending value ("invalid
+// input syntax for type integer: ..."), which is query data like the
+// arguments. Any other error (a timeout, a broken connection) keeps its
+// message.
+func recordError(span trace.Span, err error) {
+	if code := sqlState(err); code != "" {
+		span.SetAttributes(semconv.DBResponseStatusCode(code))
+		span.SetStatus(codes.Error, "SQLSTATE "+code)
+		return
+	}
+	span.RecordError(err)
+	span.SetStatus(codes.Error, err.Error())
+}
+
+// sqlState returns the SQLSTATE of the Postgres error in err's chain, or "".
+func sqlState(err error) string {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.Code
+	}
+	return ""
 }
 
 func (t *Tracer) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
@@ -113,7 +139,9 @@ func (t *Tracer) TraceBatchStart(ctx context.Context, conn *pgx.Conn, data pgx.T
 func (t *Tracer) TraceBatchQuery(ctx context.Context, _ *pgx.Conn, data pgx.TraceBatchQueryData) {
 	span := trace.SpanFromContext(ctx)
 	attrs := queryAttrs(operationName(data.SQL), data.SQL)
-	if data.Err != nil {
+	if code := sqlState(data.Err); code != "" {
+		attrs = append(attrs, semconv.DBResponseStatusCode(code))
+	} else if data.Err != nil {
 		attrs = append(attrs, attribute.String("exception.message", data.Err.Error()))
 	}
 	span.AddEvent("query", trace.WithAttributes(attrs...))

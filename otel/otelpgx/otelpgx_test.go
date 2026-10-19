@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/attribute"
@@ -187,4 +188,30 @@ func TestSpanName_FallsBackToTheSystem(t *testing.T) {
 	assert.Equal(t, "postgresql", s.Name())
 	_, hasOp := attrs(s)["db.operation.name"]
 	assert.False(t, hasOp)
+}
+
+// A Postgres error message can quote the offending value (invalid input
+// syntax, check violations), so only its SQLSTATE reaches the span.
+func TestQuery_PgErrorRecordsOnlyItsCode(t *testing.T) {
+	tr, rec := newRecorder(t)
+	pgErr := &pgconn.PgError{Code: "22P02", Message: `invalid input syntax for type integer: "hunter2"`}
+
+	ctx := tr.TraceQueryStart(context.Background(), nil, pgx.TraceQueryStartData{SQL: "select $1::int"})
+	tr.TraceQueryEnd(ctx, nil, pgx.TraceQueryEndData{Err: fmt.Errorf("lookup: %w", pgErr)})
+	b := &pgx.Batch{}
+	b.Queue("select $1::int")
+	ctx = tr.TraceBatchStart(context.Background(), nil, pgx.TraceBatchStartData{Batch: b})
+	tr.TraceBatchQuery(ctx, nil, pgx.TraceBatchQueryData{SQL: "select $1::int", Err: pgErr})
+	tr.TraceBatchEnd(ctx, nil, pgx.TraceBatchEndData{Err: pgErr})
+
+	for _, s := range rec.Ended() {
+		assert.Equal(t, codes.Error, s.Status().Code)
+		assert.Equal(t, "SQLSTATE 22P02", s.Status().Description)
+		assert.Equal(t, "22P02", attrs(s)["db.response.status_code"].AsString())
+		for _, e := range s.Events() {
+			for _, kv := range e.Attributes {
+				assert.NotContains(t, kv.Value.String(), "hunter2", "%s event leaks the error message", s.Name())
+			}
+		}
+	}
 }
