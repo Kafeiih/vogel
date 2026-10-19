@@ -88,3 +88,32 @@ func TestWithTraceIDs_WithContextBindsThem(t *testing.T) {
 		t.Errorf("line = %v, want trace_id t-1, span_id s-1, request_id req-1", got)
 	}
 }
+
+// A trace_id bound with With suppresses the injected one, as for request_id.
+func TestWithTraceIDs_BoundWithWithWins(t *testing.T) {
+	var buf bytes.Buffer
+	l := New("production", &buf, WithTraceIDs(fakeTraceIDs)).With("trace_id", "bound")
+
+	l.InfoContext(withTrace(context.Background(), "t-1", "s-1"), "hello")
+
+	got := decodeJSONLine(t, &buf)
+	if got["trace_id"] != "bound" || got["span_id"] != "s-1" {
+		t.Errorf("(trace_id, span_id) = (%v, %v), want (bound, s-1)", got["trace_id"], got["span_id"])
+	}
+}
+
+// Inside a group, the keys are added within it, and a trace_id bound outside
+// the group no longer suppresses them.
+func TestWithTraceIDs_InsideAGroup(t *testing.T) {
+	var buf bytes.Buffer
+	l := New("production", &buf, WithTraceIDs(fakeTraceIDs))
+	grouped := l.With("trace_id", "outer").WithGroup("g")
+
+	grouped.InfoContext(withTrace(context.Background(), "t-1", "s-1"), "hello")
+
+	got := decodeJSONLine(t, &buf)
+	g, _ := got["g"].(map[string]any)
+	if got["trace_id"] != "outer" || g["trace_id"] != "t-1" || g["span_id"] != "s-1" {
+		t.Errorf("line = %v, want outer trace_id at the top and t-1/s-1 inside g", got)
+	}
+}

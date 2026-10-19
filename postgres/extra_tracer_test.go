@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -180,3 +181,31 @@ func (h ctxHandler) Handle(ctx context.Context, _ slog.Record) error { //nolint:
 }
 func (h ctxHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
 func (h ctxHandler) WithGroup(string) slog.Handler      { return h }
+
+// The extra acquire span opens before vogel's acquire work: the context its
+// Start receives does not carry the AcquireTimeout deadline yet, and the one
+// pgxpool gets back carries both.
+func TestPoolTracer_ExtraAcquireStartsBeforeTheTimeout(t *testing.T) {
+	extra := &deadlineProbe{}
+	tr, _ := newTestTracer(t, poolTracerOptions{extra: extra, acquireTimeout: time.Minute})
+
+	ctx := tr.TraceAcquireStart(context.Background(), nil, pgxpool.TraceAcquireStartData{})
+	tr.TraceAcquireEnd(ctx, nil, pgxpool.TraceAcquireEndData{})
+
+	assert.False(t, extra.startHadDeadline, "extra Start saw vogel's deadline: it ran after vogel's work")
+	_, hasDeadline := ctx.Deadline()
+	assert.True(t, hasDeadline)
+	assert.Equal(t, "acquire", ctx.Value(extraKey{}))
+}
+
+type deadlineProbe struct {
+	queryOnlyTracer
+	startHadDeadline bool
+}
+
+func (d *deadlineProbe) TraceAcquireStart(ctx context.Context, _ *pgxpool.Pool, _ pgxpool.TraceAcquireStartData) context.Context {
+	_, d.startHadDeadline = ctx.Deadline()
+	return context.WithValue(ctx, extraKey{}, "acquire")
+}
+func (d *deadlineProbe) TraceAcquireEnd(context.Context, *pgxpool.Pool, pgxpool.TraceAcquireEndData) {
+}

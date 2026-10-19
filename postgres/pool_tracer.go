@@ -168,6 +168,8 @@ func withoutAcquireTimeout(ctx context.Context) context.Context {
 // the wait for a free connection. The cancel func travels in the context and
 // TraceAcquireEnd, which pgxpool always calls (deferred), runs it.
 func (t *poolTracer) TraceAcquireStart(ctx context.Context, pool *pgxpool.Pool, data pgxpool.TraceAcquireStartData) context.Context {
+	// The extra tracer starts first, so its span encloses the wait below.
+	ctx = t.extraAcquireStart(ctx, pool, data)
 	trace := &acquireTrace{start: t.now()}
 	if t.acquireTimeout > 0 && ctx.Value(noAcquireTimeoutKey{}) == nil {
 		ctx, trace.cancel = context.WithTimeout(ctx, t.acquireTimeout)
@@ -177,7 +179,7 @@ func (t *poolTracer) TraceAcquireStart(ctx context.Context, pool *pgxpool.Pool, 
 		// Skip runtime.Callers and this method.
 		trace.callers = pcs[:runtime.Callers(2, pcs)]
 	}
-	return t.extraAcquireStart(context.WithValue(ctx, acquireKey{}, trace), pool, data)
+	return context.WithValue(ctx, acquireKey{}, trace)
 }
 
 // TraceAcquireEnd implements pgxpool.AcquireTracer.
