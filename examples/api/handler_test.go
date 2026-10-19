@@ -169,48 +169,89 @@ func TestDocumentHandlerInbox_NegativeOffsetIs400(t *testing.T) {
 	}
 }
 
-// UploadFile decides the stored type from the content, not from the client's
-// Content-Type header: an HTML body declared as a PDF is rejected with 415
-// before the handler touches the store, the storage port or the database
-// (the handler has none of them, so reaching any would panic).
-func TestDocumentHandlerUploadFile_RejectsDisallowedContent(t *testing.T) {
+// withURLParam returns r routed with chi URL parameter name=value, as the
+// router would deliver it to a handler.
+func withURLParam(r *http.Request, name, value string) *http.Request {
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add(name, value)
+	return r.WithContext(context.WithValue(r.Context(), chi.RouteCtxKey, rctx))
+}
+
+const testDocID = "0b0c8a3e-6a3b-4b8e-9d2a-2f6f1f6f1f6f"
+
+// UploadURL refuses a type outside allowedUploadTypes (415) and a size it
+// would not sign (400 naming size) before it touches the store, the storage
+// port or the database: the handler has none of them, so reaching any would
+// panic.
+func TestDocumentHandlerUploadURL_RejectsBeforeSigning(t *testing.T) {
 	tests := []struct {
 		name       string
-		declared   string
 		body       string
-		wantInBody string
+		wantStatus int
+		wantInBody []string
 	}{
-		{name: "HTML declared as PDF", declared: "application/pdf", body: "<!DOCTYPE html><html><script>alert(1)</script></html>", wantInBody: "UNSUPPORTED_MEDIA_TYPE"},
-		{name: "HTML without a declared type", declared: "", body: "<html><body>hi</body></html>", wantInBody: "UNSUPPORTED_MEDIA_TYPE"},
-		{name: "ZIP declared as JPEG", declared: "image/jpeg", body: "PK" + string([]byte{3, 4}) + "rest-of-archive", wantInBody: "UNSUPPORTED_MEDIA_TYPE"},
+		{name: "HTML is not an accepted type", body: `{"content_type":"text/html","size":10}`, wantStatus: http.StatusUnsupportedMediaType, wantInBody: append([]string{"UNSUPPORTED_MEDIA_TYPE"}, allowedUploadTypes...)},
+		{name: "a missing type is not an accepted type", body: `{"size":10}`, wantStatus: http.StatusUnsupportedMediaType, wantInBody: []string{"UNSUPPORTED_MEDIA_TYPE"}},
+		{name: "size 0 is rejected", body: `{"content_type":"application/pdf","size":0}`, wantStatus: http.StatusBadRequest, wantInBody: []string{"VALIDATION_ERROR", `"size"`}},
+		{name: "a negative size is rejected", body: `{"content_type":"application/pdf","size":-1}`, wantStatus: http.StatusBadRequest, wantInBody: []string{"VALIDATION_ERROR", `"size"`}},
+		{name: "a size above maxUploadBytes is rejected", body: `{"content_type":"application/pdf","size":26214401}`, wantStatus: http.StatusBadRequest, wantInBody: []string{"VALIDATION_ERROR", `"size"`}},
+		{name: "an unknown field is rejected", body: `{"content_type":"application/pdf","size":1,"key":"x"}`, wantStatus: http.StatusBadRequest, wantInBody: []string{"key"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			h := &DocumentHandler{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
-
-			req := httptest.NewRequest(http.MethodPut, "/documents/x/file", strings.NewReader(tt.body))
-			if tt.declared != "" {
-				req.Header.Set("Content-Type", tt.declared)
-			}
-			rctx := chi.NewRouteContext()
-			rctx.URLParams.Add("id", "0b0c8a3e-6a3b-4b8e-9d2a-2f6f1f6f1f6f")
-			req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+			req := httptest.NewRequest(http.MethodPost, "/documents/x/upload-url", strings.NewReader(tt.body))
+			req.Header.Set("Content-Type", "application/json")
+			req = withURLParam(req, "id", testDocID)
 			rec := httptest.NewRecorder()
 
-			h.UploadFile(rec, req)
+			h.UploadURL(rec, req)
 
-			if rec.Code != http.StatusUnsupportedMediaType {
-				t.Fatalf("status = %d, want %d (body %s)", rec.Code, http.StatusUnsupportedMediaType, rec.Body.String())
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d (body %s)", rec.Code, tt.wantStatus, rec.Body.String())
 			}
-			if !strings.Contains(rec.Body.String(), tt.wantInBody) {
-				t.Errorf("body = %s, want it to contain %q", rec.Body.String(), tt.wantInBody)
-			}
-			// The message lists the accepted types from allowedUploadTypes
-			// itself, so it cannot drift from what SniffContentType allows.
-			for _, allowed := range allowedUploadTypes {
-				if !strings.Contains(rec.Body.String(), allowed) {
-					t.Errorf("body = %s, want it to name the accepted type %s", rec.Body.String(), allowed)
+			for _, want := range tt.wantInBody {
+				if !strings.Contains(rec.Body.String(), want) {
+					t.Errorf("body = %s, want it to contain %q", rec.Body.String(), want)
 				}
+			}
+		})
+	}
+}
+
+// AttachFile accepts only a key issued for the document in the URL
+// (documents/{id}/uploads/{uuid}); anything else is a 400 before the
+// database is touched.
+func TestDocumentHandlerAttachFile_RejectsAForeignKey(t *testing.T) {
+	prefix := "documents/" + testDocID + "/uploads/"
+	tests := []struct {
+		name string
+		key  string
+	}{
+		{name: "another document's upload", key: "documents/7e57d0c5-0000-4000-8000-000000000001/uploads/7e57d0c5-0000-4000-8000-000000000002"},
+		{name: "the legacy per-document key", key: "documents/" + testDocID},
+		{name: "a final file key, which only the job may set", key: "documents/" + testDocID + "/file/7e57d0c5-0000-4000-8000-000000000002"},
+		{name: "an empty key", key: ""},
+		{name: "the bare prefix", key: prefix},
+		{name: "a suffix that is not an issued UUID", key: prefix + "../../other"},
+		{name: "a non-canonical UUID", key: prefix + "{7e57d0c5-0000-4000-8000-000000000002}"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := &DocumentHandler{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+			body := `{"key":"` + tt.key + `"}`
+			req := httptest.NewRequest(http.MethodPost, "/documents/x/file", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			req = withURLParam(req, "id", testDocID)
+			rec := httptest.NewRecorder()
+
+			h.AttachFile(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400 (body %s)", rec.Code, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), `"key"`) {
+				t.Errorf("body = %s, want it to name the key field", rec.Body.String())
 			}
 		})
 	}

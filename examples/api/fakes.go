@@ -1,21 +1,14 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"fmt"
-	"io"
 	"log/slog"
-	"net/url"
 	"slices"
 	"strings"
-	"sync"
-	"time"
 
 	"github.com/kafeiih/vogel/auth"
 	"github.com/kafeiih/vogel/authz"
 	"github.com/kafeiih/vogel/notification"
-	"github.com/kafeiih/vogel/storage"
 )
 
 // fakeAuthenticator implements auth.Authenticator in memory, for this
@@ -80,77 +73,6 @@ func (fakeChecker) IsAllowed(_ context.Context, p authz.Principal, res authz.Res
 	}
 
 	return action == "read", nil
-}
-
-// fakeStorage implements storage.Storage over a mutex-guarded in-memory map,
-// for this example only. It stands in for storage/s3.S3Storage -- swapping
-// it out for a real S3 (or MinIO) backed one is a one-line change in
-// main.go's composition root.
-type fakeStorage struct {
-	mu    sync.Mutex
-	files map[string][]byte
-}
-
-var _ storage.Storage = (*fakeStorage)(nil)
-
-func newFakeStorage() *fakeStorage {
-	return &fakeStorage{files: make(map[string][]byte)}
-}
-
-func (s *fakeStorage) Upload(_ context.Context, input *storage.UploadInput) error {
-	data, err := io.ReadAll(input.Body)
-	if err != nil {
-		return fmt.Errorf("fake storage: upload %q: %w", input.Key, err)
-	}
-	s.mu.Lock()
-	s.files[input.Key] = data
-	s.mu.Unlock()
-	return nil
-}
-
-func (s *fakeStorage) Download(_ context.Context, key string) (*storage.DownloadOutput, error) {
-	s.mu.Lock()
-	data, ok := s.files[key]
-	s.mu.Unlock()
-	if !ok {
-		return nil, fmt.Errorf("fake storage: download %q: not found", key)
-	}
-	return &storage.DownloadOutput{
-		Body:        io.NopCloser(bytes.NewReader(data)),
-		ContentType: "application/octet-stream",
-	}, nil
-}
-
-func (s *fakeStorage) Delete(_ context.Context, key string) error {
-	s.mu.Lock()
-	delete(s.files, key)
-	s.mu.Unlock()
-	return nil
-}
-
-// fakePresignExpiry stands in for an adapter's configured default lifetime
-// (storage/s3 uses Config.PresignExpiry, or s3.DefaultPresignExpiry = 15m).
-const fakePresignExpiry = 15 * time.Minute
-
-// presignExpiry applies the storage.Storage contract: a non-positive expiry
-// means "use the adapter's configured default"; a positive one is used as is.
-func presignExpiry(expiry time.Duration) time.Duration {
-	if expiry <= 0 {
-		return fakePresignExpiry
-	}
-	return expiry
-}
-
-func (s *fakeStorage) PresignedGetURL(_ context.Context, key string, expiry time.Duration, opts ...storage.PresignGetOption) (string, error) {
-	// Fold the options the same way a real adapter does so the fake URL
-	// shows the disposition the frontend would get ("attachment" by default).
-	o := storage.ApplyPresignGetOptions(opts...)
-	return fmt.Sprintf("http://localhost/fake-storage/%s?expires=%d&disposition=%s",
-		key, time.Now().Add(presignExpiry(expiry)).Unix(), url.QueryEscape(o.ContentDisposition)), nil
-}
-
-func (s *fakeStorage) PresignedPutURL(_ context.Context, key string, _ string, expiry time.Duration, _ ...storage.PresignPutOption) (string, error) {
-	return fmt.Sprintf("http://localhost/fake-storage/%s?expires=%d", key, time.Now().Add(presignExpiry(expiry)).Unix()), nil
 }
 
 // fakeNotifier implements notification.Notifier by logging the message

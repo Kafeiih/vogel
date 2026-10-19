@@ -96,14 +96,14 @@ un Bearer token que se valida en el servidor.
 | ID | Sev. | Ítem | Estado | Evidencia |
 |---|---|---|---|---|
 | 3.1 | C | Autorización en el servidor en cada endpoint | PASS | `RequirePermission` / `RequireAccess` (`httpx/middleware/authz.go:62`, `httpx/middleware/access.go:54`); test que recorre el router y falla si una ruta `/api/` no está protegida: `examples/api/router_test.go` (`TestNewRouter_EveryAPIRouteIsGuarded`). Proteger cada ruta propia: CONSUMER (§6) |
-| 3.2 | C | Chequeo por objeto (IDOR) | PASS | `access.Guard.Check` por instancia (`access/access.go:154`); `examples/api` lo usa en `DELETE /documents/{id}` (`examples/api/router.go:78`). Usarlo en cada ruta con ID: CONSUMER |
+| 3.2 | C | Chequeo por objeto (IDOR) | PASS | `access.Guard.Check` por instancia (`access/access.go:154`); `examples/api` lo usa en `DELETE /documents/{id}` (`examples/api/router.go:89`). Usarlo en cada ruta con ID: CONSUMER |
 | 3.3 | C | Denegar por defecto | PASS | Sin principal 401, denegado 403, error del PDP 503 (falla cerrado): `httpx/middleware/authz_test.go` (`TestRequirePermission_CheckerError_Returns503NotForbidden`) |
 | 3.4 | H | Autorización centralizada | PASS | Middleware + `authz.Checker` (Cerbos) en `authz/cerbos/cerbos.go:88` |
 | 3.5 | H | DTOs explícitos; sin asignación masiva | PASS | `request.JSON` rechaza campos desconocidos (`request/json_test.go`, `TestJSONWithLimit_UnknownField`); el dueño sale del principal, no del cuerpo (`examples/api/handler_integration_test.go`, `TestDocumentHandlerCreate_PersistsThePrincipalAsOwner`) |
-| 3.6 | H | Endpoints internos fuera de internet | PASS | `/metrics` en un listener aparte, loopback por defecto (`examples/api/config.go:71`, `examples/api/router_test.go`, `TestNewMetricsServer_ServesOnlyMetrics`); Swagger rechazado en producción (`examples/boilerplate/internal/infrastructure/config/config_swagger_test.go`, `TestLoad_SwaggerRefusedInProduction`) |
+| 3.6 | H | Endpoints internos fuera de internet | PASS | `/metrics` en un listener aparte, loopback por defecto (`examples/api/config.go:80`, `examples/api/router_test.go`, `TestNewMetricsServer_ServesOnlyMetrics`); Swagger rechazado en producción (`examples/boilerplate/internal/infrastructure/config/config_swagger_test.go`, `TestLoad_SwaggerRefusedInProduction`) |
 | 3.7 | M | Fallos de autorización registrados con usuario, recurso y acción | PASS | `WriteAccessErrorFor` (`httpx/middleware/access.go:115`); `httpx/middleware/access_test.go` (`TestRequireAccess_Forbidden_LogsDenialWithActorResourceAndRequest`, `TestWriteAccessErrorFor_LogsResourceAndAction`) |
-| 3.8 | M | IDs impredecibles | PASS | UUID validados en params (`request/validate.go:71`); claves de objeto por UUID (`examples/api/document.go:65`) |
-| 3.9 | L | Archivos detrás de autorización | PASS | Descarga por URL firmada tras `requireRead` (`examples/api/router.go:93`), con expiración por defecto de 15 min (`storage/s3/s3.go:52`) |
+| 3.8 | M | IDs impredecibles | PASS | UUID validados en params (`request/validate.go:71`); claves de objeto por UUID (`examples/api/document.go:120`) |
+| 3.9 | L | Archivos detrás de autorización | PASS | Descarga por URL firmada tras `requireRead` (`examples/api/router.go:104`), que `examples/api` firma por 5 min (`downloadURLExpiry`, `examples/api/handler.go:559`); el adaptador limita cualquier expiración a `MaxPresignExpiry` (1 h por defecto) y usa 15 min si no se indica una (`storage/s3/s3.go:63`) |
 
 ## 4. Validación de input e inyección
 
@@ -116,7 +116,7 @@ un Bearer token que se valida en el servidor.
 | 4.5 | H | Inyección de operadores NoSQL | N/A | Sin NoSQL |
 | 4.6 | H | SSRF en URLs del usuario | N/A | Ninguna URL saliente viene del cliente: emisor, PDP y S3 salen de la configuración |
 | 4.7 | M | LDAP, XPath, XML, cabeceras | PASS | Sin LDAP, XPath ni XML. Cabeceras: el `X-Request-Id` del cliente se sanea a ASCII visible y largo acotado (`httpx/middleware/requestid.go:67`, `httpx/middleware/requestid_test.go`, `TestSanitizeClientRequestID`) |
-| 4.8 | M | Path traversal | PASS | La librería no abre rutas derivadas de input; claves de objeto generadas en el servidor (`examples/api/document.go:65`) |
+| 4.8 | M | Path traversal | PASS | La librería no abre rutas derivadas de input; claves de objeto generadas en el servidor (`examples/api/document.go:120`) |
 | 4.9 | L | Normalización Unicode y límites de largo antes de validar | PARTIAL | `MaxLen` cuenta runas (`request/validate.go:244`), pero no hay normalización NFC antes de validar; `stringutil.Normalize` es para búsqueda, no para validación |
 
 ## 5. XSS y cliente
@@ -142,7 +142,7 @@ un Bearer token que se valida en el servidor.
 |---|---|---|---|---|
 | 6.1 | C | Token anti-CSRF o autenticación sin cookies | PASS | Autenticación solo por cabecera `Authorization` (`httpx/middleware/auth.go:37`) |
 | 6.2 | H | Cookies `SameSite` | N/A | Sin cookies |
-| 6.3 | H | GET nunca cambia estado | PASS | Las rutas GET de los ejemplos solo leen (`examples/api/router.go:89`, `examples/boilerplate/internal/interfaces/http/router.go`); la matriz de roles las fija (`examples/api/rolematrix_test.go`) |
+| 6.3 | H | GET nunca cambia estado | PASS | Las rutas GET de los ejemplos solo leen (`examples/api/router.go:100`, `examples/boilerplate/internal/interfaces/http/router.go`); la matriz de roles las fija (`examples/api/rolematrix_test.go`) |
 | 6.4 | M | Chequeo de `Origin`/`Referer` | N/A | Sin cookies, no hay credencial ambiental que un sitio ajeno pueda usar |
 | 6.5 | M | Reautenticación en operaciones sensibles | N/A | Sin cambio de contraseña, correo ni pagos; es del IdP |
 | 6.6 | L | CORS sin reflejar orígenes con credenciales | PASS | Lista explícita y `AllowCredentials: false` (`examples/boilerplate/internal/interfaces/http/router.go:208`, `TestNewRouter_CORSDoesNotAllowCredentials`) |
@@ -163,24 +163,24 @@ un Bearer token que se valida en el servidor.
 
 | ID | Sev. | Ítem | Estado | Evidencia |
 |---|---|---|---|---|
-| 8.1 | H | Autenticación en todo endpoint no público | PASS | `Authenticate` (`httpx/middleware/auth.go:88`) en `/api/v1` (`examples/api/router.go:87`); solo `/healthz` es público |
+| 8.1 | H | Autenticación en todo endpoint no público | PASS | `Authenticate` (`httpx/middleware/auth.go:88`) en `/api/v1` (`examples/api/router.go:98`); solo `/healthz` es público |
 | 8.2 | H | Rate limit, límite de payload, paginación acotada | PARTIAL | Cuerpo de 1 MiB por defecto (`request/json_test.go`, `TestJSON_DefaultLimitIsExactly1MiB`); `limit` y `offset` acotados (`audit/audit.go:185`, `workflow/workflow.go:738`). El limitador de `examples/api` (`examples/api/ratelimit.go:64`) es por proceso y, sin `RealIP`, detrás de un proxy cuenta la IP del proxy (documentado). Limitador compartido: CONSUMER (§6) |
 | 8.3 | H | Validar `Content-Type` | PASS | `request.JSON` responde 415 a un tipo distinto de JSON (`request/json_test.go`, `TestJSON_ContentType`) |
 | 8.4 | H | Errores sin stack traces, SQL ni hosts | PASS | `Recovery` registra el stack y responde 500 genérico (`httpx/middleware/recovery.go:12`, `httpx/middleware/recovery_test.go`); errores de base solo en el log |
 | 8.5 | M | GraphQL | N/A | Sin GraphQL |
 | 8.6 | M | WebSockets | N/A | Sin WebSockets |
 | 8.7 | M | Redirecciones validadas | N/A | Sin parámetros de redirección |
-| 8.8 | L | Versionado de la API | PASS | `/api/v1` (`examples/api/router.go:80`) y `/v1` en el boilerplate |
+| 8.8 | L | Versionado de la API | PASS | `/api/v1` (`examples/api/router.go:91`) y `/v1` en el boilerplate |
 
 ## 9. Subida de archivos
 
 | ID | Sev. | Ítem | Estado | Evidencia |
 |---|---|---|---|---|
 | 9.1 | C | Archivos nunca ejecutados; en almacenamiento de objetos | PASS | Puerto `storage` sobre S3 (`storage/s3/s3.go`); descarga por URL firmada, nunca desde el proceso |
-| 9.2 | H | Tipo por contenido con lista permitida | PASS | `storage.SniffContentType` (`storage/sniff.go:40`, `storage/sniff_test.go`); `examples/api` lo usa (`examples/api/handler.go:588`, `TestDocumentHandlerUploadFile_RejectsDisallowedContent`) |
-| 9.3 | H | Nombre regenerado en el servidor | PASS | `StorageKeyFor(id)` (`examples/api/document.go:65`) |
-| 9.4 | H | Límite de tamaño antes de leer todo | PASS | `http.MaxBytesReader` de 25 MiB (`examples/api/handler.go:578`) |
-| 9.5 | M | Reencodear imágenes | CONSUMER | Depende del dominio; `examples/api` acepta PNG y JPEG sin reencodear, mitigado por la descarga como adjunto `octet-stream` (§9.7) |
+| 9.2 | H | Tipo por contenido con lista permitida | PASS | `storage.SniffContentType` (`storage/sniff.go:40`, `storage/sniff_test.go`); `examples/api` lo aplica en el job `validate_upload`, después de la subida directa al bucket (`examples/api/jobs.go:218`, `TestValidateUpload`): un objeto no permitido se borra y el documento queda `rejected`, o vuelve a su archivo validado anterior si lo tenía; uno aceptado se copia a una key final que nadie puede firmar para `PUT`, así que reusar la URL de subida no reemplaza el archivo validado (`TestPresignedUploadFlow`) |
+| 9.3 | H | Nombre regenerado en el servidor | PASS | `newUploadKey(id)` genera `documents/{id}/uploads/{uuid}` en el servidor (`examples/api/document.go:120`); el archivo validado vive en `documents/{id}/file/{uuid}`, que sólo escribe el job (`examples/api/document.go:107`) |
+| 9.4 | H | Límite de tamaño antes de leer todo | PASS | La API ya no recibe el cuerpo: `upload-url` rechaza un tamaño fuera de 1..25 MiB antes de firmar (`examples/api/handler.go:621`) y firma el tamaño exacto con `storage.WithContentLength` (`examples/api/handler.go:647`), así que el bucket rechaza otro tamaño |
+| 9.5 | M | Reencodear imágenes | CONSUMER | Depende del dominio; `examples/api` acepta PNG y JPEG sin reencodear, mitigado por la descarga como adjunto con el tipo verificado por contenido (§9.7) |
 | 9.6 | M | Escaneo de malware | CONSUMER | Según el riesgo del servicio |
 | 9.7 | M | Descarga con `Content-Disposition: attachment` y tipo seguro | PASS | Valores por defecto `attachment` y `application/octet-stream` (`storage/presign.go:13`, `storage/presign.go:23`, `storage/presign_test.go`) |
 
@@ -223,7 +223,7 @@ despliegue real es de cada consumidor.
 | 12.4 | H | Secretos de CI acotados; acciones fijadas por SHA; build no modificable por PR sin revisar | PASS | `permissions: contents: read` (`.github/workflows/ci.yaml:19`); todas las acciones fijadas por SHA de 40 caracteres (búsqueda de `uses:` sin SHA sin resultados); CODEOWNERS (`.github/CODEOWNERS`) y protección de `master` (configuración de GitHub, fuera del árbol) |
 | 12.5 | H | Respaldos cifrados con restauración probada | CONSUMER | Procedimiento en `examples/boilerplate/deploy/RUNBOOK.md` §9 |
 | 12.6 | M | IAM de nube con mínimo privilegio | CONSUMER | Sin recursos de nube en el repo |
-| 12.7 | M | Puertos y paneles sin uso cerrados | PASS | Métricas en loopback por defecto (`examples/api/config.go:71`); solo `8080` publicado en el compose de despliegue |
+| 12.7 | M | Puertos y paneles sin uso cerrados | PASS | Métricas en loopback por defecto (`examples/api/config.go:80`); solo `8080` publicado en el compose de despliegue |
 | 12.8 | L | Cadencia de parches | PASS | `examples/boilerplate/deploy/RUNBOOK.md` §0 «Parches»; Dependabot y Trivy semanales (`.github/workflows/trivy.yaml:16`) |
 
 ## 13. Privacidad y datos
@@ -261,7 +261,7 @@ despliegue real es de cada consumidor.
 | 15.4 | H | Envenenamiento de caché | PASS | Respuestas no cacheables por defecto (`httpx/middleware/security.go:33`) |
 | 15.5 | H | Engaño de caché | PASS | Igual que §15.4 |
 | 15.6 | H | Toma de subdominios | CONSUMER | DNS del consumidor |
-| 15.7 | H | DoS: límites de cuerpo, cabeceras y JSON; regex lineal; timeouts salientes | PASS | Cuerpo (§8.2); `MaxHeaderBytes` y timeouts del servidor (`examples/api/main.go:326`, `TestNewAPIServer_SetsTimeoutsAndHeaderLimit`); regex de Go (RE2) es lineal; timeouts salientes: Zitadel (`auth/zitadel/timeout_test.go`), Cerbos (`authz/cerbos/timeout_test.go`), SendGrid (`notification/sendgrid/sendgrid.go:33`), S3 (`storage/s3/timeout_test.go`), Postgres (`postgres/postgres_integration_test.go`) |
+| 15.7 | H | DoS: límites de cuerpo, cabeceras y JSON; regex lineal; timeouts salientes | PASS | Cuerpo (§8.2); `MaxHeaderBytes` y timeouts del servidor (`examples/api/main.go:346`, `TestNewAPIServer_SetsTimeoutsAndHeaderLimit`); regex de Go (RE2) es lineal; timeouts salientes: Zitadel (`auth/zitadel/timeout_test.go`), Cerbos (`authz/cerbos/timeout_test.go`), SendGrid (`notification/sendgrid/sendgrid.go:33`), S3 (`storage/s3/timeout_test.go`), Postgres (`postgres/postgres_integration_test.go`) |
 | 15.8 | M | Gestión de bots | CONSUMER | Sin registro ni login propios; rate limit en el borde (§6) |
 | 15.9 | M | DOM clobbering | N/A | Sin frontend |
 | 15.10 | M | XS-Leaks | PASS | COOP y CORP `same-origin` (`httpx/middleware/security.go:31`); sin cookies |
@@ -345,7 +345,7 @@ SAML, y no tiene webhooks, pagos ni scripts de terceros.
 | # | Brecha | Ítems | Estado |
 |---|---|---|---|
 | 1 | `CERBOS_PLAINTEXT` en `examples/boilerplate` usa `config.Bool`, que acepta valores no parseables como `false` en silencio, en lugar del parseo estricto de `SWAGGER_ENABLED` y `DB_REQUIRE_TLS` | 7.1 | Cerrada (2026-10-16): usa `parseBool`, que rechaza el valor (`examples/boilerplate/internal/infrastructure/config/config_cerbos_test.go`) |
-| 2 | La política falsa de `examples/api` deja leer `/audit` a cualquier usuario autenticado (`examples/api/fakes.go:60`); la matriz de roles lo fija. Un servicio copiado debe usar Cerbos con su política | 14.8 | Abierta (ejemplo) |
+| 2 | La política falsa de `examples/api` deja leer `/audit` a cualquier usuario autenticado (`examples/api/fakes.go:53`); la matriz de roles lo fija. Un servicio copiado debe usar Cerbos con su política | 14.8 | Abierta (ejemplo) |
 | 3 | El limitador de `examples/api` cuenta por IP del par directo: detrás de un proxy todos los clientes comparten la IP del proxy (documentado en `examples/api/ratelimit.go:28`) | 8.2 | Abierta (documentada) |
 | 4 | 6 hallazgos previos de `golangci-lint` en `auth/zitadel/introspection*.go` (idénticos en la base) | 14.5 | Abierta |
 | 5 | gitleaks y Trivy todavía no son checks requeridos de la protección de `master` | 10.1, 10.4 | Cerrada (2026-10-16): la protección de `master` los exige |

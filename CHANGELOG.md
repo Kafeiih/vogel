@@ -37,6 +37,52 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ### Cambiado
 
+- **`examples/api`: los archivos se suben directo al storage con una URL
+  firmada.** `PUT /documents/{id}/file`, que recibía los bytes y los reenviaba
+  al storage, ya no existe. El flujo nuevo:
+  - `POST /documents/{id}/upload-url` con `content_type` y `size` (`415` para
+    un tipo no permitido, `400` para un tamaño fuera de 1..25 MiB) devuelve
+    una URL de `PUT` de 5 minutos que firma el tipo y el largo exacto, con una
+    key nueva por subida (`documents/{id}/uploads/{uuid}`); `expires_at`
+    aproxima el vencimiento firmado.
+  - `POST /documents/{id}/file` con `{"key": ...}` confirma la subida: lee el
+    documento con `SELECT ... FOR UPDATE`, lo deja `pending` y, en la misma
+    transacción, encola el job `validate_upload` con 5 intentos como máximo
+    (unos 12 minutos con el backoff de River, no semanas). Se valida una
+    subida por vez: mientras otra sigue `pending` responde `409` sin encolar
+    nada, salvo que lleve más de una hora así (`stalePendingAfter`), en cuyo
+    caso la da por abandonada y la reemplaza.
+  - `validate_upload` detecta el tipo por el contenido. Lo aceptado se copia a
+    una key final, `documents/{id}/file/{uuid}`, que nadie puede firmar para
+    `PUT`: reusar la URL de subida ya no reemplaza un archivo validado. Lo no
+    permitido se borra, y lo que nunca se subió se rechaza; un objeto
+    inexistente se reconoce con `storage.ErrNotFound`, así que el job
+    funciona igual con `storage/s3`.
+  - Si la confirmación reemplazaba un archivo `ready`, ese archivo queda en la
+    fila como anterior y `download-url` lo sigue sirviendo con su tipo
+    mientras el nuevo se valida. Un reemplazo aceptado lo retira (un job
+    `delete_object` encolado en la misma transacción lo borra, con
+    reintentos); uno rechazado lo restaura, auditado como
+    `document_restore_file`, así que repetir una confirmación no destruye el
+    archivo validado.
+  - El veredicto sólo se escribe sobre un archivo `pending`: un reintento del
+    job no cambia nada ni audita dos veces, y termina la limpieza que un
+    borrado fallido dejó pendiente. Si el job falla en su último intento,
+    resuelve el documento como un rechazo y lo registra en el log.
+  - `GET /documents/{id}/download-url` firma por 5 minutos (antes 15) y sirve
+    el tipo detectado; sin archivo `ready` ni anterior responde `409`.
+
+  La migración `002_add_file_status` agrega `file_status`,
+  `file_content_type`, `file_pending_since`, `previous_storage_key` y
+  `previous_content_type`; las filas que ya tenían archivo pasan a `ready`.
+  El storage falso hace ahora de bucket: sus URL apuntan a
+  `FAKE_STORAGE_BASE_URL` (por defecto `http://localhost:<PORT>`) bajo
+  `/fake-storage/`, firmadas con HMAC, y rechaza con `403` una firma inválida,
+  una URL vencida o un tipo o largo distinto del firmado; limita el total de
+  sus objetos en memoria a 256 MiB (`507` al pasarse). Las subidas nunca
+  confirmadas no se barren: en producción, una regla de ciclo de vida del
+  bucket sobre `documents/*/uploads/`. Ninguna URL firmada se loguea ni se
+  audita.
 - **`logger`: los métodos `*Context` agregan `request_id` y `user_id` desde
   `reqctx`.** Antes, `InfoContext(ctx, …)` ignoraba el contexto y una línea
   dentro de una request salía sin `request_id` salvo que se usara

@@ -34,7 +34,7 @@ func TestPresignExpiry(t *testing.T) {
 // methods route their expiry through presignExpiry, by reading the expires
 // timestamp back out of the URL.
 func TestFakeStorage_PresignedURLsHonorExpiry(t *testing.T) {
-	s := newFakeStorage()
+	s := newFakeStorage(testFakeBase)
 	methods := []struct {
 		name    string
 		presign func(time.Duration) (string, error)

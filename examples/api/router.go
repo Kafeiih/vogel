@@ -28,6 +28,7 @@ func NewRouter(
 	guard *access.Guard,
 	metrics *vmw.Metrics,
 	limiter *ipRateLimiter,
+	bucket http.Handler,
 	pool *pgxpool.Pool,
 	logger *slog.Logger,
 ) http.Handler {
@@ -67,6 +68,16 @@ func NewRouter(
 	// served by newMetricsServer on its own internal listener.
 	r.Get("/healthz", healthzHandler(pool))
 
+	// The fake bucket (fakeStorage.Handler) stands in for the object store's
+	// own endpoint, which is why it sits outside /api/v1 with no
+	// Authenticate or rate limit: a client reaches it with a presigned URL,
+	// and that URL's signature is the only credential it checks. Only GET
+	// (download) and PUT (upload) exist. With storage/s3 these two lines go
+	// away: the presigned URLs point at the bucket itself. The access log
+	// above records the path only, never the signed query string.
+	r.Get(fakeStoragePath+"*", bucket.ServeHTTP)
+	r.Put(fakeStoragePath+"*", bucket.ServeHTTP)
+
 	requireRead := vmw.RequirePermission(checker, "documents:document", "read", logger)
 	requireWrite := vmw.RequirePermission(checker, "documents:document", "write", logger)
 	requireAuditRead := vmw.RequirePermission(checker, "audit:entry", "read", logger)
@@ -91,7 +102,11 @@ func NewRouter(
 		r.With(requireRead).Get("/documents/{id}", docs.Get)
 		r.With(requireRead).Get("/documents/{id}/history", docs.History)
 		r.With(requireRead).Get("/documents/{id}/download-url", docs.DownloadURL)
-		r.With(requireWrite).Put("/documents/{id}/file", docs.UploadFile)
+		// The presigned upload flow: sign a PUT, then confirm the key once
+		// the client uploaded to it (see UploadURL and AttachFile). The
+		// file's bytes never come through this router.
+		r.With(requireWrite).Post("/documents/{id}/upload-url", docs.UploadURL)
+		r.With(requireWrite).Post("/documents/{id}/file", docs.AttachFile)
 		r.With(requireWrite).Post("/documents/{id}/transitions", docs.Transition)
 		r.With(requireWrite).Post("/documents/{id}/claim", docs.Claim)
 		r.With(requireDelete).Delete("/documents/{id}", docs.Delete)

@@ -1,0 +1,34 @@
+-- +goose Up
+-- file_status tracks a document's file through the presigned upload flow:
+--   none     -> no file was ever confirmed
+--   pending  -> the client confirmed an upload; validate_upload has not run
+--   ready    -> validate_upload sniffed an allowed type; it may be downloaded
+--   rejected -> the object was missing or its content was not allowed
+-- file_content_type is the type validate_upload sniffed, the only type a
+-- download is ever served with.
+-- file_pending_since is when the row last went pending; a confirm treats a
+-- row pending for much longer than validate_upload's bounded retries as
+-- abandoned and takes it over.
+-- previous_storage_key and previous_content_type hold the ready file a
+-- pending replacement would supersede: downloads keep serving it while the
+-- replacement is validated, and a rejected replacement restores it.
+ALTER TABLE documents
+    ADD COLUMN file_status TEXT NOT NULL DEFAULT 'none'
+        CONSTRAINT documents_file_status_check
+        CHECK (file_status IN ('none', 'pending', 'ready', 'rejected')),
+    ADD COLUMN file_content_type TEXT,
+    ADD COLUMN file_pending_since TIMESTAMPTZ,
+    ADD COLUMN previous_storage_key TEXT,
+    ADD COLUMN previous_content_type TEXT;
+
+-- Rows with a key were attached by the old proxying upload, which sniffed
+-- the content before storing it.
+UPDATE documents SET file_status = 'ready' WHERE storage_key <> '';
+
+-- +goose Down
+ALTER TABLE documents
+    DROP COLUMN previous_content_type,
+    DROP COLUMN previous_storage_key,
+    DROP COLUMN file_pending_since,
+    DROP COLUMN file_content_type,
+    DROP COLUMN file_status;

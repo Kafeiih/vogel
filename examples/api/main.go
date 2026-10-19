@@ -166,7 +166,7 @@ func run() error {
 	// or the real adapter's concrete type.
 	authenticator := fakeAuthenticator{}
 	checker := fakeChecker{}
-	fileStorage := newFakeStorage()
+	fileStorage := newFakeStorage(cfg.FakeStorageBaseURL)
 	notifier := &fakeNotifier{logger: log.Logger}
 
 	documentStore := NewDocumentStore()
@@ -229,13 +229,31 @@ func run() error {
 		logger:   log.Logger,
 	}
 
-	queue, err := worker.NewRiverQueue(pool, RegisterWorkers(notifyWorker), worker.Config{
+	// validate_upload inspects each object a client uploaded with a
+	// presigned URL, off the HTTP path -- see ValidateUploadWorker.
+	validateWorker := &ValidateUploadWorker{
+		storage:  fileStorage,
+		store:    documentStore,
+		recorder: recorder,
+		tx:       txManager,
+		pool:     pool,
+		logger:   log.Logger,
+	}
+
+	// delete_object retires the file an accepted upload replaced.
+	deleteObjectWorker := &DeleteObjectWorker{storage: fileStorage, logger: log.Logger}
+
+	queue, err := worker.NewRiverQueue(pool, RegisterWorkers(notifyWorker, validateWorker, deleteObjectWorker), worker.Config{
 		Schema:            cfg.RiverSchema,
 		DefaultMaxWorkers: 10,
 	}, log.Logger)
 	if err != nil {
 		return fmt.Errorf("build river queue: %w", err)
 	}
+	// validate_upload enqueues delete_object through the same queue it is
+	// registered on, so it gets the queue once the queue exists.
+	validateWorker.queue = queue
+
 	if err := queue.Migrate(ctx); err != nil {
 		return fmt.Errorf("run river migrations: %w", err)
 	}
@@ -248,7 +266,7 @@ func run() error {
 	// 9. The public API server; see newAPIServer for its timeouts and
 	// ipRateLimiter for the per-process, per-IP request budget.
 	limiter := newIPRateLimiter(cfg.RateLimitRequests, cfg.RateLimitWindow)
-	srv := newAPIServer(cfg, NewRouter(docs, auditHandler, authenticator, checker, accessGuard, metrics, limiter, pool, log.Logger))
+	srv := newAPIServer(cfg, NewRouter(docs, auditHandler, authenticator, checker, accessGuard, metrics, limiter, fileStorage.Handler(), pool, log.Logger))
 
 	// Internal metrics listener (METRICS_ADDR, loopback by default), apart
 	// from the public API port. Binding here, before serving, makes a busy
@@ -320,9 +338,11 @@ const maxHeaderBytes = 64 << 10
 // newAPIServer builds the public API server on cfg.Port. Every timeout is set
 // explicitly from cfg (gosec G112): a slow or hanging client must never be
 // able to hold a connection, and the goroutine serving it, open
-// indefinitely. ReadTimeout also bounds how long an upload body may take to
-// arrive, so raise HTTP_READ_TIMEOUT before serving clients that upload
-// maxUploadBytes over slow links.
+// indefinitely. Uploads go to storage with a presigned URL, never through
+// /api/v1, but the fake bucket (fakeStorage.Handler) is served by this same
+// server: ReadTimeout also bounds how long its PUT body may take to arrive,
+// so raise HTTP_READ_TIMEOUT before letting clients upload maxUploadBytes to
+// it over slow links. A real bucket has no such coupling.
 func newAPIServer(cfg Config, handler http.Handler) *http.Server {
 	return &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.Port),

@@ -102,7 +102,7 @@ func newIntegrationHandler(t *testing.T) (*DocumentHandler, *pgxpool.Pool) {
 	recorder := audit.NewRecorder(auditpg.NewRepository(pool))
 	guard := access.New(fakeChecker{})
 
-	h := NewDocumentHandler(store, engine, wfRepo, recorder, queue, newFakeStorage(),
+	h := NewDocumentHandler(store, engine, wfRepo, recorder, queue, newFakeStorage("http://localhost:8080"),
 		pgxtx.NewPgxTxManager(pool), pool, guard, logger)
 	return h, pool
 }
@@ -146,4 +146,24 @@ func TestDocumentHandlerCreate_PersistsThePrincipalAsOwner(t *testing.T) {
 			assert.Equal(t, tt.userID, ownerID, "persisted owner_id is the principal's UserID")
 		})
 	}
+}
+
+// createTestDocument creates a document through DocumentHandler.Create, as
+// user-alice, and returns it as the response carried it.
+func createTestDocument(t *testing.T, h *DocumentHandler) Document {
+	t.Helper()
+	body := `{"title":"Contrato","kind":"contract","issued_at":"2026-01-02"}`
+	req := httptest.NewRequest(http.MethodPost, "/documents", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(auth.WithPrincipal(req.Context(), &auth.Principal{UserID: "user-alice"}))
+	rec := httptest.NewRecorder()
+
+	h.Create(rec, req)
+
+	require.Equal(t, http.StatusCreated, rec.Code, "body %s", rec.Body.String())
+	var resp struct {
+		Data Document `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	return resp.Data
 }

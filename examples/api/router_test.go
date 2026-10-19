@@ -24,6 +24,10 @@ import (
 // guard. Adding a public route means adding it here, on purpose.
 var publicRoutes = map[string]bool{
 	"GET /healthz": true,
+	// The fake bucket: authorized by the presigned URL's signature, never
+	// by a bearer token (see fakeStorage.Handler).
+	"GET /fake-storage/*": true,
+	"PUT /fake-storage/*": true,
 }
 
 // acceptAll authenticates every bearer token as the same plain user.
@@ -63,7 +67,7 @@ func TestNewRouter_EveryAPIRouteIsGuarded(t *testing.T) {
 		t.Fatalf("NewMetrics: %v", err)
 	}
 	var checker authz.Checker = denyAll{}
-	handler := NewRouter(nil, nil, acceptAll{}, checker, access.New(checker), metrics, newIPRateLimiter(1_000, time.Minute), nil, logger)
+	handler := NewRouter(nil, nil, acceptAll{}, checker, access.New(checker), metrics, newIPRateLimiter(1_000, time.Minute), newFakeStorage("http://localhost").Handler(), nil, logger)
 
 	mux, ok := handler.(chi.Routes)
 	if !ok {
