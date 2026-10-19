@@ -8,7 +8,7 @@ import (
 )
 
 // This file forwards every pgx and pgxpool tracer hook to Config.Tracer, the
-// optional extra tracer (an OpenTelemetry one from vogel/otel, for instance),
+// optional extra tracer (an OpenTelemetry pgx tracer, for instance),
 // around poolTracer's own behavior. Start hooks run the extra tracer first and
 // End hooks last, so its span encloses vogel's work on the same hook: the
 // slow-query WARN is logged while the query span is still open. Each End gets

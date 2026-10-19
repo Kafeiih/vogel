@@ -56,8 +56,8 @@ type Config struct {
 	// WrapTransport, if set, wraps every S3 call. It receives a
 	// RoundTripper backed by the SDK's own HTTP client, so this package's
 	// bounds (see ResponseHeaderTimeout) and the SDK's redirect policy (only
-	// 307 and 308 are followed) still apply. vogel/otel's HTTP client helper
-	// fits it, to trace S3 calls. With it set the SDK's AWS_DEFAULTS_MODE
+	// 307 and 308 are followed) still apply. otelhttp.NewTransport fits it,
+	// to trace S3 calls. With it set the SDK's AWS_DEFAULTS_MODE
 	// timeout tuning, which only applies to its own client type, is skipped;
 	// the default mode tunes nothing.
 	WrapTransport func(http.RoundTripper) http.RoundTripper

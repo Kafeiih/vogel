@@ -132,6 +132,16 @@ jobs:
               exit 1
             fi
           done
+          # otel es el unico paquete que puede depender del SDK de
+          # OpenTelemetry: los puertos (logger, postgres, worker, httpx, ...)
+          # reciben el tracing por opciones sin importarlo, y un servicio que
+          # no usa tracing no debe enlazarlo.
+          for pkg in $(go list ./... | grep -v '/otel$' | grep -v '/examples/'); do
+            if go list -deps "$pkg" 2>/dev/null | grep -qxF "go.opentelemetry.io/otel/sdk/trace"; then
+              echo "::error::$pkg depende del SDK de OpenTelemetry, y solo ./otel deberia"
+              exit 1
+            fi
+          done
           echo "Puertos aislados: OK"
 
       - name: Upload unit coverage
