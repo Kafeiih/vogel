@@ -684,6 +684,13 @@ var (
 // is aborted"), and rows left open hold the underlying connection busy;
 // either failure then breaks the engine's own writes later in the same call
 // to Move.
+//
+// A guard also runs while that transaction, and its pool connection, are
+// open: it must not call the network (an HTTP API, Cerbos, object storage,
+// email). A slow or hanging remote call would hold the connection and the
+// transaction's row locks for as long as it takes. Decide anything that
+// needs a remote call before opening the transaction and pass the result in
+// through the Case or the context.
 type GuardFunc func(ctx context.Context, db pgxtx.DBTX, c Case) (bool, error)
 
 // Repository defines persistence operations for cases and their event

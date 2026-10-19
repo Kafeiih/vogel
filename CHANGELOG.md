@@ -24,6 +24,11 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ### Agregado
 
+- **`pgxtx`: `RequireTx` y `ErrNoTx`.** Para el código que debe correr dentro
+  de una transacción: devuelve la transacción del contexto o `ErrNoTx`, en vez
+  de caer al pool como `DBFromContext`. Así, olvidar `WithTx` o pasar el
+  contexto equivocado es un error y no una segunda conexión tomada en silencio
+  fuera de la transacción. `DBFromContext` no cambia.
 - **`postgres`: `Config.AcquireTimeout`.** Acota la espera por una conexión del
   pool (vía `AcquireTracer` de pgxpool): con el pool lleno, la operación falla
   dentro del límite con un error que envuelve `context.DeadlineExceeded`, en
