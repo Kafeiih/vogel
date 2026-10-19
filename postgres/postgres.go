@@ -152,6 +152,15 @@ type Config struct {
 	// tracer fits it; this package depends on no tracing library.
 	Tracer pgx.QueryTracer
 
+	// TraceIDs, if set, returns the trace and span IDs of the span carried
+	// by a context, or empty strings when there is none. The pool then
+	// attaches the acquiring span as an exemplar to db_pool_acquire_wait_seconds
+	// and db_pool_conn_hold_seconds, and adds trace_id and span_id to the
+	// leak-threshold warning (read at acquire: the release has no context).
+	// otel.SampledTraceIDs fits it, so exemplars only point at exported
+	// traces. Prometheus reads exemplars only in the OpenMetrics format.
+	TraceIDs func(ctx context.Context) (traceID, spanID string)
+
 	// AfterConnect, if set, runs after this package's own per-connection setup
 	// (TLS, timeouts, tracer) on every new physical connection. Use it for
 	// consumer-specific per-connection work — for example, registering a
@@ -212,6 +221,7 @@ func newPoolConfig(cfg Config, logger *slog.Logger) (*pgxpool.Config, error) {
 		slowQueryThreshold: slowQueryThreshold,
 		hashSlowQuerySQL:   cfg.HashSlowQuerySQL,
 		extra:              cfg.Tracer,
+		traceIDs:           cfg.TraceIDs,
 		acquireTimeout:     cfg.AcquireTimeout,
 		leakThreshold:      cfg.LeakThreshold,
 		maxConns:           int(poolConfig.MaxConns),

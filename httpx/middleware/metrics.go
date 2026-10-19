@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -25,7 +26,13 @@ type Metrics struct {
 	requestsTotal   *prometheus.CounterVec
 	requestDuration *prometheus.HistogramVec
 	responseSize    *prometheus.HistogramVec
+	exemplars       ExemplarFunc // nil: no exemplars
 }
+
+// ExemplarFunc returns the trace and span IDs of the span carried by ctx, or
+// empty strings when there is none (or it was not sampled). It has the shape
+// of logger.TraceIDsFunc; otel.SampledTraceIDs implements it.
+type ExemplarFunc func(ctx context.Context) (traceID, spanID string)
 
 // DefaultDurationBuckets returns the http_request_duration_seconds buckets
 // NewMetrics uses when WithDurationBuckets is not given: 5 ms to 10 s.
@@ -38,6 +45,16 @@ type MetricsOption func(*metricsConfig)
 
 type metricsConfig struct {
 	durationBuckets []float64
+	exemplars       ExemplarFunc
+}
+
+// WithExemplars attaches the request's trace_id and span_id, read with fn,
+// as an exemplar to each http_request_duration_seconds observation, so a
+// slow bucket links to a trace. A request fn finds no trace for records no
+// exemplar. Prometheus reads exemplars only in the OpenMetrics format:
+// serve the registry with promhttp.HandlerOpts{EnableOpenMetrics: true}.
+func WithExemplars(fn ExemplarFunc) MetricsOption {
+	return func(c *metricsConfig) { c.exemplars = fn }
 }
 
 // WithDurationBuckets sets the http_request_duration_seconds bucket upper
@@ -104,6 +121,7 @@ func NewMetrics(reg prometheus.Registerer, opts ...MetricsOption) (*Metrics, err
 		requestsTotal:   requestsTotal,
 		requestDuration: requestDuration,
 		responseSize:    responseSize,
+		exemplars:       cfg.exemplars,
 	}, nil
 }
 
@@ -158,7 +176,7 @@ func (m *Metrics) Middleware(next http.Handler) http.Handler {
 			}
 			routePattern := routePatternOf(r)
 			m.requestsTotal.WithLabelValues(r.Method, routePattern, strconv.Itoa(code)).Inc()
-			m.requestDuration.WithLabelValues(r.Method, routePattern).Observe(time.Since(start).Seconds())
+			observe(r.Context(), m.requestDuration.WithLabelValues(r.Method, routePattern), time.Since(start).Seconds(), m.exemplars)
 			m.responseSize.WithLabelValues(r.Method, routePattern).Observe(float64(ww.BytesWritten()))
 
 			if rec != nil {
@@ -195,4 +213,18 @@ func validateBuckets(buckets []float64) error {
 		}
 	}
 	return nil
+}
+
+// observe records v on o, with the trace of ctx as an exemplar when fn finds
+// one.
+func observe(ctx context.Context, o prometheus.Observer, v float64, fn ExemplarFunc) {
+	if fn != nil {
+		if traceID, spanID := fn(ctx); traceID != "" {
+			if eo, ok := o.(prometheus.ExemplarObserver); ok {
+				eo.ObserveWithExemplar(v, prometheus.Labels{"trace_id": traceID, "span_id": spanID})
+				return
+			}
+		}
+	}
+	o.Observe(v)
 }

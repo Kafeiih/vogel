@@ -363,3 +363,73 @@ func TestPoolTracer_StartupAcquire_IgnoresAcquireTimeout(t *testing.T) {
 
 	tr.TraceAcquireEnd(ctx, nil, pgxpool.TraceAcquireEndData{Conn: new(pgx.Conn)})
 }
+
+func histogramExemplar(t *testing.T, h prometheus.Histogram) map[string]string {
+	t.Helper()
+	var m dto.Metric
+	require.NoError(t, h.Write(&m))
+	for _, b := range m.GetHistogram().GetBucket() {
+		if e := b.GetExemplar(); e != nil {
+			labels := map[string]string{}
+			for _, l := range e.GetLabel() {
+				labels[l.GetName()] = l.GetValue()
+			}
+			return labels
+		}
+	}
+	return nil
+}
+
+type traceKey struct{}
+
+// fakeTraceIDs reads the IDs a test put in the context with traceKey.
+func fakeTraceIDs(ctx context.Context) (string, string) {
+	ids, _ := ctx.Value(traceKey{}).([2]string)
+	return ids[0], ids[1]
+}
+
+// With traceIDs, both pool histograms carry the acquiring request's trace as
+// an exemplar, and so does the leak warning, although the release that
+// emits it has no context.
+func TestPoolTracer_TraceIDs_ExemplarsAndLeakWarning(t *testing.T) {
+	var buf bytes.Buffer
+	tr, clock := newTestTracer(t, poolTracerOptions{
+		logger:           jsonLogger(&buf),
+		leakThreshold:    time.Second,
+		traceIDs:         fakeTraceIDs,
+		internalPrefixes: []string{"github.com/jackc/pgx/"},
+	})
+	conn := new(pgx.Conn)
+	ctx := context.WithValue(context.Background(), traceKey{}, [2]string{"0af7651916cd43dd8448eb211c80319c", "b7ad6b7169203331"})
+
+	ctx = tr.TraceAcquireStart(ctx, nil, pgxpool.TraceAcquireStartData{})
+	tr.TraceAcquireEnd(ctx, nil, pgxpool.TraceAcquireEndData{Conn: conn})
+	clock.advance(2 * time.Second)
+	tr.TraceRelease(nil, pgxpool.TraceReleaseData{Conn: conn})
+
+	want := map[string]string{"trace_id": "0af7651916cd43dd8448eb211c80319c", "span_id": "b7ad6b7169203331"}
+	assert.Equal(t, want, histogramExemplar(t, tr.acquireWait))
+	assert.Equal(t, want, histogramExemplar(t, tr.connHold))
+	var line map[string]any
+	require.NoError(t, json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &line))
+	assert.Equal(t, "0af7651916cd43dd8448eb211c80319c", line["trace_id"])
+	assert.Equal(t, "b7ad6b7169203331", line["span_id"])
+}
+
+// Without traceIDs, or outside a trace, nothing changes: no exemplar and no
+// trace keys on the leak warning.
+func TestPoolTracer_NoTrace_NoExemplarNorTraceKeys(t *testing.T) {
+	for name, fn := range map[string]func(context.Context) (string, string){"no option": nil, "no trace": fakeTraceIDs} {
+		var buf bytes.Buffer
+		tr, clock := newTestTracer(t, poolTracerOptions{logger: jsonLogger(&buf), leakThreshold: time.Second, traceIDs: fn})
+		conn := new(pgx.Conn)
+		ctx := tr.TraceAcquireStart(context.Background(), nil, pgxpool.TraceAcquireStartData{})
+		tr.TraceAcquireEnd(ctx, nil, pgxpool.TraceAcquireEndData{Conn: conn})
+		clock.advance(2 * time.Second)
+		tr.TraceRelease(nil, pgxpool.TraceReleaseData{Conn: conn})
+
+		assert.Nil(t, histogramExemplar(t, tr.acquireWait), name)
+		assert.Nil(t, histogramExemplar(t, tr.connHold), name)
+		assert.NotContains(t, buf.String(), "trace_id", name)
+	}
+}
