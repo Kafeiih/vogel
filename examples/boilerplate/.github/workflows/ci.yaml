@@ -73,6 +73,31 @@ jobs:
       - name: Test
         run: go test ./... -race -cover
 
+  # The alert and SLO rules in deploy/prometheus must load in Prometheus and
+  # behave as their unit tests say. promtool comes from the Prometheus image,
+  # pinned by digest; bump it together with the Prometheus you run.
+  prometheus-rules:
+    name: Prometheus rules
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check and test rules
+        env:
+          PROMETHEUS_IMAGE: prom/prometheus:v3.5.0@sha256:63805ebb8d2b3920190daf1cb14a60871b16fd38bed42b857a3182bc621f4996
+        run: |
+          set -euo pipefail
+          promtool() {
+            docker run --rm --entrypoint promtool \
+              -v "$PWD/deploy/prometheus:/rules:ro" -w /rules \
+              "$PROMETHEUS_IMAGE" "$@"
+          }
+          promtool check rules alerts.yml
+          promtool test rules alerts_test.yml
+
   # Known vulnerabilities in dependencies, through the call graph: it fails
   # only when this code reaches the vulnerable function. Its result depends
   # on vuln.go.dev at the time of the run, so a pull request can turn red

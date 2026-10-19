@@ -24,6 +24,11 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ### Agregado
 
+- **`examples/boilerplate`: el CI de los proyectos generados valida las
+  reglas de Prometheus.** La plantilla `.github/workflows/ci.yaml` suma el job
+  `Prometheus rules`, que corre `promtool check rules` y `promtool test rules`
+  sobre `deploy/prometheus/` con la imagen fijada por digest, como el CI de
+  vogel.
 - **`httpx/middleware`: opciones de `StructuredLogger` para datos del
   cliente.** `remote_addr` y `user_agent` son datos personales bajo reglas
   tipo GDPR. `WithRemoteAddr(RemoteAddrTruncated)` loguea solo la red (/24 en
