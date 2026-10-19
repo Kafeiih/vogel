@@ -146,7 +146,10 @@ construye la imagen del PDP y prueba que las sirve (ver `cerbos/README.md`).
 > `DB_ACQUIRE_TIMEOUT` (opcional, `3s` por defecto) es cuánto espera una
 > petición por una conexión libre del pool antes de fallar con un error que
 > envuelve `context.DeadlineExceeded`: con el pool lleno la aplicación falla
-> rápido en vez de encolar peticiones hasta `APP_TIMEOUT`.
+> rápido en vez de encolar peticiones hasta `APP_TIMEOUT`. El límite también
+> cubre abrir una conexión nueva cuando el pool tiene lugar, así que debe
+> superar lo que tarda un connect sano; el `Ping` de arranque queda fuera y
+> espera hasta `DB_CONNECT_TIMEOUT`.
 > `DB_LEAK_THRESHOLD` (opcional, `10s` por defecto) registra un WARN, con la
 > función y el `archivo:línea` que pidió la conexión, cuando una conexión se
 > devuelve después de retenerla más que ese umbral. Ambas deben ser

@@ -350,3 +350,16 @@ func TestNewPool_NegativeAcquireTimeoutOrLeakThreshold_FailsBeforeConnecting(t *
 		})
 	}
 }
+
+// NewPool's startup Ping may have to dial the first connection, which can
+// take up to ConnectTimeout against a database waking up. It is marked so
+// AcquireTimeout, meant for requests queuing on a full pool, does not cut it.
+func TestPoolTracer_StartupAcquire_IgnoresAcquireTimeout(t *testing.T) {
+	tr, _ := newTestTracer(t, poolTracerOptions{acquireTimeout: 2 * time.Second})
+
+	ctx := tr.TraceAcquireStart(withoutAcquireTimeout(context.Background()), nil, pgxpool.TraceAcquireStartData{})
+	_, ok := ctx.Deadline()
+	assert.False(t, ok, "the startup acquire must not get the AcquireTimeout deadline")
+
+	tr.TraceAcquireEnd(ctx, nil, pgxpool.TraceAcquireEndData{Conn: new(pgx.Conn)})
+}

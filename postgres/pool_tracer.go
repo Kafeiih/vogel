@@ -134,13 +134,26 @@ func newPoolTracer(opts poolTracerOptions) *poolTracer {
 	}
 }
 
+// noAcquireTimeoutKey marks a context whose acquire must not get the
+// AcquireTimeout deadline; see withoutAcquireTimeout.
+type noAcquireTimeoutKey struct{}
+
+// withoutAcquireTimeout returns ctx marked so TraceAcquireStart adds no
+// AcquireTimeout deadline. NewPool uses it for its startup Ping: that acquire
+// dials the first connection, which may take up to ConnectTimeout against a
+// database that is still waking up, and AcquireTimeout is meant for requests
+// queuing on a full pool, not for the boot.
+func withoutAcquireTimeout(ctx context.Context) context.Context {
+	return context.WithValue(ctx, noAcquireTimeoutKey{}, true)
+}
+
 // TraceAcquireStart implements pgxpool.AcquireTracer. pgxpool uses the
 // returned context for the rest of Acquire, so a deadline added here bounds
 // the wait for a free connection. The cancel func travels in the context and
 // TraceAcquireEnd, which pgxpool always calls (deferred), runs it.
 func (t *poolTracer) TraceAcquireStart(ctx context.Context, _ *pgxpool.Pool, _ pgxpool.TraceAcquireStartData) context.Context {
 	trace := &acquireTrace{start: t.now()}
-	if t.acquireTimeout > 0 {
+	if t.acquireTimeout > 0 && ctx.Value(noAcquireTimeoutKey{}) == nil {
 		ctx, trace.cancel = context.WithTimeout(ctx, t.acquireTimeout)
 	}
 	if t.leakThreshold > 0 {

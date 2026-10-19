@@ -106,6 +106,13 @@ type Config struct {
 	// same error, but then ctx.Err() is set too). The wait is observed in the
 	// db_pool_acquire_wait_seconds histogram either way.
 	//
+	// The deadline covers the whole acquire, so when the pool has room but no
+	// idle connection it also bounds dialing a new one (as HikariCP's
+	// connectionTimeout does): keep it above the time a healthy connect
+	// takes, or a request that has to open a connection fails before
+	// ConnectTimeout. NewPool's own startup Ping is exempt, so the boot still
+	// waits up to ConnectTimeout for a database that is waking up.
+	//
 	// Zero disables it (pgxpool's behavior: wait for the caller's context); a
 	// negative value is a NewPool error.
 	AcquireTimeout time.Duration
@@ -148,7 +155,7 @@ func NewPool(ctx context.Context, cfg Config, logger *slog.Logger) (*pgxpool.Poo
 		return nil, fmt.Errorf("creating connection pool: %w", err)
 	}
 
-	if err := pool.Ping(ctx); err != nil {
+	if err := pool.Ping(withoutAcquireTimeout(ctx)); err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("pinging database: %w", err)
 	}
