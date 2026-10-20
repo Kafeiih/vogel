@@ -125,6 +125,28 @@ func (r *fakeRepo) GetByVerificationKey(_ context.Context, _ pgxtx.DBTX, key str
 	return nil, document.ErrNotFound
 }
 
+func (r *fakeRepo) GetBySourceKey(_ context.Context, _ pgxtx.DBTX, key string) (*document.Document, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, d := range r.docs {
+		if d.SourceKey == key {
+			return &d, nil
+		}
+	}
+	return nil, document.ErrNotFound
+}
+
+func (r *fakeRepo) ExistsForCase(_ context.Context, _ pgxtx.DBTX, caseID uuid.UUID, templateName string) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, d := range r.docs {
+		if d.CaseID != nil && *d.CaseID == caseID && d.TemplateName == templateName {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 var fixedNow = time.Date(2026, 10, 20, 12, 30, 45, 123456789, time.FixedZone("CLT", -3*3600))
 
 type fixture struct {
@@ -317,4 +339,52 @@ func TestFindByVerificationKey_Empty_IsNotFound(t *testing.T) {
 	f := newFixture()
 	_, err := f.svc.FindByVerificationKey(context.Background(), nil, "")
 	require.ErrorIs(t, err, document.ErrNotFound)
+}
+
+func TestGenerate_SameSourceKey_ReturnsExistingWithoutRendering(t *testing.T) {
+	f := newFixture()
+	in := input()
+	in.SourceKey = "case-1/7/acta"
+
+	first, err := f.svc.Generate(context.Background(), nil, in)
+	require.NoError(t, err)
+	f.renderer.html = nil
+
+	second, err := f.svc.Generate(context.Background(), nil, in)
+	require.NoError(t, err)
+	assert.Equal(t, first.ID, second.ID)
+	assert.Nil(t, f.renderer.html, "a known source key must not render again")
+	assert.Len(t, f.repo.docs, 1)
+	assert.Len(t, f.store.objects, 1)
+	assert.Equal(t, "case-1/7/acta", second.SourceKey)
+}
+
+func TestGenerate_EmptySourceKey_AlwaysGenerates(t *testing.T) {
+	f := newFixture()
+	in := input()
+
+	_, err := f.svc.Generate(context.Background(), nil, in)
+	require.NoError(t, err)
+	_, err = f.svc.Generate(context.Background(), nil, in)
+	require.NoError(t, err)
+	assert.Len(t, f.repo.docs, 2)
+}
+
+func TestExistsForCase_MatchesCaseAndTemplateName(t *testing.T) {
+	f := newFixture()
+	in := input()
+	_, err := f.svc.Generate(context.Background(), nil, in)
+	require.NoError(t, err)
+
+	ok, err := f.svc.ExistsForCase(context.Background(), nil, *in.CaseID, "acta")
+	require.NoError(t, err)
+	assert.True(t, ok)
+
+	ok, err = f.svc.ExistsForCase(context.Background(), nil, *in.CaseID, "orden")
+	require.NoError(t, err)
+	assert.False(t, ok)
+
+	ok, err = f.svc.ExistsForCase(context.Background(), nil, uuid.New(), "acta")
+	require.NoError(t, err)
+	assert.False(t, ok)
 }

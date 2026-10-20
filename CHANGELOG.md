@@ -38,7 +38,14 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   el error original. `document/gotenberg` es el primer `Renderer` (ruta
   Chromium HTML de Gotenberg por HTTP, con timeout y tamaño de respuesta
   acotados); `document/postgres` y `document/migrations` (tabla de versión
-  `document_db_version`) persisten los metadatos. La firma electrónica queda
+  `document_db_version`) persisten los metadatos en la tabla
+  `document_record`. `GenerateInput.SourceKey` identifica a quien pidió el
+  documento: con una clave ya conocida, `Generate` devuelve el documento
+  guardado sin volver a generarlo, y `ExistsForCase` responde si un caso ya
+  tiene un documento de una plantilla. `document/docflow` lo une con el motor
+  y con `action`: `Exists` es el guard que impide avanzar sin el documento y
+  `Generate` es el handler de un efecto que genera documentos, idempotente por
+  `<caso>/<seq>/<efecto>`. La firma electrónica queda
   fuera de alcance: sólo se define la interfaz `Signer`.
 
 - **`action`: los efectos del workflow se ejecutan en segundo plano.**

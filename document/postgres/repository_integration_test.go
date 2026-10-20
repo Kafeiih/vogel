@@ -185,6 +185,64 @@ func TestMigrations_DownRemovesTable(t *testing.T) {
 	defer pool.Close()
 
 	var exists bool
-	require.NoError(t, pool.QueryRow(ctx, `SELECT to_regclass('public.document') IS NOT NULL`).Scan(&exists))
+	require.NoError(t, pool.QueryRow(ctx, `SELECT to_regclass('public.document_record') IS NOT NULL`).Scan(&exists))
 	assert.False(t, exists)
+}
+
+func TestMigrations_CreatePrefixedTable(t *testing.T) {
+	pool := startTestPool(t)
+	var prefixed, bare bool
+	require.NoError(t, pool.QueryRow(context.Background(),
+		`SELECT to_regclass('public.document_record') IS NOT NULL, to_regclass('public.document') IS NOT NULL`).Scan(&prefixed, &bare))
+	assert.True(t, prefixed, "metadata lives in document_record")
+	assert.False(t, bare, "no bare document table that could collide with a consumer's own")
+}
+
+func TestRepository_GetBySourceKey_RoundTripsAndEmptyKeysDoNotCollide(t *testing.T) {
+	pool := startTestPool(t)
+	repo := postgres.NewRepository()
+	ctx := context.Background()
+
+	caseID := uuid.New()
+	d := newDocument(&caseID, time.Now())
+	d.SourceKey = caseID.String() + "/3/acta"
+	require.NoError(t, repo.Insert(ctx, pool, d))
+
+	got, err := repo.GetBySourceKey(ctx, pool, d.SourceKey)
+	require.NoError(t, err)
+	assert.Equal(t, d.ID, got.ID)
+	assert.Equal(t, d.SourceKey, got.SourceKey)
+
+	dup := newDocument(&caseID, time.Now())
+	dup.SourceKey = d.SourceKey
+	require.Error(t, repo.Insert(ctx, pool, dup), "a source key is unique")
+
+	require.NoError(t, repo.Insert(ctx, pool, newDocument(&caseID, time.Now())))
+	require.NoError(t, repo.Insert(ctx, pool, newDocument(&caseID, time.Now())), "empty source keys never collide")
+
+	_, err = repo.GetBySourceKey(ctx, pool, "missing")
+	require.ErrorIs(t, err, document.ErrNotFound)
+	_, err = repo.GetBySourceKey(ctx, pool, "")
+	require.ErrorIs(t, err, document.ErrNotFound, "an empty key never matches the documents stored without one")
+}
+
+func TestRepository_ExistsForCase_MatchesCaseAndTemplate(t *testing.T) {
+	pool := startTestPool(t)
+	repo := postgres.NewRepository()
+	ctx := context.Background()
+
+	caseID := uuid.New()
+	require.NoError(t, repo.Insert(ctx, pool, newDocument(&caseID, time.Now())))
+
+	ok, err := repo.ExistsForCase(ctx, pool, caseID, "acta")
+	require.NoError(t, err)
+	assert.True(t, ok)
+
+	ok, err = repo.ExistsForCase(ctx, pool, caseID, "orden")
+	require.NoError(t, err)
+	assert.False(t, ok)
+
+	ok, err = repo.ExistsForCase(ctx, pool, uuid.New(), "acta")
+	require.NoError(t, err)
+	assert.False(t, ok)
 }

@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -44,6 +45,9 @@ type GenerateInput struct {
 	Template Template
 	// Data is the value the template is executed against.
 	Data any
+	// SourceKey optionally identifies what asked for the document; see
+	// Document.SourceKey.
+	SourceKey string
 }
 
 func (in GenerateInput) validate() error {
@@ -104,6 +108,15 @@ func (s *Service) Generate(ctx context.Context, db pgxtx.DBTX, in GenerateInput)
 	if err := in.validate(); err != nil {
 		return nil, err
 	}
+	if in.SourceKey != "" {
+		existing, err := s.repo.GetBySourceKey(ctx, db, in.SourceKey)
+		if err == nil {
+			return existing, nil
+		}
+		if !errors.Is(err, ErrNotFound) {
+			return nil, fmt.Errorf("document: look up source key: %w", err)
+		}
+	}
 	html, err := in.Template.Execute(in.Data)
 	if err != nil {
 		return nil, err
@@ -131,6 +144,7 @@ func (s *Service) Generate(ctx context.Context, db pgxtx.DBTX, in GenerateInput)
 		SHA256:          hex.EncodeToString(sum[:]),
 		VerificationKey: verificationKey,
 		Size:            int64(len(pdf)),
+		SourceKey:       in.SourceKey,
 		CreatedAt:       s.now().UTC().Truncate(time.Microsecond),
 	}
 	doc.StorageKey = s.storageKey(doc)
@@ -154,6 +168,12 @@ func (s *Service) Generate(ctx context.Context, db pgxtx.DBTX, in GenerateInput)
 		return nil, fmt.Errorf("document: insert metadata: %w", err)
 	}
 	return doc, nil
+}
+
+// ExistsForCase reports whether caseID has at least one document of
+// templateName, in any template version.
+func (s *Service) ExistsForCase(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID, templateName string) (bool, error) {
+	return s.repo.ExistsForCase(ctx, db, caseID, templateName)
 }
 
 // Get returns the document with id, or an error wrapping ErrNotFound.

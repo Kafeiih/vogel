@@ -92,7 +92,12 @@ type Document struct {
 	// the internal ID or the storage key.
 	VerificationKey string
 	Size            int64
-	CreatedAt       time.Time
+	// SourceKey identifies what produced the document (for example one
+	// workflow effect run). Empty means none. Generate returns the existing
+	// document for a known non-empty SourceKey instead of generating again,
+	// so a retried job never creates a duplicate.
+	SourceKey string
+	CreatedAt time.Time
 }
 
 // Repository persists Document metadata. Every method receives the
@@ -111,6 +116,12 @@ type Repository interface {
 	// GetByVerificationKey returns the document whose verification key is
 	// key, or an error wrapping ErrNotFound.
 	GetByVerificationKey(ctx context.Context, db pgxtx.DBTX, key string) (*Document, error)
+	// GetBySourceKey returns the document whose source key is key, or an
+	// error wrapping ErrNotFound.
+	GetBySourceKey(ctx context.Context, db pgxtx.DBTX, key string) (*Document, error)
+	// ExistsForCase reports whether caseID has at least one document of
+	// templateName, in any template version.
+	ExistsForCase(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID, templateName string) (bool, error)
 }
 
 // Sentinel errors callers can branch on via errors.Is.

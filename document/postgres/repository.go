@@ -15,7 +15,7 @@ import (
 )
 
 const documentColumns = `id, domain, external_id, case_id, template_name, template_version,
-    sha256, storage_key, verification_key, size_bytes, created_at`
+    sha256, storage_key, verification_key, size_bytes, source_key, created_at`
 
 // Repository implements document.Repository using pgx. It is stateless:
 // every method receives the pgxtx.DBTX to run against, so the caller decides
@@ -34,14 +34,15 @@ type rowScanner interface {
 	Scan(dest ...any) error
 }
 
-// Insert persists d. A duplicate id, storage key or verification key is
+// Insert persists d; an empty SourceKey is stored as NULL. A duplicate id,
+// storage key, verification key or non-empty source key is
 // returned as the driver's unique-violation error, wrapped.
 func (r *Repository) Insert(ctx context.Context, db pgxtx.DBTX, d *document.Document) error {
 	_, err := db.Exec(ctx, `
-        INSERT INTO document (`+documentColumns+`)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+        INSERT INTO document_record (`+documentColumns+`)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NULLIF($11, ''), $12)`,
 		d.ID, d.Domain, d.ExternalID, d.CaseID, d.TemplateName, d.TemplateVersion,
-		d.SHA256, d.StorageKey, d.VerificationKey, d.Size, d.CreatedAt,
+		d.SHA256, d.StorageKey, d.VerificationKey, d.Size, d.SourceKey, d.CreatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("document: insert: %w", err)
@@ -51,7 +52,7 @@ func (r *Repository) Insert(ctx context.Context, db pgxtx.DBTX, d *document.Docu
 
 // GetByID retrieves a single document by its primary key.
 func (r *Repository) GetByID(ctx context.Context, db pgxtx.DBTX, id uuid.UUID) (*document.Document, error) {
-	row := db.QueryRow(ctx, `SELECT `+documentColumns+` FROM document WHERE id = $1`, id)
+	row := db.QueryRow(ctx, `SELECT `+documentColumns+` FROM document_record WHERE id = $1`, id)
 	d, err := scanDocument(row)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -65,7 +66,7 @@ func (r *Repository) GetByID(ctx context.Context, db pgxtx.DBTX, id uuid.UUID) (
 // ListByCase returns every document of caseID ordered by created_at, then
 // id, ascending.
 func (r *Repository) ListByCase(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID) ([]document.Document, error) {
-	rows, err := db.Query(ctx, `SELECT `+documentColumns+` FROM document WHERE case_id = $1 ORDER BY created_at ASC, id ASC`, caseID)
+	rows, err := db.Query(ctx, `SELECT `+documentColumns+` FROM document_record WHERE case_id = $1 ORDER BY created_at ASC, id ASC`, caseID)
 	if err != nil {
 		return nil, fmt.Errorf("document: list by case: %w", err)
 	}
@@ -87,7 +88,7 @@ func (r *Repository) ListByCase(ctx context.Context, db pgxtx.DBTX, caseID uuid.
 
 // GetByVerificationKey retrieves the document whose verification key is key.
 func (r *Repository) GetByVerificationKey(ctx context.Context, db pgxtx.DBTX, key string) (*document.Document, error) {
-	row := db.QueryRow(ctx, `SELECT `+documentColumns+` FROM document WHERE verification_key = $1`, key)
+	row := db.QueryRow(ctx, `SELECT `+documentColumns+` FROM document_record WHERE verification_key = $1`, key)
 	d, err := scanDocument(row)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -98,13 +99,44 @@ func (r *Repository) GetByVerificationKey(ctx context.Context, db pgxtx.DBTX, ke
 	return d, nil
 }
 
+// GetBySourceKey retrieves the document whose source key is key. An empty
+// key never matches: documents stored without one have a NULL source_key.
+func (r *Repository) GetBySourceKey(ctx context.Context, db pgxtx.DBTX, key string) (*document.Document, error) {
+	row := db.QueryRow(ctx, `SELECT `+documentColumns+` FROM document_record WHERE source_key = $1`, key)
+	d, err := scanDocument(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("document: get by source key: %w", document.ErrNotFound)
+		}
+		return nil, fmt.Errorf("document: get by source key: %w", err)
+	}
+	return d, nil
+}
+
+// ExistsForCase reports whether caseID has a document of templateName.
+func (r *Repository) ExistsForCase(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID, templateName string) (bool, error) {
+	var exists bool
+	err := db.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM document_record WHERE case_id = $1 AND template_name = $2)`,
+		caseID, templateName,
+	).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("document: exists for case: %w", err)
+	}
+	return exists, nil
+}
+
 func scanDocument(row rowScanner) (*document.Document, error) {
 	var d document.Document
+	var sourceKey *string
 	if err := row.Scan(
 		&d.ID, &d.Domain, &d.ExternalID, &d.CaseID, &d.TemplateName, &d.TemplateVersion,
-		&d.SHA256, &d.StorageKey, &d.VerificationKey, &d.Size, &d.CreatedAt,
+		&d.SHA256, &d.StorageKey, &d.VerificationKey, &d.Size, &sourceKey, &d.CreatedAt,
 	); err != nil {
 		return nil, err
+	}
+	if sourceKey != nil {
+		d.SourceKey = *sourceKey
 	}
 	return &d, nil
 }
