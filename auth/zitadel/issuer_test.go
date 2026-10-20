@@ -64,6 +64,7 @@ func TestNew_InvalidIssuerURL_ReturnsError(t *testing.T) {
 		wantErr string
 	}{
 		{"ftp://my-instance.zitadel.cloud", `scheme must be "https" or "http"`},
+		{"ftp://my-instance.zitadel.cloud/oauth", `scheme must be "https" or "http"`},
 		{"https://", "has no host"},
 		{"https://my-instance.zitadel.cloud/oauth", "must not have a path"},
 		{"https://my-instance.zitadel.cloud?x=1", "must not have a query or fragment"},

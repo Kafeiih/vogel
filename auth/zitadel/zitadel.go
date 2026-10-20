@@ -148,6 +148,8 @@ func issuerProvider(issuer string) (*zitadel.Zitadel, error) {
 		return nil, fmt.Errorf("auth/zitadel: invalid issuer %q: %w", issuer, err)
 	}
 	switch {
+	case u.Scheme != "https" && u.Scheme != "http":
+		return nil, fmt.Errorf("auth/zitadel: issuer %q: scheme must be \"https\" or \"http\"", issuer)
 	case u.Hostname() == "":
 		return nil, fmt.Errorf("auth/zitadel: issuer %q has no host", issuer)
 	case u.User != nil:
@@ -156,9 +158,6 @@ func issuerProvider(issuer string) (*zitadel.Zitadel, error) {
 		return nil, fmt.Errorf("auth/zitadel: issuer %q must not have a path", issuer)
 	case u.RawQuery != "" || u.ForceQuery || u.Fragment != "":
 		return nil, fmt.Errorf("auth/zitadel: issuer %q must not have a query or fragment", issuer)
-	}
-	if u.Scheme != "https" && u.Scheme != "http" {
-		return nil, fmt.Errorf("auth/zitadel: issuer %q: scheme must be \"https\" or \"http\"", issuer)
 	}
 	// Over plain http a network attacker could serve a forged JWKS and mint
 	// tokens Authenticate accepts, so http is kept to a local issuer.
@@ -172,8 +171,9 @@ func issuerProvider(issuer string) (*zitadel.Zitadel, error) {
 	if strings.Contains(host, ":") {
 		host = "[" + host + "]"
 	}
+	hasPort := u.Port() != ""
 	var port uint64
-	if u.Port() != "" {
+	if hasPort {
 		port, err = strconv.ParseUint(u.Port(), 10, 16)
 		if err != nil {
 			return nil, fmt.Errorf("auth/zitadel: invalid issuer %q: port: %w", issuer, err)
@@ -184,11 +184,11 @@ func issuerProvider(issuer string) (*zitadel.Zitadel, error) {
 	}
 
 	switch {
-	case u.Scheme == "http" && port == 0:
+	case u.Scheme == "http" && !hasPort:
 		return zitadel.New(host, zitadel.WithInsecure("80")), nil
 	case u.Scheme == "http":
 		return zitadel.New(host, zitadel.WithInsecure(strconv.FormatUint(port, 10))), nil
-	case port == 0:
+	case !hasPort:
 		return zitadel.New(host), nil
 	default:
 		return zitadel.New(host, zitadel.WithPort(uint16(port))), nil
