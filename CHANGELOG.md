@@ -24,6 +24,23 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   `Definition.Validate` rechaza nombres vacíos o repetidos dentro de un mismo
   nodo o transición, y efectos en un nodo de decisión (van en sus rutas).
 
+- **`document`: documentos PDF generados desde plantillas.** `Template`
+  (nombre, versión y cuerpo HTML) se ejecuta con `html/template`, así que todo
+  dato interpolado se escapa automáticamente (a diferencia de la sustitución
+  sin escapar de SIMPLE). `Service.Generate` renderiza la plantilla, la
+  convierte a PDF con un `Renderer` intercambiable, la sube con
+  `storage.Storage` (`application/pdf`, clave
+  `documents/<dominio>/<caso o external id>/<id>.pdf`) e inserta sus
+  metadatos: caso, plantilla y versión, sha256, tamaño y una clave de
+  verificación aleatoria y URL-safe para un endpoint público
+  (`FindByVerificationKey`); `Get` y `ListByCase` completan las consultas. Si
+  el insert falla después de subir, se intenta borrar el objeto y se devuelve
+  el error original. `document/gotenberg` es el primer `Renderer` (ruta
+  Chromium HTML de Gotenberg por HTTP, con timeout y tamaño de respuesta
+  acotados); `document/postgres` y `document/migrations` (tabla de versión
+  `document_db_version`) persisten los metadatos. La firma electrónica queda
+  fuera de alcance: sólo se define la interfaz `Signer`.
+
 ## [0.13.2] — 2026-10-20
 
 ### Cambiado
