@@ -17,8 +17,9 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   contenedores para `sslmode=verify-full`. El Postgres empaquetado queda
   detrás del profile `bundled-db` para los ambientes que no son producción, y
   el nuevo servicio `db-roles` crea los roles en RDS con el usuario master,
-  que ya no necesita ser superusuario. Cada servicio rota sus logs, y
-  `API_PORT` elige el puerto publicado. **Migración:** en un `deploy/.env`
+  que ya no necesita ser superusuario. Cada servicio rota sus logs, `api` se
+  reinicia solo como el worker (`restart: unless-stopped`) y `API_PORT` elige
+  el puerto publicado. **Migración:** en un `deploy/.env`
   existente, agregar `DB_URL` y `MIGRATE_DB_URL`; con el Postgres
   empaquetado, también `COMPOSE_PROFILES=bundled-db`, `DB_REQUIRE_TLS=false`
   y bajar el bundle de RDS (ver la sección 0 del RUNBOOK).

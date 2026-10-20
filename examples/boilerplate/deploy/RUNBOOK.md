@@ -41,7 +41,8 @@ RDS o el Postgres empaquetado:
   curl -fsSo deploy/rds-global-bundle.pem https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
   ```
   Los roles se crean **una vez por instancia** con el usuario master de RDS,
-  que no se guarda en `.env` (solo vive en el shell de esa ejecucion):
+  que no se guarda en `.env` (solo vive en el shell de esa ejecucion; empezar
+  la linea con un espacio para que la clave no quede en el historial):
   ```bash
   DB_ADMIN_HOST=<endpoint-rds> DB_ADMIN_USER=<master> DB_ADMIN_PASSWORD=<clave-master> \
     docker compose -f deploy/docker-compose.yaml --profile tools run --rm db-roles
