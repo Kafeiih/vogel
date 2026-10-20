@@ -513,8 +513,10 @@ docker logs api 2>&1 | head -20
 # Probar endpoint publico (no requiere auth)
 curl -s http://localhost:8080/v1/healthz
 
-# Si healthz funciona pero auth falla, verificar Zitadel
-curl -s https://<ZITADEL_ISSUER>/.well-known/openid-configuration
+# Si healthz funciona pero auth falla, verificar Zitadel.
+# <host> es el host de ZITADEL_ISSUER (sin https://). Escribir siempre el
+# esquema: sin el, curl probaria http en el puerto 80.
+curl -s https://<host>/.well-known/openid-configuration
 ```
 
 **Si Zitadel no responde:**
