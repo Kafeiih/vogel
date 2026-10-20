@@ -4,6 +4,29 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el versionado,
 [SemVer](https://semver.org/lang/es/).
 
+## [Unreleased]
+
+### Cambiado
+
+- **`examples/boilerplate`: el despliegue usa RDS en producción y una
+  plantilla completa por ambiente.** `deploy/env.example` lista toda la
+  configuración de un host (base, HTTP, Zitadel, Cerbos y los componentes
+  opcionales, con sus valores por defecto). Los DSN pasan a `deploy/.env`
+  (`DB_URL` para servir, `MIGRATE_DB_URL` para migrar, en blanco para los
+  procesos que sirven), y el bundle de la CA de RDS se monta en los
+  contenedores para `sslmode=verify-full`. El Postgres empaquetado queda
+  detrás del profile `bundled-db` para los ambientes que no son producción, y
+  el nuevo servicio `db-roles` crea los roles en RDS con el usuario master,
+  que ya no necesita ser superusuario. Cada servicio rota sus logs, y
+  `API_PORT` elige el puerto publicado. **Migración:** en un `deploy/.env`
+  existente, agregar `DB_URL` y `MIGRATE_DB_URL`; con el Postgres
+  empaquetado, también `COMPOSE_PROFILES=bundled-db`, `DB_REQUIRE_TLS=false`
+  y bajar el bundle de RDS (ver la sección 0 del RUNBOOK).
+- **`examples/boilerplate`: los YAML y los `env.example` no tienen
+  comentarios**, salvo los marcadores del generador, las versiones al lado de
+  las acciones fijadas por SHA y notas de una línea donde un cambio rompe o
+  expone algo.
+
 ## [0.13.2] — 2026-10-20
 
 ### Cambiado

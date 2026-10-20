@@ -10,24 +10,42 @@ x-hardened: &hardened
   cap_drop: [ALL]
   security_opt: ["no-new-privileges:true"]
 
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "3"
+
 x-build: &build
   context: ../../..
   dockerfile: examples/boilerplate/Dockerfile
 
+# create_host_path: false makes a missing bundle fail `up` instead of mounting an empty directory.
+x-rds-ca: &rds-ca
+  type: bind
+  source: ${RDS_CA_BUNDLE:-./rds-global-bundle.pem}
+  target: /etc/ssl/rds/global-bundle.pem
+  read_only: true
+  bind:
+    create_host_path: false
+
 x-scrub-db-admin-secrets: &scrub-db-admin-secrets
+  MIGRATE_DB_URL: ""
   POSTGRES_PASSWORD: ""
   APP_MIGRATOR_PASSWORD: ""
 
 services:
-  # No ports and no TLS: keep it on this network; in production use sslmode=verify-full and DB_REQUIRE_TLS=true.
+  # No ports and no TLS: non-production hosts only, enabled by COMPOSE_PROFILES=bundled-db in deploy/.env.
   postgres:
     image: postgres:17.11-alpine3.24@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+    profiles: ["bundled-db"]
+    logging: *logging
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
       POSTGRES_DB: boilerplate_db
-      APP_MIGRATOR_PASSWORD: ${APP_MIGRATOR_PASSWORD:?set APP_MIGRATOR_PASSWORD in deploy/.env}
-      APP_RUNTIME_PASSWORD: ${APP_RUNTIME_PASSWORD:?set APP_RUNTIME_PASSWORD in deploy/.env}
+      APP_MIGRATOR_PASSWORD: ${APP_MIGRATOR_PASSWORD:-}
+      APP_RUNTIME_PASSWORD: ${APP_RUNTIME_PASSWORD:-}
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./initdb/10-roles.sh:/docker-entrypoint-initdb.d/10-roles.sh:ro
@@ -40,9 +58,36 @@ services:
       timeout: 3s
       retries: 5
 
+  # One-off, on RDS: creates app_migrator and app_runtime with the master user (see RUNBOOK.md section 0).
+  db-roles:
+    image: postgres:17.11-alpine3.24@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+    <<: *hardened
+    profiles: ["tools"]
+    logging: *logging
+    # Checked here, not with ${VAR:?}: compose interpolates every service, even those in inactive profiles.
+    entrypoint:
+      - sh
+      - -c
+      - ': "$${PGHOST:?set DB_ADMIN_HOST}" "$${PGPASSWORD:?set DB_ADMIN_PASSWORD}" "$${POSTGRES_USER:?set DB_ADMIN_USER}"; exec sh /initdb/10-roles.sh'
+    environment:
+      PGHOST: ${DB_ADMIN_HOST:-}
+      PGPORT: ${DB_ADMIN_PORT:-5432}
+      PGPASSWORD: ${DB_ADMIN_PASSWORD:-}
+      PGSSLMODE: verify-full
+      PGSSLROOTCERT: /etc/ssl/rds/global-bundle.pem
+      POSTGRES_USER: ${DB_ADMIN_USER:-}
+      POSTGRES_DB: ${DB_NAME:-}
+      APP_MIGRATOR_PASSWORD: ${APP_MIGRATOR_PASSWORD:-}
+      APP_RUNTIME_PASSWORD: ${APP_RUNTIME_PASSWORD:-}
+    volumes:
+      - *rds-ca
+      - ./initdb/10-roles.sh:/initdb/10-roles.sh:ro
+    restart: "no"
+
   migrate:
     image: ghcr.io/kafeiih/vogel-boilerplate:${APP_VERSION:?set APP_VERSION in deploy/.env}
     <<: *hardened
+    logging: *logging
     build:
       <<: *build
       target: api
@@ -50,17 +95,21 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+        required: false
     environment:
       # vogel:component worker begin
       <<: *worker-schema
       # vogel:component worker end
-      DB_URL: "postgres://app_migrator:${APP_MIGRATOR_PASSWORD:?set APP_MIGRATOR_PASSWORD in deploy/.env}@postgres:5432/boilerplate_db?sslmode=disable"
-      DB_REQUIRE_TLS: "false"
+      DB_URL: ${MIGRATE_DB_URL:?set MIGRATE_DB_URL in deploy/.env}
+      DB_REQUIRE_TLS: ${DB_REQUIRE_TLS:-true}
+    volumes:
+      - *rds-ca
     restart: "no"
 
   grants:
     image: postgres:17.11-alpine3.24@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
     <<: *hardened
+    logging: *logging
     command:
       - psql
       - -v
@@ -71,16 +120,12 @@ services:
       # vogel:component worker end
       - -f
       - /grants/runtime-grants.sql
+      - ${MIGRATE_DB_URL:?set MIGRATE_DB_URL in deploy/.env}
     depends_on:
       migrate:
         condition: service_completed_successfully
-    environment:
-      PGHOST: postgres
-      PGDATABASE: boilerplate_db
-      PGUSER: app_migrator
-      PGPASSWORD: ${APP_MIGRATOR_PASSWORD:?set APP_MIGRATOR_PASSWORD in deploy/.env}
-      PGSSLMODE: disable
     volumes:
+      - *rds-ca
       - ./initdb/runtime-grants.sql:/grants/runtime-grants.sql:ro
     restart: "no"
 
@@ -88,6 +133,7 @@ services:
   cerbos:
     image: ghcr.io/kafeiih/vogel-boilerplate-cerbos:${APP_VERSION:?set APP_VERSION in deploy/.env}
     <<: *hardened
+    logging: *logging
     build:
       context: ../cerbos
     networks: [authz]
@@ -102,13 +148,12 @@ services:
   api:
     image: ghcr.io/kafeiih/vogel-boilerplate:${APP_VERSION:?set APP_VERSION in deploy/.env}
     <<: *hardened
+    logging: *logging
     build:
       <<: *build
       target: api
     command: ["server"]
     depends_on:
-      postgres:
-        condition: service_healthy
       grants:
         condition: service_completed_successfully
       # vogel:component cerbos begin
@@ -117,7 +162,7 @@ services:
     networks: [default, authz]
     # vogel:component cerbos end
     ports:
-      - "8080:8080"
+      - "${API_PORT:-8080}:8080"
     env_file:
       - .env
     environment:
@@ -126,30 +171,32 @@ services:
         - *worker-schema
         # vogel:component worker end
         - *scrub-db-admin-secrets
-      DB_URL: "postgres://app_runtime:${APP_RUNTIME_PASSWORD:?set APP_RUNTIME_PASSWORD in deploy/.env}@postgres:5432/boilerplate_db?sslmode=disable"
-      DB_REQUIRE_TLS: "false"
+      DB_URL: ${DB_URL:?set DB_URL in deploy/.env}
       CERBOS_HOST: ${CERBOS_HOST:?set CERBOS_HOST and CERBOS_PLAINTEXT together in deploy/.env}
       CERBOS_PLAINTEXT: ${CERBOS_PLAINTEXT:?set CERBOS_HOST and CERBOS_PLAINTEXT together in deploy/.env}
+    volumes:
+      - *rds-ca
+    restart: unless-stopped
 
   # vogel:component worker begin
   worker:
     image: ghcr.io/kafeiih/vogel-boilerplate-worker:${APP_VERSION:?set APP_VERSION in deploy/.env}
     <<: *hardened
+    logging: *logging
     build:
       <<: *build
       target: worker
     command: ["server"]
     depends_on:
-      postgres:
-        condition: service_healthy
       grants:
         condition: service_completed_successfully
     env_file:
       - .env
     environment:
       <<: [*worker-schema, *scrub-db-admin-secrets]
-      DB_URL: "postgres://app_runtime:${APP_RUNTIME_PASSWORD:?set APP_RUNTIME_PASSWORD in deploy/.env}@postgres:5432/boilerplate_db?sslmode=disable"
-      DB_REQUIRE_TLS: "false"
+      DB_URL: ${DB_URL:?set DB_URL in deploy/.env}
+    volumes:
+      - *rds-ca
     restart: unless-stopped
 
   # vogel:component worker end

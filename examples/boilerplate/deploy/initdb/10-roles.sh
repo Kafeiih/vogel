@@ -42,6 +42,11 @@ WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r)
 ALTER ROLE app_migrator LOGIN PASSWORD :'migrator_password';
 ALTER ROLE app_runtime LOGIN PASSWORD :'runtime_password';
 
+-- RDS: ALTER DEFAULT PRIVILEGES FOR ROLE app_migrator needs membership when not a superuser.
+SELECT format('GRANT app_migrator TO %I', current_user)
+WHERE NOT (SELECT rolsuper FROM pg_roles WHERE rolname = current_user)
+\gexec
+
 -- Nobody but these two roles (and the superuser) connects to this database.
 REVOKE ALL ON DATABASE :"dbname" FROM PUBLIC;
 GRANT CONNECT ON DATABASE :"dbname" TO app_migrator, app_runtime;
