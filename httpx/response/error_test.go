@@ -114,10 +114,12 @@ func TestValidationError_NoTraceIDWithoutMiddleware(t *testing.T) {
 	assert.NotContains(t, rec.Body.String(), "trace_id")
 }
 
-// request_id carries the request ID under its own name; trace_id keeps the
-// same value until it is removed (deprecated in v0.12.0).
-func TestErrorWith_RequestIDMatchesDeprecatedTraceID(t *testing.T) {
+// The request ID travels only as request_id; trace_id, its former name, was
+// removed in v0.13.0.
+func TestErrorWith_RequestIDOnlyUnderRequestID(t *testing.T) {
+	var id string
 	h := middleware.RequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id = middleware.GetReqID(r.Context())
 		response.Error(w, r, http.StatusNotFound, response.CodeNotFound, "not found")
 	}))
 	rec := httptest.NewRecorder()
@@ -125,12 +127,15 @@ func TestErrorWith_RequestIDMatchesDeprecatedTraceID(t *testing.T) {
 
 	var got map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
-	assert.NotEmpty(t, got["request_id"])
-	assert.Equal(t, got["request_id"], got["trace_id"])
+	assert.NotEmpty(t, id)
+	assert.Equal(t, id, got["request_id"])
+	assert.NotContains(t, got, "trace_id")
 }
 
-func TestValidationError_RequestIDMatchesDeprecatedTraceID(t *testing.T) {
+func TestValidationError_RequestIDOnlyUnderRequestID(t *testing.T) {
+	var id string
 	h := middleware.RequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id = middleware.GetReqID(r.Context())
 		response.ValidationError(w, r, map[string]string{"a": "required"})
 	}))
 	rec := httptest.NewRecorder()
@@ -138,8 +143,9 @@ func TestValidationError_RequestIDMatchesDeprecatedTraceID(t *testing.T) {
 
 	var got map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
-	assert.NotEmpty(t, got["request_id"])
-	assert.Equal(t, got["request_id"], got["trace_id"])
+	assert.NotEmpty(t, id)
+	assert.Equal(t, id, got["request_id"])
+	assert.NotContains(t, got, "trace_id")
 }
 
 func TestError_NoRequestIDWithoutMiddleware(t *testing.T) {
