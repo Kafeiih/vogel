@@ -53,7 +53,8 @@
       "requires": [],
       "paths": [
         "internal/infrastructure/tracing",
-        "internal/infrastructure/config/config_tracing_test.go"
+        "internal/infrastructure/config/config_tracing_test.go",
+        "internal/interfaces/http/router_tracing_test.go"
       ]
     }
   ],

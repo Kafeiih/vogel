@@ -76,3 +76,23 @@ func TestParseTracingConfig_InvalidEndpoint(t *testing.T) {
 		t.Errorf("err = %v, want one naming OTEL_EXPORTER_OTLP_ENDPOINT", err)
 	}
 }
+
+// Load reads APP_ENV and APP_VERSION once and hands the same values to the
+// app and to the spans' resource.
+func TestLoad_TracingTakesTheAppEnvironmentAndVersion(t *testing.T) {
+	setRequiredEnv(t, "staging")
+	t.Setenv("APP_VERSION", "2.4.0")
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+	t.Setenv("OTEL_TRACES_SAMPLER_ARG", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.App.Env != "staging" || cfg.Tracing.Environment != "staging" {
+		t.Errorf("App.Env = %q, Tracing.Environment = %q, want both %q", cfg.App.Env, cfg.Tracing.Environment, "staging")
+	}
+	if cfg.App.Version != "2.4.0" || cfg.Tracing.ServiceVersion != "2.4.0" {
+		t.Errorf("App.Version = %q, Tracing.ServiceVersion = %q, want both %q", cfg.App.Version, cfg.Tracing.ServiceVersion, "2.4.0")
+	}
+}
