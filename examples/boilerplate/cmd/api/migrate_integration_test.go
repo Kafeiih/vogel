@@ -18,6 +18,10 @@ import (
 	"github.com/testcontainers/testcontainers-go/wait"
 
 	auditmigrations "github.com/kafeiih/vogel/audit/migrations"
+	// vogel:component bpms begin
+	documentmigrations "github.com/kafeiih/vogel/document/migrations"
+	workflowmigrations "github.com/kafeiih/vogel/workflow/migrations"
+	// vogel:component bpms end
 
 	// vogel:component worker begin
 	"github.com/kafeiih/vogel/examples/boilerplate/internal/infrastructure/config"
@@ -59,6 +63,10 @@ func TestMigrateDown_RevertsOnlyTheAppSet(t *testing.T) {
 	app := migrationVersions(t, migrations.FS)
 	appLatest, appPrevious := app.latest(), app.previous()
 	auditLatest := migrationVersions(t, auditmigrations.FS()).latest()
+	// vogel:component bpms begin
+	workflowLatest := migrationVersions(t, workflowmigrations.FS()).latest()
+	documentLatest := migrationVersions(t, documentmigrations.FS()).latest()
+	// vogel:component bpms end
 	checkEffect, ok := revertEffects[app.latestFile()]
 	if !ok {
 		t.Fatalf("no revertEffects entry for the latest app migration %s: add one that checks its schema effect", app.latestFile())
@@ -73,6 +81,14 @@ func TestMigrateDown_RevertsOnlyTheAppSet(t *testing.T) {
 		t.Fatalf("after up: audit version = %d, want %d", got, auditLatest)
 	}
 	assertAuditLogIntact(ctx, t, pool, "after up")
+	// vogel:component bpms begin
+	if got := gooseVersion(ctx, t, pool, workflowmigrations.DefaultTableName); got != workflowLatest {
+		t.Fatalf("after up: workflow version = %d, want %d", got, workflowLatest)
+	}
+	if got := gooseVersion(ctx, t, pool, documentmigrations.DefaultTableName); got != documentLatest {
+		t.Fatalf("after up: document version = %d, want %d", got, documentLatest)
+	}
+	// vogel:component bpms end
 	// vogel:component worker begin
 	assertRiverTables(ctx, t, pool, riverSchema, "after up")
 	riverVersion := riverMigrationVersion(ctx, t, pool, riverSchema)
@@ -95,6 +111,14 @@ func TestMigrateDown_RevertsOnlyTheAppSet(t *testing.T) {
 		t.Errorf("after down: audit version = %d, want %d (unchanged)", got, auditLatest)
 	}
 	assertAuditLogIntact(ctx, t, pool, "after down")
+	// vogel:component bpms begin
+	if got := gooseVersion(ctx, t, pool, workflowmigrations.DefaultTableName); got != workflowLatest {
+		t.Errorf("after down: workflow version = %d, want %d (unchanged)", got, workflowLatest)
+	}
+	if got := gooseVersion(ctx, t, pool, documentmigrations.DefaultTableName); got != documentLatest {
+		t.Errorf("after down: document version = %d, want %d (unchanged)", got, documentLatest)
+	}
+	// vogel:component bpms end
 	// vogel:component worker begin
 	assertRiverTables(ctx, t, pool, riverSchema, "after down")
 	if got := riverMigrationVersion(ctx, t, pool, riverSchema); got != riverVersion {

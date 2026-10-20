@@ -70,6 +70,26 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   `notification.Notifier` los mensajes que arma el llamador, validando cada
   uno antes de enviar. El efecto `webhook` queda planificado.
 
+- **Boilerplate: componente opcional `bpms`.** `create-vogel-app --with bpms`
+  (apagado por defecto; requiere `worker` y `storage`) arma la base BPMS en el
+  servicio generado, sin ningún proceso de negocio propio:
+  `internal/infrastructure/bpms` construye el `action.Registry` sobre la cola
+  de River, el `workflow.Engine` (`workflow/postgres`,
+  `WithEffectSink(registry)`) y el `document.Service` (`document/postgres`, el
+  storage `BPMS_DOCUMENT_STORAGE` y `document/gotenberg`); la API y el worker
+  los construyen desde el mismo `Process`, así que registran los mismos
+  efectos, y solo el worker los ejecuta (`action.AddWorker`). `migrate up`
+  aplica también `workflow/migrations` (`workflow_db_version`) y
+  `document/migrations` (`document_db_version`). Configuración nueva:
+  `GOTENBERG_URL` (obligatoria), `GOTENBERG_TIMEOUT` (`30s`) y
+  `BPMS_DOCUMENT_STORAGE` (`documents`, debe estar en `STORAGE_CONFIGS`).
+  Los compose de desarrollo y despliegue suman un servicio Gotenberg
+  (`gotenberg/gotenberg:8.38.1-chromium`, fijado por digest), y
+  `docs/BPMS.md` explica cómo declarar una `Definition` con efectos,
+  registrar guards (`docflow.Exists`) y handlers (`docflow.Generate`,
+  `action.NotifyHandler`) y por qué `Open`/`Move` reciben la `pgx.Tx`. Sin
+  `bpms` el proyecto generado no cambia.
+
 ## [0.13.2] — 2026-10-20
 
 ### Cambiado

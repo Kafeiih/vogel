@@ -5,6 +5,9 @@
 # vogel:component worker begin
 # So is the worker.
 # vogel:component worker end
+# vogel:component bpms begin
+# So is Gotenberg, which renders the BPMS base's PDFs for the worker.
+# vogel:component bpms end
 #
 # Secrets and settings come from deploy/.env (copy deploy/env.example).
 # Compose reads that file twice, for different things:
@@ -250,6 +253,10 @@ services:
         condition: service_healthy
       grants:
         condition: service_completed_successfully
+      # vogel:component bpms begin
+      gotenberg:
+        condition: service_healthy
+      # vogel:component bpms end
     env_file:
       - .env
     environment:
@@ -260,6 +267,22 @@ services:
     restart: unless-stopped
 
   # vogel:component worker end
+  # vogel:component bpms begin
+  # Chromium needs a writable home, so it does not get the read-only root
+  # filesystem of *hardened; it still runs with no capabilities and publishes
+  # no port. The worker reaches it at GOTENBERG_URL=http://gotenberg:3000.
+  gotenberg:
+    image: gotenberg/gotenberg:8.38.1-chromium@sha256:5da4ab7b8fe7326537369e17b661be765d9a2887f77722faacdbe6d55812fb96
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:3000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # vogel:component bpms end
 # vogel:component cerbos begin
 networks:
   # Only cerbos and api: internal, so no container on it has a route out of

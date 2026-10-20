@@ -25,6 +25,8 @@ combos=(
 	"no-cerbos|--without cerbos"
 	"no-storage|--without storage"
 	"no-tracing|--without tracing"
+	"bpms|--with bpms"
+	"bpms-lean|--with bpms --without notification --without cerbos --without tracing"
 )
 
 for combo in "${combos[@]}"; do

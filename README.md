@@ -36,7 +36,8 @@ go run github.com/kafeiih/vogel/cmd/create-vogel-app@vX.Y.Z mi-servicio
 ```
 
 Pregunta el *owner* de GitHub y qué componentes opcionales conservar (worker con
-River, notificaciones del worker, el PDP de Cerbos empaquetado y storage S3);
+River, notificaciones del worker, el PDP de Cerbos empaquetado, storage S3 y,
+apagada por defecto, la base BPMS de `workflow`, `action` y `document`);
 auditoría, autorización, Zitadel, métricas y Swagger vienen siempre. Reescribe
 el módulo (`github.com/<owner>/<nombre>`), quita el `replace` de vogel, renombra
 las imágenes a `ghcr.io/<owner>/<nombre>[-worker|-cerbos]` y la base a
