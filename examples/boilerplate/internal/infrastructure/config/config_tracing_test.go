@@ -15,8 +15,6 @@ func parseTracing(t *testing.T) (otel.Config, error) {
 	return cfg, errs.Err()
 }
 
-// Without OTEL_EXPORTER_OTLP_ENDPOINT tracing is off: otel.Setup installs
-// nothing for an empty Endpoint.
 func TestParseTracingConfig_OffWithoutEndpoint(t *testing.T) {
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
 	t.Setenv("OTEL_SERVICE_NAME", "")
@@ -53,7 +51,6 @@ func TestParseTracingConfig_ReadsTheStandardNames(t *testing.T) {
 	}
 }
 
-// A bad sample ratio fails the boot and names the variable.
 func TestParseTracingConfig_InvalidSampleRatio(t *testing.T) {
 	for _, v := range []string{"abc", "-0.1", "0", "1.5", "NaN"} {
 		t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector:4318")
@@ -66,7 +63,6 @@ func TestParseTracingConfig_InvalidSampleRatio(t *testing.T) {
 	}
 }
 
-// A bad endpoint fails the boot too, rather than at the first export.
 func TestParseTracingConfig_InvalidEndpoint(t *testing.T) {
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "otel-collector:4318")
 	t.Setenv("OTEL_TRACES_SAMPLER_ARG", "")
@@ -77,8 +73,6 @@ func TestParseTracingConfig_InvalidEndpoint(t *testing.T) {
 	}
 }
 
-// Load reads APP_ENV and APP_VERSION once and hands the same values to the
-// app and to the spans' resource.
 func TestLoad_TracingTakesTheAppEnvironmentAndVersion(t *testing.T) {
 	setRequiredEnv(t, "staging")
 	t.Setenv("APP_VERSION", "2.4.0")

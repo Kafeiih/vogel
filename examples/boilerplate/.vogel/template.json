@@ -103,7 +103,7 @@
       "to": "# {{.Name}}\n\nServicio HTTP generado con `create-vogel-app` a partir del boilerplate de\n[`vogel`](https://github.com/kafeiih/vogel): capas\n`domain`/`application`/`infrastructure`/`interfaces`, Swagger, un\n`Dockerfile` multi-stage, `docker-compose` para desarrollo y despliegue y un\n`Makefile`.\n"
     },
     {
-      "path": "README.md",
+      "path": "env.example",
       "from": "bluprint_dev",
       "to": "{{.DBName}}_dev"
     },

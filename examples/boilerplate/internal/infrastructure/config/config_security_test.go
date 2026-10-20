@@ -9,9 +9,6 @@ import (
 	"github.com/kafeiih/vogel/auth/zitadel"
 )
 
-// TLS to the database is required unless DB_REQUIRE_TLS=false says
-// otherwise, whatever APP_ENV is: a deployment that forgets APP_ENV, or runs
-// with APP_ENV=development, must not silently accept a plaintext DSN.
 func TestLoad_DBRequireTLS(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -66,8 +63,6 @@ func TestLoad_ZitadelDefaults(t *testing.T) {
 	if z.HTTPTimeout != zitadel.DefaultHTTPTimeout {
 		t.Errorf("HTTPTimeout = %v, want %v", z.HTTPTimeout, zitadel.DefaultHTTPTimeout)
 	}
-	// The lifetime check is on by default: a leaked token stays usable at
-	// most this long even if the issuer is set to mint longer-lived ones.
 	if z.MaxTokenLifetime != defaultMaxTokenLifetime {
 		t.Errorf("MaxTokenLifetime = %v, want %v", z.MaxTokenLifetime, defaultMaxTokenLifetime)
 	}
@@ -123,8 +118,6 @@ func TestLoad_ZitadelKeyFileIntrospection(t *testing.T) {
 	}
 }
 
-// Every invalid combination fails the boot, naming the variable, instead of
-// being caught later by zitadel.New or, worse, accepted as something else.
 func TestLoad_ZitadelInvalidSettings(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -147,9 +140,6 @@ func TestLoad_ZitadelInvalidSettings(t *testing.T) {
 			wantVar: "ZITADEL_INTROSPECTION",
 		},
 		{
-			// A credential without the switch most likely means the operator
-			// believes revocation is honoured while tokens are still only
-			// verified locally.
 			name:    "credential without introspection",
 			env:     map[string]string{"ZITADEL_INTROSPECTION_CLIENT_SECRET": "s"},
 			wantVar: "ZITADEL_INTROSPECTION",
@@ -180,8 +170,6 @@ func TestLoad_ZitadelInvalidSettings(t *testing.T) {
 	}
 }
 
-// "api migrate" reads DB_REQUIRE_TLS on its own, without Load, and gets the
-// same secure default: the migrator role is the most privileged one.
 func TestMigrateRequiresTLS(t *testing.T) {
 	tests := []struct {
 		name    string

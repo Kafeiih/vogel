@@ -9,7 +9,6 @@ import (
 	"github.com/kafeiih/vogel/notification"
 )
 
-// mockNotifier records calls to Send for testing.
 type mockNotifier struct {
 	lastMsg *notification.Message
 	err     error
@@ -62,7 +61,7 @@ func TestSendEmailWorker_WorkInvalidMessage(t *testing.T) {
 	job := &river.Job[SendEmailJobArgs]{
 		Args: SendEmailJobArgs{
 			Message: notification.Message{
-				To: "", // invalid
+				To: "",
 			},
 		},
 	}

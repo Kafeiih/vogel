@@ -35,8 +35,8 @@ func TestNextSequence(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "001_first.sql")
 	writeFile(t, dir, "002_second.sql")
-	writeFile(t, dir, "not_a_migration.sql") // non-numeric prefix ignored
-	writeFile(t, dir, "README.md")           // non-sql ignored
+	writeFile(t, dir, "not_a_migration.sql")
+	writeFile(t, dir, "README.md")
 
 	got, err := nextSequence(dir)
 	if err != nil {

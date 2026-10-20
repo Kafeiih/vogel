@@ -12,7 +12,7 @@ import (
 
 type fakePinger struct {
 	err         error
-	failFirst   int // when > 0, the first failFirst calls return err and later ones succeed
+	failFirst   int
 	calls       int
 	hadDeadline bool
 	deadline    time.Duration
@@ -33,8 +33,6 @@ func (f *fakePinger) Ping(ctx context.Context) error {
 	return f.err
 }
 
-// fastProbe shrinks the retry budget and backoff so tests of the failure
-// paths run in milliseconds instead of the production 30s.
 func fastProbe(t *testing.T) {
 	t.Helper()
 	budget, backoff := cerbosProbeBudget, cerbosProbeBackoff
@@ -42,8 +40,6 @@ func fastProbe(t *testing.T) {
 	t.Cleanup(func() { cerbosProbeBudget, cerbosProbeBackoff = budget, backoff })
 }
 
-// A PDP that is briefly unavailable at boot (container start order, a Cerbos
-// rollout) must not kill the API: the probe retries until it answers.
 func TestProbeCerbos_RetriesUntilReachable(t *testing.T) {
 	fastProbe(t)
 	p := &fakePinger{err: errors.New("connection refused"), failFirst: 2}
@@ -55,7 +51,6 @@ func TestProbeCerbos_RetriesUntilReachable(t *testing.T) {
 	}
 }
 
-// A PDP that never answers still fails the boot, once the budget is spent.
 func TestProbeCerbos_GivesUpAfterBudget(t *testing.T) {
 	fastProbe(t)
 	p := &fakePinger{err: errors.New("connection refused")}
@@ -109,8 +104,6 @@ func TestProbeCerbos(t *testing.T) {
 	}
 }
 
-// TestProbeCerbos_RealCheckerAgainstClosedPort wires the real adapter: a PDP
-// address nothing listens on fails the probe well before the timeout.
 func TestProbeCerbos_RealCheckerAgainstClosedPort(t *testing.T) {
 	fastProbe(t)
 	cfg := cerbos.Config{Host: "127.0.0.1:1", Plaintext: true}

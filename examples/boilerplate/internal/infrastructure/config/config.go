@@ -1,18 +1,3 @@
-// Package config loads this application's configuration from environment
-// variables.
-//
-// Every primitive read (String, Bool, Int32, Duration, Require, ...) comes
-// from vogel/config -- this package only shapes the struct and picks the env
-// var names, exactly as vogel/config's own package doc comment says a
-// consumer should. vogel deliberately does NOT define application config
-// structs (Config, AppConfig, DatabaseConfig, ...) itself, so those stay
-// here.
-//
-// Wherever an adapter's own Config type already matches this application's
-// needs field-for-field (postgres.Config, zitadel.Config, cerbos.Config and
-// the other adapters' Config types), this package embeds that type directly instead of mirroring it with a redundant local
-// struct that would need converting at the call site in main.go. Only the
-// fields with no vogel equivalent (App, CORS, Metrics) get a local type.
 package config
 
 import (
@@ -51,7 +36,6 @@ import (
 	"github.com/kafeiih/vogel/postgres"
 )
 
-// Config holds every setting this application needs to boot.
 type Config struct {
 	App      AppConfig
 	Database postgres.Config
@@ -73,91 +57,53 @@ type Config struct {
 	// vogel:component notification end
 	// vogel:component tracing begin
 
-	// Tracing is off when its Endpoint is empty (OTEL_EXPORTER_OTLP_ENDPOINT
-	// unset). ServiceName may be empty: each binary defaults it to its own
-	// name ("api", "worker").
 	Tracing otel.Config
 	// vogel:component tracing end
 }
 
-// AppConfig holds settings with no vogel equivalent: this application's own
-// identity, HTTP timeout, and the reverse proxies allowed to report the
-// client IP.
 type AppConfig struct {
-	Env     string // development, staging, production
-	Port    string // :8080
-	Url     string // localhost:8080
+	Env     string
+	Port    string
+	Url     string
 	Version string
-	Timeout time.Duration // 30s
+	Timeout time.Duration
 
-	// TrustedProxies (TRUSTED_PROXIES, comma-separated CIDRs or IPs, default
-	// empty) are the only peers whose X-Forwarded-For / X-Real-IP headers
-	// vmw.RealIP believes. Empty means no header is trusted and the client
-	// IP is always the TCP peer.
 	TrustedProxies []netip.Prefix
 
-	// SwaggerEnabled (SWAGGER_ENABLED, default false) serves the Swagger UI
-	// and spec under /v1/swagger/. It is an explicit opt-in rather than
-	// "APP_ENV is not production": the deploy compose runs with
-	// APP_ENV=development and must not publish the API description. Load
-	// refuses it when IsProduction. See parseSwaggerEnabled.
 	SwaggerEnabled bool
 }
 
-// MetricsConfig holds configuration for the dedicated Prometheus metrics
-// server. vogel does not run one of its own -- see metrics_server.go.
 type MetricsConfig struct {
-	ListenAddr string // METRICS_LISTEN_ADDR, default ":9090"
+	ListenAddr string
 	// vogel:component worker begin
 
-	// WorkerListenAddr is the worker binary's own /metrics address
-	// (WORKER_METRICS_LISTEN_ADDR, default ":9091"), apart from the api's so
-	// both can run on one host.
 	WorkerListenAddr string
 	// vogel:component worker end
 }
 
 // vogel:component notification begin
-// NotificationConfig holds configuration for email delivery. Provider picks
-// which of the two vogel-shaped configs below main.go actually builds an
-// adapter from.
 type NotificationConfig struct {
-	Provider    string          // "smtp" (default) or "sendgrid"
-	DefaultFrom string          // Default sender address, e.g. "noreply@institucion.cl"
-	SMTP        smtp.Config     // SMTP-specific settings
-	SendGrid    sendgrid.Config // SendGrid-specific settings
+	Provider    string
+	DefaultFrom string
+	SMTP        smtp.Config
+	SendGrid    sendgrid.Config
 }
 
 // vogel:component notification end
-// CORSConfig holds settings with no vogel equivalent -- CORS is wired
-// directly with github.com/rs/cors in router.go.
 type CORSConfig struct {
-	AllowedOrigins []string // ["https://app.institucion.gob"]
-	AllowedMethods []string // ["GET", "POST", "PUT", "DELETE"]
-	AllowedHeaders []string // ["Authorization", "Content-Type"]
+	AllowedOrigins []string
+	AllowedMethods []string
+	AllowedHeaders []string
 }
 
-// Load reads configuration from environment variables.
-//
-// In non-production environments it also loads a .env file if present. It
-// accumulates every validation problem via config.Errors instead of
-// returning on the first one encountered, so a single boot failure reports
-// every missing or invalid variable at once -- see vogel/config's package
-// doc comment for the rationale.
 func Load() (*Config, error) {
-	// Load .env only in dev/test -- in production env vars come from the
-	// platform.
 	if os.Getenv("APP_ENV") != "production" {
-		_ = godotenv.Load() // silently ignore if .env doesn't exist
+		_ = godotenv.Load()
 	}
 
 	var errs config.Errors
 
 	dbURL := errs.Require("DB_URL")
-	// TLS to the database is required unless explicitly turned off: it is
-	// not derived from APP_ENV, so a deployment that forgets APP_ENV (or
-	// runs with APP_ENV=development) still rejects a DSN that is not
-	// sslmode=verify-ca or verify-full.
 	dbRequireTLS := parseBool(&errs, "DB_REQUIRE_TLS", true)
 
 	maxConns := errs.Int32("DB_MAX_CONNS", 25)
@@ -232,26 +178,16 @@ func Load() (*Config, error) {
 	return cfg, nil
 }
 
-// validate records the rules that depend on more than one setting.
-// Production is decided by IsProduction alone, so these rules cannot drift
-// from it.
 func (c *Config) validate(errs *config.Errors) {
-	// The API description maps every route for an unauthenticated caller;
-	// an operator who set SWAGGER_ENABLED=true in production learns at boot
-	// that it is refused there instead of having it silently ignored.
 	if c.App.SwaggerEnabled && c.IsProduction() {
 		errs.Addf("SWAGGER_ENABLED: must not be true with APP_ENV=production")
 	}
 }
 
-// IsProduction reports whether we are running in production.
 func (c *Config) IsProduction() bool {
 	return c.App.Env == "production"
 }
 
-// parseSlice is a small helper vogel/config does not provide: a
-// comma-separated list where an unset variable means "no values" rather than
-// vogel/config.StringSlice's "one empty-string value".
 func parseSlice(key, sep string) []string {
 	value := os.Getenv(key)
 	if value == "" {
@@ -267,11 +203,6 @@ func parseSlice(key, sep string) []string {
 	return result
 }
 
-// parseTrustedProxies reads TRUSTED_PROXIES via vmw.ParseTrustedProxies and
-// records an error naming the variable if any entry is invalid. Unlike most
-// optional variables here, a bad value fails the boot instead of falling back
-// to a default: silently trusting no proxy would make every client appear as
-// the proxy's IP, and there is no safe guess for what was meant.
 func parseTrustedProxies(errs *config.Errors) []netip.Prefix {
 	prefixes, err := vmw.ParseTrustedProxies(os.Getenv("TRUSTED_PROXIES"))
 	if err != nil {
@@ -281,24 +212,11 @@ func parseTrustedProxies(errs *config.Errors) []netip.Prefix {
 	return prefixes
 }
 
-// Defaults for the pool's acquire timeout and leak threshold (see
-// postgres.Config.AcquireTimeout and LeakThreshold).
-//
-// DB_ACQUIRE_TIMEOUT (default 3s): how long a request waits for a free
-// database connection before failing, so a saturated pool fails fast instead
-// of piling requests up until APP_TIMEOUT.
-//
-// DB_LEAK_THRESHOLD (default 10s): a connection released after being held
-// longer than this logs a WARN naming the code that acquired it.
 const (
 	defaultAcquireTimeout = 3 * time.Second
 	defaultLeakThreshold  = 10 * time.Second
 )
 
-// positiveDuration reads key as a duration that must be greater than zero,
-// returning def when it is unset. An unparsable, zero or negative value is
-// recorded in errs naming the variable: zero would silently disable a
-// protection the operator set the variable to tune.
 func positiveDuration(errs *config.Errors, key string, def time.Duration) time.Duration {
 	v := errs.Duration(key, def)
 	if v <= 0 {
@@ -308,19 +226,10 @@ func positiveDuration(errs *config.Errors, key string, def time.Duration) time.D
 	return v
 }
 
-// parseSwaggerEnabled reads SWAGGER_ENABLED (default false). A value
-// strconv.ParseBool cannot read is a config error, not "off": the operator
-// meant something, and guessing which way is how a typo ends up publishing
-// the API description. Load refuses true in production (see validate).
 func parseSwaggerEnabled(errs *config.Errors) bool {
 	return parseBool(errs, "SWAGGER_ENABLED", false)
 }
 
-// parseBool reads key as a strconv.ParseBool boolean, returning def when it
-// is unset or empty. Unlike vogel/config.Bool, an unparsable value is
-// recorded in errs instead of falling back to def: every flag read this way
-// switches a security control, and a typo must fail the boot rather than
-// flip it to whichever value the default happens to be.
 func parseBool(errs *config.Errors, key string, def bool) bool {
 	raw := os.Getenv(key)
 	if raw == "" {
@@ -334,26 +243,8 @@ func parseBool(errs *config.Errors, key string, def bool) bool {
 	return v
 }
 
-// defaultMaxTokenLifetime is ZITADEL_MAX_TOKEN_LIFETIME's default: Zitadel's
-// own default access-token lifetime, so tokens minted with the issuer's
-// defaults pass and anything configured to live longer is rejected.
 const defaultMaxTokenLifetime = 12 * time.Hour
 
-// parseZitadelConfig reads the Zitadel token validation settings:
-//
-//	ZITADEL_ISSUER, ZITADEL_CLIENT_ID       required
-//	ZITADEL_HTTP_TIMEOUT                    per-request timeout towards the issuer (default 10s, > 0)
-//	ZITADEL_MAX_TOKEN_LIFETIME              longest accepted exp - iat (default 12h; 0 disables the check)
-//	ZITADEL_ALLOWED_AUTHORIZED_PARTIES      comma-separated client IDs accepted as azp (default: any)
-//	ZITADEL_INTROSPECTION                   true validates every token with the introspection endpoint (default false)
-//	ZITADEL_INTROSPECTION_KEY_FILE          API application key.json, or
-//	ZITADEL_INTROSPECTION_CLIENT_SECRET     its client secret (exactly one, only with introspection)
-//	ZITADEL_INTROSPECTION_CACHE_TTL         how long an active result is reused (default 30s)
-//	ZITADEL_INTROSPECTION_CACHE_MAX_ENTRIES cached results (default 10000)
-//
-// It checks here what zitadel.New would only reject after the process
-// started connecting, so every invalid setting is reported at once and
-// names its variable. See zitadel.Config for what each knob protects.
 func parseZitadelConfig(errs *config.Errors) zitadel.Config {
 	cfg := zitadel.Config{
 		Issuer:   errs.Require("ZITADEL_ISSUER"),
@@ -383,9 +274,6 @@ func parseZitadelConfig(errs *config.Errors) zitadel.Config {
 	hasCredential := ic.KeyFile != "" || ic.ClientSecret != ""
 	switch {
 	case !introspection:
-		// A credential without the switch most likely means the operator
-		// believes revoked tokens stop working, while they are still
-		// verified locally until exp.
 		if hasCredential {
 			errs.Addf("ZITADEL_INTROSPECTION: a ZITADEL_INTROSPECTION_* credential is set but introspection is off; set ZITADEL_INTROSPECTION=true or remove it")
 		}
@@ -404,20 +292,11 @@ func parseZitadelConfig(errs *config.Errors) zitadel.Config {
 }
 
 // vogel:component worker begin
-// WorkerSchema returns the PostgreSQL schema River's tables live in
-// (WORKER_SCHEMA, default "river"). It reads only that variable, so "api
-// migrate up" can apply River's migrations without the variables Load
-// requires for serving; the worker reads the same value through
-// parseWorkerConfig.
 func WorkerSchema() string {
 	return config.String("WORKER_SCHEMA", "river")
 }
 
 // vogel:component worker end
-// MigrateRequiresTLS reads DB_REQUIRE_TLS (default true) for "api migrate",
-// which connects with DB_URL directly instead of going through Load. The
-// migrator role owns the schema, so it gets the same TLS policy as the
-// serving process. An unparsable value is an error, as it is for Load.
 func MigrateRequiresTLS() (bool, error) {
 	var errs config.Errors
 	v := parseBool(&errs, "DB_REQUIRE_TLS", true)
@@ -425,10 +304,6 @@ func MigrateRequiresTLS() (bool, error) {
 }
 
 // vogel:component worker begin
-// parseWorkerConfig reads WORKER_* env vars and returns a worker.Config with
-// defaults. WORKER_POLL_ONLY (default false) is read with parseBool, so an
-// unparsable value is a config error: it decides whether the worker can run
-// behind PgBouncer in transaction mode (see worker.Config.PollOnly).
 func parseWorkerConfig(errs *config.Errors) worker.Config {
 	schema := WorkerSchema()
 
@@ -467,31 +342,11 @@ func parseWorkerConfig(errs *config.Errors) worker.Config {
 
 // vogel:component worker end
 // vogel:component storage begin
-// Bounds for STORAGE_<NAME>_PRESIGN_EXPIRY. A presigned URL is a bearer
-// credential for one object until it expires, and nothing can revoke it
-// earlier, so its lifetime is capped rather than left to whatever is set.
 const (
 	defaultPresignExpiry = 15 * time.Minute
 	maxPresignExpiry     = time.Hour
 )
 
-// parseStorageConfigs reads named storage configurations from environment
-// variables.
-//
-// Format:
-//
-//	STORAGE_CONFIGS=assets,documents
-//	STORAGE_ASSETS_BUCKET=app-assets
-//	STORAGE_ASSETS_REGION=us-east-1
-//	STORAGE_DOCUMENTS_BUCKET=documentos
-//	STORAGE_DOCUMENTS_ENDPOINT=http://minio:9000
-//	STORAGE_DOCUMENTS_PATH_STYLE=true
-//	STORAGE_DOCUMENTS_PRESIGN_EXPIRY=5m   (default 15m, at most 1h)
-//
-// Every bucket stays private (Block Public Access on): clients reach objects
-// only through presigned URLs, never through a public bucket policy or ACL.
-//
-// Returns an empty map if STORAGE_CONFIGS is not set.
 func parseStorageConfigs(errs *config.Errors) map[string]s3.Config {
 	raw := os.Getenv("STORAGE_CONFIGS")
 	if raw == "" {
@@ -534,22 +389,6 @@ func parseStorageConfigs(errs *config.Errors) map[string]s3.Config {
 
 // vogel:component storage end
 // vogel:component tracing begin
-// parseTracingConfig reads the standard OpenTelemetry variable names. vogel's
-// otel.Setup reads no environment itself, so these are the only OTEL_*
-// variables that take effect:
-//
-//   - OTEL_EXPORTER_OTLP_ENDPOINT: the collector's OTLP/HTTP base URL
-//     (e.g. http://otel-collector:4318); empty turns tracing off.
-//   - OTEL_SERVICE_NAME: the service name on every span; empty uses the
-//     binary's name.
-//   - OTEL_TRACES_SAMPLER_ARG: the fraction of new traces sampled, in
-//     (0, 1]; empty uses otel.DefaultSampleRatio (0.1). Zero is rejected,
-//     since otel.Config reads it as "the default": to turn tracing off,
-//     leave the endpoint empty. A trace continued
-//     from a sampled parent (a job enqueued by a sampled request) is always
-//     sampled.
-//
-// Environment and ServiceVersion come from APP_ENV and APP_VERSION.
 func parseTracingConfig(errs *config.Errors, env, version string) otel.Config {
 	const (
 		endpointKey = "OTEL_EXPORTER_OTLP_ENDPOINT"
@@ -578,14 +417,6 @@ func parseTracingConfig(errs *config.Errors, env, version string) otel.Config {
 }
 
 // vogel:component tracing end
-// parseCerbosConfig reads the Cerbos PDP connection. TLS is the default;
-// CERBOS_PLAINTEXT=true opts out, for the local development container only;
-// like every flag read with parseBool, a value it cannot read is an error.
-//
-// CERBOS_TLS, which CERBOS_PLAINTEXT replaced, is rejected whenever it is set
-// (whatever its value) and recorded in errs: a deployment that still carries
-// it would otherwise be switched to TLS silently and only fail later, with a
-// 503 on every authorization call.
 func parseCerbosConfig(errs *config.Errors) cerbos.Config {
 	if _, ok := os.LookupEnv("CERBOS_TLS"); ok {
 		errs.Addf("CERBOS_TLS is no longer read: remove it and set CERBOS_PLAINTEXT=true only if the Cerbos PDP listens without TLS (TLS is the default)")
@@ -597,8 +428,6 @@ func parseCerbosConfig(errs *config.Errors) cerbos.Config {
 }
 
 // vogel:component notification begin
-// parseNotificationConfig reads NOTIFICATION_*, SMTP_*, and SENDGRID_* env
-// vars.
 func parseNotificationConfig() NotificationConfig {
 	smtpPort := 587
 	if v := os.Getenv("SMTP_PORT"); v != "" {
@@ -623,8 +452,6 @@ func parseNotificationConfig() NotificationConfig {
 }
 
 // vogel:component notification end
-// parseMetricsConfig reads METRICS_* env vars and returns a MetricsConfig
-// with defaults.
 func parseMetricsConfig() MetricsConfig {
 	return MetricsConfig{
 		ListenAddr: config.String("METRICS_LISTEN_ADDR", ":9090"),

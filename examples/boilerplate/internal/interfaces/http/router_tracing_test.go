@@ -14,9 +14,6 @@ import (
 	"github.com/kafeiih/vogel/examples/boilerplate/internal/interfaces/http/handler"
 )
 
-// tracingProbe records, for each request, the response headers already set
-// when the tracing middleware is entered and once the rest of the chain
-// returns.
 type tracingProbe struct {
 	before, after []http.Header
 }
@@ -47,10 +44,6 @@ func newTracedRouter(t *testing.T, probe *tracingProbe) http.Handler {
 	})
 }
 
-// The tracing middleware is mounted before every other one, so the span
-// covers the whole request: nothing has touched the response when it is
-// entered, and the request ID and security headers are set inside it. It
-// also wraps the requests the router rejects before reaching a handler.
 func TestNewRouter_MountsTracingFirst(t *testing.T) {
 	for _, tc := range []struct {
 		path string

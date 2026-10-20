@@ -18,8 +18,6 @@ import (
 	"github.com/kafeiih/vogel/pgxtx"
 )
 
-// --- fake repository for handler tests ---
-
 type stubRepo struct {
 	entries []audit.Entry
 	total   int
@@ -44,7 +42,6 @@ func (s *stubRepo) GetByID(_ context.Context, id uuid.UUID) (*audit.Entry, error
 }
 
 func (s *stubRepo) List(_ context.Context, f audit.Filters) ([]audit.Entry, int, error) {
-	// Like audit/postgres, reject an out-of-range page before anything else.
 	if _, _, err := f.Page(); err != nil {
 		return nil, 0, err
 	}
@@ -76,8 +73,6 @@ func sampleEntry() audit.Entry {
 	}
 }
 
-// --- GetByID tests ---
-
 func TestGetByID_ValidUUID_ReturnsEntry(t *testing.T) {
 	entry := sampleEntry()
 	repo := &stubRepo{entries: []audit.Entry{entry}}
@@ -85,7 +80,6 @@ func TestGetByID_ValidUUID_ReturnsEntry(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/audit/"+entry.ID.String(), nil)
 
-	// Set chi URL param
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("id", entry.ID.String())
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
@@ -181,8 +175,6 @@ func TestGetByID_MissingParam_Returns400(t *testing.T) {
 	}
 }
 
-// --- List tests ---
-
 func TestList_DefaultParams_Returns200(t *testing.T) {
 	entry := sampleEntry()
 	repo := &stubRepo{entries: []audit.Entry{entry}, total: 1}
@@ -243,9 +235,6 @@ func TestList_NegativeOffset_Returns400(t *testing.T) {
 	}
 }
 
-// An offset past audit.MaxListOffset is the caller's error, not the
-// server's: the repository rejects it (audit.ErrOffsetOutOfRange) before
-// querying, and the handler answers 400 on the offset field instead of 500.
 func TestList_OffsetAboveMax_Returns400(t *testing.T) {
 	repo := &stubRepo{}
 	h := newTestHandler(repo)

@@ -10,8 +10,6 @@ import (
 	"time"
 )
 
-// The worker serves /metrics on its own address, from the default registry
-// that worker.WithMetrics and the pool collector register on.
 func TestStartMetricsServer_ServesMetrics(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	srv, stop, err := startMetricsServer("127.0.0.1:0", logger)

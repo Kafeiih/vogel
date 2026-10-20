@@ -66,7 +66,6 @@ func TestRunHeartbeat_BeatsUntilCanceledThenRemovesFile(t *testing.T) {
 		runHeartbeat(ctx, path, 10*time.Millisecond, logger)
 	}()
 
-	// The first beat is written immediately, not after one interval.
 	deadline := time.Now().Add(2 * time.Second)
 	for {
 		if err := checkHeartbeat(path, time.Now(), time.Second); err == nil {
