@@ -22,11 +22,11 @@ de versión: `vogel/workflow/migrations` (`workflow_db_version`) y
 
 | Variable | Default | Efecto |
 |---|---|---|
-| `GOTENBERG_URL` | — (obligatoria) | URL base de Gotenberg, p. ej. `http://localhost:3000` (local) o `http://gotenberg:3000` (compose de despliegue). |
+| `GOTENBERG_URL` | — (obligatoria) | URL base de Gotenberg, p. ej. `http://localhost:3001` (local) o `http://gotenberg:3000` (compose de despliegue). |
 | `GOTENBERG_TIMEOUT` | `30s` | Tope de una conversión a PDF. Debe ser mayor que cero. |
 | `BPMS_DOCUMENT_STORAGE` | `documents` | Backend de `STORAGE_CONFIGS` donde se guardan los PDF. Si no está en `STORAGE_CONFIGS`, el arranque falla. |
 
-`make dev-infra` levanta Gotenberg en el puerto 3000. No trae un S3 local:
+`make dev-infra` levanta Gotenberg en `127.0.0.1:3001` (el 3000 queda libre para el frontend). Chromium tiene prohibido conectarse a cualquier IP, privada o pública, y no ejecuta JavaScript: una plantilla debe ser autocontenida (CSS en línea, imágenes como `data:` URI), y así un dato que llegue a la plantilla no puede hacer que Gotenberg pida una URL (SSRF). No trae un S3 local:
 apunte `STORAGE_DOCUMENTS_*` a un endpoint S3-compatible.
 
 ## Dónde va el proceso de su servicio

@@ -184,7 +184,7 @@ No trae MinIO (su imagen ya no se publica en Docker Hub): apunte `STORAGE_*`
 a cualquier endpoint S3-compatible si lo necesita.
 <!-- vogel:component storage end -->
 <!-- vogel:component bpms begin -->
-También levanta Gotenberg (HTML a PDF) en el puerto 3000.
+También levanta Gotenberg (HTML a PDF) en `127.0.0.1:3001`.
 <!-- vogel:component bpms end -->
 
 `docker compose -f deploy/docker-compose.yaml` es el compose de despliegue

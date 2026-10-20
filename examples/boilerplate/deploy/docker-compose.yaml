@@ -271,8 +271,14 @@ services:
   # Chromium needs a writable home, so it does not get the read-only root
   # filesystem of *hardened; it still runs with no capabilities and publishes
   # no port. The worker reaches it at GOTENBERG_URL=http://gotenberg:3000.
+  # Chromium is denied every private and public IP and runs no JavaScript, so a
+  # template cannot make it fetch anything (no SSRF): templates are self-contained.
   gotenberg:
     image: gotenberg/gotenberg:8.38.1-chromium@sha256:5da4ab7b8fe7326537369e17b661be765d9a2887f77722faacdbe6d55812fb96
+    environment:
+      CHROMIUM_DENY_PRIVATE_IPS: "true"
+      CHROMIUM_DENY_PUBLIC_IPS: "true"
+      CHROMIUM_DISABLE_JAVASCRIPT: "true"
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     healthcheck:
