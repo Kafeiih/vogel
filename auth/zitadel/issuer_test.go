@@ -34,6 +34,9 @@ func TestIssuerProvider_Origin(t *testing.T) {
 		{"https://my-instance.zitadel.cloud/", "https://my-instance.zitadel.cloud"},
 		{"HTTPS://my-instance.zitadel.cloud", "https://my-instance.zitadel.cloud"},
 		{"https://auth.example.com:8443", "https://auth.example.com:8443"},
+		{"https://auth.example.com:443", "https://auth.example.com"},
+		{"http://127.0.0.1:8080", "http://127.0.0.1:8080"},
+		{"http://LOCALHOST:8080", "http://LOCALHOST:8080"},
 		{"http://localhost:8080", "http://localhost:8080"},
 		{"http://localhost", "http://localhost"},
 		{"https://[::1]:8443", "https://[::1]:8443"},
@@ -69,6 +72,10 @@ func TestNew_InvalidIssuerURL_ReturnsError(t *testing.T) {
 		{"https://my-instance.zitadel.cloud:notaport", "auth/zitadel: invalid issuer"},
 		{"https://my-instance.zitadel.cloud:0", "port must be between 1 and 65535"},
 		{"http://localhost:0", "port must be between 1 and 65535"},
+		{"https://my-instance.zitadel.cloud:65536", "auth/zitadel: invalid issuer"},
+		{"http://my-instance.zitadel.cloud", "http is only allowed for a loopback host"},
+		{"http://localhost.example.com:8080", "http is only allowed for a loopback host"},
+		{"http://10.0.0.1:8080", "http is only allowed for a loopback host"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.issuer, func(t *testing.T) {

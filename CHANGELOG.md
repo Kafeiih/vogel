@@ -14,7 +14,8 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   `https://my-instance.zitadel.cloud` terminaba en
   `https://https://my-instance.zitadel.cloud` y el discovery de OIDC fallaba.
   Ahora una URL `https://` (con puerto opcional) o `http://` (sin TLS, solo
-  para desarrollo local) se separa en host y puerto; una URL con path, query,
+  con un host loopback: `localhost`, `127.0.0.1`, `::1`) se separa en host y
+  puerto; un `http://` hacia otro host, una URL con path, query,
   fragment o user info, o con otro esquema, es un error de construcción. Un
   valor sin esquema (`my-instance.zitadel.cloud`) se sigue tratando como antes.
 

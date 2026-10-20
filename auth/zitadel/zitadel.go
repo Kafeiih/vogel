@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"slices"
@@ -27,8 +28,9 @@ type Config struct {
 	// Issuer is the Zitadel instance issuer URL, e.g.
 	// "https://my-instance.zitadel.cloud" or, with a port,
 	// "https://auth.example.com:8443". It must not have a path, query,
-	// fragment or user info. An "http://" URL connects without TLS and is
-	// meant only for local development. A bare host
+	// fragment or user info. An "http://" URL connects without TLS, so it
+	// is accepted only for a loopback host ("localhost", 127.0.0.1, ::1),
+	// for local development. A bare host
 	// ("my-instance.zitadel.cloud") is also accepted and means https.
 	Issuer   string
 	ClientID string // OIDC client/application ID used for audience validation
@@ -135,8 +137,8 @@ func New(ctx context.Context, cfg Config) (*Authenticator, error) {
 // issuerProvider returns the zitadel.Zitadel for issuer. zitadel.New takes a
 // bare host and always prepends "https://", so an issuer URL is split into
 // its host and port here: an https port goes to WithPort, and an http URL to
-// WithInsecure (port 80 when it has none). A value without "://" is passed
-// to zitadel.New unchanged, as before.
+// WithInsecure (port 80 when it has none; loopback hosts only). A value
+// without "://" is passed to zitadel.New unchanged, as before.
 func issuerProvider(issuer string) (*zitadel.Zitadel, error) {
 	if !strings.Contains(issuer, "://") {
 		return zitadel.New(issuer), nil
@@ -157,6 +159,11 @@ func issuerProvider(issuer string) (*zitadel.Zitadel, error) {
 	}
 	if u.Scheme != "https" && u.Scheme != "http" {
 		return nil, fmt.Errorf("auth/zitadel: issuer %q: scheme must be \"https\" or \"http\"", issuer)
+	}
+	// Over plain http a network attacker could serve a forged JWKS and mint
+	// tokens Authenticate accepts, so http is kept to a local issuer.
+	if u.Scheme == "http" && !isLoopbackHost(u.Hostname()) {
+		return nil, fmt.Errorf("auth/zitadel: issuer %q: http is only allowed for a loopback host; use https", issuer)
 	}
 
 	// Hostname drops the brackets of an IPv6 literal, which zitadel.New needs
@@ -186,6 +193,16 @@ func issuerProvider(issuer string) (*zitadel.Zitadel, error) {
 	default:
 		return zitadel.New(host, zitadel.WithPort(uint16(port))), nil
 	}
+}
+
+// isLoopbackHost reports whether host is "localhost" or a loopback IP
+// address.
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // validateConfig rejects an invalid cfg and returns it with the
