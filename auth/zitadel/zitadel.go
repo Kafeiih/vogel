@@ -7,7 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"slices"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/zitadel/oidc/v3/pkg/oidc"
@@ -21,7 +24,13 @@ import (
 
 // Config holds the settings needed to construct an Authenticator backed by Zitadel.
 type Config struct {
-	Issuer   string // Zitadel instance issuer URL, e.g. "https://my-instance.zitadel.cloud"
+	// Issuer is the Zitadel instance issuer URL, e.g.
+	// "https://my-instance.zitadel.cloud" or, with a port,
+	// "https://auth.example.com:8443". It must not have a path, query,
+	// fragment or user info. An "http://" URL connects without TLS and is
+	// meant only for local development. A bare host
+	// ("my-instance.zitadel.cloud") is also accepted and means https.
+	Issuer   string
 	ClientID string // OIDC client/application ID used for audience validation
 
 	// HTTPTimeout bounds each request of OIDC discovery, of the JWKS
@@ -116,7 +125,67 @@ func New(ctx context.Context, cfg Config) (*Authenticator, error) {
 	if err != nil {
 		return nil, err
 	}
-	return build(ctx, zitadel.New(cfg.Issuer), cfg)
+	z, err := issuerProvider(cfg.Issuer)
+	if err != nil {
+		return nil, err
+	}
+	return build(ctx, z, cfg)
+}
+
+// issuerProvider returns the zitadel.Zitadel for issuer. zitadel.New takes a
+// bare host and always prepends "https://", so an issuer URL is split into
+// its host and port here: an https port goes to WithPort, and an http URL to
+// WithInsecure (port 80 when it has none). A value without "://" is passed
+// to zitadel.New unchanged, as before.
+func issuerProvider(issuer string) (*zitadel.Zitadel, error) {
+	if !strings.Contains(issuer, "://") {
+		return zitadel.New(issuer), nil
+	}
+	u, err := url.Parse(issuer)
+	if err != nil {
+		return nil, fmt.Errorf("auth/zitadel: invalid issuer %q: %w", issuer, err)
+	}
+	switch {
+	case u.Hostname() == "":
+		return nil, fmt.Errorf("auth/zitadel: issuer %q has no host", issuer)
+	case u.User != nil:
+		return nil, fmt.Errorf("auth/zitadel: issuer %q must not have user info", issuer)
+	case u.Path != "" && u.Path != "/":
+		return nil, fmt.Errorf("auth/zitadel: issuer %q must not have a path", issuer)
+	case u.RawQuery != "" || u.ForceQuery || u.Fragment != "":
+		return nil, fmt.Errorf("auth/zitadel: issuer %q must not have a query or fragment", issuer)
+	}
+	if u.Scheme != "https" && u.Scheme != "http" {
+		return nil, fmt.Errorf("auth/zitadel: issuer %q: scheme must be \"https\" or \"http\"", issuer)
+	}
+
+	// Hostname drops the brackets of an IPv6 literal, which zitadel.New needs
+	// to build a parseable origin once it appends the port.
+	host := u.Hostname()
+	if strings.Contains(host, ":") {
+		host = "[" + host + "]"
+	}
+	var port uint64
+	if u.Port() != "" {
+		port, err = strconv.ParseUint(u.Port(), 10, 16)
+		if err != nil {
+			return nil, fmt.Errorf("auth/zitadel: invalid issuer %q: port: %w", issuer, err)
+		}
+		if port == 0 {
+			return nil, fmt.Errorf("auth/zitadel: issuer %q: port must be between 1 and 65535", issuer)
+		}
+	}
+
+	switch {
+	case u.Scheme == "http" && port == 0:
+		return zitadel.New(host, zitadel.WithInsecure("80")), nil
+	case u.Scheme == "http":
+		return zitadel.New(host, zitadel.WithInsecure(strconv.FormatUint(port, 10))), nil
+	case port == 0:
+		return zitadel.New(host), nil
+	default:
+		return zitadel.New(host, zitadel.WithPort(uint16(port))), nil
+	}
 }
 
 // validateConfig rejects an invalid cfg and returns it with the
@@ -168,7 +237,7 @@ func withJWT(clientID string, httpClient *http.Client, algs []string) authorizat
 }
 
 // build constructs the Authenticator for an already validated cfg against z.
-// New passes zitadel.New(cfg.Issuer); this package's tests pass a plain-HTTP
+// New passes issuerProvider(cfg.Issuer); this package's tests pass a plain-HTTP
 // zitadel.Zitadel pointed at an httptest issuer.
 func build(ctx context.Context, z *zitadel.Zitadel, cfg Config) (*Authenticator, error) {
 	httpClient := issuerHTTPClient(cfg)

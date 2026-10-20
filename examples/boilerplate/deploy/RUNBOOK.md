@@ -514,7 +514,7 @@ docker logs api 2>&1 | head -20
 curl -s http://localhost:8080/v1/healthz
 
 # Si healthz funciona pero auth falla, verificar Zitadel
-curl -s https://<ZITADEL_ISSUER>/.well-known/openid-configuration
+curl -s <ZITADEL_ISSUER>/.well-known/openid-configuration
 ```
 
 **Si Zitadel no responde:**

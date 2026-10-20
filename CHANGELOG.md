@@ -4,6 +4,20 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el versionado,
 [SemVer](https://semver.org/lang/es/).
 
+## [Unreleased]
+
+### Corregido
+
+- **`auth/zitadel`: `Config.Issuer` acepta la URL que documenta.** `New` le
+  pasaba el valor tal cual a `zitadel.New`, que espera un host y siempre
+  antepone `https://`, así que un issuer como
+  `https://my-instance.zitadel.cloud` terminaba en
+  `https://https://my-instance.zitadel.cloud` y el discovery de OIDC fallaba.
+  Ahora una URL `https://` (con puerto opcional) o `http://` (sin TLS, solo
+  para desarrollo local) se separa en host y puerto; una URL con path, query,
+  fragment o user info, o con otro esquema, es un error de construcción. Un
+  valor sin esquema (`my-instance.zitadel.cloud`) se sigue tratando como antes.
+
 ## [0.13.0] — 2026-10-19
 
 ### Cambios que rompen
