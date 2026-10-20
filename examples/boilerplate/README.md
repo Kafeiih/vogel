@@ -71,7 +71,7 @@ no existe fuera de este repositorio — y nada compila.
 # vogel:only begin
 cd examples/boilerplate
 # vogel:only end
-cp .env.example .env    # ver más abajo si el archivo no existe en su copia
+cp env.example .env
 docker compose -f deploy/docker-compose.developer.yaml up -d   # infraestructura local
 go run ./cmd/api start-from-migrate   # o: make dev
 ```
@@ -82,121 +82,92 @@ guardar. `make cerbos-test` las compila y corre sus tests; `make cerbos-smoke`
 construye la imagen del PDP y prueba que las sirve (ver `cerbos/README.md`).
 
 <!-- vogel:component cerbos end -->
-> Este agente no pudo crear `.env.example` en este repositorio por una regla
-> de permisos que bloquea la escritura de archivos con forma de `.env`. Cree
-> el suyo con este contenido antes del primer arranque:
->
-> ```bash
-> APP_ENV=development
-> APP_PORT=:8080
-> APP_URL=localhost:8080
-> APP_VERSION=0.1.0
-> APP_TIMEOUT=30s
->
-> DB_URL=postgres://postgres:postgres@localhost:5433/bluprint_dev?sslmode=disable
-> DB_MAX_CONNS=25
-> DB_MIN_CONNS=5
-> DB_MAX_CONN_LIFETIME=1h
-> DB_MAX_CONN_IDLE_TIME=30m
-> DB_CONNECT_TIMEOUT=10s
-> DB_ACQUIRE_TIMEOUT=3s
-> DB_LEAK_THRESHOLD=10s
-> DB_REQUIRE_TLS=false   # solo para el Postgres local, que no sirve TLS
->
-> ZITADEL_ISSUER=https://auth.institucion.gob
-> ZITADEL_CLIENT_ID=your-client-id-here
->
-> CERBOS_HOST=localhost:3593
-> CERBOS_PLAINTEXT=true   # solo para el contenedor local de Cerbos
->
-> CORS_ALLOWED_ORIGINS=http://localhost:3000
->
-> SWAGGER_ENABLED=true   # UI y spec en /v1/swagger/; solo en desarrollo
-> ```
->
-> Variables adicionales (todas opcionales, con default razonable si se
-> omiten; ver `internal/infrastructure/config/config.go` para el detalle
-> completo de cada una): `METRICS_LISTEN_ADDR`.
+`env.example` trae la configuración para desarrollo local; `.env` no se
+versiona.
+
+Variables adicionales (todas opcionales, con default razonable si se
+omiten; ver `internal/infrastructure/config/config.go` para el detalle
+completo de cada una): `METRICS_LISTEN_ADDR`.
 <!-- vogel:component worker begin -->
-> Worker: `WORKER_SCHEMA`, `WORKER_DEFAULT_MAX_WORKERS`, `WORKER_QUEUES`,
-> `WORKER_POLL_ONLY`, `WORKER_METRICS_LISTEN_ADDR`.
+Worker: `WORKER_SCHEMA`, `WORKER_DEFAULT_MAX_WORKERS`, `WORKER_QUEUES`,
+`WORKER_POLL_ONLY`, `WORKER_METRICS_LISTEN_ADDR`.
 <!-- vogel:component worker end -->
 <!-- vogel:component storage begin -->
-> Storage: `STORAGE_CONFIGS` (+ `STORAGE_<NOMBRE>_*`). Los buckets son
-> privados (Block Public Access activado) y los clientes acceden con URLs
-> firmadas. `STORAGE_<NOMBRE>_PRESIGN_EXPIRY` (default `15m`) debe ser mayor
-> que cero y como máximo `1h`: un valor inválido impide arrancar.
+Storage: `STORAGE_CONFIGS` (+ `STORAGE_<NOMBRE>_*`). Los buckets son
+privados (Block Public Access activado) y los clientes acceden con URLs
+firmadas. `STORAGE_<NOMBRE>_PRESIGN_EXPIRY` (default `15m`) debe ser mayor
+que cero y como máximo `1h`: un valor inválido impide arrancar.
 <!-- vogel:component storage end -->
 <!-- vogel:component notification begin -->
-> Notificaciones: `NOTIFICATION_PROVIDER`, `NOTIFICATION_DEFAULT_FROM`,
-> `SMTP_*`, `SENDGRID_API_KEY`.
+Notificaciones: `NOTIFICATION_PROVIDER`, `NOTIFICATION_DEFAULT_FROM`,
+`SMTP_*`, `SENDGRID_API_KEY`.
 <!-- vogel:component notification end -->
 <!-- vogel:component tracing begin -->
-> Tracing (OpenTelemetry): `OTEL_EXPORTER_OTLP_ENDPOINT` (la URL base
-> OTLP/HTTP del colector, p. ej. `http://otel-collector:4318`; vacía, el
-> tracing queda apagado), `OTEL_SERVICE_NAME` (default `api` o `worker`) y
-> `OTEL_TRACES_SAMPLER_ARG` (la fracción de traces nuevos que se muestrean,
-> mayor que 0 y hasta 1; default `0.1`). Ninguna otra variable `OTEL_*` tiene
-> efecto: `vogel/otel` no lee el entorno.
+Tracing (OpenTelemetry): `OTEL_EXPORTER_OTLP_ENDPOINT` (la URL base
+OTLP/HTTP del colector, p. ej. `http://otel-collector:4318`; vacía, el
+tracing queda apagado), `OTEL_SERVICE_NAME` (default `api` o `worker`) y
+`OTEL_TRACES_SAMPLER_ARG` (la fracción de traces nuevos que se muestrean,
+mayor que 0 y hasta 1; default `0.1`). Ninguna otra variable `OTEL_*` tiene
+efecto: `vogel/otel` no lee el entorno.
 <!-- vogel:component tracing end -->
->
-> `SWAGGER_ENABLED` (opcional, `false` por defecto) sirve la UI y la spec de
-> Swagger en `/v1/swagger/`. Es un opt-in explícito, independiente de
-> `APP_ENV`: el compose de despliegue corre con `APP_ENV=development` y no
-> debe publicar la descripción de la API. Con `APP_ENV=production` y
-> `SWAGGER_ENABLED=true` el arranque falla, y un valor que no sea `true` o
-> `false` también (un error de tipeo no se interpreta en silencio).
->
-> `DB_REQUIRE_TLS` (opcional, `true` por defecto, en cualquier `APP_ENV`)
-> exige que `DB_URL` use `sslmode=verify-ca` o `verify-full`. Solo el `.env`
-> local y el compose de despliegue, cuyo Postgres no sirve TLS, la ponen en
-> `false`. Un valor que no sea `true` o `false` hace fallar el arranque.
->
-> `DB_ACQUIRE_TIMEOUT` (opcional, `3s` por defecto) es cuánto espera una
-> petición por una conexión libre del pool antes de fallar con un error que
-> envuelve `context.DeadlineExceeded`: con el pool lleno la aplicación falla
-> rápido en vez de encolar peticiones hasta `APP_TIMEOUT`. El límite también
-> cubre abrir una conexión nueva cuando el pool tiene lugar, así que debe
-> superar lo que tarda un connect sano; el `Ping` de arranque queda fuera y
-> espera hasta `DB_CONNECT_TIMEOUT`.
-> `DB_LEAK_THRESHOLD` (opcional, `10s` por defecto) registra un WARN, con la
-> función y el `archivo:línea` que pidió la conexión, cuando una conexión se
-> devuelve después de retenerla más que ese umbral. Ambas deben ser
-> duraciones mayores que cero; un valor inválido, cero o negativo hace fallar
-> el arranque. Las esperas y retenciones se exponen en los histogramas
-> `db_pool_acquire_wait_seconds` y `db_pool_conn_hold_seconds`.
->
-> Validación de tokens de Zitadel (todas opcionales; el arranque falla con un
-> valor inválido o una combinación incoherente, nombrando la variable):
->
-> | Variable | Default | Efecto |
-> |---|---|---|
-> | `ZITADEL_HTTP_TIMEOUT` | `10s` | Timeout de cada request al issuer (discovery, JWKS, introspección). Debe ser mayor que cero. |
-> | `ZITADEL_MAX_TOKEN_LIFETIME` | `12h` | Rechaza tokens cuyo `exp - iat` lo supera, y los que no traen `iat`. `0` desactiva el control. |
-> | `ZITADEL_ALLOWED_AUTHORIZED_PARTIES` | vacía | Client IDs (separados por comas) aceptados como `azp`, normalmente las apps frontend. Vacía no valida `azp`; la audiencia (`ZITADEL_CLIENT_ID`) se valida siempre. |
-> | `ZITADEL_INTROSPECTION` | `false` | `true` valida cada token contra el endpoint de introspección, así un token revocado deja de valer sin esperar su `exp`. Necesita exactamente una credencial: |
-> | `ZITADEL_INTROSPECTION_KEY_FILE` / `ZITADEL_INTROSPECTION_CLIENT_SECRET` | — | `key.json` de la app API, o su client secret. Definir una sin `ZITADEL_INTROSPECTION=true` es un error. |
-> | `ZITADEL_INTROSPECTION_CACHE_TTL` | `30s` | Cuánto se reutiliza un resultado activo; es también lo máximo que un token revocado sigue aceptado. |
-> | `ZITADEL_INTROSPECTION_CACHE_MAX_ENTRIES` | `10000` | Resultados en caché. |
->
-> `CERBOS_PLAINTEXT` (opcional, `false` por defecto) desactiva TLS hacia el
-> PDP de Cerbos. Sin ella la conexión gRPC usa TLS; el contenedor local de
-> Cerbos escucha sin TLS, por eso el `.env` local la pone en `true`. Nunca la active en staging ni en producción: las decisiones
-> de autorización viajarían en texto plano. Acepta solo valores booleanos
-> (`true`, `false`, `1`, `0`...): cualquier otro hace fallar el arranque en
-> lugar de leerse como `false`. Reemplaza a `CERBOS_TLS`: si esa
-> variable sigue definida (con cualquier valor), el arranque falla con un
-> error que indica usar `CERBOS_PLAINTEXT`, para que la migración no pase
-> inadvertida.
->
-> `TRUSTED_PROXIES` (opcional, vacía por defecto) lista, separados por comas,
-> los CIDR o IP de los proxies inversos o balanceadores cuyas cabeceras
-> `X-Forwarded-For` / `X-Real-IP` se aceptan para resolver la IP del cliente
-> (la que queda en `audit_log.ip` y la que usa el rate limit por IP), p. ej.
-> `TRUSTED_PROXIES=10.0.0.0/8,192.168.1.10`. Vacía, esas cabeceras se ignoran
-> y la IP es siempre la del par TCP: un cliente no puede falsificarla. Detrás
-> de un balanceador hay que declararlo aquí, o todas las requests aparecen con
-> su IP. Un valor inválido hace fallar el arranque.
+
+`SWAGGER_ENABLED` (opcional, `false` por defecto) sirve la UI y la spec de
+Swagger en `/v1/swagger/`. Es un opt-in explícito, independiente de
+`APP_ENV`: el compose de despliegue corre con `APP_ENV=development` y no
+debe publicar la descripción de la API. Con `APP_ENV=production` y
+`SWAGGER_ENABLED=true` el arranque falla, y un valor que no sea `true` o
+`false` también (un error de tipeo no se interpreta en silencio).
+
+`DB_REQUIRE_TLS` (opcional, `true` por defecto, en cualquier `APP_ENV`)
+exige que `DB_URL` use `sslmode=verify-ca` o `verify-full`. Solo el `.env`
+local y el compose de despliegue, cuyo Postgres no sirve TLS, la ponen en
+`false`. Un valor que no sea `true` o `false` hace fallar el arranque.
+
+`DB_ACQUIRE_TIMEOUT` (opcional, `3s` por defecto) es cuánto espera una
+petición por una conexión libre del pool antes de fallar con un error que
+envuelve `context.DeadlineExceeded`: con el pool lleno la aplicación falla
+rápido en vez de encolar peticiones hasta `APP_TIMEOUT`. El límite también
+cubre abrir una conexión nueva cuando el pool tiene lugar, así que debe
+superar lo que tarda un connect sano; el `Ping` de arranque queda fuera y
+espera hasta `DB_CONNECT_TIMEOUT`.
+`DB_LEAK_THRESHOLD` (opcional, `10s` por defecto) registra un WARN, con la
+función y el `archivo:línea` que pidió la conexión, cuando una conexión se
+devuelve después de retenerla más que ese umbral. Ambas deben ser
+duraciones mayores que cero; un valor inválido, cero o negativo hace fallar
+el arranque. Las esperas y retenciones se exponen en los histogramas
+`db_pool_acquire_wait_seconds` y `db_pool_conn_hold_seconds`.
+
+Validación de tokens de Zitadel (todas opcionales; el arranque falla con un
+valor inválido o una combinación incoherente, nombrando la variable):
+
+| Variable | Default | Efecto |
+|---|---|---|
+| `ZITADEL_HTTP_TIMEOUT` | `10s` | Timeout de cada request al issuer (discovery, JWKS, introspección). Debe ser mayor que cero. |
+| `ZITADEL_MAX_TOKEN_LIFETIME` | `12h` | Rechaza tokens cuyo `exp - iat` lo supera, y los que no traen `iat`. `0` desactiva el control. |
+| `ZITADEL_ALLOWED_AUTHORIZED_PARTIES` | vacía | Client IDs (separados por comas) aceptados como `azp`, normalmente las apps frontend. Vacía no valida `azp`; la audiencia (`ZITADEL_CLIENT_ID`) se valida siempre. |
+| `ZITADEL_INTROSPECTION` | `false` | `true` valida cada token contra el endpoint de introspección, así un token revocado deja de valer sin esperar su `exp`. Necesita exactamente una credencial: |
+| `ZITADEL_INTROSPECTION_KEY_FILE` / `ZITADEL_INTROSPECTION_CLIENT_SECRET` | — | `key.json` de la app API, o su client secret. Definir una sin `ZITADEL_INTROSPECTION=true` es un error. |
+| `ZITADEL_INTROSPECTION_CACHE_TTL` | `30s` | Cuánto se reutiliza un resultado activo; es también lo máximo que un token revocado sigue aceptado. |
+| `ZITADEL_INTROSPECTION_CACHE_MAX_ENTRIES` | `10000` | Resultados en caché. |
+
+`CERBOS_PLAINTEXT` (opcional, `false` por defecto) desactiva TLS hacia el
+PDP de Cerbos. Sin ella la conexión gRPC usa TLS; el contenedor local de
+Cerbos escucha sin TLS, por eso el `.env` local la pone en `true`. Nunca la active en staging ni en producción: las decisiones
+de autorización viajarían en texto plano. Acepta solo valores booleanos
+(`true`, `false`, `1`, `0`...): cualquier otro hace fallar el arranque en
+lugar de leerse como `false`. Reemplaza a `CERBOS_TLS`: si esa
+variable sigue definida (con cualquier valor), el arranque falla con un
+error que indica usar `CERBOS_PLAINTEXT`, para que la migración no pase
+inadvertida.
+
+`TRUSTED_PROXIES` (opcional, vacía por defecto) lista, separados por comas,
+los CIDR o IP de los proxies inversos o balanceadores cuyas cabeceras
+`X-Forwarded-For` / `X-Real-IP` se aceptan para resolver la IP del cliente
+(la que queda en `audit_log.ip` y la que usa el rate limit por IP), p. ej.
+`TRUSTED_PROXIES=10.0.0.0/8,192.168.1.10`. Vacía, esas cabeceras se ignoran
+y la IP es siempre la del par TCP: un cliente no puede falsificarla. Detrás
+de un balanceador hay que declararlo aquí, o todas las requests aparecen con
+su IP. Un valor inválido hace fallar el arranque.
 
 `docker compose -f deploy/docker-compose.developer.yaml` levanta Postgres
 para desarrollo local.
