@@ -4,6 +4,26 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el versionado,
 [SemVer](https://semver.org/lang/es/).
 
+## [Unreleased]
+
+### Agregado
+
+- **`workflow`: efectos declarativos.** `Node.Effects` (al entrar al nodo) y
+  `Transition.Effects` (al tomar la transición o la ruta) nombran efectos que
+  el motor **nunca ejecuta**: `Engine.Open` y `Engine.Move` llaman una sola
+  vez a `EffectSink.Dispatch`, después de persistir todo, con el caso final y
+  exactamente los eventos que esa llamada agregó (en orden de `Seq`: el salto
+  humano, los saltos de decisión y el `EventClosed` automático), sobre el
+  mismo `db` del llamador; si `Dispatch` falla, el método devuelve el error y
+  el llamador debe hacer rollback. `Claim` y `Release` no despachan.
+  `WithEffectSink` fija el sink (en cualquier orden respecto de
+  `WithDefinitions`, que ahora registra después de aplicar todas las
+  opciones); `Engine.Register` rechaza con `ErrUnknownEffect` una definición
+  que nombra un efecto que el sink no conoce, o cualquier efecto sin sink.
+  `Definition.EffectNames` lista los nombres ordenados y sin repetir, y
+  `Definition.Validate` rechaza nombres vacíos o repetidos dentro de un mismo
+  nodo o transición, y efectos en un nodo de decisión (van en sus rutas).
+
 ## [0.13.2] — 2026-10-20
 
 ### Cambiado
