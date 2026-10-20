@@ -68,7 +68,7 @@ services:
     entrypoint:
       - sh
       - -c
-      - ': "$${PGHOST:?set DB_ADMIN_HOST}" "$${PGPASSWORD:?set DB_ADMIN_PASSWORD}" "$${POSTGRES_USER:?set DB_ADMIN_USER}"; exec sh /initdb/10-roles.sh'
+      - ': "$${PGHOST:?set DB_ADMIN_HOST}" "$${PGPASSWORD:?set DB_ADMIN_PASSWORD}" "$${POSTGRES_USER:?set DB_ADMIN_USER}" "$${POSTGRES_DB:?set DB_NAME}" "$${APP_MIGRATOR_PASSWORD:?set APP_MIGRATOR_PASSWORD}" "$${APP_RUNTIME_PASSWORD:?set APP_RUNTIME_PASSWORD}"; exec sh /initdb/10-roles.sh'
     environment:
       PGHOST: ${DB_ADMIN_HOST:-}
       PGPORT: ${DB_ADMIN_PORT:-5432}

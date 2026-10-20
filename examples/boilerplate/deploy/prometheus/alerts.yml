@@ -89,6 +89,7 @@ groups:
           summary: "p99 wait for a pool connection above 1s on {{ $labels.instance }}"
           description: With the default DB_ACQUIRE_TIMEOUT (3s) this is close to requests failing with context.DeadlineExceeded.
       - alert: DBConnectionHeldTooLong
+        # The le matcher must equal DB_LEAK_THRESHOLD; DBLeakAlertBucketMissing fires when no bucket matches.
         expr: |
           sum by (instance) (rate(db_pool_conn_hold_seconds_count[5m]))
           - sum by (instance) (rate(db_pool_conn_hold_seconds_bucket{le=~"10|10.0"}[5m])) > 0

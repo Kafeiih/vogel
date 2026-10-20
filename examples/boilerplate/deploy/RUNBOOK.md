@@ -12,7 +12,8 @@ copiarla a `deploy/.env` y completarla. Compose usa ese archivo para
 interpolar las variables `${...}` del propio compose y lo pasa como
 `env_file` a los procesos que sirven (`api`, y `worker` si existe).
 Variables obligatorias (si falta alguna, `docker compose` falla antes de
-crear contenedores):
+crear contenedores; las contraseñas de los roles las exigen `db-roles` y el
+primer arranque del Postgres empaquetado):
 
 | Variable | Uso |
 |---|---|
@@ -20,7 +21,7 @@ crear contenedores):
 | `APP_ENV` | `production` en produccion (logs en JSON, Swagger prohibido); otro nombre, p. ej. `staging`, en los demas ambientes |
 | `DB_URL` | DSN del rol `app_runtime`, con el que sirven `api` (y `worker`, si existe) |
 | `MIGRATE_DB_URL` | DSN del rol `app_migrator`, dueño del esquema; solo lo usan `migrate` y `grants`. Los procesos que sirven lo reciben vacio |
-| `APP_MIGRATOR_PASSWORD`, `APP_RUNTIME_PASSWORD` | Contraseñas de esos dos roles; las usan `db-roles` (RDS) o el Postgres empaquetado para crearlos. Deben coincidir con las de los DSN |
+| `APP_MIGRATOR_PASSWORD`, `APP_RUNTIME_PASSWORD` | Contraseñas de esos dos roles; las usan `db-roles` (RDS) o el Postgres empaquetado para crearlos. **Deben coincidir con las de los DSN**: al rotar, cambiar las dos copias |
 | `ZITADEL_ISSUER`, `ZITADEL_CLIENT_ID`, `CERBOS_HOST`, ... | Configuracion de la aplicacion; la plantilla lista todas, con las opcionales comentadas y su valor por defecto |
 
 Las contraseñas viajan dentro de URLs `postgres://`: generarlas sin

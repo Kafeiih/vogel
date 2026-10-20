@@ -1,3 +1,4 @@
+# Change together with cerbos/tests, cerbos/smoke.sh, rolematrix_test.go and docs/CERBOS_POLICIES.md.
 apiVersion: api.cerbos.dev/v1
 resourcePolicy:
   version: "default"
