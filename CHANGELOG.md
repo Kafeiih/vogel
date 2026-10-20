@@ -41,6 +41,21 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   `document_db_version`) persisten los metadatos. La firma electrónica queda
   fuera de alcance: sólo se define la interfaz `Signer`.
 
+- **`action`: los efectos del workflow se ejecutan en segundo plano.**
+  `action.Registry` implementa `workflow.EffectSink`: `Dispatch` traduce cada
+  evento que agregó `Open` o `Move` a nombres de efecto (los del nodo de
+  destino y luego los de la transición o ruta tomada; `EventClosed` no agrega
+  nada) y encola un trabajo de River por cada (caso, `seq`, efecto) con
+  `worker.Queue.EnqueueTx` en la transacción del llamador: un rollback no
+  encola nada y, sin transacción, falla con un error que envuelve
+  `pgxtx.ErrNoTx`. Los trabajos son únicos por esa tripleta, así que
+  redespachar el mismo evento no los duplica. `action.Worker` (registrado con
+  `action.AddWorker`) busca el `Handler` por nombre: sus errores se
+  reintentan, `river.JobCancel(err)` falla en forma permanente y un efecto
+  desconocido cancela el trabajo. `NotifyHandler` envía por un
+  `notification.Notifier` los mensajes que arma el llamador, validando cada
+  uno antes de enviar. El efecto `webhook` queda planificado.
+
 ## [0.13.2] — 2026-10-20
 
 ### Cambiado
