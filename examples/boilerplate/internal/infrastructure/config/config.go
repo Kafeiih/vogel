@@ -174,13 +174,15 @@ func Load() (*Config, error) {
 	cerbosCfg := parseCerbosConfig(&errs)
 	zitadelCfg := parseZitadelConfig(&errs)
 	swaggerEnabled := parseSwaggerEnabled(&errs)
+	appEnv := config.String("APP_ENV", "development")
+	appVersion := config.String("APP_VERSION", "0.1.0")
 
 	cfg := &Config{
 		App: AppConfig{
-			Env:     config.String("APP_ENV", "development"),
+			Env:     appEnv,
 			Port:    config.String("APP_PORT", ":8080"),
 			Url:     config.String("APP_URL", "localhost:8080"),
-			Version: config.String("APP_VERSION", "0.1.0"),
+			Version: appVersion,
 			Timeout: appTimeout,
 
 			TrustedProxies: trustedProxies,
@@ -219,7 +221,7 @@ func Load() (*Config, error) {
 		// vogel:component notification end
 		// vogel:component tracing begin
 
-		Tracing: parseTracingConfig(&errs, config.String("APP_ENV", "development"), config.String("APP_VERSION", "0.1.0")),
+		Tracing: parseTracingConfig(&errs, appEnv, appVersion),
 		// vogel:component tracing end
 	}
 
