@@ -46,9 +46,10 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   evento que agregó `Open` o `Move` a nombres de efecto (los del nodo de
   destino y luego los de la transición o ruta tomada; `EventClosed` no agrega
   nada) y encola un trabajo de River por cada (caso, `seq`, efecto) con
-  `worker.Queue.EnqueueTx` en la transacción del llamador: un rollback no
-  encola nada y, sin transacción, falla con un error que envuelve
-  `pgxtx.ErrNoTx`. Los trabajos son únicos por esa tripleta, así que
+  `worker.Queue.EnqueueTx` en la transacción del llamador, que debe ser el
+  mismo `db` con que el motor escribió el caso: un rollback no encola nada y,
+  si `db` no es una `pgx.Tx` (aunque haya una transacción en el `ctx`), falla
+  con un error que envuelve `pgxtx.ErrNoTx`. Los trabajos son únicos por esa tripleta, así que
   redespachar el mismo evento no los duplica. `action.Worker` (registrado con
   `action.AddWorker`) busca el `Handler` por nombre: sus errores se
   reintentan, `river.JobCancel(err)` falla en forma permanente y un efecto

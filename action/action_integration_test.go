@@ -180,12 +180,18 @@ func TestIntegration_MoveCommitted_EnqueuesExactlyOnceAndWorkerRuns(t *testing.T
 	want := []jobRow{{2, "on_submit"}, {2, "audit"}, {3, "on_approved"}, {3, "on_big"}}
 	assert.Equal(t, want, listJobs(t, pool))
 
-	// Re-dispatching the same events is a no-op. db is the pool here, so the
-	// Registry must find the transaction on ctx.
+	// Re-dispatching the same events is a no-op.
 	require.NoError(t, tm.WithTx(ctx, func(txCtx context.Context) error {
-		return r.Dispatch(txCtx, pool, integrationDefinition(), *moved, events)
+		return r.Dispatch(txCtx, pgxtx.TxFromContext(txCtx), integrationDefinition(), *moved, events)
 	}))
 	assert.Equal(t, want, listJobs(t, pool), "re-dispatch must not duplicate jobs")
+
+	// A transaction on ctx alone is not enough: the engine wrote through db,
+	// so enqueueing on another handle could commit apart from the case.
+	err = tm.WithTx(ctx, func(txCtx context.Context) error {
+		return r.Dispatch(txCtx, pool, integrationDefinition(), *moved, events)
+	})
+	require.ErrorIs(t, err, pgxtx.ErrNoTx)
 
 	workers := river.NewWorkers()
 	require.NoError(t, action.AddWorker(workers, action.NewWorker(r)))

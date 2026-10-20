@@ -184,10 +184,11 @@ func (r *Registry) handler(name string) (Handler, bool) {
 // Transition.Effects of the transition identified by (FromState, Action).
 // Every other event kind triggers nothing.
 //
-// Jobs are enqueued on the caller's transaction: db itself when it is a
-// pgx.Tx, otherwise the one pgxtx.RequireTx finds on ctx. With effects to
-// enqueue and no transaction, Dispatch fails with an error wrapping
-// pgxtx.ErrNoTx and enqueues nothing. An effect name not registered fails
+// Jobs are enqueued on the caller's transaction, which must be db itself: the
+// engine wrote the case and its events through db, so a transaction found
+// only on ctx would let the jobs commit or roll back apart from them. With
+// effects to enqueue and a db that is not a pgx.Tx, Dispatch fails with an
+// error wrapping pgxtx.ErrNoTx and enqueues nothing. An effect name not registered fails
 // with workflow.ErrUnknownEffect before anything is enqueued.
 func (r *Registry) Dispatch(ctx context.Context, db pgxtx.DBTX, d workflow.Definition, c workflow.Case, events []workflow.Event) error {
 	jobs, err := r.plan(d, c, events)
@@ -197,7 +198,7 @@ func (r *Registry) Dispatch(ctx context.Context, db pgxtx.DBTX, d workflow.Defin
 	if len(jobs) == 0 {
 		return nil
 	}
-	tx, err := resolveTx(ctx, db)
+	tx, err := resolveTx(db)
 	if err != nil {
 		return fmt.Errorf("action: dispatch case %s: %w", c.ID, err)
 	}
@@ -255,10 +256,10 @@ func effectsFor(d workflow.Definition, evt workflow.Event) []string {
 	return names
 }
 
-// resolveTx returns db when it is a transaction, else the one on ctx.
-func resolveTx(ctx context.Context, db pgxtx.DBTX) (pgx.Tx, error) {
+// resolveTx returns db when it is a transaction, else an error wrapping pgxtx.ErrNoTx.
+func resolveTx(db pgxtx.DBTX) (pgx.Tx, error) {
 	if tx, ok := db.(pgx.Tx); ok && tx != nil {
 		return tx, nil
 	}
-	return pgxtx.RequireTx(ctx)
+	return nil, fmt.Errorf("action: dispatch needs db to be the caller's transaction: %w", pgxtx.ErrNoTx)
 }
