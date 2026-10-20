@@ -4,6 +4,17 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el versionado,
 [SemVer](https://semver.org/lang/es/).
 
+## [Unreleased]
+
+### Cambios que rompen
+
+- **`httpx/response`: se quita el campo `trace_id`.** `ErrorResponse` y
+  `ValidationErrorResponse` pierden `TraceID`, y las respuestas de error ya no
+  incluyen la clave `trace_id`, que llevaba el request ID y no un trace ID de
+  OpenTelemetry. Quedó obsoleto en v0.12.0: los clientes deben leer
+  `request_id`, que tiene el mismo valor. El código Go que lea o asigne
+  `TraceID` deja de compilar.
+
 ## [0.12.0] — 2026-10-19
 
 ### Agregado

@@ -481,6 +481,12 @@ response.JSONList(w, http.StatusOK, items, total, limit, offset)
 
 Sin cambio de firma en las funciones que sí están portadas.
 
+Desde `v0.13.0` las respuestas de error llevan el request ID solo en
+`request_id`: la clave `trace_id` (y el campo `TraceID` de `ErrorResponse` y
+`ValidationErrorResponse`) ya no existe. Un frontend o un cliente que lea
+`trace_id` debe pasar a leer `request_id`, que tiene el mismo valor que el
+header `X-Request-Id`.
+
 ### `request`
 
 - Ambas apps: borrar `internal/interfaces/http/request/{json.go,validate.go}`.

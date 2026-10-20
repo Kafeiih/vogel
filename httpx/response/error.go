@@ -62,11 +62,6 @@ type ErrorResponse struct {
 	// matching an error report with its log lines. Omitted without
 	// httpx/middleware.RequestID.
 	RequestID string `json:"request_id,omitempty"`
-	// TraceID carries the same request ID under its former name.
-	//
-	// Deprecated: read RequestID ("request_id"); "trace_id" is not an
-	// OpenTelemetry trace ID and is removed in v0.13.0.
-	TraceID string `json:"trace_id,omitempty"`
 } //	@name	ErrorResponse
 
 // ValidationErrorResponse is a 400 response with per-field errors.
@@ -77,8 +72,6 @@ type ValidationErrorResponse struct {
 	Fields  map[string]string `json:"fields"`
 	// RequestID is the request's ID, as in ErrorResponse.
 	RequestID string `json:"request_id,omitempty"`
-	// Deprecated: read RequestID ("request_id"); removed in v0.13.0.
-	TraceID string `json:"trace_id,omitempty"`
 } //	@name	ValidationErrorResponse
 
 // ErrorOption customizes an ErrorResponse built by ErrorWith.
@@ -109,7 +102,6 @@ func ErrorWith(w http.ResponseWriter, r *http.Request, status int, code, message
 		Message:   message,
 		Code:      code,
 		RequestID: requestID,
-		TraceID:   requestID,
 	}
 	for _, opt := range opts {
 		opt(&resp)
@@ -132,7 +124,6 @@ func ValidationError(w http.ResponseWriter, r *http.Request, fields map[string]s
 		Code:      "VALIDATION_ERROR",
 		Fields:    fields,
 		RequestID: requestID,
-		TraceID:   requestID,
 	}); err != nil {
 		slog.Error("failed to encode validation error response", "error", err)
 	}
