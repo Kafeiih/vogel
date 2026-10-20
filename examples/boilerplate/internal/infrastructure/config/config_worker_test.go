@@ -9,8 +9,6 @@ import (
 	"github.com/kafeiih/vogel/worker"
 )
 
-// mustParseWorkerConfig runs parseWorkerConfig and fails the test on any
-// config error it records.
 func mustParseWorkerConfig(t *testing.T) worker.Config {
 	t.Helper()
 	var errs config.Errors
@@ -21,9 +19,6 @@ func mustParseWorkerConfig(t *testing.T) worker.Config {
 	return cfg
 }
 
-// WORKER_POLL_ONLY maps to worker.Config.PollOnly. It decides whether the
-// worker can sit behind PgBouncer in transaction mode, so a typo must fail the
-// boot instead of silently keeping LISTEN/NOTIFY.
 func TestParseWorkerConfig_PollOnly(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -63,8 +58,6 @@ func TestParseWorkerConfig_PollOnly(t *testing.T) {
 	}
 }
 
-// Load reports an invalid WORKER_POLL_ONLY like any other config error, so
-// the worker does not boot.
 func TestLoad_InvalidWorkerPollOnlyFails(t *testing.T) {
 	setRequiredEnv(t, "development")
 	t.Setenv("WORKER_POLL_ONLY", "sometimes")
@@ -96,7 +89,6 @@ func setWorkerEnv(t *testing.T, env map[string]string) {
 }
 
 func TestWorkerConfig_Defaults(t *testing.T) {
-	// Clear any worker env vars
 	os.Unsetenv("WORKER_SCHEMA")
 	os.Unsetenv("WORKER_DEFAULT_MAX_WORKERS")
 	os.Unsetenv("WORKER_QUEUES")
@@ -154,7 +146,6 @@ func TestWorkerConfig_InvalidMaxWorkers(t *testing.T) {
 
 	cfg := mustParseWorkerConfig(t)
 
-	// Should fall back to default on invalid input
 	if cfg.DefaultMaxWorkers != 100 {
 		t.Errorf("DefaultMaxWorkers: got %d, want %d (fallback)", cfg.DefaultMaxWorkers, 100)
 	}
@@ -167,7 +158,6 @@ func TestWorkerConfig_MalformedQueues(t *testing.T) {
 
 	cfg := mustParseWorkerConfig(t)
 
-	// Only "valid:10" should parse successfully
 	if _, ok := cfg.Queues["valid"]; !ok {
 		t.Error("Queues: expected 'valid' queue to be present")
 	}
@@ -193,16 +183,11 @@ func TestWorkerSchema_ReadsWorkerSchemaEnv(t *testing.T) {
 	if got := WorkerSchema(); got != "jobs" {
 		t.Errorf("WorkerSchema() = %q, want %q", got, "jobs")
 	}
-	// The migrate path and the worker must agree on the schema, so the full
-	// worker config reads the same value.
 	if got := mustParseWorkerConfig(t).Schema; got != "jobs" {
 		t.Errorf("parseWorkerConfig().Schema = %q, want %q", got, "jobs")
 	}
 }
 
-// WORKER_METRICS_LISTEN_ADDR is the worker's own /metrics address. Its
-// default differs from METRICS_LISTEN_ADDR's so api and worker can run on one
-// host, and setting one never moves the other.
 func TestParseMetricsConfig_WorkerListenAddr(t *testing.T) {
 	t.Run("defaults to :9091, apart from the api's :9090", func(t *testing.T) {
 		unsetEnv(t, "WORKER_METRICS_LISTEN_ADDR")

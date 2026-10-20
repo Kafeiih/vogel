@@ -26,22 +26,10 @@ import (
 	"github.com/kafeiih/vogel/examples/boilerplate/internal/infrastructure/database/migrations"
 )
 
-// appVersionTable is goose's default version table, used by the app set
-// (migrationSets gives it no TableName).
 const appVersionTable = "goose_db_version"
 
-// testDeadline bounds the whole test from one shared context: the container
-// start (image pull included), every query and each runMigrate call draw on
-// the same budget. A slow pull, or a hung migration or query (for example one
-// waiting on the advisory lock), fails within minutes with a clear message
-// instead of running into go test's default 10-minute timeout.
 const testDeadline = 2 * time.Minute
 
-// revertEffects proves, for the app set's latest migration, that "migrate
-// down" actually ran its down SQL and not just moved goose's version row.
-// Each entry checks that the migration's effect is present (applied=true)
-// or gone (applied=false). When a new app migration becomes the latest, the
-// test fails until an entry for it is added here.
 var revertEffects = map[string]func(ctx context.Context, t *testing.T, pool *pgxpool.Pool, applied bool){
 	"001_enable_pgcrypto.sql": func(ctx context.Context, t *testing.T, pool *pgxpool.Pool, applied bool) {
 		if got := extensionExists(ctx, t, pool, "pgcrypto"); got != applied {
@@ -50,26 +38,13 @@ var revertEffects = map[string]func(ctx context.Context, t *testing.T, pool *pgx
 	},
 }
 
-// TestMigrateDown_RevertsOnlyTheAppSet backs the claims the RUNBOOK rollback
-// step makes about "./api migrate down": it reverts only the latest migration
-// of this service's own set and never touches audit_log.
 // vogel:component worker begin
-// Nor does it touch River's schema.
 // vogel:component worker end
-// It drives
-// runMigrate, the function main dispatches "api migrate ..." to, with DB_URL
-// pointing at a throwaway Postgres.
-//
-// The advisory lock "migrate down" shares with "migrate up" is not re-tested
-// here: vogel/migrate takes it on every operation, and
-// migrate/runner_integration_test.go in the vogel module proves it.
 func TestMigrateDown_RevertsOnlyTheAppSet(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), testDeadline)
 	defer cancel()
 	dbURL := startTestPostgres(ctx, t)
 	t.Setenv("DB_URL", dbURL)
-	// The throwaway container serves plaintext (sslmode=disable), which "api
-	// migrate" refuses under DB_REQUIRE_TLS's default of true.
 	t.Setenv("DB_REQUIRE_TLS", "false")
 
 	pool, err := pgxpool.New(ctx, dbURL)
@@ -128,11 +103,6 @@ func TestMigrateDown_RevertsOnlyTheAppSet(t *testing.T) {
 	// vogel:component worker end
 }
 
-// startTestPostgres spins up a postgres:17-alpine testcontainer and returns
-// its connection string, the same way vogel's own integration tests do
-// (workflow/postgres/repository_integration_test.go). ctx bounds the image
-// pull and the container start; termination uses a fresh context so cleanup
-// still runs after the test deadline has passed.
 func startTestPostgres(ctx context.Context, t *testing.T) string {
 	t.Helper()
 
@@ -158,11 +128,6 @@ func startTestPostgres(ctx context.Context, t *testing.T) string {
 	return connStr
 }
 
-// runMigrateWithin runs runMigrate (what main dispatches "api migrate ..."
-// to) and fails the test if it does not return before ctx's deadline.
-// runMigrate takes no context, so a hung call cannot be cancelled; this only
-// makes the test report it promptly instead of blocking until go test's
-// timeout.
 func runMigrateWithin(ctx context.Context, t *testing.T, sub string) {
 	t.Helper()
 	done := make(chan error, 1)
@@ -177,7 +142,6 @@ func runMigrateWithin(ctx context.Context, t *testing.T, sub string) {
 	}
 }
 
-// versionedFiles lists a migration set's files by goose version, ascending.
 type versionedFiles []migrationFile
 
 type migrationFile struct {
@@ -185,10 +149,6 @@ type migrationFile struct {
 	name    string
 }
 
-// migrationVersions reads the .sql files at the root of fsys and parses the
-// numeric prefix goose uses as each file's version (the digits before the
-// first "_"). It does not assume versions are contiguous or start at 1, so
-// gaps and timestamp-style versions work too.
 func migrationVersions(t *testing.T, fsys fs.FS) versionedFiles {
 	t.Helper()
 	names, err := fs.Glob(fsys, "*.sql")
@@ -214,8 +174,6 @@ func migrationVersions(t *testing.T, fsys fs.FS) versionedFiles {
 func (s versionedFiles) latest() int64      { return s[len(s)-1].version }
 func (s versionedFiles) latestFile() string { return s[len(s)-1].name }
 
-// previous is the version goose is left at after one "down": the second
-// highest version, or 0 when the set holds a single migration.
 func (s versionedFiles) previous() int64 {
 	if len(s) < 2 {
 		return 0
@@ -223,8 +181,6 @@ func (s versionedFiles) previous() int64 {
 	return s[len(s)-2].version
 }
 
-// gooseVersion returns the highest applied version recorded in a goose
-// version table (0 when only goose's bootstrap row is left).
 func gooseVersion(ctx context.Context, t *testing.T, pool *pgxpool.Pool, table string) int64 {
 	t.Helper()
 	var v int64
@@ -235,8 +191,6 @@ func gooseVersion(ctx context.Context, t *testing.T, pool *pgxpool.Pool, table s
 	return v
 }
 
-// assertAuditLogIntact checks audit_log exists with both append-only
-// triggers from audit/migrations/002.
 func assertAuditLogIntact(ctx context.Context, t *testing.T, pool *pgxpool.Pool, phase string) {
 	t.Helper()
 	if !relationExists(ctx, t, pool, "public.audit_log") {
@@ -257,7 +211,6 @@ func assertAuditLogIntact(ctx context.Context, t *testing.T, pool *pgxpool.Pool,
 }
 
 // vogel:component worker begin
-// assertRiverTables checks River's core tables exist inside schema.
 func assertRiverTables(ctx context.Context, t *testing.T, pool *pgxpool.Pool, schema, phase string) {
 	t.Helper()
 	for _, table := range []string{"river_migration", "river_job", "river_leader", "river_queue"} {
@@ -268,8 +221,6 @@ func assertRiverTables(ctx context.Context, t *testing.T, pool *pgxpool.Pool, sc
 	}
 }
 
-// riverMigrationVersion returns the highest River migration version applied
-// in schema.
 func riverMigrationVersion(ctx context.Context, t *testing.T, pool *pgxpool.Pool, schema string) int64 {
 	t.Helper()
 	var v int64

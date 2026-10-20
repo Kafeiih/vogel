@@ -5,17 +5,14 @@ import (
 	"testing"
 )
 
-// unsetEnv removes key for the duration of the test and restores it after.
 func unsetEnv(t *testing.T, key string) {
 	t.Helper()
-	t.Setenv(key, "") // registers the restore
+	t.Setenv(key, "")
 	if err := os.Unsetenv(key); err != nil {
 		t.Fatalf("os.Unsetenv(%q): %v", key, err)
 	}
 }
 
-// setRequiredEnv sets the variables Load requires and clears the optional
-// ones a developer's shell might carry into the test.
 func setRequiredEnv(t *testing.T, appEnv string) {
 	t.Helper()
 	t.Setenv("APP_ENV", appEnv)

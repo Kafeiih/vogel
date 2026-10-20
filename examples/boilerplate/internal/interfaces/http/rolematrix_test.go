@@ -25,9 +25,6 @@ import (
 	"github.com/kafeiih/vogel/examples/boilerplate/internal/interfaces/http/handler"
 )
 
-// outcome is what the router's guards decide for one request: rejected by
-// Authenticate (401), rejected by RequirePermission (403), or let through to
-// the handler.
 type outcome int
 
 const (
@@ -51,8 +48,6 @@ func outcomeOf(code int) outcome {
 	}
 }
 
-// matrixCallers are matrixAuthenticator tokens ("<userID>:<roles>"); an empty
-// token sends no Authorization header at all.
 var matrixCallers = []struct {
 	name  string
 	token string
@@ -64,15 +59,8 @@ var matrixCallers = []struct {
 	{"admin", "u3:admin"},
 }
 
-// matrixPolicy stands in for the Cerbos policies the PDP serves: the roles
-// allowed each action on each resource kind. Keep the two in sync.
 // vogel:component cerbos begin
-// The bundled policies are in cerbos/policies, whose own tests run with make
-// cerbos-test; TestMatrixPolicyMatchesCerbosPolicies fails when the two drift.
 // vogel:component cerbos end
-// It is deliberately asymmetric (an
-// auditor may view an entry but not list them) so a route wired to the wrong
-// action shows up as a wrong cell.
 var matrixPolicy = map[string]map[string][]string{
 	"audit:entry": {
 		"list": {"admin"},
@@ -80,26 +68,17 @@ var matrixPolicy = map[string]map[string][]string{
 	},
 }
 
-// TestNewRouter_RoleMatrix pins, for every route and every kind of caller,
-// whether the router's guards let the request through. A change to a
-// route's Authenticate group or to the resource/action it asks the checker
-// about shows up here as a named route x caller cell, not as a silent
-// widening of access.
 func TestNewRouter_RoleMatrix(t *testing.T) {
 	A, F, U := allowed, forbidden, unauthenticated
 	entryPath := "/v1/audit/" + uuid.NewString()
 
-	// Columns follow matrixCallers: anonymous, malformed, no role, auditor, admin.
 	tests := []struct {
 		method, route, path string
 		want                [5]outcome
 	}{
-		// Public probes: Kubernetes calls them without credentials.
 		{"GET", "/v1/healthz", "/v1/healthz", [5]outcome{A, A, A, A, A}},
 		{"GET", "/v1/readyz", "/v1/readyz", [5]outcome{A, A, A, A, A}},
 		{"GET", "/v1/livez", "/v1/livez", [5]outcome{A, A, A, A, A}},
-		// Only registered with SWAGGER_ENABLED=true, which Load refuses in
-		// production; public when it is on.
 		{"GET", "/v1/swagger/*", "/v1/swagger/index.html", [5]outcome{A, A, A, A, A}},
 		{"GET", "/v1/audit/", "/v1/audit/", [5]outcome{U, U, F, F, A}},
 		{"GET", "/v1/audit/{id}", entryPath, [5]outcome{U, U, F, A, A}},
@@ -128,8 +107,6 @@ func TestNewRouter_RoleMatrix(t *testing.T) {
 		}
 	}
 
-	// Every registered route must have a row, so a new route cannot ship
-	// without someone deciding who may call it.
 	err := chi.Walk(router, func(method, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
 		if key := method + " " + route; !covered[key] {
 			t.Errorf("%s has no row in the role matrix", key)
@@ -141,9 +118,6 @@ func TestNewRouter_RoleMatrix(t *testing.T) {
 	}
 }
 
-// newMatrixRouter wires NewRouter as main.go does, with every optional route
-// registered (Swagger on) and the auth ports replaced by matrixAuthenticator
-// and matrixChecker.
 func newMatrixRouter(t *testing.T) *chi.Mux {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -162,8 +136,6 @@ func newMatrixRouter(t *testing.T) *chi.Mux {
 	})
 }
 
-// matrixAuthenticator accepts "<userID>:<comma-separated roles>" tokens and
-// rejects anything else.
 type matrixAuthenticator struct{}
 
 func (matrixAuthenticator) Authenticate(_ context.Context, token string) (*auth.Principal, error) {
@@ -178,8 +150,6 @@ func (matrixAuthenticator) Authenticate(_ context.Context, token string) (*auth.
 	return p, nil
 }
 
-// matrixChecker allows an action when the principal holds one of the roles
-// matrixPolicy lists for it.
 type matrixChecker struct{}
 
 func (matrixChecker) IsAllowed(_ context.Context, p authz.Principal, r authz.Resource, action string) (bool, error) {
@@ -191,8 +161,6 @@ func (matrixChecker) IsAllowed(_ context.Context, p authz.Principal, r authz.Res
 	return false, nil
 }
 
-// emptyAuditRepo answers every read with no rows, so an allowed audit
-// request ends in 200 (list) or 404 (entry), never in 401 or 403.
 type emptyAuditRepo struct{}
 
 func (emptyAuditRepo) Create(context.Context, pgxtx.DBTX, *audit.Entry) error { return nil }

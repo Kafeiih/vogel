@@ -7,9 +7,6 @@ import (
 	"github.com/kafeiih/vogel/config"
 )
 
-// Swagger is an explicit opt-in (SWAGGER_ENABLED), independent of APP_ENV:
-// the deploy compose runs with APP_ENV=development, and it must not publish
-// the API description.
 func TestParseSwaggerEnabled(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -20,8 +17,6 @@ func TestParseSwaggerEnabled(t *testing.T) {
 		{name: "unset stays off", value: "", want: false},
 		{name: "explicit true turns it on", value: "true", want: true},
 		{name: "explicit false stays off", value: "false", want: false},
-		// A typo must not be read as "off" (or "on") silently: the operator
-		// learns at boot that the value means nothing.
 		{name: "unparsable value is a config error", value: "yes please", want: false, wantErr: true},
 	}
 
@@ -51,8 +46,6 @@ func TestParseSwaggerEnabled(t *testing.T) {
 	}
 }
 
-// Load carries the flag into AppConfig, so main.go never derives it from
-// APP_ENV again.
 func TestLoad_SwaggerDefaultsToDisabled(t *testing.T) {
 	setRequiredEnv(t, "development")
 	unsetEnv(t, "SWAGGER_ENABLED")
@@ -75,9 +68,6 @@ func TestLoad_SwaggerDefaultsToDisabled(t *testing.T) {
 	}
 }
 
-// Whether the environment is production is decided by Config.IsProduction
-// alone, so the Swagger refusal cannot drift from every other
-// production-only rule.
 func TestLoad_SwaggerRefusedInProduction(t *testing.T) {
 	tests := []struct {
 		name    string

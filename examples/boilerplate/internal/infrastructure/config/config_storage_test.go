@@ -49,11 +49,9 @@ func TestParseStorageConfigs_SingleStorage(t *testing.T) {
 func TestParseStorageConfigs_MultiStorage(t *testing.T) {
 	t.Setenv("STORAGE_CONFIGS", "public,private")
 
-	// Public → AWS S3
 	t.Setenv("STORAGE_PUBLIC_BUCKET", "cdn-assets")
 	t.Setenv("STORAGE_PUBLIC_REGION", "us-east-1")
 
-	// Private → MinIO
 	t.Setenv("STORAGE_PRIVATE_BUCKET", "documentos")
 	t.Setenv("STORAGE_PRIVATE_REGION", "us-east-1")
 	t.Setenv("STORAGE_PRIVATE_ENDPOINT", "http://minio:9000")
@@ -121,8 +119,6 @@ func TestParseStorageConfigs_EmptyNameSkipped(t *testing.T) {
 	}
 }
 
-// parseStorageConfigsNoErr parses the storage configs and fails the test on
-// any configuration error.
 func parseStorageConfigsNoErr(t *testing.T) map[string]s3.Config {
 	t.Helper()
 	var errs config.Errors
@@ -133,10 +129,6 @@ func parseStorageConfigsNoErr(t *testing.T) map[string]s3.Config {
 	return cfgs
 }
 
-// A presigned URL that lives long is a credential that leaks for long: a
-// value that is not a duration, not positive or above maxPresignExpiry must
-// fail at boot naming the variable, instead of being replaced by the default
-// or accepted as is.
 func TestParseStorageConfigs_InvalidPresignExpiry_IsConfigError(t *testing.T) {
 	for _, tc := range []struct{ value, want string }{
 		{"15", "STORAGE_DOCS_PRESIGN_EXPIRY"},
@@ -164,7 +156,6 @@ func TestParseStorageConfigs_InvalidPresignExpiry_IsConfigError(t *testing.T) {
 	}
 }
 
-// The upper bound itself is accepted.
 func TestParseStorageConfigs_PresignExpiryAtMaximum_IsAccepted(t *testing.T) {
 	t.Setenv("STORAGE_CONFIGS", "docs")
 	t.Setenv("STORAGE_DOCS_BUCKET", "b")

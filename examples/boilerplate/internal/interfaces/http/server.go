@@ -30,9 +30,6 @@ func NewServer(addr string, handler http.Handler, logger *slog.Logger) *Server {
 	}
 }
 
-// Start runs the HTTP server and blocks until a shutdown signal is received.
-// drainers are called after http.Server.Shutdown completes, before the process exits.
-// Use this to wait for background goroutines to finish.
 func (s *Server) Start(drainers ...func()) error {
 	serverErrors := make(chan error, 1)
 

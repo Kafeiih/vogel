@@ -27,8 +27,6 @@ func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
-// --- /livez ---
-
 func TestLive_Always200(t *testing.T) {
 	h := NewHealthHandler(&fakePinger{}, discardLogger())
 
@@ -47,8 +45,6 @@ func TestLive_Always200(t *testing.T) {
 		t.Errorf("status = %v, want %q", data["status"], "alive")
 	}
 }
-
-// --- /healthz ---
 
 func TestCheck_Healthy_Returns200(t *testing.T) {
 	h := NewHealthHandler(&fakePinger{err: nil}, discardLogger())
@@ -101,8 +97,6 @@ func TestCheck_DBDown_Returns503(t *testing.T) {
 	}
 }
 
-// /healthz is public and unauthenticated: the database driver's error text
-// (host names, ports, role names, TLS details) must never reach the caller.
 func TestCheck_DBDown_DoesNotLeakErrorText(t *testing.T) {
 	const secret = "dial tcp 10.1.2.3:5432: password authentication failed for user app_runtime"
 	var logs bytes.Buffer
@@ -118,13 +112,10 @@ func TestCheck_DBDown_DoesNotLeakErrorText(t *testing.T) {
 			t.Errorf("response body leaks %q: %s", fragment, body)
 		}
 	}
-	// The cause is not lost: operators find it in the server log.
 	if !strings.Contains(logs.String(), "password authentication failed") {
 		t.Errorf("server log does not record the ping error: %q", logs.String())
 	}
 }
-
-// --- /readyz ---
 
 func TestReady_Healthy_Returns200(t *testing.T) {
 	h := NewHealthHandler(&fakePinger{err: nil}, discardLogger())
@@ -164,9 +155,6 @@ func TestReady_DBDown_Returns503(t *testing.T) {
 	}
 }
 
-// --- logging on state transitions ---
-
-// recordingHandler is a slog.Handler that keeps every record it receives.
 type recordingHandler struct {
 	mu      sync.Mutex
 	records []slog.Record
@@ -184,7 +172,6 @@ func (h *recordingHandler) Handle(_ context.Context, r slog.Record) error {
 func (h *recordingHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
 func (h *recordingHandler) WithGroup(string) slog.Handler      { return h }
 
-// take returns the levels recorded since the previous call and resets them.
 func (h *recordingHandler) take() []slog.Level {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -196,10 +183,6 @@ func (h *recordingHandler) take() []slog.Level {
 	return levels
 }
 
-// The probes are public and unauthenticated: logging at ERROR on every
-// failed ping would let anyone flood the log while the database is down.
-// The handler logs only when the database state changes, and the responses
-// stay exactly as before.
 func TestHealth_LogsOnlyOnStateTransitions(t *testing.T) {
 	pinger := &fakePinger{}
 	rec := &recordingHandler{}
@@ -252,9 +235,6 @@ func TestHealth_LogsOnlyOnStateTransitions(t *testing.T) {
 	expect("second outage", slog.LevelError)
 }
 
-// While the database stays down, a different failure cause (the network is
-// back but the password was rotated, say) is new information and is logged
-// once; repeating the same cause is not.
 func TestHealth_LogsWhenTheFailureCauseChanges(t *testing.T) {
 	pinger := &fakePinger{err: errors.New("connection refused")}
 	rec := &recordingHandler{}
@@ -290,8 +270,6 @@ func TestHealth_LogsWhenTheFailureCauseChanges(t *testing.T) {
 	}
 }
 
-// ctxPinger fails with the context's error once it is done, like pgx does
-// when the caller goes away mid-ping.
 type ctxPinger struct{ err error }
 
 func (p *ctxPinger) Ping(ctx context.Context) error {
@@ -301,9 +279,6 @@ func (p *ctxPinger) Ping(ctx context.Context) error {
 	return p.err
 }
 
-// A caller that hung up says nothing about the database: the ping runs
-// detached from it, so against a healthy database nothing is logged or
-// recorded, and a canceled probe cannot open (or close) an outage in the log.
 func TestHealth_CallerCancellationIsNotADatabaseFailure(t *testing.T) {
 	for _, tt := range []struct {
 		name  string
@@ -330,8 +305,6 @@ func TestHealth_CallerCancellationIsNotADatabaseFailure(t *testing.T) {
 				t.Errorf("canceled caller answered 503: the database was reported down")
 			}
 
-			// The database was never marked down, so a healthy probe now has
-			// no recovery to log...
 			w = httptest.NewRecorder()
 			tt.probe(h)(w, httptest.NewRequest(http.MethodGet, "/"+tt.name, nil))
 			if w.Code != http.StatusOK {
@@ -341,7 +314,6 @@ func TestHealth_CallerCancellationIsNotADatabaseFailure(t *testing.T) {
 				t.Fatalf("healthy probe after a canceled one: logged levels %v, want none", got)
 			}
 
-			// ...and during a real outage a canceled probe does not end it.
 			pinger.err = errors.New("connection refused")
 			tt.probe(h)(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/"+tt.name, nil))
 			rec.take()
@@ -354,8 +326,6 @@ func TestHealth_CallerCancellationIsNotADatabaseFailure(t *testing.T) {
 	}
 }
 
-// hangingPinger never answers on its own; it returns only when ctx is done,
-// like a database that accepts the connection and then stalls.
 type hangingPinger struct{}
 
 func (hangingPinger) Ping(ctx context.Context) error {
@@ -363,10 +333,6 @@ func (hangingPinger) Ping(ctx context.Context) error {
 	return ctx.Err()
 }
 
-// A caller deadline (a kubelet probe timeout, an upstream timeout middleware)
-// expiring while the database stalls is the outage itself, not a client that
-// went away: it is logged and answered 503, so a hung database is never
-// hidden behind the caller's shorter deadline.
 func TestHealth_CallerDeadlineOnAHungDatabaseIsAFailure(t *testing.T) {
 	for _, tt := range []struct {
 		name  string
@@ -396,11 +362,6 @@ func TestHealth_CallerDeadlineOnAHungDatabaseIsAFailure(t *testing.T) {
 	}
 }
 
-// The kubelet enforces its probe timeoutSeconds by closing the connection,
-// which the server sees as a canceled request, not an expired deadline. A
-// database that stalls under kubelet probes must still be logged: the ping
-// runs on its own timeout, detached from the caller, so the outcome is
-// always recorded.
 func TestHealth_CanceledCallerOnAHungDatabaseIsStillLogged(t *testing.T) {
 	for _, tt := range []struct {
 		name  string

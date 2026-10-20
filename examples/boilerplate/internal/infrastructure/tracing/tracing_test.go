@@ -25,11 +25,9 @@ func TestSetup_DisabledWithoutEndpoint(t *testing.T) {
 	if !strings.Contains(buf.String(), "tracing disabled") {
 		t.Errorf("log = %q, want the disabled line", buf.String())
 	}
-	Shutdown(tp, logger) // a disabled provider shuts down cleanly
+	Shutdown(tp, logger)
 }
 
-// The binary's name is the default service name, and the endpoint, which
-// can carry a credential, is not logged.
 func TestSetup_DefaultsTheServiceNameToTheBinary(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, nil))

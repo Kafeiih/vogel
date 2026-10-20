@@ -28,8 +28,6 @@ func TestParseCommand(t *testing.T) {
 }
 
 func TestParseCommand_UnknownListsValidSubcommands(t *testing.T) {
-	// "migrate" belongs to the api binary; the worker never migrates on its
-	// own except through start-from-migrate.
 	for _, subcmd := range []string{"start", "migrate"} {
 		_, err := parseCommand(subcmd)
 		if err == nil {

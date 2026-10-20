@@ -43,8 +43,6 @@ func get(router http.Handler, path string) *httptest.ResponseRecorder {
 	return rec
 }
 
-// In production (EnableSwagger false, the zero value) the API description is
-// not served at all: it maps every route and parameter for an attacker.
 func TestNewRouter_SwaggerAbsentWhenDisabled(t *testing.T) {
 	router := newRouterWithConfig(t, RouterConfig{})
 	for _, path := range []string{"/v1/swagger/index.html", "/v1/swagger/doc.json"} {
@@ -54,9 +52,6 @@ func TestNewRouter_SwaggerAbsentWhenDisabled(t *testing.T) {
 	}
 }
 
-// Outside production the UI is served under SecurityHeaders, with a CSP
-// relaxed only as far as swagger-ui needs (its inline bootstrap script and
-// styles) and framing still denied.
 func TestNewRouter_SwaggerServedWithItsOwnCSPWhenEnabled(t *testing.T) {
 	router := newRouterWithConfig(t, RouterConfig{EnableSwagger: true})
 	rec := get(router, "/v1/swagger/index.html")
@@ -71,15 +66,12 @@ func TestNewRouter_SwaggerServedWithItsOwnCSPWhenEnabled(t *testing.T) {
 	}
 }
 
-// Authentication is a Bearer token in the Authorization header, never a
-// cookie, so CORS must not tell browsers to send credentials cross-origin.
 func TestNewRouter_CORSDoesNotAllowCredentials(t *testing.T) {
 	router := newRouterWithConfig(t, RouterConfig{CORSOrigins: []string{"https://app.example.org"}})
 	req := httptest.NewRequest(http.MethodOptions, "/v1/audit/", nil)
 	req.RemoteAddr = "203.0.113.9:1234"
 	req.Header.Set("Origin", "https://app.example.org")
 	req.Header.Set("Access-Control-Request-Method", http.MethodGet)
-	// Browsers send the requested header names lowercased (Fetch spec).
 	req.Header.Set("Access-Control-Request-Headers", "authorization")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
@@ -92,8 +84,6 @@ func TestNewRouter_CORSDoesNotAllowCredentials(t *testing.T) {
 	}
 }
 
-// assertSecurityHeaders checks a representative subset of what
-// vmw.SecurityHeaders sets.
 func assertSecurityHeaders(t *testing.T, rec *httptest.ResponseRecorder) {
 	t.Helper()
 	for header, want := range map[string]string{
@@ -108,9 +98,6 @@ func assertSecurityHeaders(t *testing.T, rec *httptest.ResponseRecorder) {
 	}
 }
 
-// SecurityHeaders is the outermost middleware, so a response written before
-// a route's handler runs -- an authentication failure, a rate-limit
-// rejection, an unknown route -- carries the same headers as a success.
 func TestNewRouter_EarlyRejectionsCarrySecurityHeaders(t *testing.T) {
 	t.Run("401 from Authenticate", func(t *testing.T) {
 		router := newRouterWithConfig(t, RouterConfig{})

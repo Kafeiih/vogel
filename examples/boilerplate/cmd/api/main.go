@@ -88,33 +88,21 @@ func main() {
 		err = runMigrate(args[1:])
 	}
 	if err != nil {
-		// slog, not log.Fatal: once run installs the app logger as the default,
-		// the log package writes at INFO, and a fatal error must stay an ERROR.
 		slog.Error("exiting", "error", err)
 		os.Exit(1)
 	}
 }
 
-// command is a top-level subcommand of the api binary. The startup phases
-// follow Zitadel's setup/start split: migrations are a separate step so the
-// serving role does not need to own the schema.
 type command int
 
 const (
-	// cmdServer serves only and never touches the schema. A bare "api" is
-	// an alias for "api server".
 	cmdServer command = iota
-	// cmdStartFromMigrate applies every migration set and then serves.
 	// vogel:component worker begin
-	// River's schema is applied too, as "migrate up" does.
 	// vogel:component worker end
-	// It is a development convenience: the serving role must own the tables.
 	cmdStartFromMigrate
-	// cmdMigrate runs the migrate subcommands (up, down, status, create).
 	cmdMigrate
 )
 
-// parseCommand maps the first CLI argument to a command.
 func parseCommand(subcmd string) (command, error) {
 	switch subcmd {
 	case "", "server":
@@ -134,7 +122,6 @@ func runMigrate(args []string) error {
 		subcmd = args[0]
 	}
 
-	// create does not need a database connection — it only scaffolds a file.
 	if subcmd == "create" {
 		name := strings.TrimSpace(strings.Join(args[1:], " "))
 		path, err := appmigrate.Create(appmigrate.MigrationsDir, name)
@@ -175,23 +162,11 @@ func runMigrate(args []string) error {
 		// vogel:component worker end
 		return nil
 	case "down":
-		// Only this service's own set is rolled back. migrate.Down reverts the
-		// latest migration of the set it is given: on the audit set that would
-		// first remove audit_log's append-only triggers (002) and, on a second
-		// "migrate down", drop audit_log and the audit trail with it (001).
-		// cmd/api/migrate_integration_test.go proves the audit set is left
-		// untouched.
 		// vogel:component worker begin
-		// River's schema is never rolled back either, and the same test
-		// proves it: its down migrations drop the job tables and every queued
-		// job with them.
 		// vogel:component worker end
 		return migrate.Down(ctx, dbURL, migrations.FS)
 	case "status":
-		// Lists the goose sets only.
 		// vogel:component worker begin
-		// River's migrations are not goose migrations; "migrate up" applies
-		// them idempotently and logs each version it applies.
 		// vogel:component worker end
 		for i, set := range migrationSets() {
 			if i > 0 {
@@ -212,9 +187,6 @@ func runMigrate(args []string) error {
 }
 
 // vogel:component worker begin
-// migrateRiver ensures the worker's River schema (WORKER_SCHEMA, the same
-// variable the worker reads) and applies River's migrations, so "worker
-// server" can start with a role that cannot create tables.
 func migrateRiver(ctx context.Context, dbURL string) error {
 	pool, err := pgxpool.New(ctx, dbURL)
 	if err != nil {
@@ -226,18 +198,12 @@ func migrateRiver(ctx context.Context, dbURL string) error {
 }
 
 // vogel:component worker end
-// migrationSet is one embedded set of goose migrations and the options it
-// runs with.
 type migrationSet struct {
 	name string
 	fsys fs.FS
 	opts migrate.Options
 }
 
-// migrationSets lists every migration set this service applies, in order.
-// "start-from-migrate" and "migrate up" both read it, so a set added here is
-// applied by either. Each set numbers from 001, so
-// each needs its own goose version table.
 func migrationSets() []migrationSet {
 	return []migrationSet{
 		{name: "app", fsys: migrations.FS},
@@ -245,13 +211,8 @@ func migrationSets() []migrationSet {
 	}
 }
 
-// runServer serves the API. With migrateFirst ("start-from-migrate") it first
-// applies every migration set against cfg.Database.URL.
 // vogel:component worker begin
-// River's schema is applied the same way.
 // vogel:component worker end
-// Without it ("server") the schema must already be current, applied by
-// "migrate up" with a migrator role.
 func runServer(migrateFirst bool) error {
 	cfg, err := config.Load()
 	if err != nil {
@@ -260,14 +221,9 @@ func runServer(migrateFirst bool) error {
 
 	logOpts := make([]logger.Option, 0, 1)
 	// vogel:component tracing begin
-	// Log lines written with a context carry the span's trace_id/span_id.
 	logOpts = append(logOpts, logger.WithTraceIDs(otel.TraceIDs))
 	// vogel:component tracing end
 	appLogger := logger.NewDefault(cfg.App.Env, logOpts...).With("component", "api")
-	// Installed as the default too, so package-level slog calls, River's
-	// migrations and libraries logging through slog.Default() share its JSON
-	// format, component attribute and request_id from context. It also routes
-	// the standard log package through it, as INFO records.
 	slog.SetDefault(appLogger.Logger)
 	appLogger.Info("starting application",
 		"version", cfg.App.Version,
@@ -278,15 +234,12 @@ func runServer(migrateFirst bool) error {
 	defer cancel()
 
 	// vogel:component tracing begin
-	// Deferred before everything else, so it runs last: the spans of the
-	// HTTP server's final requests are flushed after it has drained.
+	// Deferred first so it runs last and flushes the spans of the final requests.
 	tp, err := tracing.Setup(ctx, cfg.Tracing, "api", appLogger.Logger)
 	if err != nil {
 		return err
 	}
 	defer tracing.Shutdown(tp, appLogger.Logger)
-	// A span per query, batch, COPY and connection, and the acquiring
-	// request's trace as an exemplar on the pool histograms.
 	cfg.Database.Tracer = otelpgx.NewTracer()
 	cfg.Database.TraceIDs = otel.SampledTraceIDs
 	// vogel:component tracing end
@@ -298,16 +251,6 @@ func runServer(migrateFirst bool) error {
 
 	appLogger.Info("database connection established")
 
-	// Two independent migration sets, each against its OWN goose version
-	// table: this application's own migrations (default table,
-	// "goose_db_version", since this binary owns no other migration set that
-	// could collide with it) and audit/migrations, numbered independently
-	// starting at its own "001" (table "vogel_db_version"). Running both
-	// against one shared table would make goose believe one set's "001" was
-	// the other's, silently skipping one entirely. See the "Tres conjuntos
-	// de migraciones" section of vogel's examples/api/README.md — this
-	// boilerplate only needs two of the three since it does not use
-	// vogel/workflow.
 	if migrateFirst {
 		for _, set := range migrationSets() {
 			set.opts.Logger = appLogger.Logger
@@ -316,16 +259,12 @@ func runServer(migrateFirst bool) error {
 			}
 		}
 		// vogel:component worker begin
-		// Same River step as "migrate up", so both leave the database alike.
 		if err := riverschema.Migrate(ctx, pool, cfg.Worker.Schema, appLogger.Logger); err != nil {
 			return err
 		}
 		// vogel:component worker end
 	}
 
-	// Database pool metrics for Prometheus, registered on the default
-	// registerer — the same one promhttp.Handler() (used by
-	// NewMetricsServer, in metrics_server.go) reads from.
 	if _, err := postgres.NewPoolMetricsCollector(pool, prometheus.DefaultRegisterer); err != nil {
 		return fmt.Errorf("registering pool metrics: %w", err)
 	}
@@ -338,8 +277,6 @@ func runServer(migrateFirst bool) error {
 		return fmt.Errorf("building http metrics: %w", err)
 	}
 
-	// Dedicated metrics server on its own port (METRICS_LISTEN_ADDR, default :9090).
-	// Keeps /metrics off the public API port.
 	metricsSrv := httpiface.NewMetricsServer(cfg.Metrics.ListenAddr, appLogger.Logger)
 	metricErrCh, err := httpiface.StartMetricsServer(metricsSrv, appLogger.Logger)
 	if err != nil {
@@ -347,7 +284,6 @@ func runServer(migrateFirst bool) error {
 	}
 	go httpiface.WatchMetricsErrors(metricErrCh, appLogger.Logger)
 
-	// Zitadel (bounded context for JWKS fetch during init)
 	zitadelCtx, zitadelCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer zitadelCancel()
 
@@ -364,7 +300,6 @@ func runServer(migrateFirst bool) error {
 		"max_token_lifetime", cfg.Zitadel.MaxTokenLifetime,
 		"azp_restricted", len(cfg.Zitadel.AllowedAuthorizedParties) > 0)
 
-	// Cerbos authorization (PDP via gRPC)
 	cerbosChecker, err := cerbos.New(cfg.Cerbos)
 	if err != nil {
 		return fmt.Errorf("initializing cerbos: %w", err)
@@ -377,28 +312,12 @@ func runServer(migrateFirst bool) error {
 
 	appLogger.Info("cerbos checker initialized", "host", cfg.Cerbos.Host)
 
-	// Audit subsystem
 	auditRepo := auditpg.NewRepository(pool)
 
-	// auditRecorder is passed to command handlers that need to record
-	// mutations, with audit.SourceHTTP as the Source argument. Example:
-	//   fooCommands := fooapp.NewCommands(fooRepo, auditRecorder, pool)
 	auditRecorder := auditpkg.NewRecorder(auditRepo)
-	_ = auditRecorder // remove underscore when Commands are added
+	_ = auditRecorder // Remove once command handlers take it, with audit.SourceHTTP.
 
 	// vogel:component storage begin
-	// S3-compatible storage (optional — only if STORAGE_CONFIGS is set).
-	//
-	// Buckets stay private: clients upload and download through presigned
-	// URLs, so file bytes never pass through this API.
-	//
-	// Usage in handlers:
-	//   docs := storageReg.Get("documents")
-	//   // 0 expiry = the backend's PresignExpiry (STORAGE_<NAME>_PRESIGN_EXPIRY).
-	//   putURL, err := docs.PresignedPutURL(ctx, "docs/licencia.pdf", "application/pdf", 0)
-	//   // The URL serves the object as an attachment unless you pass
-	//   // storage.WithContentDisposition("inline").
-	//   getURL, err := docs.PresignedGetURL(ctx, "docs/licencia.pdf", 0, storage.AsAttachment("licencia.pdf"))
 	if len(cfg.Storages) > 0 {
 		// vogel:component tracing begin
 		for name, sc := range cfg.Storages {
@@ -410,12 +329,11 @@ func runServer(migrateFirst bool) error {
 		if err != nil {
 			return fmt.Errorf("initializing storage: %w", err)
 		}
-		_ = storageReg // remove underscore when handlers need storage
+		_ = storageReg // Remove once handlers use storage.
 		appLogger.Info("storage initialized", "backends", storageReg.Names())
 	}
 
 	// vogel:component storage end
-	// HTTP handlers
 	healthHandler := handler.NewHealthHandler(pool, appLogger.Logger)
 	auditHandler := handler.NewAuditHandler(auditRepo, appLogger.Logger)
 
@@ -426,8 +344,6 @@ func runServer(migrateFirst bool) error {
 
 		TrustedProxies: cfg.App.TrustedProxies,
 
-		// Swagger UI and spec only on an explicit SWAGGER_ENABLED=true
-		// (never in production; config.Load rejects it there).
 		EnableSwagger: cfg.App.SwaggerEnabled,
 	}
 
@@ -457,13 +373,6 @@ func runServer(migrateFirst bool) error {
 	return server.Start(httpiface.MetricsDrainer(metricsSrv, appLogger.Logger))
 }
 
-// cerbosProbeTimeout bounds the startup reachability probe of the Cerbos PDP.
-// cerbosProbeTimeout bounds each startup probe attempt; cerbosProbeBudget
-// bounds all of them, so a PDP that is briefly down at boot (container start
-// order, a Cerbos rollout) is waited for instead of killing the API, while a
-// wrong host or TLS mode still fails the boot within seconds of the budget.
-// Between attempts the wait starts at cerbosProbeBackoff and doubles, capped
-// at cerbosProbeMaxBackoff. They are variables only so tests can shrink them.
 var (
 	cerbosProbeTimeout    = 5 * time.Second
 	cerbosProbeBudget     = 30 * time.Second
@@ -471,17 +380,10 @@ var (
 	cerbosProbeMaxBackoff = 4 * time.Second
 )
 
-// pinger is the part of *cerbos.Checker the startup probe needs.
 type pinger interface {
 	Ping(ctx context.Context) error
 }
 
-// probeCerbos calls the PDP until it answers or cerbosProbeBudget is spent, so
-// a wrong host or a TLS mismatch fails the boot instead of turning every
-// authorization into a 503, and a PDP that is only briefly down is waited for.
-// The gRPC connection is lazy, so cerbos.New alone proves nothing. The usual
-// mismatch is a deployment written when plaintext was the default: Cerbos now
-// uses TLS unless CERBOS_PLAINTEXT=true, which the error names.
 func probeCerbos(ctx context.Context, p pinger, cfg cerbos.Config) error {
 	deadline := time.Now().Add(cerbosProbeBudget)
 	backoff := cerbosProbeBackoff
@@ -505,7 +407,6 @@ func probeCerbos(ctx context.Context, p pinger, cfg cerbos.Config) error {
 	}
 }
 
-// pingOnce runs one probe attempt bounded by cerbosProbeTimeout.
 func pingOnce(ctx context.Context, p pinger) error {
 	ctx, cancel := context.WithTimeout(ctx, cerbosProbeTimeout)
 	defer cancel()

@@ -23,8 +23,6 @@ type okPinger struct{}
 
 func (okPinger) Ping(context.Context) error { return nil }
 
-// denyAll satisfies the auth and authz ports NewRouter requires; the tests
-// only hit public routes, so neither is ever called.
 type denyAll struct{}
 
 func (denyAll) Authenticate(context.Context, string) (*auth.Principal, error) {
@@ -58,8 +56,6 @@ func newTestRouter(t *testing.T, trusted string) http.Handler {
 	})
 }
 
-// countRateLimited sends n requests to a public route from peer, each with a
-// distinct X-Forwarded-For, and returns how many were answered 429.
 func countRateLimited(router http.Handler, peer string, n int) int {
 	limited := 0
 	for i := range n {
@@ -77,8 +73,6 @@ func countRateLimited(router http.Handler, peer string, n int) int {
 	return limited
 }
 
-// The per-IP limiter is 100 req/min. A direct client rotating spoofed
-// forwarding headers must still be limited by its own TCP peer address.
 func TestNewRouter_SpoofedForwardingHeadersDoNotBypassRateLimit(t *testing.T) {
 	router := newTestRouter(t, "")
 	if got := countRateLimited(router, "203.0.113.7:4242", 105); got != 5 {
@@ -86,8 +80,6 @@ func TestNewRouter_SpoofedForwardingHeadersDoNotBypassRateLimit(t *testing.T) {
 	}
 }
 
-// Behind a configured trusted proxy, each distinct X-Forwarded-For client
-// gets its own bucket.
 func TestNewRouter_TrustedProxyForwardsClientIP(t *testing.T) {
 	router := newTestRouter(t, "10.0.0.0/8")
 	if got := countRateLimited(router, "10.0.0.1:4242", 105); got != 0 {

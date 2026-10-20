@@ -40,8 +40,6 @@ func TestParseCerbosConfig(t *testing.T) {
 	}
 }
 
-// CERBOS_PLAINTEXT switches TLS off, so a value strconv.ParseBool cannot
-// read must fail the boot instead of being taken as false.
 func TestParseCerbosConfig_UnparsablePlaintext_IsConfigError(t *testing.T) {
 	t.Setenv("CERBOS_PLAINTEXT", "ture")
 	unsetEnv(t, "CERBOS_TLS")
@@ -61,9 +59,6 @@ func TestParseCerbosConfig_UnparsablePlaintext_IsConfigError(t *testing.T) {
 	}
 }
 
-// CERBOS_TLS was replaced by CERBOS_PLAINTEXT. A deployment that still sets
-// it must fail at boot instead of being silently switched to TLS and failing
-// later on every authorization call.
 func TestParseCerbosConfig_LeftoverCerbosTLS_IsConfigError(t *testing.T) {
 	for _, value := range []string{"true", "false", ""} {
 		t.Run("CERBOS_TLS="+value, func(t *testing.T) {

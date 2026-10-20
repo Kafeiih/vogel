@@ -13,10 +13,6 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
-// cerbosPolicyFile declares only the policy features matrixPolicy can model.
-// Decoding is strict, so a policy that uses anything else (conditions on
-// resource attributes, derived roles, scopes, schemas) fails this test
-// instead of being compared as if its roles alone decided access.
 type cerbosPolicyFile struct {
 	APIVersion     string `yaml:"apiVersion"`
 	ResourcePolicy *struct {
@@ -31,10 +27,6 @@ type cerbosPolicyFile struct {
 	} `yaml:"resourcePolicy"`
 }
 
-// TestMatrixPolicyMatchesCerbosPolicies fails when matrixPolicy, the PDP
-// stand-in the role matrix runs against, no longer grants exactly what the
-// bundled Cerbos policies grant. Without it a policy change would leave
-// TestNewRouter_RoleMatrix green while the deployed PDP decides otherwise.
 func TestMatrixPolicyMatchesCerbosPolicies(t *testing.T) {
 	files, err := filepath.Glob(filepath.Join("..", "..", "..", "cerbos", "policies", "*.yaml"))
 	if err != nil {
@@ -100,8 +92,6 @@ func readCerbosPolicy(t *testing.T, file string) cerbosPolicyFile {
 	return policy
 }
 
-// normalizeMatrix sorts and deduplicates every role list so that rule order
-// and repeated grants do not count as drift.
 func normalizeMatrix(m map[string]map[string][]string) map[string]map[string][]string {
 	out := make(map[string]map[string][]string, len(m))
 	for kind, actions := range m {

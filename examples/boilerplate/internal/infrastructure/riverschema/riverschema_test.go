@@ -7,9 +7,6 @@ import (
 	"testing"
 )
 
-// These cases fail before any database round trip, so they need no Postgres.
-// The happy path (schema created, River tables migrated) is exercised by
-// vogel/worker's own integration tests.
 func TestMigrate_FailsBeforeTouchingTheDatabase(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cases := []struct {

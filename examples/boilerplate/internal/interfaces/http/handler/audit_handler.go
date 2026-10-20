@@ -13,11 +13,6 @@ import (
 	"github.com/kafeiih/vogel/request"
 )
 
-// AuditHandler is a thin wrapper around vogel/audit/httpx's parsing and
-// mapping helpers. It exists as an app-owned type — instead of mounting
-// httpx.Handler directly — solely so the Swagger annotations below (read by
-// swaggo from the comments on the concrete function, never from an imported
-// library type) stay part of this application's generated docs.
 type AuditHandler struct {
 	repo   audit.Repository
 	logger *slog.Logger
@@ -64,9 +59,6 @@ func (h *AuditHandler) List(w http.ResponseWriter, r *http.Request) {
 
 	entries, total, err := h.repo.List(r.Context(), filters)
 	if errors.Is(err, audit.ErrOffsetOutOfRange) {
-		// The repository caps the offset at audit.MaxListOffset (Postgres
-		// reads and discards every row an OFFSET skips). Paging past it is a
-		// client error, mapped to 400 exactly as httpx.Handler.List does.
 		response.ErrorWith(w, r, http.StatusBadRequest, response.CodeValidationError,
 			"El offset está fuera de rango; acotá los filtros en lugar de seguir paginando",
 			response.WithField("offset"))

@@ -6,7 +6,6 @@ import (
 	"time"
 )
 
-// Unset, DB_ACQUIRE_TIMEOUT and DB_LEAK_THRESHOLD default to 3s and 10s.
 func TestLoad_PoolTracingDefaults(t *testing.T) {
 	setRequiredEnv(t, "development")
 
@@ -39,7 +38,6 @@ func TestLoad_PoolTracingValidValues(t *testing.T) {
 	}
 }
 
-// An unparsable, zero or negative value fails the boot naming the variable.
 func TestLoad_PoolTracingInvalidValues_FailBoot(t *testing.T) {
 	for _, key := range []string{"DB_ACQUIRE_TIMEOUT", "DB_LEAK_THRESHOLD"} {
 		for _, tc := range []struct{ value, want string }{
