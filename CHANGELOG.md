@@ -4,6 +4,20 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el versionado,
 [SemVer](https://semver.org/lang/es/).
 
+## [0.13.2] — 2026-10-20
+
+### Cambiado
+
+- **`examples/boilerplate`: trae `env.example` y el código Go no tiene
+  comentarios.** La configuración de desarrollo que el README pegaba dentro
+  de una nota ahora es un archivo `env.example` (sin punto inicial, porque
+  `create-vogel-app` nunca copia archivos `.env*`), y el arranque rápido corre
+  `cp env.example .env`. Los proyectos generados reciben ese archivo con el
+  nombre de su base. Del código Go se quitaron los comentarios, salvo los que
+  leen las herramientas (anotaciones de swag, marcadores `vogel:component`,
+  directivas) y cinco notas de una línea donde un error rompe algo. El
+  Swagger generado no cambia.
+
 ## [0.13.1] — 2026-10-20
 
 ### Corregido
