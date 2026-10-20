@@ -1,49 +1,3 @@
-# Publishes this service's images to GHCR when a version tag is pushed.
-#
-# vogel:only begin
-# Template: inside the vogel repository this file never runs (GitHub only
-# reads the workflows of the repository root). In a service generated from
-# the boilerplate it sits at .github/workflows/release.yaml and publishes to
-# that repository's own registry namespace.
-#
-# vogel:only end
-# Images, in this repository's own registry namespace:
-#
-#   ghcr.io/<owner>/<repo>:<version>         api      (job "api")
-# vogel:component worker begin
-#   ghcr.io/<owner>/<repo>-worker:<version>  worker   (job "worker")
-# vogel:component worker end
-# vogel:component cerbos begin
-#   ghcr.io/<owner>/<repo>-cerbos:<version>  Cerbos   (job "cerbos")
-# vogel:component cerbos end
-#
-# deploy/docker-compose.yaml must pull these names with APP_VERSION.
-# vogel:only begin
-# A fresh copy still names ghcr.io/kafeiih/vogel-boilerplate*: rename those
-# image: lines (README, "Cómo copiar este boilerplate") or the deploy pulls
-# nothing. create-vogel-app renames them for you.
-# vogel:only end
-#
-# All or nothing: every build job pushes its image by digest only, with no
-# tag, and the publish job tags every digest once all of them have succeeded
-# (the Cerbos one after its smoke test, when the PDP is bundled). A failed
-# job leaves untagged digests that no deploy pulls, never a version X.Y.Z
-# that exists for one image and not the others. Each tag is retried, and
-# tagging a digest again is a no-op, so if publish still fails partway
-# (registry outage), re-run that job: it completes the missing tags.
-# vogel:component worker begin
-# vogel:component cerbos begin
-# A service without a worker or a bundled PDP deletes that job and, in
-# publish, its "needs" entry, its *_DIGEST env line and its tag line.
-# vogel:component cerbos end
-# vogel:component worker end
-#
-# A tag v1.2.3 publishes 1.2.3 only: there is no :latest, so a deploy always
-# names the exact version it runs. Each image carries an SBOM and a build
-# provenance attestation, attached in the registry next to the image.
-#
-# The first push of each image creates a private GHCR package. Link it to the
-# repository and set its visibility in the package settings once.
 name: Release
 
 on:
@@ -145,11 +99,6 @@ jobs:
 
   # vogel:component worker end
   # vogel:component cerbos begin
-  # The image build already proves the policies compile and pass their tests
-  # (cerbos/Dockerfile). The smoke test proves the pushed image SERVES them:
-  # an empty policy store starts healthy and denies every request
-  # (cerbos/README.md). It runs against the pushed digest, so the version
-  # publish tags is exactly the bytes that passed.
   cerbos:
     name: Build and smoke-test Cerbos image
     runs-on: ubuntu-latest
@@ -223,8 +172,6 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # tag <suffix> <digest>: points ghcr.io/<repo><suffix>:<version> at the
-      # digest that job built (and, for Cerbos, smoke-tested).
       - name: Tag every digest
         env:
           API_DIGEST: ${{ needs.api.outputs.digest }}

@@ -1,16 +1,3 @@
-# Who may read the audit log (GET /v1/audit and /v1/audit/{id}).
-#
-# Deliberately asymmetric: an auditor may view one entry by id but not list
-# them all. The same matrix is written down in four more places; change them
-# together:
-#   - cerbos/tests/resource_audit_entry_test.yaml   (policy tests)
-#   - cerbos/smoke.sh                               (image smoke checks)
-#   - internal/interfaces/http/rolematrix_test.go   (HTTP-layer matrix;
-#     rolematrix_policy_test.go fails when it drifts from this policy)
-#   - docs/CERBOS_POLICIES.md                       (reference table)
-#
-# RequirePermission sends only the principal's id and roles and a resource
-# with no attributes (id "*" for list), so this policy matches on roles alone.
 apiVersion: api.cerbos.dev/v1
 resourcePolicy:
   version: "default"
