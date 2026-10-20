@@ -56,7 +56,10 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   `worker.Queue.EnqueueTx` en la transacción del llamador, que debe ser el
   mismo `db` con que el motor escribió el caso: un rollback no encola nada y,
   si `db` no es una `pgx.Tx` (aunque haya una transacción en el `ctx`), falla
-  con un error que envuelve `pgxtx.ErrNoTx`. Los trabajos son únicos por esa tripleta, así que
+  con un error que envuelve `pgxtx.ErrNoTx`. Esa comprobación ocurre antes
+  de escribir: `EffectSink.CheckDB` se llama al inicio de `Open` y `Move`
+  cuando la definición declara efectos, así que un pool como `db` no avanza
+  el caso ni pierde sus efectos. Los trabajos son únicos por esa tripleta, así que
   redespachar el mismo evento no los duplica. `action.Worker` (registrado con
   `action.AddWorker`) busca el `Handler` por nombre: sus errores se
   reintentan, `river.JobCancel(err)` falla en forma permanente y un efecto

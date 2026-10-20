@@ -121,11 +121,35 @@ func registerAll(t *testing.T, r *action.Registry, h action.Handler) {
 
 func openCase(t *testing.T, pool *pgxpool.Pool, e *workflow.Engine) *workflow.Case {
 	t.Helper()
-	c, err := e.Open(context.Background(), pool, workflow.OpenInput{
-		Definition: "purchase", Domain: "compras", ExternalID: "solicitud-1", Unit: "finanzas", ActorID: "u1",
-	})
-	require.NoError(t, err)
+	var c *workflow.Case
+	require.NoError(t, pgxtx.NewPgxTxManager(pool).WithTx(context.Background(), func(txCtx context.Context) error {
+		var err error
+		c, err = e.Open(txCtx, pgxtx.TxFromContext(txCtx), workflow.OpenInput{
+			Definition: "purchase", Domain: "compras", ExternalID: "solicitud-1", Unit: "finanzas", ActorID: "u1",
+		})
+		return err
+	}))
 	return c
+}
+
+func TestIntegration_PoolAsDB_RejectedBeforeAnyWrite(t *testing.T) {
+	pool, q := setup(t)
+	r := action.NewRegistry(q)
+	registerAll(t, r, nopHandler())
+	e := newEngine(t, r)
+	c := openCase(t, pool, e)
+	jobsBefore := listJobs(t, pool)
+
+	_, err := e.Move(context.Background(), pool, workflow.MoveInput{CaseID: c.ID, Action: "submit", ActorID: "u2"})
+	require.ErrorIs(t, err, pgxtx.ErrNoTx)
+
+	stored, err := postgres.NewRepository().GetByID(context.Background(), pool, c.ID)
+	require.NoError(t, err)
+	assert.Equal(t, c.State, stored.State, "the transition must not commit through the pool")
+	evs, err := postgres.NewRepository().ListEvents(context.Background(), pool, c.ID)
+	require.NoError(t, err)
+	assert.Len(t, evs, 1, "only the opened event")
+	assert.Equal(t, jobsBefore, listJobs(t, pool))
 }
 
 var errRollback = errors.New("rollback on purpose")

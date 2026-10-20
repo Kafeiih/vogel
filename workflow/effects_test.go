@@ -26,6 +26,7 @@ type dispatchCall struct {
 type recordingSink struct {
 	known map[string]bool
 	err   error
+	dbErr error
 
 	mu    sync.Mutex
 	calls []dispatchCall
@@ -40,6 +41,8 @@ func newRecordingSink(names ...string) *recordingSink {
 }
 
 func (s *recordingSink) HasEffect(name string) bool { return s.known[name] }
+
+func (s *recordingSink) CheckDB(pgxtx.DBTX) error { return s.dbErr }
 
 func (s *recordingSink) Dispatch(_ context.Context, db pgxtx.DBTX, d Definition, c Case, events []Event) error {
 	s.mu.Lock()
@@ -364,4 +367,42 @@ func TestNoEffectSink_OpenAndMoveUnchanged(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []EventKind{EventOpened, EventMoved, EventMoved, EventClosed}, eventKinds(history))
 	assert.Equal(t, []int64{1, 2, 3, 4}, eventSeqs(history))
+}
+
+func TestOpen_SinkRejectsDB_WritesNothing(t *testing.T) {
+	repo := newFakeRepository()
+	sink := allEffectsSink()
+	dbErr := errors.New("not a transaction")
+	sink.dbErr = dbErr
+	e := New(repo, Config{}, testLogger(), WithEffectSink(sink), WithDefinitions(effectsDefinition()))
+
+	_, err := e.Open(context.Background(), nil, OpenInput{Definition: "purchase", Domain: "compras", ExternalID: "s-1"})
+	require.ErrorIs(t, err, dbErr)
+	assert.Empty(t, repo.cases, "a db the sink cannot dispatch on must be rejected before any write")
+	assert.Zero(t, sink.callCount())
+}
+
+func TestMove_SinkRejectsDB_WritesNothing(t *testing.T) {
+	repo := newFakeRepository()
+	sink := allEffectsSink()
+	e := New(repo, Config{}, testLogger(), WithEffectSink(sink), WithDefinitions(effectsDefinition()))
+	c, err := e.Open(context.Background(), nil, OpenInput{Definition: "purchase", Domain: "compras", ExternalID: "s-1"})
+	require.NoError(t, err)
+
+	dbErr := errors.New("not a transaction")
+	sink.dbErr = dbErr
+	_, err = e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "submit", ActorID: "u1"})
+	require.ErrorIs(t, err, dbErr)
+	assert.Equal(t, c.State, repo.cases[c.ID].State, "the case must not move")
+	assert.Len(t, repo.events[c.ID], 1, "only the opened event remains")
+	assert.Equal(t, 1, sink.callCount(), "only Open dispatched")
+}
+
+func TestCheckDB_NotRequiredWhenDefinitionDeclaresNoEffects(t *testing.T) {
+	sink := allEffectsSink()
+	sink.dbErr = errors.New("not a transaction")
+	e := New(newFakeRepository(), Config{}, testLogger(), WithEffectSink(sink), WithDefinitions(decisionToTerminalDefinition()))
+
+	_, err := e.Open(context.Background(), nil, OpenInput{Definition: "purchase", Domain: "compras", ExternalID: "s-1"})
+	require.NoError(t, err, "a definition without effects never needs a dispatchable db")
 }

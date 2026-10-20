@@ -52,6 +52,13 @@ type Engine struct {
 type EffectSink interface {
 	// HasEffect reports whether name is an effect this sink can dispatch.
 	HasEffect(name string) bool
+	// CheckDB reports whether Dispatch could run on db. Open and Move call
+	// it before writing anything, whenever the case's definition declares
+	// at least one effect, so a db the sink cannot dispatch on (for example
+	// a pool where a transaction is required) fails the call with nothing
+	// persisted, instead of committing a transition whose effects are then
+	// lost.
+	CheckDB(db pgxtx.DBTX) error
 	// Dispatch is called by Open and Move exactly once, after all their
 	// persistence succeeded, with the definition the case runs on, the final
 	// case, and exactly the events that call appended, in Seq order (Open:
@@ -168,6 +175,15 @@ func (e *Engine) checkEffects(d Definition) error {
 	return fmt.Errorf("%w: %s", ErrUnknownEffect, strings.Join(unknown, ", "))
 }
 
+// checkEffectDB asks the EffectSink, before any write, whether it could
+// dispatch d's effects on db. Definitions without effects never need it.
+func (e *Engine) checkEffectDB(d Definition, db pgxtx.DBTX) error {
+	if e.effectSink == nil || len(d.EffectNames()) == 0 {
+		return nil
+	}
+	return e.effectSink.CheckDB(db)
+}
+
 // dispatch hands the events one Open or Move appended to the EffectSink, if
 // any. It is the engine's only contact with effects.
 func (e *Engine) dispatch(ctx context.Context, db pgxtx.DBTX, d Definition, c Case, events []Event) error {
@@ -273,6 +289,9 @@ func (e *Engine) Open(ctx context.Context, db pgxtx.DBTX, in OpenInput) (*Case, 
 	start, ok := d.StartNode()
 	if !ok {
 		return nil, fmt.Errorf("workflow: open case: definition %q has no start node", d.Key())
+	}
+	if err := e.checkEffectDB(d, db); err != nil {
+		return nil, fmt.Errorf("workflow: open case: %w", err)
 	}
 
 	now := e.now()
@@ -535,6 +554,9 @@ func (e *Engine) Move(ctx context.Context, db pgxtx.DBTX, in MoveInput) (*Case, 
 	d, err := e.resolveDefinition(c.Definition, c.Version)
 	if err != nil {
 		return nil, err
+	}
+	if err := e.checkEffectDB(d, db); err != nil {
+		return nil, fmt.Errorf("workflow: move case %s: %w", c.ID, err)
 	}
 
 	transition, found := findTransition(d.TransitionsFrom(c.State), in.Action)

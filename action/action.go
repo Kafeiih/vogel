@@ -256,6 +256,14 @@ func effectsFor(d workflow.Definition, evt workflow.Event) []string {
 	return names
 }
 
+// CheckDB reports whether Dispatch could enqueue on db: it must be the
+// caller's pgx.Tx. The engine calls it before writing, so a pool fails Open
+// or Move with an error wrapping pgxtx.ErrNoTx and nothing persisted.
+func (r *Registry) CheckDB(db pgxtx.DBTX) error {
+	_, err := resolveTx(db)
+	return err
+}
+
 // resolveTx returns db when it is a transaction, else an error wrapping pgxtx.ErrNoTx.
 func resolveTx(db pgxtx.DBTX) (pgx.Tx, error) {
 	if tx, ok := db.(pgx.Tx); ok && tx != nil {
