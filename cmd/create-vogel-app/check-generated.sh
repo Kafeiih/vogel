@@ -46,8 +46,10 @@ for combo in "${combos[@]}"; do
 		fi
 		{
 			echo "APP_VERSION=0.0.0"
-			echo "DB_URL=postgres://app_runtime:x@postgres:5432/db?sslmode=disable"
-			echo "MIGRATE_DB_URL=postgres://app_migrator:x@postgres:5432/db?sslmode=disable"
+			echo "DB_HOST=postgres"
+			echo "DB_NAME=db"
+			echo "APP_MIGRATOR_PASSWORD=x"
+			echo "APP_RUNTIME_PASSWORD=x"
 			echo "CERBOS_HOST=cerbos:3593"
 			echo "CERBOS_PLAINTEXT=true"
 		} >deploy/.env

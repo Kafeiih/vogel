@@ -12,29 +12,28 @@ copiarla a `deploy/.env` y completarla. Compose usa ese archivo para
 interpolar las variables `${...}` del propio compose y lo pasa como
 `env_file` a los procesos que sirven (`api`, y `worker` si existe).
 Variables obligatorias (si falta alguna, `docker compose` falla antes de
-crear contenedores; las contraseñas de los roles las exigen `db-roles` y el
-primer arranque del Postgres empaquetado):
+crear contenedores):
 
 | Variable | Uso |
 |---|---|
 | `APP_VERSION` | Tag de las imagenes `ghcr.io/kafeiih/vogel-boilerplate*` del servicio (nunca `latest`); la API tambien lo informa como su version |
 | `APP_ENV` | `production` en produccion (logs en JSON, Swagger prohibido); otro nombre, p. ej. `staging`, en los demas ambientes |
-| `DB_URL` | DSN del rol `app_runtime`, con el que sirven `api` (y `worker`, si existe) |
-| `MIGRATE_DB_URL` | DSN del rol `app_migrator`, dueño del esquema; solo lo usan `migrate` y `grants`. Los procesos que sirven lo reciben vacio |
-| `APP_MIGRATOR_PASSWORD`, `APP_RUNTIME_PASSWORD` | Contraseñas de esos dos roles; las usan `db-roles` (RDS) o el Postgres empaquetado para crearlos. **Deben coincidir con las de los DSN**: al rotar, cambiar las dos copias |
+| `DB_HOST`, `DB_NAME` | Host y base; el compose arma con ellos los DSN de los dos roles (`DB_PORT` y `DB_SSLMODE` son opcionales: `5432` y `verify-full`) |
+| `APP_MIGRATOR_PASSWORD` | Rol `app_migrator`, dueño del esquema; solo lo usan `migrate`, `grants` y la creacion de roles. Los procesos que sirven la reciben vacia |
+| `APP_RUNTIME_PASSWORD` | Rol `app_runtime`, con el que sirven `api` (y `worker`, si existe) |
 | `ZITADEL_ISSUER`, `ZITADEL_CLIENT_ID`, `CERBOS_HOST`, ... | Configuracion de la aplicacion; la plantilla lista todas, con las opcionales comentadas y su valor por defecto |
 
 Las contraseñas viajan dentro de URLs `postgres://`: generarlas sin
 caracteres especiales, p. ej. `openssl rand -hex 24`. Los procesos que sirven
-reciben `MIGRATE_DB_URL`, `POSTGRES_PASSWORD` y `APP_MIGRATOR_PASSWORD`
-vacias aunque esten en `.env`, para que el proceso que atiende requests no
+reciben `POSTGRES_PASSWORD` y `APP_MIGRATOR_PASSWORD` vacias aunque esten
+en `.env`, para que el proceso que atiende requests no
 tenga credenciales capaces de alterar el esquema.
 
 **Base de datos.** Produccion usa AWS RDS; los demas ambientes pueden usar
 RDS o el Postgres empaquetado:
 
-- **RDS** (por defecto): `DB_URL` y `MIGRATE_DB_URL` apuntan a la instancia
-  con `sslmode=verify-full&sslrootcert=/etc/ssl/rds/global-bundle.pem`. La CA
+- **RDS** (por defecto): `DB_HOST` es el endpoint de la instancia y los DSN
+  usan `sslmode=verify-full` con `/etc/ssl/rds/global-bundle.pem`. La CA
   de RDS no viene en la imagen: descargar el bundle una vez por host, junto
   al compose (o en la ruta de `RDS_CA_BUNDLE`); si falta, `docker compose up`
   falla nombrando la ruta:
@@ -45,15 +44,16 @@ RDS o el Postgres empaquetado:
   que no se guarda en `.env` (solo vive en el shell de esa ejecucion; empezar
   la linea con un espacio para que la clave no quede en el historial):
   ```bash
-  DB_ADMIN_HOST=<endpoint-rds> DB_ADMIN_USER=<master> DB_ADMIN_PASSWORD=<clave-master> \
+   DB_ADMIN_USER=<master> DB_ADMIN_PASSWORD=<clave-master> \
     docker compose -f deploy/docker-compose.yaml --profile tools run --rm db-roles
   ```
-  `DB_NAME` (en `.env`) es la base donde se crean. Repetirlo es seguro: crea
+  Se conecta a `DB_HOST` y `DB_NAME` de `.env`. Repetirlo es seguro: crea
   el rol que falte y rota las dos contraseñas a las de `.env`.
 - **Postgres empaquetado** (testing o staging): descomentar el bloque
   correspondiente de la plantilla, que fija `COMPOSE_PROFILES=bundled-db`
-  (asi todo comando de compose incluye el servicio `postgres`), los DSN con
-  `sslmode=disable`, `DB_REQUIRE_TLS=false` y `POSTGRES_PASSWORD`. Los roles
+  (asi todo comando de compose incluye el servicio `postgres`),
+  `DB_HOST=postgres`, `DB_SSLMODE=disable`, `DB_REQUIRE_TLS=false` y
+  `POSTGRES_PASSWORD`. Los roles
   los crea `deploy/initdb/10-roles.sh` en el **primer** arranque del volumen;
   para un volumen existente, ver «Actualizar un volumen existente». Sin TLS:
   solo es aceptable dentro de la red privada del compose, nunca en produccion.
@@ -645,8 +645,8 @@ exposicion y, como minimo, una vez al año.
 
 | Secreto | Como rotarlo | Como verificar |
 |---|---|---|
-| `APP_RUNTIME_PASSWORD` | `ALTER ROLE` en la base en marcha (RDS o empaquetada), sin recrear nada: ver «Rotar las contraseñas de los roles» abajo. El valor tambien va dentro de `DB_URL` | `/v1/healthz` responde 200, el worker (si existe) queda `healthy` y el log no muestra `password authentication failed` |
-| `APP_MIGRATOR_PASSWORD` | Igual que la anterior, dentro de `MIGRATE_DB_URL`; el valor nuevo lo usan `migrate` y `grants` en el proximo despliegue | `docker compose -f deploy/docker-compose.yaml run --rm migrate migrate status` |
+| `APP_RUNTIME_PASSWORD` | `ALTER ROLE` en la base en marcha (RDS o empaquetada), sin recrear nada: ver «Rotar las contraseñas de los roles» abajo | `/v1/healthz` responde 200, el worker (si existe) queda `healthy` y el log no muestra `password authentication failed` |
+| `APP_MIGRATOR_PASSWORD` | Igual que la anterior; el valor nuevo lo usan `migrate` y `grants` en el proximo despliegue | `docker compose -f deploy/docker-compose.yaml run --rm migrate migrate status` |
 | Usuario master de RDS | Rotarlo en la consola de RDS (o Secrets Manager); no vive en `deploy/.env` | `db-roles` con la clave nueva |
 | `POSTGRES_PASSWORD` (superusuario del Postgres empaquetado) | `docker compose -f deploy/docker-compose.yaml exec postgres psql -U postgres -c "\password postgres"` y actualizar `deploy/.env` | `psql` con la contraseña nueva |
 | Zitadel (clave o secreto de la aplicacion API, si se usa introspeccion) | Crear una clave nueva en la consola de Zitadel (aplicacion API → Keys), desplegarla, reiniciar `api` (y `worker`, si existe) y recien entonces borrar la vieja. `ZITADEL_CLIENT_ID` no es secreto | Las requests autenticadas responden 200; el log no muestra `initializing zitadel` |
@@ -692,8 +692,8 @@ el contenedor ni, mucho menos, el volumen.
    siguen funcionando; las nuevas exigen el valor nuevo.
    Con RDS, en vez de los pasos 2 y 3: actualizar `deploy/.env` y correr
    `db-roles` (seccion 0), que fija las dos contraseñas a las de `.env`.
-3. Actualizar `APP_RUNTIME_PASSWORD` **y** la contraseña dentro de `DB_URL`
-   en `deploy/.env` (o en el gestor de secretos).
+3. Actualizar `APP_RUNTIME_PASSWORD` en `deploy/.env` (o en el gestor de
+   secretos).
 4. Recrear solo los procesos que usan ese rol, **sin** tocar Postgres:
    ```bash
    docker compose -f deploy/docker-compose.yaml up -d --no-deps api
