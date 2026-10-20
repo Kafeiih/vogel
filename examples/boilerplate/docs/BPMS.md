@@ -101,9 +101,13 @@ Effects: func(r *action.Registry, docs *document.Service, db pgxtx.DBTX) error {
 ```
 
 `action.NotifyHandler` adapta un `notification.Notifier` (componente
-`notification`): usted decide destinatarios y mensaje. Nada se registra solo;
-agregue un campo `Notifier notification.Notifier` a `bpms.Deps`, páselo en
-`cmd/worker/main.go` (ya construye uno) y regístrelo:
+`notification`): usted decide destinatarios y mensaje. Nada se registra solo,
+porque `notification` es opcional y `Process.Effects` no recibe un notifier.
+Para usarlo, haga tres cambios en su servicio: agregue un campo
+`Notifier notification.Notifier` a `bpms.Deps`, agregue ese notifier como
+parámetro de `Process.Effects` (y pásele `d.Notifier` en `build`), y llénelo
+en `cmd/worker/main.go` con el `notifier` que ese archivo ya construye. Luego
+regístrelo:
 
 ```go
 r.Register("notificar.ciudadano", action.NotifyHandler(notifier,

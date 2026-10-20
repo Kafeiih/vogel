@@ -454,7 +454,7 @@ func parseBPMSConfig(errs *config.Errors) BPMSConfig {
 	}
 	if cfg.Gotenberg.BaseURL != "" {
 		if _, err := gotenberg.New(cfg.Gotenberg); err != nil {
-			errs.Addf("GOTENBERG_URL: must be an absolute http(s) URL, got %q", cfg.Gotenberg.BaseURL)
+			errs.Addf("GOTENBERG_URL: %v", err)
 		}
 	}
 	return cfg

@@ -54,8 +54,8 @@ func TestParseBPMSConfig_Invalid(t *testing.T) {
 		name, url, timeout, want string
 	}{
 		{"missing url", "", "", "GOTENBERG_URL"},
-		{"relative url", "gotenberg:3000", "", "GOTENBERG_URL: must be an absolute http(s) URL"},
-		{"no host", "http://", "", "GOTENBERG_URL: must be an absolute http(s) URL"},
+		{"relative url", "gotenberg:3000", "", "GOTENBERG_URL: gotenberg: base url"},
+		{"no host", "http://", "", "GOTENBERG_URL: gotenberg: base url"},
 		{"zero timeout", "http://gotenberg:3000", "0s", "GOTENBERG_TIMEOUT: must be greater than zero"},
 		{"negative timeout", "http://gotenberg:3000", "-1s", "GOTENBERG_TIMEOUT: must be greater than zero"},
 		{"unparsable timeout", "http://gotenberg:3000", "soon", "GOTENBERG_TIMEOUT"},
