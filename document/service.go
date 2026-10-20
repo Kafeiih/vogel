@@ -54,6 +54,13 @@ func (in GenerateInput) validate() error {
 	if in.Domain == "" || in.ExternalID == "" {
 		return fmt.Errorf("document: domain and external id are required: %w", ErrInvalidInput)
 	}
+	// Both become storage key segments: a dot segment could resolve outside
+	// the key prefix on a path-based store.
+	for _, v := range []string{in.Domain, in.ExternalID} {
+		if v == "." || v == ".." {
+			return fmt.Errorf("document: domain and external id cannot be %q: %w", v, ErrInvalidInput)
+		}
+	}
 	// Template.Execute validates the template's name and version.
 	return nil
 }

@@ -388,3 +388,33 @@ func TestExistsForCase_MatchesCaseAndTemplateName(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, ok)
 }
+
+func TestGenerate_DotSegmentReference_Rejected(t *testing.T) {
+	for _, v := range []string{".", ".."} {
+		f := newFixture()
+		in := input()
+		in.CaseID = nil
+		in.ExternalID = v
+		_, err := f.svc.Generate(context.Background(), nil, in)
+		require.ErrorIs(t, err, document.ErrInvalidInput, "external id %q", v)
+
+		in = input()
+		in.Domain = v
+		_, err = f.svc.Generate(context.Background(), nil, in)
+		require.ErrorIs(t, err, document.ErrInvalidInput, "domain %q", v)
+		assert.Empty(t, f.store.objects)
+	}
+}
+
+func TestGenerate_TemplateFailure_IsErrTemplate(t *testing.T) {
+	f := newFixture()
+	in := input()
+	in.Template.Body = `{{.Name`
+	_, err := f.svc.Generate(context.Background(), nil, in)
+	require.ErrorIs(t, err, document.ErrTemplate, "parse failure")
+
+	in = input()
+	in.Data = map[string]any{}
+	_, err = f.svc.Generate(context.Background(), nil, in)
+	require.ErrorIs(t, err, document.ErrTemplate, "missing key")
+}

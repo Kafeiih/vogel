@@ -174,3 +174,14 @@ func TestGenerate_BuildErrorIsRetried(t *testing.T) {
 	require.ErrorIs(t, err, boom)
 	assert.False(t, action.IsCancel(err))
 }
+
+func TestGenerate_TemplateFailureCancelsTheJob(t *testing.T) {
+	svc, _, _ := newService()
+	h := docflow.Generate(svc, nil, func(context.Context, action.Run) (document.GenerateInput, error) {
+		return document.GenerateInput{Template: acta, Data: map[string]any{}}, nil
+	})
+
+	err := h.Handle(context.Background(), run())
+	require.ErrorIs(t, err, document.ErrTemplate)
+	assert.True(t, action.IsCancel(err), "a template that cannot execute never succeeds on retry")
+}

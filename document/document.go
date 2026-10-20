@@ -50,11 +50,11 @@ func (t Template) Execute(data any) ([]byte, error) {
 	}
 	tmpl, err := template.New(t.Name).Option("missingkey=error").Parse(t.Body)
 	if err != nil {
-		return nil, fmt.Errorf("document: parse template %s@%d: %w", t.Name, t.Version, err)
+		return nil, fmt.Errorf("document: parse template %s@%d: %w: %w", t.Name, t.Version, ErrTemplate, err)
 	}
 	var buf bytes.Buffer
 	if err := tmpl.Execute(&buf, data); err != nil {
-		return nil, fmt.Errorf("document: execute template %s@%d: %w", t.Name, t.Version, err)
+		return nil, fmt.Errorf("document: execute template %s@%d: %w: %w", t.Name, t.Version, ErrTemplate, err)
 	}
 	return buf.Bytes(), nil
 }
@@ -128,6 +128,10 @@ type Repository interface {
 var (
 	ErrNotFound     = errors.New("document: not found")
 	ErrInvalidInput = errors.New("document: invalid input")
+	// ErrTemplate reports that a template failed to parse or execute (for
+	// example a key missing from the data). Retrying the same input cannot
+	// fix it.
+	ErrTemplate = errors.New("document: template failed")
 	// ErrEmptyPDF reports that the Renderer returned no bytes; nothing is
 	// uploaded or stored.
 	ErrEmptyPDF = errors.New("document: renderer returned an empty pdf")

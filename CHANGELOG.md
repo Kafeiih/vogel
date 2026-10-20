@@ -45,7 +45,10 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   tiene un documento de una plantilla. `document/docflow` lo une con el motor
   y con `action`: `Exists` es el guard que impide avanzar sin el documento y
   `Generate` es el handler de un efecto que genera documentos, idempotente por
-  `<caso>/<seq>/<efecto>`. La firma electrónica queda
+  `<caso>/<seq>/<efecto>`; una entrada inválida o una plantilla que no
+  compila o no se puede ejecutar (`ErrTemplate`) cancela el trabajo en vez de
+  reintentarlo. Un dominio o external id igual a `.` o `..` se rechaza, porque
+  forma parte de la clave de almacenamiento. La firma electrónica queda
   fuera de alcance: sólo se define la interfaz `Signer`.
 
 - **`action`: los efectos del workflow se ejecutan en segundo plano.**

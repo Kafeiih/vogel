@@ -37,8 +37,9 @@ type BuildFunc func(ctx context.Context, r action.Run) (document.GenerateInput, 
 // Generate returns the handler for a document-generating effect. Each run
 // generates at most one document: the source key defaults to
 // "<case id>/<event seq>/<effect>", so a retried job returns the document a
-// previous attempt stored. Input the document package rejects as invalid
-// cancels the job, since a retry cannot fix it; every other error, including
+// previous attempt stored. Input the document package rejects as invalid,
+// and a template that fails to parse or execute, cancel the job, since a
+// retry cannot fix them; every other error, including
 // one from build, is returned so River retries. db is where the metadata row
 // is written, typically the pool.
 func Generate(svc *document.Service, db pgxtx.DBTX, build BuildFunc) action.Handler {
@@ -61,7 +62,7 @@ func Generate(svc *document.Service, db pgxtx.DBTX, build BuildFunc) action.Hand
 			in.SourceKey = fmt.Sprintf("%s/%d/%s", r.CaseID, r.Seq, r.Effect)
 		}
 		if _, err := svc.Generate(ctx, db, in); err != nil {
-			if errors.Is(err, document.ErrInvalidInput) {
+			if errors.Is(err, document.ErrInvalidInput) || errors.Is(err, document.ErrTemplate) {
 				return river.JobCancel(err)
 			}
 			return err
