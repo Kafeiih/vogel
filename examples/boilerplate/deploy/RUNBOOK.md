@@ -7,7 +7,7 @@ Guia de respuesta a incidentes para el equipo de operaciones.
 ## 0. Configuracion del compose de despliegue
 
 Cada ambiente (testing, staging, produccion) es un host propio con su
-`deploy/.env`, que nunca se commitea. La plantilla es `deploy/env.example`:
+`deploy/.env`, que nunca se commitea, y Docker Compose 2.20 o posterior. La plantilla es `deploy/env.example`:
 copiarla a `deploy/.env` y completarla. Compose usa ese archivo para
 interpolar las variables `${...}` del propio compose y lo pasa como
 `env_file` a los procesos que sirven (`api`, y `worker` si existe).

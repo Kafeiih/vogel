@@ -42,7 +42,7 @@ services:
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
-      POSTGRES_DB: boilerplate_db
+      POSTGRES_DB: ${DB_NAME:-boilerplate_db}
       APP_MIGRATOR_PASSWORD: ${APP_MIGRATOR_PASSWORD:-}
       APP_RUNTIME_PASSWORD: ${APP_RUNTIME_PASSWORD:-}
     volumes:
@@ -52,7 +52,7 @@ services:
     cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
     security_opt: ["no-new-privileges:true"]
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d boilerplate_db"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d $$POSTGRES_DB"]
       interval: 5s
       timeout: 3s
       retries: 5
