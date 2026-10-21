@@ -24,6 +24,7 @@ type StoredVersion struct {
 
 type VersionRepository interface {
 	Insert(ctx context.Context, db pgxtx.DBTX, name string, spec []byte) (int, error)
+	InsertFirst(ctx context.Context, db pgxtx.DBTX, name string, spec []byte) (bool, error)
 	All(ctx context.Context, db pgxtx.DBTX) ([]StoredVersion, error)
 }
 

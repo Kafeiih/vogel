@@ -333,6 +333,9 @@ func runServer(migrateFirst bool) error {
 	auditRecorder := auditpkg.NewRecorder(auditRepo)
 	_ = auditRecorder // Remove once command handlers take it, with audit.SourceHTTP.
 
+	// vogel:component bpms begin
+	var processHandler *handler.ProcessHandler
+	// vogel:component bpms end
 	// vogel:component storage begin
 	if len(cfg.Storages) > 0 {
 		// vogel:component tracing begin
@@ -373,7 +376,7 @@ func runServer(migrateFirst bool) error {
 		if err != nil {
 			return fmt.Errorf("initializing bpms processes: %w", err)
 		}
-		_ = processes // Remove once the router serves the process routes.
+		processHandler = handler.NewProcessHandler(processes.Service, appLogger.Logger)
 		appLogger.Info("bpms initialized", "definitions", len(bpmsBase.Engine.Definitions()), "profile_holders", len(cfg.BPMS.ProfileHolders))
 		// vogel:component bpms end
 	}
@@ -401,6 +404,9 @@ func runServer(migrateFirst bool) error {
 		HealthHandler: healthHandler,
 		AuditHandler:  auditHandler,
 	}
+	// vogel:component bpms begin
+	deps.ProcessHandler = processHandler
+	// vogel:component bpms end
 	// vogel:component tracing begin
 	deps.Tracing = otel.Middleware()
 	// vogel:component tracing end

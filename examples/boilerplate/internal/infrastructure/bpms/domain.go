@@ -21,7 +21,7 @@ type Domain struct {
 	Service *process.Service
 }
 
-// Publishes each processes/*.json whose name has no stored version yet.
+// Publishes each processes/*.json whose name has no stored version yet; replicas may boot at once.
 func NewDomain(ctx context.Context, db process.DB, engine *workflow.Engine, profiles domain.ProfileResolver) (*Domain, error) {
 	fields, err := domain.NewFieldRegistry(domain.DefaultFieldTypes()...)
 	if err != nil {

@@ -19,3 +19,11 @@ type FormError struct {
 }
 
 func (e *FormError) Error() string { return fmt.Sprintf("invalid form: %d field(s)", len(e.Fields)) }
+
+type CompileError struct {
+	Err error
+}
+
+func (e *CompileError) Error() string { return e.Err.Error() }
+
+func (e *CompileError) Unwrap() error { return e.Err }

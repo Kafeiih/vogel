@@ -79,3 +79,24 @@ func TestNewDomain_SeedsConsultaOnce(t *testing.T) {
 	assert.Equal(t, 1, p.Definition.Version, "a restart reloads version 1 without publishing again")
 	assert.Len(t, engine.Definitions(), 1)
 }
+
+func TestNewDomain_ConcurrentBootsSeedOnce(t *testing.T) {
+	ctx := context.Background()
+	pool := bpmstest.NewPool(t)
+
+	const replicas = 4
+	errs := make(chan error, replicas)
+	for range replicas {
+		go func() {
+			_, err := bpms.NewDomain(ctx, pool, bpmstest.NewEngine(), bpms.NewMemoryDirectory())
+			errs <- err
+		}()
+	}
+	for range replicas {
+		require.NoError(t, <-errs)
+	}
+
+	var n int
+	require.NoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM process_version WHERE name = 'consulta'`).Scan(&n))
+	assert.Equal(t, 1, n)
+}

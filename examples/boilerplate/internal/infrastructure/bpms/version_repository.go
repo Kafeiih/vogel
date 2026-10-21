@@ -27,6 +27,18 @@ func (VersionRepository) Insert(ctx context.Context, db pgxtx.DBTX, name string,
 	return version, nil
 }
 
+func (VersionRepository) InsertFirst(ctx context.Context, db pgxtx.DBTX, name string, spec []byte) (bool, error) {
+	tag, err := db.Exec(ctx, `
+		INSERT INTO process_version (name, version, spec)
+		SELECT $1, 1, $2
+		WHERE NOT EXISTS (SELECT 1 FROM process_version WHERE name = $1)
+		ON CONFLICT DO NOTHING`, name, spec)
+	if err != nil {
+		return false, fmt.Errorf("insert first process version: %w", err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
 func (VersionRepository) All(ctx context.Context, db pgxtx.DBTX) ([]process.StoredVersion, error) {
 	rows, err := db.Query(ctx, `SELECT version, spec FROM process_version ORDER BY name, version`)
 	if err != nil {

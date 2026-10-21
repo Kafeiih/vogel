@@ -37,6 +37,14 @@ func NewService(d ServiceDeps) *Service {
 	return &Service{db: d.DB, engine: d.Engine, cases: d.Cases, values: d.Values, catalog: d.Catalog, profiles: d.Profiles}
 }
 
+func (s *Service) Publish(ctx context.Context, spec domain.ProcessSpec) (*domain.Process, error) {
+	return s.catalog.Publish(ctx, s.db, spec)
+}
+
+func (s *Service) Latest(name string) (*domain.Process, bool) {
+	return s.catalog.Latest(name)
+}
+
 func (s *Service) Start(ctx context.Context, actor, process, action string, values map[string]any) (*workflow.Case, error) {
 	p, ok := s.catalog.Latest(process)
 	if !ok {

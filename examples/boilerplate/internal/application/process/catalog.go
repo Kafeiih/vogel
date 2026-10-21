@@ -36,7 +36,7 @@ func (c *Catalog) Publish(ctx context.Context, db pgxtx.DBTX, spec domain.Proces
 	// The version is assigned by the insert; nothing compiled depends on it.
 	p, err := domain.CompileProcess(c.fields, spec, 1)
 	if err != nil {
-		return nil, fmt.Errorf("publish %q: %w", spec.Name, err)
+		return nil, &domain.CompileError{Err: fmt.Errorf("publish %q: %w", spec.Name, err)}
 	}
 	raw, err := json.Marshal(spec)
 	if err != nil {
@@ -74,6 +74,7 @@ func (c *Catalog) Load(ctx context.Context, db pgxtx.DBTX) error {
 	return nil
 }
 
+// Publishes raw as version 1 unless its name already has a version.
 func (c *Catalog) EnsurePublished(ctx context.Context, db pgxtx.DBTX, raw []byte) error {
 	spec, err := domain.ParseProcessSpec(raw)
 	if err != nil {
@@ -82,11 +83,28 @@ func (c *Catalog) EnsurePublished(ctx context.Context, db pgxtx.DBTX, raw []byte
 	if _, ok := c.Latest(spec.Name); ok {
 		return nil
 	}
-	_, err = c.Publish(ctx, db, spec)
-	return err
+	p, err := domain.CompileProcess(c.fields, spec, 1)
+	if err != nil {
+		return &domain.CompileError{Err: fmt.Errorf("publish %q: %w", spec.Name, err)}
+	}
+	stored, err := json.Marshal(spec)
+	if err != nil {
+		return fmt.Errorf("publish %q: encode spec: %w", spec.Name, err)
+	}
+	inserted, err := c.versions.InsertFirst(ctx, db, spec.Name, stored)
+	if err != nil {
+		return fmt.Errorf("publish %q: store: %w", spec.Name, err)
+	}
+	if !inserted {
+		return c.Load(ctx, db)
+	}
+	return c.add(p)
 }
 
 func (c *Catalog) add(p *domain.Process) error {
+	if _, ok := c.Get(p.Definition.Name, p.Definition.Version); ok {
+		return nil
+	}
 	if err := c.engine.Register(p.Definition); err != nil {
 		return err
 	}

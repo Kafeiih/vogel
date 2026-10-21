@@ -114,7 +114,7 @@ func TestLoad_BPMS(t *testing.T) {
 
 func TestParseBPMSConfig_ProfileHolders(t *testing.T) {
 	t.Setenv("GOTENBERG_URL", "http://gotenberg:3000")
-	t.Setenv("BPMS_PROFILE_HOLDERS", " encargado@atencion=123 , encargado@atencion=456,jefe@ti=789 ")
+	t.Setenv("BPMS_PROFILE_HOLDERS", " encargado@atencion=123 , encargado @ atencion = 456,jefe@ti=789 ")
 
 	cfg, err := parseBPMS(t)
 	if err != nil {

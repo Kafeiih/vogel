@@ -486,6 +486,7 @@ func parseProfileHolders(errs *config.Errors, raw string) []ProfileHolder {
 		}
 		profile, userID, ok := strings.Cut(entry, "=")
 		position, unit, okProfile := strings.Cut(profile, "@")
+		position, unit, userID = strings.TrimSpace(position), strings.TrimSpace(unit), strings.TrimSpace(userID)
 		if !ok || !okProfile || position == "" || unit == "" || userID == "" {
 			errs.Addf("BPMS_PROFILE_HOLDERS: entry %q must look like position@unit=user-id", entry)
 			continue

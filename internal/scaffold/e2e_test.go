@@ -112,12 +112,24 @@ func TestGenerateRealBoilerplateDefaultsLeaveOutBPMS(t *testing.T) {
 	if got := strings.Join(res.Removed, ","); got != "bpms" {
 		t.Fatalf("Removed = %s, want bpms only", got)
 	}
-	for _, p := range []string{"internal/infrastructure/bpms", "internal/infrastructure/config/config_bpms_test.go", "docs/BPMS.md"} {
+	for _, p := range []string{
+		"internal/domain/process",
+		"internal/application/process",
+		"internal/infrastructure/bpms",
+		"internal/infrastructure/config/config_bpms_test.go",
+		"internal/interfaces/http/handler/process_handler.go",
+		"internal/interfaces/http/rolematrix_bpms_test.go",
+		"cerbos/policies/resource_bpms_process.yaml",
+		"cerbos/policies/resource_bpms_case.yaml",
+		"cerbos/tests/resource_bpms_test.yaml",
+		"docs/BPMS.md",
+	} {
 		if _, err := os.Stat(filepath.Join(dir, p)); !os.IsNotExist(err) {
 			t.Errorf("%s was not removed", p)
 		}
 	}
-	leaks := []string{"GOTENBERG", "gotenberg", "BPMS", "infrastructure/bpms", "kafeiih/vogel/workflow", "kafeiih/vogel/action", "kafeiih/vogel/document", "document_db_version"}
+	leaks := []string{"GOTENBERG", "gotenberg", "BPMS", "infrastructure/bpms", "kafeiih/vogel/workflow", "kafeiih/vogel/action", "kafeiih/vogel/document", "document_db_version",
+		"bpms_db_version", "bpms:", "domain/process", "application/process", "ProcessHandler", "PROFILE_HOLDERS"}
 	err = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err

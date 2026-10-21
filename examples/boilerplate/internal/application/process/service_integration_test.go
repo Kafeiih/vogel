@@ -216,9 +216,10 @@ func TestCatalog_PublishStoresNothingForAnInvalidSpec(t *testing.T) {
 	spec.Nodes[0].Form = append([]domain.FieldSpec(nil), spec.Nodes[0].Form...)
 	spec.Nodes[0].Form[0].Type = "rut"
 
-	_, err := a.d.Catalog.Publish(a.ctx, a.db, spec)
+	_, err := a.d.Service.Publish(a.ctx, spec)
 
-	require.Error(t, err)
+	var compileErr *domain.CompileError
+	require.ErrorAs(t, err, &compileErr)
 	_, ok := a.d.Catalog.Get("consulta", 2)
 	assert.False(t, ok)
 	var n int
