@@ -1,0 +1,22 @@
+services:
+  postgres:
+    # Exact version and multi-arch digest; Dependabot proposes the bumps.
+    image: postgres:17.11-alpine3.24@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+    environment:
+      POSTGRES_USER: vogel_bpms
+      POSTGRES_PASSWORD: vogel_bpms
+      POSTGRES_DB: vogel_bpms
+    ports:
+      # 55433 on the host so this example runs next to examples/api (55432)
+      # and a PostgreSQL already listening on 5432.
+      - "55433:5432"
+    volumes:
+      - vogel_bpms_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vogel_bpms -d vogel_bpms"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  vogel_bpms_postgres_data:

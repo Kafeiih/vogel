@@ -28,6 +28,14 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ### Agregado
 
+- **`examples/bpms`: modelo de procesos sobre `workflow`.** Un formulario de
+  consulta ejecutable que muestra lo que el motor deja al consumidor: la
+  definición como JSON versionado (publicar valida todo y congela la versión;
+  cada caso corre con la suya), tipos de campo como plugins con reglas
+  `visibleWhen` en CEL, y responsables por perfil resueltos en vivo por un
+  puerto `ProfileResolver`, con la persona fijada al tomar la tarea. Es un
+  módulo Go aparte para que `cel-go` no llegue al `go.mod` de la librería; la
+  CI lo compila, lo prueba y lo revisa en su propio job.
 - **`workflow`: efectos declarativos.** `Node.Effects` (al entrar al nodo) y
   `Transition.Effects` (al tomar la transición o la ruta) nombran efectos que
   el motor **nunca ejecuta**: `Engine.Open` y `Engine.Move` llaman una sola

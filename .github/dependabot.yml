@@ -54,6 +54,16 @@ updates:
     commit-message:
       prefix: build(deps)
 
+  - package-ecosystem: gomod
+    directory: /examples/bpms
+    schedule:
+      interval: weekly
+    groups:
+      gomod-bpms:
+        patterns: ["*"]
+    commit-message:
+      prefix: build(deps)
+
   # cerbos/ has its own Dockerfile (the PDP image); its Cerbos pin must move
   # together with the one in deploy/docker-compose.developer.yaml, which the
   # docker-compose updater below bumps in a separate PR.
@@ -76,6 +86,7 @@ updates:
   - package-ecosystem: docker-compose
     directories:
       - /examples/api
+      - /examples/bpms
       - /examples/boilerplate/deploy
     schedule:
       interval: weekly

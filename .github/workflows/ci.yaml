@@ -230,6 +230,34 @@ jobs:
       - name: Generated projects
         run: cmd/create-vogel-app/check-generated.sh
 
+  # examples/bpms es otro modulo Go aparte (con 'replace' hacia la raiz) para
+  # que su dependencia de cel-go no llegue al go.mod de la libreria; como el
+  # boilerplate, 'go test ./...' desde la raiz no lo alcanza.
+  bpms:
+    name: BPMS example
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.code != 'false') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: examples/bpms/go.mod
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.13.2
+          working-directory: examples/bpms
+          args: --config ../../.golangci.yml --build-tags=integration
+
+      - name: Build
+        run: cd examples/bpms && go build ./...
+
+      - name: Test
+        run: cd examples/bpms && go test ./... -race -cover
+
   # Vulnerabilidades conocidas en dependencias, usando el call graph: solo
   # falla cuando el codigo de vogel (o del boilerplate) ALCANZA la funcion
   # vulnerable, no por el mero hecho de requerir el modulo. Corre sobre los
@@ -265,6 +293,9 @@ jobs:
       - name: Scan boilerplate
         run: cd examples/boilerplate && govulncheck ./...
 
+      - name: Scan bpms example
+        run: cd examples/bpms && govulncheck ./...
+
   # Tests de integracion (testcontainers + postgres): lo mas caro del set.
   # Corren SOLO en un PR con el label 'run-integration', que se agrega al ir
   # a mergear. Asi no se pagan en cada push intermedio.
@@ -289,6 +320,9 @@ jobs:
 
       - name: Boilerplate integration tests
         run: cd examples/boilerplate && go test -tags=integration ./... -race
+
+      - name: BPMS example integration tests
+        run: cd examples/bpms && go test -tags=integration ./... -race
 
       - name: Upload integration coverage
         if: always()
