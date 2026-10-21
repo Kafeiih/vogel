@@ -32,6 +32,8 @@ x-rds-ca: &rds-ca
 x-scrub-db-admin-secrets: &scrub-db-admin-secrets
   POSTGRES_PASSWORD: ""
   APP_MIGRATOR_PASSWORD: ""
+  DB_ADMIN_USER: ""
+  DB_ADMIN_PASSWORD: ""
 
 services:
   # No ports and no TLS: non-production hosts only, enabled by COMPOSE_PROFILES=bundled-db in deploy/.env.
@@ -39,6 +41,13 @@ services:
     image: postgres:17.11-alpine3.24@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
     profiles: ["bundled-db"]
     logging: *logging
+    # Checked here, not with ${VAR:?}: compose interpolates every service, even those in inactive profiles.
+    entrypoint:
+      - sh
+      - -c
+      - ': "$${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}"; exec docker-entrypoint.sh "$$@"'
+      - docker-entrypoint.sh
+    command: ["postgres"]
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
