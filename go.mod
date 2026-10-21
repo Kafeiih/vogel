@@ -20,7 +20,7 @@ require (
 	github.com/riverqueue/river/riverdriver/riverpgxv5 v0.49.0
 	github.com/riverqueue/river/rivertype v0.49.0
 	github.com/sendgrid/sendgrid-go v3.16.1+incompatible
-	github.com/shopspring/decimal v1.5.0
+	github.com/shopspring/decimal v1.6.0
 	github.com/stretchr/testify v1.12.1
 	github.com/testcontainers/testcontainers-go v0.44.0
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.44.0
