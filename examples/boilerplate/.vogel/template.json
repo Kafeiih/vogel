@@ -66,6 +66,8 @@
         "storage"
       ],
       "paths": [
+        "internal/domain/process",
+        "internal/application/process",
         "internal/infrastructure/bpms",
         "internal/infrastructure/config/config_bpms_test.go",
         "docs/BPMS.md"

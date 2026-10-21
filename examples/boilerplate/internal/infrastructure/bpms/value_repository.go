@@ -1,43 +1,23 @@
-package main
+package bpms
 
 import (
 	"context"
-	"embed"
 	"encoding/json"
 	"fmt"
-	"io/fs"
 	"sort"
-	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/kafeiih/vogel/pgxtx"
+
+	domain "github.com/kafeiih/vogel/examples/boilerplate/internal/domain/process"
 )
 
-//go:embed migrations/*.sql
-var appMigrations embed.FS
+type ValueRepository struct{}
 
-// appMigrationsFS returns this example's migrations rooted at their
-// directory; goose only scans the root of the fs.FS it is handed (see the
-// same helper in examples/api).
-func appMigrationsFS() (fs.FS, error) {
-	return fs.Sub(appMigrations, "migrations")
-}
+func NewValueRepository() *ValueRepository { return &ValueRepository{} }
 
-// CaseValue is one recorded value of a case field: which node collected it,
-// who, and when. Values are only ever appended; the current value of a
-// field is its latest record.
-type CaseValue struct {
-	Field      string    `json:"field"`
-	Value      any       `json:"value"`
-	NodeID     string    `json:"nodeId"`
-	ActorID    string    `json:"actorId"`
-	RecordedAt time.Time `json:"recordedAt"`
-}
-
-// SaveCaseValues appends values collected on nodeID by actorID. Keys are
-// written in sorted order so the history reads deterministically.
-func SaveCaseValues(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID, nodeID, actorID string, values map[string]any) error {
+func (ValueRepository) Save(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID, nodeID, actorID string, values map[string]any) error {
 	keys := make([]string, 0, len(values))
 	for k := range values {
 		keys = append(keys, k)
@@ -58,8 +38,7 @@ func SaveCaseValues(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID, nodeID
 	return nil
 }
 
-// CurrentCaseValues returns the latest value of every field of the case.
-func CurrentCaseValues(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID) (map[string]any, error) {
+func (ValueRepository) Current(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID) (map[string]any, error) {
 	rows, err := db.Query(ctx, `
 		SELECT DISTINCT ON (field) field, value
 		FROM case_value WHERE case_id = $1
@@ -87,8 +66,7 @@ func CurrentCaseValues(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID) (ma
 	return out, rows.Err()
 }
 
-// CaseValueHistory returns every recorded value of the case, oldest first.
-func CaseValueHistory(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID) ([]CaseValue, error) {
+func (ValueRepository) History(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID) ([]domain.CaseValue, error) {
 	rows, err := db.Query(ctx, `
 		SELECT field, value, node_id, actor_id, recorded_at
 		FROM case_value WHERE case_id = $1 ORDER BY id`, caseID)
@@ -97,10 +75,10 @@ func CaseValueHistory(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID) ([]C
 	}
 	defer rows.Close()
 
-	var out []CaseValue
+	var out []domain.CaseValue
 	for rows.Next() {
 		var (
-			cv  CaseValue
+			cv  domain.CaseValue
 			raw []byte
 		)
 		if err := rows.Scan(&cv.Field, &raw, &cv.NodeID, &cv.ActorID, &cv.RecordedAt); err != nil {

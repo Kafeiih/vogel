@@ -103,6 +103,13 @@ type NotificationConfig struct {
 type BPMSConfig struct {
 	DocumentStorage string
 	Gotenberg       gotenberg.Config
+	ProfileHolders  []ProfileHolder
+}
+
+type ProfileHolder struct {
+	Position string
+	Unit     string
+	UserID   string
 }
 
 // vogel:component bpms end
@@ -457,6 +464,7 @@ func parseBPMSConfig(errs *config.Errors) BPMSConfig {
 			Timeout: positiveDuration(errs, "GOTENBERG_TIMEOUT", gotenberg.DefaultTimeout),
 		},
 	}
+	cfg.ProfileHolders = parseProfileHolders(errs, os.Getenv("BPMS_PROFILE_HOLDERS"))
 	if cfg.Gotenberg.Timeout > maxGotenbergTimeout {
 		errs.Addf("GOTENBERG_TIMEOUT: must be at most %s, got %s", maxGotenbergTimeout, cfg.Gotenberg.Timeout)
 		cfg.Gotenberg.Timeout = gotenberg.DefaultTimeout
@@ -467,6 +475,24 @@ func parseBPMSConfig(errs *config.Errors) BPMSConfig {
 		}
 	}
 	return cfg
+}
+
+func parseProfileHolders(errs *config.Errors, raw string) []ProfileHolder {
+	var out []ProfileHolder
+	for _, entry := range strings.Split(raw, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		profile, userID, ok := strings.Cut(entry, "=")
+		position, unit, okProfile := strings.Cut(profile, "@")
+		if !ok || !okProfile || position == "" || unit == "" || userID == "" {
+			errs.Addf("BPMS_PROFILE_HOLDERS: entry %q must look like position@unit=user-id", entry)
+			continue
+		}
+		out = append(out, ProfileHolder{Position: position, Unit: unit, UserID: userID})
+	}
+	return out
 }
 
 // vogel:component bpms end

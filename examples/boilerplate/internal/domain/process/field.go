@@ -1,4 +1,4 @@
-package main
+package process
 
 import (
 	"bytes"
@@ -11,30 +11,17 @@ import (
 	"cel.dev/cel-go/cel"
 )
 
-// FieldType is the contract every field type implements. The engine never
-// sees it: a form is compiled against a FieldRegistry when a definition is
-// published, and a submission is validated against it before the case moves.
-// Adding a type means writing one of these and registering it; neither the
-// engine nor any published definition changes.
 type FieldType interface {
-	// Key is the value of FieldSpec.Type that selects this type.
 	Key() string
-	// ValidateConfig checks a field's options. It runs when a definition is
-	// published, so a bad option never reaches a citizen.
 	ValidateConfig(cfg json.RawMessage) error
-	// Validate checks one submitted, non-empty value against the field's
-	// options. Required-ness is checked by the form, not here.
 	Validate(value any, cfg json.RawMessage) error
-	// CELType is the type visibleWhen rules see for this field.
 	CELType() *cel.Type
 }
 
-// FieldRegistry holds the field types a definition may use, by key.
 type FieldRegistry struct {
 	types map[string]FieldType
 }
 
-// NewFieldRegistry registers types and rejects two types with the same key.
 func NewFieldRegistry(types ...FieldType) (*FieldRegistry, error) {
 	r := &FieldRegistry{types: make(map[string]FieldType, len(types))}
 	for _, t := range types {
@@ -46,19 +33,15 @@ func NewFieldRegistry(types ...FieldType) (*FieldRegistry, error) {
 	return r, nil
 }
 
-// Lookup returns the type registered under key.
 func (r *FieldRegistry) Lookup(key string) (FieldType, bool) {
 	t, ok := r.types[key]
 	return t, ok
 }
 
-// DefaultFieldTypes returns the field types this example ships with.
 func DefaultFieldTypes() []FieldType {
 	return []FieldType{textField{}, textareaField{}, emailField{}, selectField{}}
 }
 
-// decodeConfig strictly decodes a field's options into dst; an absent config
-// decodes as an empty object, and an unknown option is an error.
 func decodeConfig(cfg json.RawMessage, dst any) error {
 	if len(bytes.TrimSpace(cfg)) == 0 {
 		cfg = json.RawMessage(`{}`)
@@ -73,7 +56,6 @@ func decodeConfig(cfg json.RawMessage, dst any) error {
 
 var errNotString = errors.New("must be a string")
 
-// lengthConfig is the option set shared by text and textarea.
 type lengthConfig struct {
 	MaxLength int `json:"maxLength"`
 }
@@ -108,8 +90,6 @@ func validateLength(value any, cfg json.RawMessage, defaultMax int) error {
 	return nil
 }
 
-// textField is a single line of text, 200 characters unless maxLength says
-// otherwise.
 type textField struct{}
 
 func (textField) Key() string        { return "text" }
@@ -122,8 +102,6 @@ func (textField) Validate(v any, cfg json.RawMessage) error {
 	return validateLength(v, cfg, 200)
 }
 
-// textareaField is free text, 2000 characters unless maxLength says
-// otherwise.
 type textareaField struct{}
 
 func (textareaField) Key() string        { return "textarea" }
@@ -136,7 +114,6 @@ func (textareaField) Validate(v any, cfg json.RawMessage) error {
 	return validateLength(v, cfg, 2000)
 }
 
-// emailField is one bare email address. It takes no options.
 type emailField struct{}
 
 func (emailField) Key() string        { return "email" }
@@ -149,8 +126,6 @@ func (emailField) Validate(v any, _ json.RawMessage) error {
 	if !ok {
 		return errNotString
 	}
-	// ParseAddress also accepts "Name <addr>"; requiring the parsed address
-	// to equal the input keeps only bare addresses.
 	addr, err := mail.ParseAddress(s)
 	if err != nil || addr.Address != s {
 		return errors.New("must be a single email address")
@@ -158,7 +133,6 @@ func (emailField) Validate(v any, _ json.RawMessage) error {
 	return nil
 }
 
-// selectField is one value out of a fixed, non-empty list of options.
 type selectField struct{}
 
 type selectConfig struct {

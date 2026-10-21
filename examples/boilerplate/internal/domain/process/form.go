@@ -1,4 +1,4 @@
-package main
+package process
 
 import (
 	"encoding/json"
@@ -10,18 +10,13 @@ import (
 	"github.com/kafeiih/vogel/request"
 )
 
-// FieldSpec is one field of a node's form, as written in a process
-// definition.
 type FieldSpec struct {
-	Key      string          `json:"key"`
-	Type     string          `json:"type"`
-	Label    string          `json:"label"`
-	Required bool            `json:"required,omitempty"`
-	Config   json.RawMessage `json:"config,omitempty"`
-	// VisibleWhen is a CEL expression over the definition's fields. A field
-	// whose rule is false is not validated and not stored. Empty means
-	// always visible.
-	VisibleWhen string `json:"visibleWhen,omitempty"`
+	Key         string          `json:"key"`
+	Type        string          `json:"type"`
+	Label       string          `json:"label"`
+	Required    bool            `json:"required,omitempty"`
+	Config      json.RawMessage `json:"config,omitempty"`
+	VisibleWhen string          `json:"visibleWhen,omitempty"`
 }
 
 type compiledField struct {
@@ -30,19 +25,11 @@ type compiledField struct {
 	visible cel.Program // nil: always visible
 }
 
-// Form is a node's form compiled against a FieldRegistry. Its rules can read
-// every field of the definition, so a later node can depend on what an
-// earlier node collected.
 type Form struct {
 	fields []compiledField
-	// zero holds every definition field at its empty value, so a rule
-	// never fails on a field nobody has filled in yet.
-	zero map[string]any
+	zero   map[string]any
 }
 
-// CompileForm compiles the form made of nodeFields. allFields is every field
-// of the definition: it fixes the variables visibleWhen rules may use. Every
-// error here is a publish-time error.
 func CompileForm(reg *FieldRegistry, allFields, nodeFields []FieldSpec) (*Form, error) {
 	env, zero, err := ruleEnv(reg, allFields)
 	if err != nil {
@@ -81,8 +68,6 @@ func CompileForm(reg *FieldRegistry, allFields, nodeFields []FieldSpec) (*Form, 
 	return form, nil
 }
 
-// ruleEnv declares one CEL variable per definition field, typed by its
-// field type, and returns each field's empty value.
 func ruleEnv(reg *FieldRegistry, allFields []FieldSpec) (*cel.Env, map[string]any, error) {
 	opts := make([]cel.EnvOption, 0, len(allFields))
 	zero := make(map[string]any, len(allFields))
@@ -95,8 +80,6 @@ func ruleEnv(reg *FieldRegistry, allFields []FieldSpec) (*cel.Env, map[string]an
 			return nil, nil, fmt.Errorf("field %q declared twice in the definition", f.Key)
 		}
 		opts = append(opts, cel.Variable(f.Key, typ.CELType()))
-		// Every built-in type is a string; a non-string type would supply
-		// its own empty value here.
 		zero[f.Key] = ""
 	}
 	env, err := cel.NewEnv(opts...)
@@ -106,7 +89,6 @@ func ruleEnv(reg *FieldRegistry, allFields []FieldSpec) (*cel.Env, map[string]an
 	return env, zero, nil
 }
 
-// compileRule compiles expr and requires it to produce a bool.
 func compileRule(env *cel.Env, expr string) (cel.Program, error) {
 	ast, iss := env.Compile(expr)
 	if iss.Err() != nil {
@@ -118,9 +100,6 @@ func compileRule(env *cel.Env, expr string) (cel.Program, error) {
 	return env.Program(ast)
 }
 
-// Validate checks a submission. caseData is what the case already holds;
-// submitted values override it when rules are evaluated. It returns the
-// values to store (visible fields only) or one error per offending field.
 func (f *Form) Validate(submitted, caseData map[string]any) (map[string]any, request.FieldErrors) {
 	errs := request.FieldErrors{}
 
