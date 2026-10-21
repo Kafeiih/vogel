@@ -815,7 +815,7 @@ reintenta con backoff hasta agotar sus intentos (25 por defecto, a lo largo de
 dias). En un despliegue escalonado es esperable y se resuelve solo cuando el
 worker nuevo toma el job. Si el efecto se borro o se renombro a proposito,
 esos jobs nunca van a correr: listarlos y cancelarlos con un rol que tenga DML
-sobre River (`WORKER_SCHEMA`, `river` por defecto):
+sobre River, reemplazando `river` por su `WORKER_SCHEMA` si lo cambio:
 
 ```sql
 SELECT id, args->>'effect' AS effect, args->>'case_id' AS case_id, attempt, state
