@@ -4,6 +4,72 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el versionado,
 [SemVer](https://semver.org/lang/es/).
 
+## [Unreleased]
+
+### Agregado
+
+- **`workflow`: efectos declarativos.** `Node.Effects` (al entrar al nodo) y
+  `Transition.Effects` (al tomar la transición o la ruta) nombran efectos que
+  el motor **nunca ejecuta**: `Engine.Open` y `Engine.Move` llaman una sola
+  vez a `EffectSink.Dispatch`, después de persistir todo, con el caso final y
+  exactamente los eventos que esa llamada agregó (en orden de `Seq`: el salto
+  humano, los saltos de decisión y el `EventClosed` automático), sobre el
+  mismo `db` del llamador; si `Dispatch` falla, el método devuelve el error y
+  el llamador debe hacer rollback. `Claim` y `Release` no despachan.
+  `WithEffectSink` fija el sink (en cualquier orden respecto de
+  `WithDefinitions`, que ahora registra después de aplicar todas las
+  opciones); `Engine.Register` rechaza con `ErrUnknownEffect` una definición
+  que nombra un efecto que el sink no conoce, o cualquier efecto sin sink.
+  `Definition.EffectNames` lista los nombres ordenados y sin repetir, y
+  `Definition.Validate` rechaza nombres vacíos o repetidos dentro de un mismo
+  nodo o transición, y efectos en un nodo de decisión (van en sus rutas).
+
+- **`document`: documentos PDF generados desde plantillas.** `Template`
+  (nombre, versión y cuerpo HTML) se ejecuta con `html/template`, así que todo
+  dato interpolado se escapa automáticamente (a diferencia de la sustitución
+  sin escapar de SIMPLE). `Service.Generate` renderiza la plantilla, la
+  convierte a PDF con un `Renderer` intercambiable, la sube con
+  `storage.Storage` (`application/pdf`, clave
+  `documents/<dominio>/<caso o external id>/<id>.pdf`) e inserta sus
+  metadatos: caso, plantilla y versión, sha256, tamaño y una clave de
+  verificación aleatoria y URL-safe para un endpoint público
+  (`FindByVerificationKey`); `Get` y `ListByCase` completan las consultas. Si
+  el insert falla después de subir, se intenta borrar el objeto y se devuelve
+  el error original. `document/gotenberg` es el primer `Renderer` (ruta
+  Chromium HTML de Gotenberg por HTTP, con timeout y tamaño de respuesta
+  acotados); `document/postgres` y `document/migrations` (tabla de versión
+  `document_db_version`) persisten los metadatos en la tabla
+  `document_record`. `GenerateInput.SourceKey` identifica a quien pidió el
+  documento: con una clave ya conocida, `Generate` devuelve el documento
+  guardado sin volver a generarlo, y `ExistsForCase` responde si un caso ya
+  tiene un documento de una plantilla. `document/docflow` lo une con el motor
+  y con `action`: `Exists` es el guard que impide avanzar sin el documento y
+  `Generate` es el handler de un efecto que genera documentos, idempotente por
+  `<caso>/<seq>/<efecto>`; una entrada inválida o una plantilla que no
+  compila o no se puede ejecutar (`ErrTemplate`) cancela el trabajo en vez de
+  reintentarlo. Un dominio o external id igual a `.` o `..` se rechaza, porque
+  forma parte de la clave de almacenamiento. La firma electrónica queda
+  fuera de alcance: sólo se define la interfaz `Signer`.
+
+- **`action`: los efectos del workflow se ejecutan en segundo plano.**
+  `action.Registry` implementa `workflow.EffectSink`: `Dispatch` traduce cada
+  evento que agregó `Open` o `Move` a nombres de efecto (los del nodo de
+  destino y luego los de la transición o ruta tomada; `EventClosed` no agrega
+  nada) y encola un trabajo de River por cada (caso, `seq`, efecto) con
+  `worker.Queue.EnqueueTx` en la transacción del llamador, que debe ser el
+  mismo `db` con que el motor escribió el caso: un rollback no encola nada y,
+  si `db` no es una `pgx.Tx` (aunque haya una transacción en el `ctx`), falla
+  con un error que envuelve `pgxtx.ErrNoTx`. Esa comprobación ocurre antes
+  de escribir: `EffectSink.CheckDB` se llama al inicio de `Open` y `Move`
+  cuando la definición declara efectos, así que un pool como `db` no avanza
+  el caso ni pierde sus efectos. Los trabajos son únicos por esa tripleta, así que
+  redespachar el mismo evento no los duplica. `action.Worker` (registrado con
+  `action.AddWorker`) busca el `Handler` por nombre: sus errores se
+  reintentan, `river.JobCancel(err)` falla en forma permanente y un efecto
+  desconocido cancela el trabajo. `NotifyHandler` envía por un
+  `notification.Notifier` los mensajes que arma el llamador, validando cada
+  uno antes de enviar. El efecto `webhook` queda planificado.
+
 ## [0.13.2] — 2026-10-20
 
 ### Cambiado

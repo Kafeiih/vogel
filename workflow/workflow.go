@@ -225,6 +225,15 @@ type Node struct {
 	// Kind distinguishes an ordinary task node from a decision node. The
 	// zero value is NodeTask. See the NodeKind doc comment.
 	Kind NodeKind
+	// Effects names the declarative effects to run when a case enters this
+	// node (EventOpened or EventMoved with ToState == ID). The engine never
+	// executes an effect: it only hands the events it appended to the
+	// Engine's EffectSink, which decides what each name means and runs it
+	// asynchronously, outside the request that advanced the case. Every name
+	// must be known to that sink (see Engine.Register and ErrUnknownEffect).
+	// Definition.Validate rejects an empty or duplicate name within one
+	// node, and any effect on a decision node: a case never rests there.
+	Effects []string
 }
 
 // Transition is a named move from one node to another, optionally gated by
@@ -267,6 +276,12 @@ type Transition struct {
 	// decision node, so a return into one would silently resume automatic
 	// routing and could push the case forward instead of back.
 	Return bool
+	// Effects names the declarative effects to run when this transition —
+	// or, from a decision node, this route — is taken. Like Node.Effects,
+	// the engine never executes them; it only passes the EventMoved it
+	// appended to the Engine's EffectSink. Definition.Validate rejects an
+	// empty or duplicate name within one transition.
+	Effects []string
 }
 
 // Definition describes one version of a workflow: its nodes, and the
@@ -325,6 +340,30 @@ func (d Definition) GuardNames() []string {
 	return names
 }
 
+// EffectNames returns the sorted, deduplicated set of effect names
+// referenced by this definition's nodes and transitions.
+func (d Definition) EffectNames() []string {
+	seen := make(map[string]bool)
+	var names []string
+	add := func(effects []string) {
+		for _, name := range effects {
+			if name == "" || seen[name] {
+				continue
+			}
+			seen[name] = true
+			names = append(names, name)
+		}
+	}
+	for _, n := range d.Nodes {
+		add(n.Effects)
+	}
+	for _, tr := range d.Transitions {
+		add(tr.Effects)
+	}
+	sort.Strings(names)
+	return names
+}
+
 // Key returns the unique key this definition is registered under: "Name@Version".
 func (d Definition) Key() string {
 	return fmt.Sprintf("%s@%d", d.Name, d.Version)
@@ -337,6 +376,21 @@ func (d Definition) Validate() error {
 	var errs []string
 	addf := func(format string, args ...any) {
 		errs = append(errs, fmt.Sprintf(format, args...))
+	}
+	// checkEffects reports an empty or duplicate name within one node's or
+	// transition's Effects; owner prefixes each message.
+	checkEffects := func(owner string, effects []string) {
+		seen := make(map[string]bool, len(effects))
+		for i, name := range effects {
+			if name == "" {
+				addf("%s: effect[%d]: empty name", owner, i)
+				continue
+			}
+			if seen[name] {
+				addf("%s: duplicate effect %q", owner, name)
+			}
+			seen[name] = true
+		}
 	}
 
 	if d.Name == "" {
@@ -378,6 +432,7 @@ func (d Definition) Validate() error {
 		if n.Deadline < 0 {
 			addf("node %q: deadline must not be negative", n.ID)
 		}
+		checkEffects(fmt.Sprintf("node %q", n.ID), n.Effects)
 
 		if n.Kind == NodeDecision {
 			if n.Start {
@@ -391,6 +446,9 @@ func (d Definition) Validate() error {
 			}
 			if n.Deadline != 0 {
 				addf("decision node %q: must not declare a deadline", n.ID)
+			}
+			if len(n.Effects) > 0 {
+				addf("decision node %q: must not declare effects (declare them on its routes)", n.ID)
 			}
 		}
 	}
@@ -415,6 +473,7 @@ func (d Definition) Validate() error {
 		if !tr.Comment.Valid() {
 			addf("transition[%d]: invalid comment policy %q", i, tr.Comment)
 		}
+		checkEffects(fmt.Sprintf("transition[%d]", i), tr.Effects)
 
 		fromNode, fromOK := nodeByID[tr.From]
 		toNode, toOK := nodeByID[tr.To]
@@ -657,6 +716,9 @@ var (
 	ErrNoRoute                 = errors.New("workflow: no route matched at decision node")
 	ErrTooManyDecisionHops     = errors.New("workflow: exceeded maximum decision node hops")
 	ErrReturnNotVisited        = errors.New("workflow: case never occupied the return transition's target node")
+	// ErrUnknownEffect reports that a Definition names an effect the Engine's
+	// EffectSink does not know, or names any effect while no sink is set.
+	ErrUnknownEffect = errors.New("workflow: effect not known to the effect sink")
 	// ErrConflict reports that the case changed between the engine's read
 	// and its write: its Revision no longer matches the stored row because a
 	// concurrent writer committed first. The failing call persisted nothing
