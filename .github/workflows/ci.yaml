@@ -131,7 +131,12 @@ jobs:
           # los middlewares que recibe worker.WithMiddleware, asi que importa
           # River por definicion. Vive en su propio paquete para que importar
           # otel (Setup, el middleware HTTP) no arrastre la cola de trabajos.
-          for pkg in $(go list ./... | grep -v '/worker$' | grep -v '/otel/otelriver$' | grep -v '/examples/'); do
+          #
+          # action es el puente entre los efectos del workflow y la cola: encola
+          # los jobs en la misma transaccion y los ejecuta como workers de River,
+          # asi que importa River por definicion. document/docflow lo hereda
+          # porque registra sus efectos en action.
+          for pkg in $(go list ./... | grep -v '/worker$' | grep -v '/otel/otelriver$' | grep -v '/action$' | grep -v '/document/docflow$' | grep -v '/examples/'); do
             if go list -deps "$pkg" 2>/dev/null | grep -qxF "github.com/riverqueue/river"; then
               echo "::error::$pkg depende de River, y solo ./worker deberia"
               exit 1
