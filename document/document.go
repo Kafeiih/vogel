@@ -60,7 +60,8 @@ func (t Template) Execute(data any) ([]byte, error) {
 }
 
 // Renderer converts an HTML document to PDF bytes. Implementations must be
-// safe for concurrent use. The first adapter is document/gotenberg.
+// safe for concurrent use, and wrap ErrRenderRejected in errors a retry
+// cannot fix. The first adapter is document/gotenberg.
 type Renderer interface {
 	Render(ctx context.Context, html []byte) ([]byte, error)
 }
@@ -135,4 +136,8 @@ var (
 	// ErrEmptyPDF reports that the Renderer returned no bytes; nothing is
 	// uploaded or stored.
 	ErrEmptyPDF = errors.New("document: renderer returned an empty pdf")
+	// ErrRenderRejected is wrapped by a Renderer error that retrying the
+	// same HTML cannot fix (the renderer refused or could not convert it),
+	// as opposed to an outage or a timeout worth retrying.
+	ErrRenderRejected = errors.New("document: renderer rejected the document")
 )

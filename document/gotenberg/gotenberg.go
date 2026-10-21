@@ -22,6 +22,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/kafeiih/vogel/document"
 )
 
 // htmlRoute is Gotenberg's Chromium HTML-to-PDF route, relative to the base
@@ -41,10 +43,11 @@ const (
 // Sentinel errors callers can branch on via errors.Is.
 var (
 	// ErrResponseTooLarge reports a PDF larger than Config.MaxResponseBytes;
-	// the body is discarded.
+	// the body is discarded. It also wraps document.ErrRenderRejected.
 	ErrResponseTooLarge = errors.New("gotenberg: response exceeds the configured size limit")
 	// ErrUnexpectedStatus reports a non-2xx response. The error text carries
-	// the status code and the start of Gotenberg's plain-text message.
+	// the status code and the start of Gotenberg's plain-text message. A 4xx
+	// other than 408 and 429 also wraps document.ErrRenderRejected.
 	ErrUnexpectedStatus = errors.New("gotenberg: unexpected response status")
 )
 
@@ -126,7 +129,11 @@ func (r *Renderer) Render(ctx context.Context, html []byte) ([]byte, error) {
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, errorBodyLimit))
-		return nil, fmt.Errorf("%w: %d: %s", ErrUnexpectedStatus, resp.StatusCode, strings.TrimSpace(string(msg)))
+		err := fmt.Errorf("%w: %d: %s", ErrUnexpectedStatus, resp.StatusCode, strings.TrimSpace(string(msg)))
+		if permanentStatus(resp.StatusCode) {
+			return nil, rejected{err}
+		}
+		return nil, err
 	}
 
 	pdf, err := io.ReadAll(io.LimitReader(resp.Body, r.maxBytes+1))
@@ -134,7 +141,19 @@ func (r *Renderer) Render(ctx context.Context, html []byte) ([]byte, error) {
 		return nil, fmt.Errorf("gotenberg: read response: %w", err)
 	}
 	if int64(len(pdf)) > r.maxBytes {
-		return nil, fmt.Errorf("%w (%d bytes)", ErrResponseTooLarge, r.maxBytes)
+		return nil, rejected{fmt.Errorf("%w (%d bytes)", ErrResponseTooLarge, r.maxBytes)}
 	}
 	return pdf, nil
 }
+
+// permanentStatus reports whether a status means Gotenberg cannot convert
+// this HTML, so sending it again cannot help.
+func permanentStatus(code int) bool {
+	return code >= 400 && code < 500 && code != http.StatusRequestTimeout && code != http.StatusTooManyRequests
+}
+
+// rejected keeps err's text and adds document.ErrRenderRejected to its chain.
+type rejected struct{ err error }
+
+func (e rejected) Error() string   { return e.err.Error() }
+func (e rejected) Unwrap() []error { return []error{e.err, document.ErrRenderRejected} }

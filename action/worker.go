@@ -22,13 +22,15 @@ func NewWorker(r *Registry) *Worker {
 }
 
 // Work runs the Handler registered for job.Args.Effect. An effect not in the
-// Registry cancels the job (it can never succeed on retry); a Handler error
-// is returned as is, so River retries unless it is a river.JobCancel.
+// Registry is an error River retries with backoff: during a rolling deploy a
+// worker still on the previous release may pick up a job for an effect only
+// the new release registers. A Handler error is returned as is, so River
+// retries unless it is a river.JobCancel.
 func (w *Worker) Work(ctx context.Context, job *river.Job[Args]) error {
 	a := job.Args
 	h, ok := w.registry.handler(a.Effect)
 	if !ok {
-		return river.JobCancel(fmt.Errorf("action: case %s seq %d: %w: %s", a.CaseID, a.Seq, workflow.ErrUnknownEffect, a.Effect))
+		return fmt.Errorf("action: case %s seq %d: %w: %s", a.CaseID, a.Seq, workflow.ErrUnknownEffect, a.Effect)
 	}
 	run := Run{
 		Effect:     a.Effect,
