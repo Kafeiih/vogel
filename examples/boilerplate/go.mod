@@ -5,7 +5,7 @@ go 1.26.7
 toolchain go1.26.10
 
 require (
-	github.com/go-chi/chi/v5 v5.4.0
+	github.com/go-chi/chi/v5 v5.5.0
 	github.com/go-chi/httprate v0.16.1
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.11.0
@@ -47,7 +47,7 @@ require (
 	github.com/aws/smithy-go v1.28.5 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/bits-and-blooms/bitset v1.24.4 // indirect
-	github.com/bmatcuk/doublestar/v4 v4.10.2 // indirect
+	github.com/bmatcuk/doublestar/v4 v4.10.3 // indirect
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cerbos/cerbos-sdk-go v0.4.5 // indirect
@@ -154,7 +154,7 @@ require (
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	github.com/zalando/go-keyring v0.2.8 // indirect
 	github.com/zeebo/xxh3 v1.0.2 // indirect
-	github.com/zitadel/oidc/v3 v3.51.14 // indirect
+	github.com/zitadel/oidc/v3 v3.51.16 // indirect
 	github.com/zitadel/schema v1.3.2 // indirect
 	github.com/zitadel/zitadel-go/v3 v3.30.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
