@@ -91,9 +91,10 @@ Guards: func(e *workflow.Engine, docs *document.Service) error {
 `docflow.Generate` genera un PDF por corrida, idempotente ante reintentos
 (la clave de origen es `<caso>/<seq>/<efecto>`). Cancela el trabajo sin
 reintentar cuando reintentar no sirve: entrada inválida, plantilla que falla,
-PDF vacío o un documento que Gotenberg rechaza (400, 403, 409, 413 o 422, o
-un PDF más grande que el límite). Un Gotenberg caído, lento, saturado o mal
-configurado (un 401 o 404 de un proxy o de una URL equivocada) se reintenta:
+PDF vacío o un documento que Gotenberg rechaza (400, 409 o 422, o un PDF más
+grande que el límite). Un Gotenberg caído, lento, saturado o mal configurado
+(un 401, 403, 404 o 413 de un proxy, un WAF o una URL equivocada) se
+reintenta:
 
 ```go
 Effects: func(r *action.Registry, docs *document.Service, db pgxtx.DBTX) error {

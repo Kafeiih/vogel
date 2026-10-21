@@ -115,6 +115,7 @@ func TestNotifyWorker_MessageJobPastTheBuiltMessages_IsCancelled(t *testing.T) {
 
 	require.Error(t, err)
 	assert.True(t, action.IsCancel(err), "build no longer returns that message")
+	assert.Contains(t, err.Error(), "message 3: build returned 1 messages", "the error names the job's 1-based part")
 	assert.Empty(t, n.sent)
 }
 

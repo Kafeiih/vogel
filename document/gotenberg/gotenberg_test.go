@@ -126,9 +126,9 @@ func TestRender_StatusDecidesWhetherARetryCanHelp(t *testing.T) {
 		rejected bool
 	}{
 		{http.StatusBadRequest, true},
-		{http.StatusForbidden, true},
+		{http.StatusForbidden, false},
 		{http.StatusConflict, true},
-		{http.StatusRequestEntityTooLarge, true},
+		{http.StatusRequestEntityTooLarge, false},
 		{http.StatusUnprocessableEntity, true},
 		{http.StatusUnauthorized, false},
 		{http.StatusNotFound, false},
