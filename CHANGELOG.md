@@ -6,6 +6,16 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ## [Unreleased]
 
+### Cambios que rompen
+
+- **`examples/boilerplate` exige la configuración de BPMS.** El ejemplo trae
+  todos los componentes, `bpms` incluido, así que la API y el worker ya no
+  arrancan sin `GOTENBERG_URL` ni con un `STORAGE_CONFIGS` que no incluya el
+  storage de `BPMS_DOCUMENT_STORAGE` (`documents` por defecto). Un despliegue
+  del ejemplo que actualice con su `.env` anterior debe sumar esas variables
+  (ver `deploy/env.example`) y un servicio Gotenberg. Los servicios generados
+  con `create-vogel-app` no cambian: `bpms` está apagado por defecto.
+
 ### Agregado
 
 - **`workflow`: efectos declarativos.** `Node.Effects` (al entrar al nodo) y
