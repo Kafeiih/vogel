@@ -1,0 +1,30 @@
+{
+  "name": "consulta",
+  "nodes": [
+    {
+      "id": "ingreso",
+      "start": true,
+      "form": [
+        {"key": "nombre", "type": "text", "label": "Nombre", "required": true},
+        {"key": "correo", "type": "email", "label": "Correo electrónico", "required": true},
+        {"key": "tema", "type": "select", "label": "Tema", "required": true,
+         "config": {"options": ["general", "reclamo"]}},
+        {"key": "consulta", "type": "textarea", "label": "Consulta", "required": true},
+        {"key": "numero_atencion", "type": "text", "label": "Número de atención reclamada",
+         "required": true, "visibleWhen": "tema == \"reclamo\"", "config": {"maxLength": 20}}
+      ]
+    },
+    {
+      "id": "respuesta",
+      "profile": {"position": "encargado", "unit": "atencion"},
+      "form": [
+        {"key": "respuesta", "type": "textarea", "label": "Respuesta", "required": true}
+      ]
+    },
+    {"id": "cerrada", "terminal": true}
+  ],
+  "transitions": [
+    {"from": "ingreso", "to": "respuesta", "action": "enviar"},
+    {"from": "respuesta", "to": "cerrada", "action": "responder"}
+  ]
+}

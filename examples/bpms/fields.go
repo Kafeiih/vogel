@@ -112,9 +112,12 @@ func validateLength(value any, cfg json.RawMessage, defaultMax int) error {
 // otherwise.
 type textField struct{}
 
-func (textField) Key() string                              { return "text" }
-func (textField) CELType() *cel.Type                       { return cel.StringType }
-func (textField) ValidateConfig(cfg json.RawMessage) error { _, err := validateLengthConfig(cfg); return err }
+func (textField) Key() string        { return "text" }
+func (textField) CELType() *cel.Type { return cel.StringType }
+func (textField) ValidateConfig(cfg json.RawMessage) error {
+	_, err := validateLengthConfig(cfg)
+	return err
+}
 func (textField) Validate(v any, cfg json.RawMessage) error {
 	return validateLength(v, cfg, 200)
 }
@@ -123,9 +126,12 @@ func (textField) Validate(v any, cfg json.RawMessage) error {
 // otherwise.
 type textareaField struct{}
 
-func (textareaField) Key() string                              { return "textarea" }
-func (textareaField) CELType() *cel.Type                       { return cel.StringType }
-func (textareaField) ValidateConfig(cfg json.RawMessage) error { _, err := validateLengthConfig(cfg); return err }
+func (textareaField) Key() string        { return "textarea" }
+func (textareaField) CELType() *cel.Type { return cel.StringType }
+func (textareaField) ValidateConfig(cfg json.RawMessage) error {
+	_, err := validateLengthConfig(cfg)
+	return err
+}
 func (textareaField) Validate(v any, cfg json.RawMessage) error {
 	return validateLength(v, cfg, 2000)
 }
