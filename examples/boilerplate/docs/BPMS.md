@@ -124,9 +124,13 @@ r.Register("notificar.ciudadano", action.NotifyHandler(notifier,
 ```
 
 La API registra el mismo nombre con el notifier en `nil`: solo lo encola, el
-handler corre únicamente en el worker. Un handler debe tolerar correr más de
-una vez (la entrega es *at-least-once*); devuelva `river.JobCancel(err)` para
-un error que ningún reintento puede corregir.
+handler corre únicamente en el worker. Con más de un mensaje, el trabajo del
+efecto encola un trabajo por mensaje y cada uno vuelve a llamar a su función
+y envía solo el suyo: un envío fallido no reenvía los que ya salieron, pero la
+función debe devolver los mismos mensajes en el mismo orden para la misma
+corrida. Un handler debe tolerar correr más de una vez (la entrega es
+*at-least-once*); devuelva `river.JobCancel(err)` para un error que ningún
+reintento puede corregir.
 
 ## La regla de la transacción
 

@@ -96,7 +96,9 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   de la versión anterior puede tomar el trabajo de un efecto que sólo registra
   la nueva. `NotifyHandler` envía por un
   `notification.Notifier` los mensajes que arma el llamador, validando cada
-  uno antes de enviar. El efecto `webhook` queda planificado.
+  uno antes de enviar; con más de un mensaje, el trabajo del efecto encola un
+  trabajo por mensaje (`Args.Part`/`Run.Part`), así que un envío fallido
+  reintenta sólo ese mensaje y no reenvía los que ya salieron. El efecto `webhook` queda planificado.
 
 - **Boilerplate: componente opcional `bpms`.** `create-vogel-app --with bpms`
   (apagado por defecto; requiere `worker` y `storage`) arma la base BPMS en el

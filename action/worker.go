@@ -42,11 +42,31 @@ func (w *Worker) Work(ctx context.Context, job *river.Job[Args]) error {
 		ExternalID: a.ExternalID,
 		Unit:       a.Unit,
 		ActorID:    a.ActorID,
+		Part:       a.Part,
 	}
 	if job.JobRow != nil {
 		run.Attempt = job.Attempt
 	}
-	return h.Handle(ctx, run)
+	return h.Handle(context.WithValue(ctx, partsKey{}, w.enqueueParts(a)), run)
+}
+
+type partsKey struct{}
+
+// enqueuePartsFunc enqueues one job per item 1..n of the effect a Handler is
+// running, each unique, so a retried effect job does not enqueue them twice.
+type enqueuePartsFunc func(ctx context.Context, n int) error
+
+func (w *Worker) enqueueParts(a Args) enqueuePartsFunc {
+	return func(ctx context.Context, n int) error {
+		for i := 1; i <= n; i++ {
+			part := a
+			part.Part = i
+			if _, err := w.registry.queue.Enqueue(ctx, part, insertOpts()); err != nil {
+				return fmt.Errorf("action: case %s seq %d: enqueue %q part %d: %w", a.CaseID, a.Seq, a.Effect, i, err)
+			}
+		}
+		return nil
+	}
 }
 
 // AddWorker registers w on workers, like river.AddWorkerSafely: it fails
