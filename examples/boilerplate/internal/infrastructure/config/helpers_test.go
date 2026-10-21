@@ -28,4 +28,10 @@ func setRequiredEnv(t *testing.T, appEnv string) {
 	} {
 		unsetEnv(t, key)
 	}
+	// vogel:component bpms begin
+	t.Setenv("GOTENBERG_URL", "http://localhost:3000")
+	t.Setenv("STORAGE_CONFIGS", "documents")
+	unsetEnv(t, "GOTENBERG_TIMEOUT")
+	unsetEnv(t, "BPMS_DOCUMENT_STORAGE")
+	// vogel:component bpms end
 }

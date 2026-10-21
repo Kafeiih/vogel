@@ -196,6 +196,10 @@ services:
     depends_on:
       grants:
         condition: service_completed_successfully
+      # vogel:component bpms begin
+      gotenberg:
+        condition: service_healthy
+      # vogel:component bpms end
     env_file:
       - .env
     environment:
@@ -206,6 +210,24 @@ services:
     restart: unless-stopped
 
   # vogel:component worker end
+  # vogel:component bpms begin
+  # Not *hardened: Chromium needs a writable home. Denying every IP and JavaScript keeps templates from fetching anything (no SSRF).
+  gotenberg:
+    image: gotenberg/gotenberg:8.38.1-chromium@sha256:5da4ab7b8fe7326537369e17b661be765d9a2887f77722faacdbe6d55812fb96
+    environment:
+      CHROMIUM_DENY_PRIVATE_IPS: "true"
+      CHROMIUM_DENY_PUBLIC_IPS: "true"
+      CHROMIUM_DISABLE_JAVASCRIPT: "true"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:3000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # vogel:component bpms end
 # vogel:component cerbos begin
 networks:
   authz:

@@ -34,10 +34,56 @@ type Engine struct {
 	definitions map[string]Definition // by Key(): "Name@Version"
 	latest      map[string]Definition // by bare Name -> highest registered Version
 	guards      map[string]GuardFunc
+
+	// effectSink receives the events Open and Move append; nil means no
+	// definition may declare effects. Set only at construction.
+	effectSink EffectSink
+	// pendingDefs collects WithDefinitions arguments so New registers them
+	// after every option ran, making WithEffectSink order-independent.
+	pendingDefs []Definition
+}
+
+// EffectSink turns the declarative effects a Definition names (Node.Effects,
+// Transition.Effects) into work that runs outside the request advancing the
+// case — typically by enqueuing jobs in the same transaction. The engine
+// itself never runs an effect and never enqueues anything: it only asks the
+// sink, at Register time, whether each name is known, and hands it the
+// events each Open or Move appended.
+type EffectSink interface {
+	// HasEffect reports whether name is an effect this sink can dispatch.
+	HasEffect(name string) bool
+	// CheckDB reports whether Dispatch could run on db. Open and Move call
+	// it before writing anything, whenever the case's definition declares
+	// at least one effect, so a db the sink cannot dispatch on (for example
+	// a pool where a transaction is required) fails the call with nothing
+	// persisted, instead of committing a transition whose effects are then
+	// lost.
+	CheckDB(db pgxtx.DBTX) error
+	// Dispatch is called by Open and Move exactly once, after all their
+	// persistence succeeded, with the definition the case runs on, the final
+	// case, and exactly the events that call appended, in Seq order (Open:
+	// the EventOpened; Move: the human-driven EventMoved, every automatic
+	// decision-node EventMoved, then the automatic EventClosed if the case
+	// closed). db is the exact value the caller passed to Open or Move, so
+	// whatever Dispatch writes commits or rolls back with the caller's
+	// transaction. A returned error fails Open or Move (wrapped); the caller
+	// must then roll back. Like a GuardFunc, Dispatch runs inside that open
+	// transaction and must not call the network.
+	Dispatch(ctx context.Context, db pgxtx.DBTX, d Definition, c Case, events []Event) error
 }
 
 // Option configures optional Engine behaviour at construction time.
 type Option func(*Engine)
+
+// WithEffectSink sets the EffectSink that validates effect names at Register
+// time and receives the events Open and Move append. Without one, Register
+// rejects any definition that declares an effect, and nothing is dispatched.
+// It may appear before or after WithDefinitions.
+func WithEffectSink(s EffectSink) Option {
+	return func(e *Engine) {
+		e.effectSink = s
+	}
+}
 
 // New creates an Engine backed by repo. logger is required by the surrounding
 // convention (libraries take a stdlib *slog.Logger); a nil logger falls back
@@ -64,29 +110,40 @@ func New(repo Repository, cfg Config, logger *slog.Logger, opts ...Option) *Engi
 		opt(e)
 	}
 
+	// Definitions register only after every option ran, so a WithEffectSink
+	// listed after WithDefinitions still validates their effects.
+	for _, d := range e.pendingDefs {
+		if err := e.Register(d); err != nil {
+			e.logger.Error("workflow: failed to register definition via WithDefinitions",
+				"definition", d.Name, "version", d.Version, "error", err)
+		}
+	}
+	e.pendingDefs = nil
+
 	return e
 }
 
-// WithDefinitions registers defs at construction time. It is a convenience
-// over calling Register after New; a definition that fails validation is
+// WithDefinitions registers defs at construction time, after every other
+// option has been applied. It is a convenience over calling Register after
+// New; a definition that fails validation (or names an unknown effect) is
 // logged and skipped rather than aborting construction, since Option has no
 // error return.
 func WithDefinitions(defs ...Definition) Option {
 	return func(e *Engine) {
-		for _, d := range defs {
-			if err := e.Register(d); err != nil {
-				e.logger.Error("workflow: failed to register definition via WithDefinitions",
-					"definition", d.Name, "version", d.Version, "error", err)
-			}
-		}
+		e.pendingDefs = append(e.pendingDefs, defs...)
 	}
 }
 
 // Register validates d and stores it under d.Key(). It also registers d
 // under its bare Name, pointing at the highest version registered so far, so
-// callers can open a case without pinning a version.
+// callers can open a case without pinning a version. A definition naming an
+// effect fails with ErrUnknownEffect when no EffectSink is set, or when the
+// sink's HasEffect reports false for that name.
 func (e *Engine) Register(d Definition) error {
 	if err := d.Validate(); err != nil {
+		return fmt.Errorf("workflow: register definition %q: %w", d.Key(), err)
+	}
+	if err := e.checkEffects(d); err != nil {
 		return fmt.Errorf("workflow: register definition %q: %w", d.Key(), err)
 	}
 
@@ -98,6 +155,42 @@ func (e *Engine) Register(d Definition) error {
 		e.latest[d.Name] = d
 	}
 	return nil
+}
+
+// checkEffects reports every effect name d declares that the Engine's
+// EffectSink cannot dispatch (all of them when no sink is set).
+func (e *Engine) checkEffects(d Definition) error {
+	var unknown []string
+	for _, name := range d.EffectNames() {
+		if e.effectSink == nil || !e.effectSink.HasEffect(name) {
+			unknown = append(unknown, name)
+		}
+	}
+	if len(unknown) == 0 {
+		return nil
+	}
+	if e.effectSink == nil {
+		return fmt.Errorf("%w: no effect sink set for %s", ErrUnknownEffect, strings.Join(unknown, ", "))
+	}
+	return fmt.Errorf("%w: %s", ErrUnknownEffect, strings.Join(unknown, ", "))
+}
+
+// checkEffectDB asks the EffectSink, before any write, whether it could
+// dispatch d's effects on db. Definitions without effects never need it.
+func (e *Engine) checkEffectDB(d Definition, db pgxtx.DBTX) error {
+	if e.effectSink == nil || len(d.EffectNames()) == 0 {
+		return nil
+	}
+	return e.effectSink.CheckDB(db)
+}
+
+// dispatch hands the events one Open or Move appended to the EffectSink, if
+// any. It is the engine's only contact with effects.
+func (e *Engine) dispatch(ctx context.Context, db pgxtx.DBTX, d Definition, c Case, events []Event) error {
+	if e.effectSink == nil {
+		return nil
+	}
+	return e.effectSink.Dispatch(ctx, db, d, c, events)
 }
 
 // RegisterGuard registers fn under name. Overwriting an existing name is
@@ -184,7 +277,9 @@ type OpenInput struct {
 
 // Open creates a case at the definition's start node and appends an
 // EventOpened event as Seq 1. It is callable inside the caller's own
-// transaction via db (see pgxtx.DBTX).
+// transaction via db (see pgxtx.DBTX). When an EffectSink is set, Open then
+// calls its Dispatch once with that event; a Dispatch error fails Open and
+// the caller must roll back its transaction, discarding the new case.
 func (e *Engine) Open(ctx context.Context, db pgxtx.DBTX, in OpenInput) (*Case, error) {
 	d, err := e.resolveDefinition(in.Definition, in.Version)
 	if err != nil {
@@ -194,6 +289,9 @@ func (e *Engine) Open(ctx context.Context, db pgxtx.DBTX, in OpenInput) (*Case, 
 	start, ok := d.StartNode()
 	if !ok {
 		return nil, fmt.Errorf("workflow: open case: definition %q has no start node", d.Key())
+	}
+	if err := e.checkEffectDB(d, db); err != nil {
+		return nil, fmt.Errorf("workflow: open case: %w", err)
 	}
 
 	now := e.now()
@@ -228,6 +326,10 @@ func (e *Engine) Open(ctx context.Context, db pgxtx.DBTX, in OpenInput) (*Case, 
 	}
 	if err := e.repo.AppendEvent(ctx, db, evt); err != nil {
 		return nil, fmt.Errorf("workflow: open case: append event: %w", err)
+	}
+
+	if err := e.dispatch(ctx, db, d, *c, []Event{*evt}); err != nil {
+		return nil, fmt.Errorf("workflow: open case %s: dispatch effects: %w", c.ID, err)
 	}
 
 	return c, nil
@@ -423,6 +525,13 @@ type MoveInput struct {
 // repeats in.Action once a route hop followed it — it describes how the
 // case actually reached the terminal node, not what the human asked for.
 //
+// Effects: once the case update and every event are persisted, Move calls
+// the EffectSink's Dispatch (when one is set) exactly once, with the final
+// case and exactly the events this call appended, in Seq order. A Dispatch
+// error fails Move after its writes went through the caller's db, so the
+// caller must roll back its transaction. A Move that fails earlier never
+// dispatches.
+//
 // Concurrency: the case is written through Repository.Update, a
 // compare-and-swap on Case.Revision, BEFORE any event is appended. If
 // another writer changed the case after Move read it, Move fails with
@@ -445,6 +554,9 @@ func (e *Engine) Move(ctx context.Context, db pgxtx.DBTX, in MoveInput) (*Case, 
 	d, err := e.resolveDefinition(c.Definition, c.Version)
 	if err != nil {
 		return nil, err
+	}
+	if err := e.checkEffectDB(d, db); err != nil {
+		return nil, fmt.Errorf("workflow: move case %s: %w", c.ID, err)
 	}
 
 	transition, found := findTransition(d.TransitionsFrom(c.State), in.Action)
@@ -516,10 +628,13 @@ func (e *Engine) Move(ctx context.Context, db pgxtx.DBTX, in MoveInput) (*Case, 
 		return nil, fmt.Errorf("workflow: move case %s: %w", c.ID, err)
 	}
 
+	appended := make([]Event, 0, len(hops)+1)
 	for _, h := range hops {
-		if err := e.appendEvent(ctx, db, c.ID, EventMoved, h.fromState, h.toState, h.action, in.ActorID, h.comment, now); err != nil {
+		evt, err := e.appendEvent(ctx, db, c.ID, EventMoved, h.fromState, h.toState, h.action, in.ActorID, h.comment, now)
+		if err != nil {
 			return nil, fmt.Errorf("workflow: move case %s: append event: %w", c.ID, err)
 		}
+		appended = append(appended, evt)
 	}
 
 	if terminated {
@@ -528,9 +643,15 @@ func (e *Engine) Move(ctx context.Context, db pgxtx.DBTX, in MoveInput) (*Case, 
 		// belongs to the human-driven hop's own EventMoved record, appended
 		// above, so Comment is passed as "" here rather than reused.
 		lastAction := hops[len(hops)-1].action
-		if err := e.appendEvent(ctx, db, c.ID, EventClosed, restNode.ID, restNode.ID, lastAction, in.ActorID, "", now); err != nil {
+		evt, err := e.appendEvent(ctx, db, c.ID, EventClosed, restNode.ID, restNode.ID, lastAction, in.ActorID, "", now)
+		if err != nil {
 			return nil, fmt.Errorf("workflow: move case %s: append close event: %w", c.ID, err)
 		}
+		appended = append(appended, evt)
+	}
+
+	if err := e.dispatch(ctx, db, d, *c, appended); err != nil {
+		return nil, fmt.Errorf("workflow: move case %s: dispatch effects: %w", c.ID, err)
 	}
 
 	return c, nil
@@ -620,6 +741,7 @@ func findTransition(candidates []Transition, action string) (Transition, bool) {
 
 // Claim assigns the case to actorID. Re-claiming by the same actor is a
 // no-op success; claiming a case already assigned to someone else fails.
+// Claim never calls the EffectSink: no effect can be declared on a claim.
 // Like Move, the case update is a revision compare-and-swap performed before
 // the event is appended: a concurrent change fails with ErrConflict and
 // persists nothing, so two racing claimers can never both win.
@@ -643,7 +765,7 @@ func (e *Engine) Claim(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID, act
 		return nil, fmt.Errorf("workflow: claim case %s: %w", c.ID, err)
 	}
 
-	if err := e.appendEvent(ctx, db, c.ID, EventAssigned, c.State, c.State, "", actorID, "", e.now()); err != nil {
+	if _, err := e.appendEvent(ctx, db, c.ID, EventAssigned, c.State, c.State, "", actorID, "", e.now()); err != nil {
 		return nil, fmt.Errorf("workflow: claim case %s: append event: %w", c.ID, err)
 	}
 
@@ -651,7 +773,8 @@ func (e *Engine) Claim(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID, act
 }
 
 // Release clears the case's assignment. A concurrent change to the case
-// fails with ErrConflict and persists nothing (see Claim).
+// fails with ErrConflict and persists nothing (see Claim). Like Claim, it
+// never calls the EffectSink.
 func (e *Engine) Release(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID, actorID string) (*Case, error) {
 	c, err := e.repo.GetByID(ctx, db, caseID)
 	if err != nil {
@@ -666,7 +789,7 @@ func (e *Engine) Release(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID, a
 		return nil, fmt.Errorf("workflow: release case %s: %w", c.ID, err)
 	}
 
-	if err := e.appendEvent(ctx, db, c.ID, EventUnassigned, c.State, c.State, "", actorID, "", e.now()); err != nil {
+	if _, err := e.appendEvent(ctx, db, c.ID, EventUnassigned, c.State, c.State, "", actorID, "", e.now()); err != nil {
 		return nil, fmt.Errorf("workflow: release case %s: append event: %w", c.ID, err)
 	}
 
@@ -723,11 +846,12 @@ func (e *Engine) EligibilityFor(ctx context.Context, db pgxtx.DBTX, caseID uuid.
 	}, nil
 }
 
-// appendEvent computes the next Seq for caseID and appends an event.
-func (e *Engine) appendEvent(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID, kind EventKind, fromState, toState, action, actorID, comment string, occurredAt time.Time) error {
+// appendEvent computes the next Seq for caseID, appends an event, and
+// returns the event as persisted (Move collects them for the EffectSink).
+func (e *Engine) appendEvent(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID, kind EventKind, fromState, toState, action, actorID, comment string, occurredAt time.Time) (Event, error) {
 	seq, err := e.nextSeq(ctx, db, caseID)
 	if err != nil {
-		return err
+		return Event{}, err
 	}
 
 	evt := &Event{
@@ -742,7 +866,10 @@ func (e *Engine) appendEvent(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUI
 		Comment:    comment,
 		OccurredAt: occurredAt,
 	}
-	return e.repo.AppendEvent(ctx, db, evt)
+	if err := e.repo.AppendEvent(ctx, db, evt); err != nil {
+		return Event{}, err
+	}
+	return *evt, nil
 }
 
 // nextSeq returns the next per-case Seq value for caseID, computed from its

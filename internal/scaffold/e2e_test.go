@@ -80,3 +80,60 @@ func TestGenerateRealBoilerplate(t *testing.T) {
 		t.Fatalf("go.mod module line not rewritten:\n%s", gomod)
 	}
 }
+
+// TestGenerateRealBoilerplateDefaultsLeaveOutBPMS scaffolds the real
+// boilerplate with the manifest defaults: bpms is off, so nothing of it may
+// reach the project.
+func TestGenerateRealBoilerplateDefaultsLeaveOutBPMS(t *testing.T) {
+	if testing.Short() {
+		t.Skip("end-to-end scaffold of the real boilerplate")
+	}
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "examples", "boilerplate", ManifestPath)); err != nil {
+		t.Skipf("examples/boilerplate/%s does not exist yet: %v", ManifestPath, err)
+	}
+
+	dir := filepath.Join(t.TempDir(), "billing-api")
+	res, err := Generate(context.Background(), Options{
+		Name:     "billing-api",
+		Owner:    "acme",
+		Module:   "github.com/acme/billing-api",
+		Dir:      dir,
+		From:     root,
+		SkipTidy: true,
+		NoGit:    true,
+	})
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+	if got := strings.Join(res.Removed, ","); got != "bpms" {
+		t.Fatalf("Removed = %s, want bpms only", got)
+	}
+	for _, p := range []string{"internal/infrastructure/bpms", "internal/infrastructure/config/config_bpms_test.go", "docs/BPMS.md"} {
+		if _, err := os.Stat(filepath.Join(dir, p)); !os.IsNotExist(err) {
+			t.Errorf("%s was not removed", p)
+		}
+	}
+	leaks := []string{"GOTENBERG", "gotenberg", "BPMS", "infrastructure/bpms", "kafeiih/vogel/workflow", "kafeiih/vogel/action", "kafeiih/vogel/document", "document_db_version"}
+	err = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		for _, leak := range leaks {
+			if strings.Contains(string(data), leak) {
+				t.Errorf("%s contains %q although bpms is off", path, leak)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
