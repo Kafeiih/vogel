@@ -39,7 +39,7 @@ type Config struct {
 	WriteTimeout      time.Duration // HTTP_WRITE_TIMEOUT, default 30s
 	IdleTimeout       time.Duration // HTTP_IDLE_TIMEOUT, default 60s
 
-	// Per-client-IP request budget for /api/v1 (see ipRateLimiter):
+	// Per-client-IP request budget for the authenticated routes (see ipRateLimiter):
 	// RateLimitRequests (RATE_LIMIT_REQUESTS, default 300) per
 	// RateLimitWindow (RATE_LIMIT_WINDOW, default 1m). Both must be positive.
 	RateLimitRequests int

@@ -1101,7 +1101,7 @@ Este es exactamente el patrón que ambos repos necesitan: reusar
 `httpx.FiltersFromRequest` y `httpx.ToResponse`/`ToResponseList` sin
 duplicar el parseo ni el mapeo, mientras el handler concreto (con sus
 anotaciones swaggo) sigue siendo propio de la app. Las rutas y su prefijo
-(`/v1/audit`, etc.) también siguen siendo decisión de cada app — vogel no
+(`/audit`, etc.) también siguen siendo decisión de cada app — vogel no
 las registra.
 
 ### `worker.Config` (reemplaza `config.WorkerConfig` local)
@@ -1261,7 +1261,7 @@ Después de migrar cada paquete (o cada tanda, según el orden recomendado):
   otro `river.Worker` concreto quedan en cada app.
 - **`cmd/`**: binarios de entrada (`cmd/api`, `cmd/worker`), scaffolding de
   arranque, parseo de flags — específico de cada app.
-- **Rutas y su prefijo** (`/v1`, registro en `router.go`): vogel
+- **Rutas** (registro en `router.go`, sin prefijo de versión: la versión la publica el proxy inverso): vogel
   deliberadamente no las define, ver «Todavía no está acá» en el README de
   vogel.
 - **Anotaciones de Swagger**: se leen de los comentarios sobre la función

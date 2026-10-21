@@ -51,13 +51,13 @@ El ejemplo trae un `auth.Authenticator` falso que acepta un token con la forma
 TOKEN='u-1:oscar:admin'
 
 # Crear un documento
-curl -s -X POST localhost:8080/api/v1/documents \
+curl -s -X POST localhost:8080/documents \
   -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"title":"Contrato marco","kind":"contract","issued_at":"03/02/2026"}'
 
 # Ver el rastro de auditoría que esa única llamada dejó
-curl -s "localhost:8080/api/v1/audit?resource_type=document" -H "Authorization: Bearer $TOKEN"
+curl -s "localhost:8080/audit?resource_type=document" -H "Authorization: Bearer $TOKEN"
 ```
 
 El `authz.Checker` falso permite todo al rol `admin` y sólo acciones de lectura
@@ -187,13 +187,13 @@ TOKEN='u-1:oscar:admin'
 DOC='...'   # el id de un documento creado con POST /documents
 printf '%%PDF-1.4\nhola\n' > /tmp/doc.pdf
 
-curl -s -X POST localhost:8080/api/v1/documents/$DOC/upload-url \
+curl -s -X POST localhost:8080/documents/$DOC/upload-url \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d "{\"content_type\":\"application/pdf\",\"size\":$(wc -c < /tmp/doc.pdf)}"
 
 # Con la url y la key de la respuesta:
 curl -s -X PUT "$URL" -H 'Content-Type: application/pdf' --data-binary @/tmp/doc.pdf
-curl -s -X POST localhost:8080/api/v1/documents/$DOC/file \
+curl -s -X POST localhost:8080/documents/$DOC/file \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d "{\"key\":\"$KEY\"}"
 ```
@@ -204,7 +204,7 @@ query con la firma.
 
 Con `fakeStorage` el "bucket" es este mismo servidor: las URL apuntan a
 `FAKE_STORAGE_BASE_URL` (por defecto `http://localhost:<PORT>`) bajo
-`/fake-storage/`, fuera de `/api/v1` y sin token, como el endpoint de un bucket
+`/fake-storage/`, fuera de las rutas autenticadas y sin token, como el endpoint de un bucket
 real. Llevan un HMAC del proceso sobre método, key, expiración, tipo y largo, y
 el handler responde `403` ante una firma inválida, una URL vencida o un
 `Content-Type`/`Content-Length` distinto del firmado. Con `storage/s3` esas
@@ -238,7 +238,7 @@ paso no demostraría nada, porque el cambio quedaría invisible.
 
 ## Rutas
 
-Todo bajo `/api/v1` exige `Authorization: Bearer <token>`.
+Toda ruta salvo `/healthz` y `/fake-storage/` exige `Authorization: Bearer <token>`. Las rutas no llevan prefijo de versión: si hace falta versionar, el proxy inverso (nginx) publica cada versión de la app bajo su propio prefijo.
 
 | Método | Ruta | Permiso | Qué demuestra |
 |---|---|---|---|
@@ -280,7 +280,7 @@ o si aparece una ruta pública fuera de `/api/` que no esté declarada en
 llamador (anónimo, token inválido, usuario común, dueño, admin), si los
 guards lo dejan pasar, y falla si aparece una ruta sin fila en la matriz.
 
-`/api/v1` tiene un límite de pedidos por IP de cliente (`ratelimit.go`):
+Las rutas autenticadas tienen un límite de pedidos por IP de cliente (`ratelimit.go`):
 `RATE_LIMIT_REQUESTS` pedidos (300) por `RATE_LIMIT_WINDOW` (1m), con la IP
 que `vmw.RequestContext` dejó en `reqctx`. Al pasarse responde `429` con el
 código `RATE_LIMITED` y `Retry-After`. Se chequea antes de autenticar, así que

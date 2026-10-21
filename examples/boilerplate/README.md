@@ -117,7 +117,7 @@ efecto: `vogel/otel` no lee el entorno.
 <!-- vogel:component tracing end -->
 
 `SWAGGER_ENABLED` (opcional, `false` por defecto) sirve la UI y la spec de
-Swagger en `/v1/swagger/`. Es un opt-in explícito, independiente de
+Swagger en `/swagger/`. Es un opt-in explícito, independiente de
 `APP_ENV`: el compose de despliegue corre con `APP_ENV=development` y no
 debe publicar la descripción de la API. Con `APP_ENV=production` y
 `SWAGGER_ENABLED=true` el arranque falla, y un valor que no sea `true` o
@@ -281,7 +281,7 @@ puertos en el host. Detalle en la sección 0 de `deploy/RUNBOOK.md`.
 Verificación:
 
 ```bash
-curl -s localhost:8080/v1/healthz
+curl -s localhost:8080/healthz
 ```
 
 <!-- vogel:component worker begin -->
@@ -492,5 +492,5 @@ mismo patrón del lado del worker.
 - `deploy/RUNBOOK.md` — operación en producción.
 - `docs/swagger.json` / `docs/swagger.yaml` — spec generada por `swag init`;
   regenerar con `make gen-docs` después de anotar un handler nuevo. La UI y
-  la spec se sirven en `/v1/swagger/` solo con `SWAGGER_ENABLED=true` (nunca
+  la spec se sirven en `/swagger/` solo con `SWAGGER_ENABLED=true` (nunca
   en producción); sin esa variable la ruta no existe (404).

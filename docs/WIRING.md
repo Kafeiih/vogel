@@ -330,7 +330,7 @@ reciben la opción por separado — no comparten una instancia de
 Montaje típico (de `examples/api/router.go`):
 
 ```go
-r.Route("/api/v1", func(r chi.Router) {
+r.Group(func(r chi.Router) {
 	r.Use(vmw.Authenticate(authenticator, logger))
 
 	requireRead := vmw.RequirePermission(checker, "documents:document", "read", logger)

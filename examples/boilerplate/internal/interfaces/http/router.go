@@ -90,10 +90,10 @@ func NewRouter(deps Dependencies) *chi.Mux {
 
 	r.Use(middleware.Timeout(deps.Config.Timeout))
 
-	r.Route("/v1", func(r chi.Router) {
+	r.Group(func(r chi.Router) {
 		if deps.Config.EnableSwagger {
 			r.With(swaggerHeaders).Get("/swagger/*", httpSwagger.Handler(
-				httpSwagger.URL("/v1/swagger/doc.json"),
+				httpSwagger.URL("/swagger/doc.json"),
 			))
 		}
 

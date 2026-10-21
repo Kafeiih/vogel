@@ -43,12 +43,12 @@ groups:
         annotations:
           summary: The API target is not being scraped
       - alert: HealthCheckFailing
-        expr: sum(increase(http_requests_total{job="api",path="/v1/healthz",status="503"}[2m])) > 0
+        expr: sum(increase(http_requests_total{job="api",path="/healthz",status="503"}[2m])) > 0
         for: 1m
         labels:
           severity: critical
         annotations:
-          summary: /v1/healthz is answering 503; see RUNBOOK.md (DB caida)
+          summary: /healthz is answering 503; see RUNBOOK.md (DB caida)
       - alert: HighLatencyP99
         expr: histogram_quantile(0.99, sum by (le, path) (rate(http_request_duration_seconds_bucket{job="api"}[5m]))) > 2
         for: 5m

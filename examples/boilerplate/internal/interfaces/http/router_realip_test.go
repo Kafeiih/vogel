@@ -59,7 +59,7 @@ func newTestRouter(t *testing.T, trusted string) http.Handler {
 func countRateLimited(router http.Handler, peer string, n int) int {
 	limited := 0
 	for i := range n {
-		req := httptest.NewRequest(http.MethodGet, "/v1/livez", nil)
+		req := httptest.NewRequest(http.MethodGet, "/livez", nil)
 		req.RemoteAddr = peer
 		req.Header.Set("X-Forwarded-For", fmt.Sprintf("198.51.%d.%d", i/250, i%250+1))
 		req.Header.Set("X-Real-IP", fmt.Sprintf("203.0.%d.%d", i/250, i%250+1))

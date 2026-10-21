@@ -70,18 +70,18 @@ var matrixPolicy = map[string]map[string][]string{
 
 func TestNewRouter_RoleMatrix(t *testing.T) {
 	A, F, U := allowed, forbidden, unauthenticated
-	entryPath := "/v1/audit/" + uuid.NewString()
+	entryPath := "/audit/" + uuid.NewString()
 
 	tests := []struct {
 		method, route, path string
 		want                [5]outcome
 	}{
-		{"GET", "/v1/healthz", "/v1/healthz", [5]outcome{A, A, A, A, A}},
-		{"GET", "/v1/readyz", "/v1/readyz", [5]outcome{A, A, A, A, A}},
-		{"GET", "/v1/livez", "/v1/livez", [5]outcome{A, A, A, A, A}},
-		{"GET", "/v1/swagger/*", "/v1/swagger/index.html", [5]outcome{A, A, A, A, A}},
-		{"GET", "/v1/audit/", "/v1/audit/", [5]outcome{U, U, F, F, A}},
-		{"GET", "/v1/audit/{id}", entryPath, [5]outcome{U, U, F, A, A}},
+		{"GET", "/healthz", "/healthz", [5]outcome{A, A, A, A, A}},
+		{"GET", "/readyz", "/readyz", [5]outcome{A, A, A, A, A}},
+		{"GET", "/livez", "/livez", [5]outcome{A, A, A, A, A}},
+		{"GET", "/swagger/*", "/swagger/index.html", [5]outcome{A, A, A, A, A}},
+		{"GET", "/audit/", "/audit/", [5]outcome{U, U, F, F, A}},
+		{"GET", "/audit/{id}", entryPath, [5]outcome{U, U, F, A, A}},
 	}
 
 	router := newMatrixRouter(t)

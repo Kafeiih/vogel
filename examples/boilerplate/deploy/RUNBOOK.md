@@ -71,7 +71,7 @@ para ajustar permisos del directorio de datos y bajar al usuario `postgres`
 `no-new-privileges`. Las imagenes de los compose y las bases del `Dockerfile`
 estan fijadas por version exacta y digest; ver «Parches» abajo.
 
-Healthchecks: la imagen de la API consulta `/v1/healthz`.
+Healthchecks: la imagen de la API consulta `/healthz`.
 <!-- vogel:component worker begin -->
 La del worker,
 que no publica puertos (su `/metrics` escucha en `WORKER_METRICS_LISTEN_ADDR`,
@@ -258,7 +258,7 @@ repetir. Como ultimo recurso, restaurar el respaldo del paso 1 con
 
 ```bash
 # Desde el servidor de la app
-curl -s http://localhost:8080/v1/healthz | jq .
+curl -s http://localhost:8080/healthz | jq .
 
 # Conectividad directa a PostgreSQL
 pg_isready -h <DB_HOST> -p 5432 -U <DB_USER>
@@ -431,7 +431,7 @@ curl -s http://localhost:8080/metrics | grep 'http_requests_total.*429'
 |-------|--------|-------|
 | Por IP (global) | 100 req/min | Todas las rutas |
 | Por usuario autenticado | 1000 req/min | Rutas autenticadas |
-| Auditoria por usuario | 30 req/min | `/v1/audit/*` |
+| Auditoria por usuario | 30 req/min | `/audit/*` |
 
 ---
 
@@ -529,7 +529,7 @@ docker logs api 2>&1 | head -20
 
 ```bash
 # Probar endpoint publico (no requiere auth)
-curl -s http://localhost:8080/v1/healthz
+curl -s http://localhost:8080/healthz
 
 # Si healthz funciona pero auth falla, verificar Zitadel.
 # <host> es el host de ZITADEL_ISSUER (sin https://). Escribir siempre el
@@ -623,7 +623,7 @@ docker compose -f deploy/docker-compose.yaml exec -T postgres \
    `pg_restore -U postgres -d boilerplate_db --no-owner --role=app_migrator respaldo.dump`.
 4. Aplicar `deploy/initdb/runtime-grants.sql` como `app_migrator`.
 5. Verificar: `SELECT count(*), max(created_at) FROM audit_log;` coincide con
-   lo esperado; la API arranca contra esa base y `/v1/healthz` responde 200.
+   lo esperado; la API arranca contra esa base y `/healthz` responde 200.
 6. Registrar el resultado abajo y borrar la copia descifrada.
 
 | Campo | Valor (lo completa el operador) |
@@ -645,7 +645,7 @@ exposicion y, como minimo, una vez al año.
 
 | Secreto | Como rotarlo | Como verificar |
 |---|---|---|
-| `APP_RUNTIME_PASSWORD` | `ALTER ROLE` en la base en marcha (RDS o empaquetada), sin recrear nada: ver «Rotar las contraseñas de los roles» abajo | `/v1/healthz` responde 200, el worker (si existe) queda `healthy` y el log no muestra `password authentication failed` |
+| `APP_RUNTIME_PASSWORD` | `ALTER ROLE` en la base en marcha (RDS o empaquetada), sin recrear nada: ver «Rotar las contraseñas de los roles» abajo | `/healthz` responde 200, el worker (si existe) queda `healthy` y el log no muestra `password authentication failed` |
 | `APP_MIGRATOR_PASSWORD` | Igual que la anterior; el valor nuevo lo usan `migrate` y `grants` en el proximo despliegue | `docker compose -f deploy/docker-compose.yaml run --rm migrate migrate status` |
 | Usuario master de RDS | Rotarlo en la consola de RDS (o Secrets Manager); no vive en `deploy/.env` | `db-roles` con la clave nueva |
 | `POSTGRES_PASSWORD` (superusuario del Postgres empaquetado) | `docker compose -f deploy/docker-compose.yaml exec postgres psql -U postgres -c "\password postgres"` y actualizar `deploy/.env` | `psql` con la contraseña nueva |

@@ -1,4 +1,4 @@
-basePath: /v1
+basePath: /
 info:
   contact:
     email: support@swagger.io
