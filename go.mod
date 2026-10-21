@@ -2,7 +2,7 @@ module github.com/kafeiih/vogel
 
 go 1.26.7
 
-toolchain go1.26.9
+toolchain go1.26.10
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.47.3
