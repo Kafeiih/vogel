@@ -259,10 +259,11 @@ jobs:
         run: cd examples/bpms && go test ./... -race -cover
 
   # Vulnerabilidades conocidas en dependencias, usando el call graph: solo
-  # falla cuando el codigo de vogel (o del boilerplate) ALCANZA la funcion
+  # falla cuando el codigo de vogel (o de un ejemplo) ALCANZA la funcion
   # vulnerable, no por el mero hecho de requerir el modulo. Corre sobre los
-  # dos modulos porque el boilerplate es un modulo Go aparte, con su propio
-  # go.mod/go.sum y dependencias que la raiz no tiene (River, entre otras).
+  # tres modulos porque el boilerplate y examples/bpms son modulos Go aparte,
+  # con su propio go.mod/go.sum y dependencias que la raiz no tiene (River y
+  # cel-go, entre otras).
   #
   # Este job depende de la base de datos de vuln.go.dev en el momento de
   # correr, no solo del diff: un advisory nuevo puede poner en rojo un PR que

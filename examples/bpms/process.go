@@ -30,15 +30,16 @@ type NodeSpec struct {
 	ID       string `json:"id"`
 	Start    bool   `json:"start,omitempty"`
 	Terminal bool   `json:"terminal,omitempty"`
-	// Profile is who handles the node, as a profile (a position, optionally
-	// in a unit), never as a person. Who holds the profile is resolved live
-	// through a ProfileResolver. A start node without a profile is filled in
-	// by whoever opens the case.
+	// Profile is who handles the node, as a profile (a position in a unit),
+	// never as a person. Who holds the profile is resolved live through a
+	// ProfileResolver. The start node has no profile: whoever opens the case
+	// fills it in.
 	Profile *ProfileSpec `json:"profile,omitempty"`
 	Form    []FieldSpec  `json:"form,omitempty"`
 }
 
-// ProfileSpec names a profile. An empty Unit means the case's own unit.
+// ProfileSpec names a profile. Unit is required: cases in this example
+// belong to no unit, so there is no case unit to fall back to.
 type ProfileSpec struct {
 	Position string `json:"position"`
 	Unit     string `json:"unit,omitempty"`
@@ -92,6 +93,12 @@ func CompileProcess(reg *FieldRegistry, spec ProcessSpec, version int) (*Process
 		}
 		node := workflow.Node{ID: n.ID, Start: n.Start, Terminal: n.Terminal}
 		if n.Profile != nil {
+			if n.Start {
+				return nil, fmt.Errorf("node %q: the start node is filled in by whoever opens the case and cannot name a profile", n.ID)
+			}
+			if n.Profile.Position == "" || n.Profile.Unit == "" {
+				return nil, fmt.Errorf("node %q: a profile needs a position and a unit", n.ID)
+			}
 			node.Eligible = workflow.ByPositionInUnit(n.Profile.Position, n.Profile.Unit)
 		}
 		def.Nodes = append(def.Nodes, node)

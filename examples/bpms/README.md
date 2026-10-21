@@ -84,7 +84,7 @@ Con `"tema":"reclamo"` aparece el campo obligatorio `numero_atencion`: su
 | `GET /inbox` | Casos sin tomar cuyo perfil ocupa el actor ahora, más los que el actor tomó. |
 | `POST /cases/{id}/claim` | Toma la tarea si el actor ocupa el perfil del nodo actual. |
 | `POST /cases/{id}/submit` | Guarda el formulario del nodo actual y toma `action`; solo quien tomó la tarea. |
-| `GET /cases/{id}` | El caso con sus valores e historial, para quien lo abrió, lo tomó u ocupa el perfil. |
+| `GET /cases/{id}` | El caso con sus valores e historial, para quien actuó sobre él (lo abrió, lo tomó o lo avanzó) u ocupa el perfil del nodo actual. |
 | `PUT`, `DELETE /fake-safo/subrogation` | Inicia o termina una subrogación en el directorio falso. |
 
 Los errores de formulario responden 400 con un mensaje por campo en `fields`.

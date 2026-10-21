@@ -231,6 +231,9 @@ func TestCaseViewShowsValuesAndTheirHistory(t *testing.T) {
 	assert.Equal(t, "respuesta", last["nodeId"])
 	assert.Equal(t, "luis", last["actorId"])
 
+	status, _ = app.do(http.MethodGet, "/cases/"+id, "luis", nil)
+	assert.Equal(t, http.StatusOK, status, "whoever worked the case keeps access after it closes")
+
 	status, _ = app.do(http.MethodGet, "/cases/"+id, "pedro", nil)
 	assert.Equal(t, http.StatusForbidden, status)
 }

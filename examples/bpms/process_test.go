@@ -62,6 +62,24 @@ func TestCompileProcessRejectsAFormOnATerminalNode(t *testing.T) {
 	assert.Contains(t, err.Error(), "terminal")
 }
 
+func TestCompileProcessRejectsAProfileOnTheStartNode(t *testing.T) {
+	spec := loadConsultaSpec(t)
+	spec.Nodes[0].Profile = &ProfileSpec{Position: "encargado", Unit: "atencion"}
+
+	_, err := CompileProcess(testRegistry(t), spec, 1)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "start node")
+}
+
+func TestCompileProcessRequiresAProfileUnit(t *testing.T) {
+	spec := loadConsultaSpec(t)
+	spec.Nodes[1].Profile.Unit = ""
+
+	_, err := CompileProcess(testRegistry(t), spec, 1)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unit")
+}
+
 func TestCompileProcessRejectsAFieldDeclaredOnTwoNodes(t *testing.T) {
 	spec := loadConsultaSpec(t)
 	spec.Nodes[1].Form = append(spec.Nodes[1].Form, spec.Nodes[0].Form[0])

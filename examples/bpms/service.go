@@ -207,8 +207,8 @@ type CaseView struct {
 	History []CaseValue
 }
 
-// View returns the case if actor opened it, is working it, or holds the
-// profile of its current node.
+// View returns the case if actor has acted on it (opened, claimed or moved
+// it), is working it, or holds the profile of its current node.
 func (s *Service) View(ctx context.Context, actor string, caseID uuid.UUID) (*CaseView, error) {
 	c, err := s.repo.GetByID(ctx, s.pool, caseID)
 	if err != nil {
@@ -241,8 +241,12 @@ func (s *Service) related(ctx context.Context, actor string, c *workflow.Case) (
 	if err != nil {
 		return false, err
 	}
-	if len(events) > 0 && events[0].ActorID == actor {
-		return true, nil
+	// Move clears the assignment, so whoever answered a closed case is
+	// found in its events, not in AssignedTo.
+	for i := range events {
+		if events[i].ActorID == actor {
+			return true, nil
+		}
 	}
 	if c.Status == workflow.StatusClosed {
 		return false, nil

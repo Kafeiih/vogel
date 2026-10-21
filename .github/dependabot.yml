@@ -2,8 +2,9 @@
 # current. Dependabot rewrites both the commit SHA and the trailing
 # "# vX.Y.Z" comment of each action.
 #
-# Go modules are listed too, for both modules in this repository (the root
-# library and examples/boilerplate, which has its own go.mod). govulncheck in
+# Go modules are listed too, for every module in this repository (the root
+# library, and examples/boilerplate and examples/bpms, which have their own
+# go.mod). govulncheck in
 # CI and Dependabot do different jobs: govulncheck fails only when the code
 # reaches a function with a KNOWN vulnerability, so it says nothing about a
 # dependency that is merely old, and it reacts only after an advisory is
