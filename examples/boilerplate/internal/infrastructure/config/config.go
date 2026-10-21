@@ -25,6 +25,10 @@ import (
 	"github.com/kafeiih/vogel/storage/s3"
 
 	// vogel:component storage end
+	// vogel:component bpms begin
+	"github.com/kafeiih/vogel/document/gotenberg"
+
+	// vogel:component bpms end
 	// vogel:component tracing begin
 	"github.com/kafeiih/vogel/otel"
 
@@ -59,6 +63,10 @@ type Config struct {
 
 	Tracing otel.Config
 	// vogel:component tracing end
+	// vogel:component bpms begin
+
+	BPMS BPMSConfig
+	// vogel:component bpms end
 }
 
 type AppConfig struct {
@@ -90,6 +98,13 @@ type NotificationConfig struct {
 }
 
 // vogel:component notification end
+// vogel:component bpms begin
+type BPMSConfig struct {
+	DocumentStorage string
+	Gotenberg       gotenberg.Config
+}
+
+// vogel:component bpms end
 type CORSConfig struct {
 	AllowedOrigins []string
 	AllowedMethods []string
@@ -169,6 +184,10 @@ func Load() (*Config, error) {
 
 		Tracing: parseTracingConfig(&errs, appEnv, appVersion),
 		// vogel:component tracing end
+		// vogel:component bpms begin
+
+		BPMS: parseBPMSConfig(&errs),
+		// vogel:component bpms end
 	}
 
 	cfg.validate(&errs)
@@ -182,6 +201,11 @@ func (c *Config) validate(errs *config.Errors) {
 	if c.App.SwaggerEnabled && c.IsProduction() {
 		errs.Addf("SWAGGER_ENABLED: must not be true with APP_ENV=production")
 	}
+	// vogel:component bpms begin
+	if _, ok := c.Storages[c.BPMS.DocumentStorage]; !ok {
+		errs.Addf("BPMS_DOCUMENT_STORAGE: %q is not listed in STORAGE_CONFIGS", c.BPMS.DocumentStorage)
+	}
+	// vogel:component bpms end
 }
 
 func (c *Config) IsProduction() bool {
@@ -417,6 +441,26 @@ func parseTracingConfig(errs *config.Errors, env, version string) otel.Config {
 }
 
 // vogel:component tracing end
+// vogel:component bpms begin
+const defaultDocumentStorage = "documents"
+
+func parseBPMSConfig(errs *config.Errors) BPMSConfig {
+	cfg := BPMSConfig{
+		DocumentStorage: config.String("BPMS_DOCUMENT_STORAGE", defaultDocumentStorage),
+		Gotenberg: gotenberg.Config{
+			BaseURL: errs.Require("GOTENBERG_URL"),
+			Timeout: positiveDuration(errs, "GOTENBERG_TIMEOUT", gotenberg.DefaultTimeout),
+		},
+	}
+	if cfg.Gotenberg.BaseURL != "" {
+		if _, err := gotenberg.New(cfg.Gotenberg); err != nil {
+			errs.Addf("GOTENBERG_URL: %v", err)
+		}
+	}
+	return cfg
+}
+
+// vogel:component bpms end
 func parseCerbosConfig(errs *config.Errors) cerbos.Config {
 	if _, ok := os.LookupEnv("CERBOS_TLS"); ok {
 		errs.Addf("CERBOS_TLS is no longer read: remove it and set CERBOS_PLAINTEXT=true only if the Cerbos PDP listens without TLS (TLS is the default)")

@@ -25,6 +25,10 @@ GRANT SELECT, INSERT ON audit_log TO app_runtime;
 -- only reads them when nothing is pending; the runtime never writes them.
 REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON goose_db_version, vogel_db_version FROM app_runtime;
 GRANT SELECT ON goose_db_version, vogel_db_version TO app_runtime;
+-- vogel:component bpms begin
+REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON workflow_db_version, document_db_version FROM app_runtime;
+GRANT SELECT ON workflow_db_version, document_db_version TO app_runtime;
+-- vogel:component bpms end
 
 -- vogel:component worker begin
 -- River (api inserts jobs; worker fetches, updates and deletes them). At

@@ -1,0 +1,147 @@
+# Base BPMS
+
+El componente `bpms` arma, sin ningún proceso de negocio propio, las tres
+piezas de la base BPMS de `vogel`:
+
+| Pieza | Paquete de `vogel` | Qué hace |
+|---|---|---|
+| Motor de workflow | `vogel/workflow` + `vogel/workflow/postgres` | Abre casos y los mueve por una `Definition` (nodos, transiciones, guards). Nunca ejecuta un efecto. |
+| Acciones en segundo plano | `vogel/action` | `action.Registry` es el `EffectSink` del motor: encola un job de River por cada efecto, en la misma transacción que el `Open`/`Move`. `action.Worker` los corre en el worker, con reintentos. |
+| Documentos PDF | `vogel/document` + `document/postgres` + `document/gotenberg` + `document/docflow` | Plantilla HTML + datos → PDF (Gotenberg) → storage, con su fila de metadatos (`document_record`). |
+
+`internal/infrastructure/bpms` las construye con `bpms.New`: la API (que
+encola) y el worker (que ejecuta) llaman a la misma función, así que los dos
+registran exactamente los mismos efectos. La API no corre ningún efecto:
+solo los encola; el worker los ejecuta con `action.AddWorker`.
+
+`migrate up` aplica dos conjuntos de migraciones más, cada uno con su tabla
+de versión: `vogel/workflow/migrations` (`workflow_db_version`) y
+`vogel/document/migrations` (`document_db_version`).
+
+## Configuración
+
+| Variable | Default | Efecto |
+|---|---|---|
+| `GOTENBERG_URL` | — (obligatoria) | URL base de Gotenberg, p. ej. `http://localhost:3001` (local) o `http://gotenberg:3000` (compose de despliegue). |
+| `GOTENBERG_TIMEOUT` | `30s` | Tope de una conversión a PDF. Debe ser mayor que cero. |
+| `BPMS_DOCUMENT_STORAGE` | `documents` | Backend de `STORAGE_CONFIGS` donde se guardan los PDF. Si no está en `STORAGE_CONFIGS`, el arranque falla. |
+
+`make dev-infra` levanta Gotenberg en `127.0.0.1:3001` (el 3000 queda libre para el frontend). Chromium tiene prohibido conectarse a cualquier IP, privada o pública, y no ejecuta JavaScript: una plantilla debe ser autocontenida (CSS en línea, imágenes como `data:` URI), y así un dato que llegue a la plantilla no puede hacer que Gotenberg pida una URL (SSRF). No trae un S3 local:
+apunte `STORAGE_DOCUMENTS_*` a un endpoint S3-compatible.
+
+## Dónde va el proceso de su servicio
+
+Todo lo propio va en `service`, en `internal/infrastructure/bpms/process.go`:
+
+```go
+var service = Process{
+	Effects:     func(r *action.Registry, docs *document.Service, db pgxtx.DBTX) error { ... },
+	Guards:      func(e *workflow.Engine, docs *document.Service) error { ... },
+	Definitions: func() []workflow.Definition { ... },
+}
+```
+
+`bpms.New` los registra en ese orden: efectos, guards y después las
+`Definition`. `Engine.Register` rechaza una `Definition` que nombra un efecto
+que el registro no conoce (`workflow.ErrUnknownEffect`), así que un nombre mal
+escrito hace fallar el arranque, no el primer caso.
+
+### 1. Declarar una `Definition` con efectos
+
+Los efectos se declaran por nombre: `Node.Effects` corren al entrar al nodo,
+`Transition.Effects` al tomar la transición.
+
+```go
+Definitions: func() []workflow.Definition {
+	return []workflow.Definition{{
+		Name:    "solicitud",
+		Version: 1,
+		Nodes: []workflow.Node{
+			{ID: "borrador", Start: true, Eligible: workflow.ByPosition("ciudadano")},
+			{ID: "revision", Eligible: workflow.ByPosition("funcionario"),
+				Effects: []string{"certificado.generar"}},
+			{ID: "aprobada", Terminal: true, Effects: []string{"notificar.ciudadano"}},
+		},
+		Transitions: []workflow.Transition{
+			{From: "borrador", To: "revision", Action: "enviar"},
+			{From: "revision", To: "aprobada", Action: "aprobar", Guard: "certificado.existe"},
+		},
+	}}
+},
+```
+
+### 2. Registrar un guard
+
+Un efecto corre en segundo plano y puede estar pendiente o fallando cuando
+llega la siguiente acción humana. Lo que un paso posterior necesita se
+modela como guard, nunca se supone. `docflow.Exists` pasa solo cuando el caso
+ya tiene un documento de esa plantilla:
+
+```go
+Guards: func(e *workflow.Engine, docs *document.Service) error {
+	return e.RegisterGuard("certificado.existe", docflow.Exists(docs, "certificado"))
+},
+```
+
+### 3. Registrar un handler
+
+`docflow.Generate` genera un PDF por corrida, idempotente ante reintentos
+(la clave de origen es `<caso>/<seq>/<efecto>`):
+
+```go
+Effects: func(r *action.Registry, docs *document.Service, db pgxtx.DBTX) error {
+	return r.Register("certificado.generar", docflow.Generate(docs, db,
+		func(ctx context.Context, run action.Run) (document.GenerateInput, error) {
+			return document.GenerateInput{
+				Template: document.Template{Name: "certificado", Version: 1, Body: certificadoHTML},
+				Data:     map[string]any{"Expediente": run.ExternalID},
+			}, nil
+		}))
+},
+```
+
+`action.NotifyHandler` adapta un `notification.Notifier` (componente
+`notification`): usted decide destinatarios y mensaje. Nada se registra solo,
+porque `notification` es opcional y `Process.Effects` no recibe un notifier.
+Para usarlo, haga tres cambios en su servicio: agregue un campo
+`Notifier notification.Notifier` a `bpms.Deps`, agregue ese notifier como
+parámetro de `Process.Effects` (y pásele `d.Notifier` en `build`), y llénelo
+en `cmd/worker/main.go` con el `notifier` que ese archivo ya construye. Luego
+regístrelo:
+
+```go
+r.Register("notificar.ciudadano", action.NotifyHandler(notifier,
+	func(ctx context.Context, run action.Run) ([]*notification.Message, error) {
+		// buscar el destinatario por run.Domain / run.ExternalID
+	}))
+```
+
+La API registra el mismo nombre con el notifier en `nil`: solo lo encola, el
+handler corre únicamente en el worker. Un handler debe tolerar correr más de
+una vez (la entrega es *at-least-once*); devuelva `river.JobCancel(err)` para
+un error que ningún reintento puede corregir.
+
+## La regla de la transacción
+
+`Engine.Open` y `Engine.Move` reciben la base de datos donde escriben, y los
+efectos se encolan en esa misma transacción: un rollback no encola nada y un
+commit hace visibles el cambio de estado y sus jobs juntos. Por eso hay que
+pasarles el `pgx.Tx`, nunca el pool: cuando la `Definition` declara efectos,
+`EffectSink.CheckDB` rechaza el pool (error que envuelve `pgxtx.ErrNoTx`)
+antes de escribir nada.
+
+```go
+txm := pgxtx.NewPgxTxManager(pool)
+err := txm.WithTx(ctx, func(ctx context.Context) error {
+	tx, err := pgxtx.RequireTx(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = base.Engine.Move(ctx, tx, workflow.MoveInput{CaseID: id, Action: "enviar", ActorID: actor})
+	return err
+})
+```
+
+Los PDF quedan en el storage aunque la transacción que registró su fila haga
+rollback (el storage no es transaccional): un barrido de objetos sin fila en
+`document_record` los limpia.

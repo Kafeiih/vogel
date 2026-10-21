@@ -6,6 +6,16 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ## [Unreleased]
 
+### Cambios que rompen
+
+- **`examples/boilerplate` exige la configuración de BPMS.** El ejemplo trae
+  todos los componentes, `bpms` incluido, así que la API y el worker ya no
+  arrancan sin `GOTENBERG_URL` ni con un `STORAGE_CONFIGS` que no incluya el
+  storage de `BPMS_DOCUMENT_STORAGE` (`documents` por defecto). Un despliegue
+  del ejemplo que actualice con su `.env` anterior debe sumar esas variables
+  (ver `deploy/env.example`) y un servicio Gotenberg. Los servicios generados
+  con `create-vogel-app` no cambian: `bpms` está apagado por defecto.
+
 ### Agregado
 
 - **`workflow`: efectos declarativos.** `Node.Effects` (al entrar al nodo) y
@@ -69,6 +79,26 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   desconocido cancela el trabajo. `NotifyHandler` envía por un
   `notification.Notifier` los mensajes que arma el llamador, validando cada
   uno antes de enviar. El efecto `webhook` queda planificado.
+
+- **Boilerplate: componente opcional `bpms`.** `create-vogel-app --with bpms`
+  (apagado por defecto; requiere `worker` y `storage`) arma la base BPMS en el
+  servicio generado, sin ningún proceso de negocio propio:
+  `internal/infrastructure/bpms` construye el `action.Registry` sobre la cola
+  de River, el `workflow.Engine` (`workflow/postgres`,
+  `WithEffectSink(registry)`) y el `document.Service` (`document/postgres`, el
+  storage `BPMS_DOCUMENT_STORAGE` y `document/gotenberg`); la API y el worker
+  los construyen desde el mismo `Process`, así que registran los mismos
+  efectos, y solo el worker los ejecuta (`action.AddWorker`). `migrate up`
+  aplica también `workflow/migrations` (`workflow_db_version`) y
+  `document/migrations` (`document_db_version`). Configuración nueva:
+  `GOTENBERG_URL` (obligatoria), `GOTENBERG_TIMEOUT` (`30s`) y
+  `BPMS_DOCUMENT_STORAGE` (`documents`, debe estar en `STORAGE_CONFIGS`).
+  Los compose de desarrollo y despliegue suman un servicio Gotenberg
+  (`gotenberg/gotenberg:8.38.1-chromium`, fijado por digest), y
+  `docs/BPMS.md` explica cómo declarar una `Definition` con efectos,
+  registrar guards (`docflow.Exists`) y handlers (`docflow.Generate`,
+  `action.NotifyHandler`) y por qué `Open`/`Move` reciben la `pgx.Tx`. Sin
+  `bpms` el proyecto generado no cambia.
 
 ## [0.13.2] — 2026-10-20
 

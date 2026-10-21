@@ -47,5 +47,20 @@ services:
     security_opt: ["no-new-privileges:true"]
 
   # vogel:component cerbos end
+  # vogel:component bpms begin
+  # HTML-to-PDF for the BPMS base's documents (GOTENBERG_URL in .env). Port 3001
+  # on loopback, so it never takes the frontend's 3000; Chromium may fetch nothing.
+  gotenberg:
+    image: gotenberg/gotenberg:8.38.1-chromium@sha256:5da4ab7b8fe7326537369e17b661be765d9a2887f77722faacdbe6d55812fb96
+    ports:
+      - "127.0.0.1:3001:3000"
+    environment:
+      CHROMIUM_DENY_PRIVATE_IPS: "true"
+      CHROMIUM_DENY_PUBLIC_IPS: "true"
+      CHROMIUM_DISABLE_JAVASCRIPT: "true"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+
+  # vogel:component bpms end
 volumes:
   pgdata_dev:
