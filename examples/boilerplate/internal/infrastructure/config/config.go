@@ -27,6 +27,7 @@ import (
 	// vogel:component storage end
 	// vogel:component bpms begin
 	"github.com/kafeiih/vogel/document/gotenberg"
+	"github.com/riverqueue/river"
 
 	// vogel:component bpms end
 	// vogel:component tracing begin
@@ -444,8 +445,8 @@ func parseTracingConfig(errs *config.Errors, env, version string) otel.Config {
 // vogel:component bpms begin
 const (
 	defaultDocumentStorage = "documents"
-	// River cancels a job after 1m (JobTimeoutDefault): leave room for the upload and the insert.
-	maxGotenbergTimeout = 45 * time.Second
+	// Leave a quarter of River's job timeout for the upload and the insert.
+	maxGotenbergTimeout = river.JobTimeoutDefault * 3 / 4
 )
 
 func parseBPMSConfig(errs *config.Errors) BPMSConfig {

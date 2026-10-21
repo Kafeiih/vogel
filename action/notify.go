@@ -2,7 +2,6 @@ package action
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"github.com/riverqueue/river"
@@ -37,8 +36,8 @@ func NotifyHandler(n notification.Notifier, build func(ctx context.Context, r Ru
 			return sendPart(ctx, n, r, msgs)
 		}
 		for i, m := range msgs {
-			if err := validMessage(m); err != nil {
-				return river.JobCancel(fmt.Errorf("action: notify case %s: message %d: %w", r.CaseID, i+1, err))
+			if err := invalidMessage(r, i+1, m); err != nil {
+				return river.JobCancel(err)
 			}
 		}
 		if enqueue, ok := ctx.Value(partsKey{}).(enqueuePartsFunc); ok && len(msgs) > 1 {
@@ -61,8 +60,8 @@ func sendPart(ctx context.Context, n notification.Notifier, r Run, msgs []*notif
 		return river.JobCancel(fmt.Errorf("action: notify case %s: message %d: build returned %d messages", r.CaseID, r.Part, len(msgs)))
 	}
 	m := msgs[r.Part-1]
-	if err := validMessage(m); err != nil {
-		return river.JobCancel(fmt.Errorf("action: notify case %s: message %d: %w", r.CaseID, r.Part, err))
+	if err := invalidMessage(r, r.Part, m); err != nil {
+		return river.JobCancel(err)
 	}
 	if err := n.Send(ctx, m); err != nil {
 		return fmt.Errorf("action: notify case %s: send message %d: %w", r.CaseID, r.Part, err)
@@ -70,9 +69,12 @@ func sendPart(ctx context.Context, n notification.Notifier, r Run, msgs []*notif
 	return nil
 }
 
-func validMessage(m *notification.Message) error {
+func invalidMessage(r Run, n int, m *notification.Message) error {
 	if m == nil {
-		return errors.New("message is nil")
+		return fmt.Errorf("action: notify case %s: message %d is nil", r.CaseID, n)
 	}
-	return m.Validate()
+	if err := m.Validate(); err != nil {
+		return fmt.Errorf("action: notify case %s: message %d: %w", r.CaseID, n, err)
+	}
+	return nil
 }

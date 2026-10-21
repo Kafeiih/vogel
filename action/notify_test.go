@@ -74,3 +74,15 @@ func TestNotifyHandler_PropagatesBuildAndSendErrors(t *testing.T) {
 	require.ErrorIs(t, err, sendErr)
 	assert.False(t, action.IsCancel(err), "a send failure is retried")
 }
+
+func TestNotifyHandler_NilMessage_NamesItsPosition(t *testing.T) {
+	h := action.NotifyHandler(&recordingNotifier{}, func(context.Context, action.Run) ([]*notification.Message, error) {
+		return []*notification.Message{msg("a@example.cl"), nil}, nil
+	})
+
+	err := h.Handle(context.Background(), action.Run{})
+
+	require.Error(t, err)
+	assert.True(t, action.IsCancel(err))
+	assert.Contains(t, err.Error(), "message 2 is nil")
+}
