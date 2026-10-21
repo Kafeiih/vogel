@@ -202,8 +202,9 @@ func (r *Registry) Dispatch(ctx context.Context, db pgxtx.DBTX, d workflow.Defin
 	if err != nil {
 		return fmt.Errorf("action: dispatch case %s: %w", c.ID, err)
 	}
-	for _, args := range jobs {
-		if _, err := r.queue.EnqueueTx(ctx, tx, args, insertOpts()); err != nil {
+	for i := range jobs {
+		args := &jobs[i]
+		if _, err := r.queue.EnqueueTx(ctx, tx, *args, insertOpts()); err != nil {
 			return fmt.Errorf("action: dispatch case %s: enqueue %q (seq %d): %w", c.ID, args.Effect, args.Seq, err)
 		}
 	}
@@ -213,8 +214,9 @@ func (r *Registry) Dispatch(ctx context.Context, db pgxtx.DBTX, d workflow.Defin
 // plan maps events to the job args Dispatch enqueues, in order.
 func (r *Registry) plan(d workflow.Definition, c workflow.Case, events []workflow.Event) ([]Args, error) {
 	var jobs []Args
-	for _, evt := range events {
-		for _, name := range effectsFor(d, evt) {
+	for i := range events {
+		evt := &events[i]
+		for _, name := range effectsFor(d, *evt) {
 			if !r.HasEffect(name) {
 				return nil, fmt.Errorf("action: dispatch case %s: %w: %s", c.ID, workflow.ErrUnknownEffect, name)
 			}

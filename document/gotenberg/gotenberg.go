@@ -122,7 +122,7 @@ func (r *Renderer) Render(ctx context.Context, html []byte) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("gotenberg: convert html: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, errorBodyLimit))
