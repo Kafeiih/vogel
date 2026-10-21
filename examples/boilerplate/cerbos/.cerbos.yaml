@@ -5,9 +5,5 @@ server:
 storage:
   driver: "disk"
   disk:
-    # Where the Dockerfile bakes the policies, and where the developer
-    # compose bind-mounts policies/. Not /policies: see the Dockerfile.
     directory: /bundle/policies
-    # Hot reload while editing a policy under the developer compose. In the
-    # built image the policies never change, so it has nothing to watch.
     watchForChanges: true

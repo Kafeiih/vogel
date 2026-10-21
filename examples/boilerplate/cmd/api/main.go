@@ -19,6 +19,12 @@ import (
 	"github.com/kafeiih/vogel/storage/s3"
 
 	// vogel:component storage end
+	// vogel:component bpms begin
+	documentmigrations "github.com/kafeiih/vogel/document/migrations"
+	"github.com/kafeiih/vogel/worker"
+	workflowmigrations "github.com/kafeiih/vogel/workflow/migrations"
+
+	// vogel:component bpms end
 	// vogel:component tracing begin
 	"github.com/kafeiih/vogel/otel"
 	"github.com/kafeiih/vogel/otel/otelpgx"
@@ -38,6 +44,10 @@ import (
 	"github.com/kafeiih/vogel/examples/boilerplate/internal/infrastructure/riverschema"
 
 	// vogel:component worker end
+	// vogel:component bpms begin
+	"github.com/kafeiih/vogel/examples/boilerplate/internal/infrastructure/bpms"
+
+	// vogel:component bpms end
 	// vogel:component tracing begin
 	"github.com/kafeiih/vogel/examples/boilerplate/internal/infrastructure/tracing"
 
@@ -208,6 +218,10 @@ func migrationSets() []migrationSet {
 	return []migrationSet{
 		{name: "app", fsys: migrations.FS},
 		{name: "audit", fsys: auditmigrations.FS(), opts: migrate.Options{TableName: auditmigrations.DefaultTableName}},
+		// vogel:component bpms begin
+		{name: "workflow", fsys: workflowmigrations.FS(), opts: migrate.Options{TableName: workflowmigrations.DefaultTableName}},
+		{name: "document", fsys: documentmigrations.FS(), opts: migrate.Options{TableName: documentmigrations.DefaultTableName}},
+		// vogel:component bpms end
 	}
 }
 
@@ -331,6 +345,29 @@ func runServer(migrateFirst bool) error {
 		}
 		_ = storageReg // Remove once handlers use storage.
 		appLogger.Info("storage initialized", "backends", storageReg.Names())
+		// vogel:component bpms begin
+
+		bpmsQueue, err := worker.NewRiverQueue(pool, nil, cfg.Worker, appLogger.Logger)
+		if err != nil {
+			return fmt.Errorf("creating bpms queue: %w", err)
+		}
+		bpmsDeps := bpms.Deps{
+			DB:        pool,
+			Queue:     bpmsQueue,
+			Storage:   storageReg.Get(cfg.BPMS.DocumentStorage),
+			Gotenberg: cfg.BPMS.Gotenberg,
+			Logger:    appLogger.Logger,
+		}
+		// vogel:component tracing begin
+		bpmsDeps.WrapTransport = otel.Transport()
+		// vogel:component tracing end
+		bpmsBase, err := bpms.New(bpmsDeps)
+		if err != nil {
+			return fmt.Errorf("initializing bpms: %w", err)
+		}
+		_ = bpmsBase // Remove once handlers open and move cases, always on a pgx.Tx (see docs/BPMS.md).
+		appLogger.Info("bpms initialized", "definitions", len(bpmsBase.Engine.Definitions()))
+		// vogel:component bpms end
 	}
 
 	// vogel:component storage end

@@ -56,6 +56,20 @@
         "internal/infrastructure/config/config_tracing_test.go",
         "internal/interfaces/http/router_tracing_test.go"
       ]
+    },
+    {
+      "name": "bpms",
+      "prompt": "¿Incluir la base BPMS (motor de workflow, acciones en segundo plano y documentos PDF)?",
+      "default": false,
+      "requires": [
+        "worker",
+        "storage"
+      ],
+      "paths": [
+        "internal/infrastructure/bpms",
+        "internal/infrastructure/config/config_bpms_test.go",
+        "docs/BPMS.md"
+      ]
     }
   ],
   "alwaysRemove": [
@@ -79,6 +93,11 @@
     },
     {
       "path": "deploy/docker-compose.yaml",
+      "from": "boilerplate_db",
+      "to": "{{.DBName}}_db"
+    },
+    {
+      "path": "deploy/env.example",
       "from": "boilerplate_db",
       "to": "{{.DBName}}_db"
     },

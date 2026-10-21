@@ -19,6 +19,11 @@ import (
 	"github.com/kafeiih/vogel/notification/smtp"
 
 	// vogel:component notification end
+	// vogel:component bpms begin
+	"github.com/kafeiih/vogel/action"
+	"github.com/kafeiih/vogel/storage/s3"
+
+	// vogel:component bpms end
 	// vogel:component tracing begin
 	"github.com/kafeiih/vogel/otel"
 	"github.com/kafeiih/vogel/otel/otelpgx"
@@ -29,6 +34,10 @@ import (
 	"github.com/kafeiih/vogel/postgres"
 	"github.com/kafeiih/vogel/worker"
 
+	// vogel:component bpms begin
+	"github.com/kafeiih/vogel/examples/boilerplate/internal/infrastructure/bpms"
+
+	// vogel:component bpms end
 	// vogel:component tracing begin
 	"github.com/kafeiih/vogel/examples/boilerplate/internal/infrastructure/tracing"
 
@@ -153,6 +162,39 @@ func run(migrateFirst bool) error {
 		appLogger.Info("send_email worker registered", "provider", cfg.Notification.Provider)
 	}
 	// vogel:component notification end
+	// vogel:component bpms begin
+
+	documentStorageCfg := cfg.Storages[cfg.BPMS.DocumentStorage]
+	// vogel:component tracing begin
+	documentStorageCfg.WrapTransport = otel.Transport()
+	// vogel:component tracing end
+	documentStorage, err := s3.NewS3Storage(documentStorageCfg, appLogger.Logger)
+	if err != nil {
+		return fmt.Errorf("initializing document storage: %w", err)
+	}
+	bpmsQueue, err := worker.NewRiverQueue(pool, nil, cfg.Worker, appLogger.Logger)
+	if err != nil {
+		return fmt.Errorf("creating bpms queue: %w", err)
+	}
+	bpmsDeps := bpms.Deps{
+		DB:        pool,
+		Queue:     bpmsQueue,
+		Storage:   documentStorage,
+		Gotenberg: cfg.BPMS.Gotenberg,
+		Logger:    appLogger.Logger,
+	}
+	// vogel:component tracing begin
+	bpmsDeps.WrapTransport = otel.Transport()
+	// vogel:component tracing end
+	bpmsBase, err := bpms.New(bpmsDeps)
+	if err != nil {
+		return fmt.Errorf("initializing bpms: %w", err)
+	}
+	if err := action.AddWorker(workers, action.NewWorker(bpmsBase.Registry)); err != nil {
+		return fmt.Errorf("registering bpms action worker: %w", err)
+	}
+	appLogger.Info("bpms action worker registered")
+	// vogel:component bpms end
 
 	if _, err := postgres.NewPoolMetricsCollector(pool, prometheus.DefaultRegisterer); err != nil {
 		return fmt.Errorf("registering pool metrics: %w", err)

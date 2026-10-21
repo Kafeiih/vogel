@@ -5,6 +5,10 @@ import (
 	"testing"
 
 	auditmigrations "github.com/kafeiih/vogel/audit/migrations"
+	// vogel:component bpms begin
+	documentmigrations "github.com/kafeiih/vogel/document/migrations"
+	workflowmigrations "github.com/kafeiih/vogel/workflow/migrations"
+	// vogel:component bpms end
 )
 
 func TestMigrationSets(t *testing.T) {
@@ -16,6 +20,10 @@ func TestMigrationSets(t *testing.T) {
 	}{
 		{name: "app", tableName: ""},
 		{name: "audit", tableName: auditmigrations.DefaultTableName},
+		// vogel:component bpms begin
+		{name: "workflow", tableName: workflowmigrations.DefaultTableName},
+		{name: "document", tableName: documentmigrations.DefaultTableName},
+		// vogel:component bpms end
 	}
 	if len(sets) != len(want) {
 		t.Fatalf("migrationSets() returned %d sets, want %d", len(sets), len(want))

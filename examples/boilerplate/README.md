@@ -98,6 +98,11 @@ privados (Block Public Access activado) y los clientes acceden con URLs
 firmadas. `STORAGE_<NOMBRE>_PRESIGN_EXPIRY` (default `15m`) debe ser mayor
 que cero y como máximo `1h`: un valor inválido impide arrancar.
 <!-- vogel:component storage end -->
+<!-- vogel:component bpms begin -->
+Base BPMS: `GOTENBERG_URL` (obligatoria), `GOTENBERG_TIMEOUT` (default
+`30s`) y `BPMS_DOCUMENT_STORAGE` (default `documents`, debe estar en
+`STORAGE_CONFIGS`). Ver `docs/BPMS.md`.
+<!-- vogel:component bpms end -->
 <!-- vogel:component notification begin -->
 Notificaciones: `NOTIFICATION_PROVIDER`, `NOTIFICATION_DEFAULT_FROM`,
 `SMTP_*`, `SENDGRID_API_KEY`.
@@ -178,6 +183,9 @@ También levanta Cerbos, con las políticas de `cerbos/policies`.
 No trae MinIO (su imagen ya no se publica en Docker Hub): apunte `STORAGE_*`
 a cualquier endpoint S3-compatible si lo necesita.
 <!-- vogel:component storage end -->
+<!-- vogel:component bpms begin -->
+También levanta Gotenberg (HTML a PDF) en `127.0.0.1:3001`.
+<!-- vogel:component bpms end -->
 
 `docker compose -f deploy/docker-compose.yaml` es el compose de despliegue
 (Postgres, `migrate`, `grants` y la API) que construye las imágenes desde el
@@ -188,6 +196,9 @@ También corre el worker.
 <!-- vogel:component cerbos begin -->
 También corre el PDP de Cerbos, construido desde `cerbos/`.
 <!-- vogel:component cerbos end -->
+<!-- vogel:component bpms begin -->
+También corre Gotenberg, sin puertos publicados, para el worker.
+<!-- vogel:component bpms end -->
 <!-- vogel:only begin -->
 
 Dentro de `vogel` esa raíz es la de `vogel`, no este directorio: como el
@@ -259,12 +270,14 @@ se toma de `deploy/.env` o, si no está, vale `river`.
 aplicación. El compose ya aplica la receta de la sección «Un rol para
 migrar, otro para servir» del README de `vogel`: `deploy/initdb/10-roles.sh`
 crea `app_migrator` (dueño del esquema, lo usan `migrate` y `grants`) y
-`app_runtime` (el de los procesos que sirven) en el primer arranque del
-volumen, y el servicio `grants` aplica `deploy/initdb/runtime-grants.sql` después de
-cada `migrate up`. Las contraseñas salen de `deploy/.env`
-(`POSTGRES_PASSWORD`, `APP_MIGRATOR_PASSWORD`, `APP_RUNTIME_PASSWORD`,
-obligatorias) y Postgres no publica ningún puerto en el host. Detalle,
-incluido TLS en producción, en la sección 0 de `deploy/RUNBOOK.md`.
+`app_runtime` (el de los procesos que sirven), y el servicio `grants` aplica
+`deploy/initdb/runtime-grants.sql` después de cada `migrate up`. Cada
+ambiente es un host con su `deploy/.env` (plantilla completa en
+`deploy/env.example`). Producción usa AWS RDS con `sslmode=verify-full`:
+los roles se crean una vez con el usuario master (`db-roles`) y el bundle de
+la CA de RDS se monta en los contenedores. Los demás ambientes pueden usar el
+Postgres empaquetado con `COMPOSE_PROFILES=bundled-db`, que no publica
+puertos en el host. Detalle en la sección 0 de `deploy/RUNBOOK.md`.
 Verificación:
 
 ```bash
@@ -324,6 +337,12 @@ migrate-up`, `make lint`, `make docker-build`, ...).
   `OTEL_EXPORTER_OTLP_ENDPOINT` esté vacía; `--without tracing` lo saca del
   todo.
 <!-- vogel:component tracing end -->
+<!-- vogel:component bpms begin -->
+- **Base BPMS**: `vogel/workflow`, `vogel/action` y `vogel/document`
+  (+ `gotenberg`, `docflow`), armados por `internal/infrastructure/bpms`. El
+  proceso de negocio es propio y va en `internal/infrastructure/bpms/process.go`;
+  ver `docs/BPMS.md`.
+<!-- vogel:component bpms end -->
 
 Sobre `internal/infrastructure/database/migrate/create.go`: es un scaffolder
 de CLI (`go run ./cmd/api migrate create <nombre>`) que escribe un archivo
@@ -352,6 +371,18 @@ motor de BPM/workflow. Los tres conjuntos numeran independientemente desde
 aplicado" y se saltearía en silencio — por eso `migrate.Options.TableName` es
 un parámetro obligatorio del llamador, no una constante escondida en la
 librería.
+<!-- vogel:component bpms begin -->
+
+Con la base BPMS este servicio sí monta `vogel/workflow/migrations` y
+también `vogel/document/migrations`, después de los dos de arriba:
+
+| Conjunto | Tabla de versión |
+|---|---|
+| `vogel/workflow/migrations` | `workflow_db_version` |
+| `vogel/document/migrations` | `document_db_version` |
+
+`migrate down` tampoco los revierte.
+<!-- vogel:component bpms end -->
 
 `./api migrate down` revierte sólo la última migración de este servicio, nunca
 las de audit: `migrate.Down` deshace la última migración del conjunto que
@@ -454,6 +485,10 @@ mismo patrón del lado del worker.
 
 - `docs/USAGE_GUIDE.md` — cómo agregar un módulo de negocio nuevo, paso a paso.
 - `docs/CERBOS_POLICIES.md` — cómo escribir políticas Cerbos para este boilerplate.
+<!-- vogel:component bpms begin -->
+- `docs/BPMS.md` — la base BPMS: definiciones, efectos, guards, handlers y la
+  regla de la transacción.
+<!-- vogel:component bpms end -->
 <!-- vogel:component cerbos begin -->
 - `cerbos/README.md` — cómo se construye, valida y despliega la imagen del PDP
   con las políticas de `cerbos/policies`.
