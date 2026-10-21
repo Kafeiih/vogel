@@ -21,6 +21,7 @@ import (
 	// vogel:component bpms begin
 	documentmigrations "github.com/kafeiih/vogel/document/migrations"
 	workflowmigrations "github.com/kafeiih/vogel/workflow/migrations"
+
 	// vogel:component bpms end
 
 	// vogel:component worker begin
