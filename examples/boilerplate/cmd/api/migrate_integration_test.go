@@ -18,12 +18,12 @@ import (
 	"github.com/testcontainers/testcontainers-go/wait"
 
 	auditmigrations "github.com/kafeiih/vogel/audit/migrations"
+
 	// vogel:component bpms begin
 	documentmigrations "github.com/kafeiih/vogel/document/migrations"
 	workflowmigrations "github.com/kafeiih/vogel/workflow/migrations"
 
 	// vogel:component bpms end
-
 	// vogel:component worker begin
 	"github.com/kafeiih/vogel/examples/boilerplate/internal/infrastructure/config"
 
