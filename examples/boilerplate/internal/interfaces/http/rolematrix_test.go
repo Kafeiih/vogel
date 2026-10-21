@@ -66,11 +66,27 @@ var matrixPolicy = map[string]map[string][]string{
 		"list": {"admin"},
 		"view": {"admin", "auditor"},
 	},
+	// vogel:component bpms begin
+	"bpms:process": {
+		"publish": {"admin"},
+		"read":    {"admin", "operator"},
+		"start":   {"admin", "operator"},
+	},
+	"bpms:case": {
+		"inbox":  {"admin", "operator"},
+		"view":   {"admin", "operator"},
+		"claim":  {"admin", "operator"},
+		"submit": {"admin", "operator"},
+	},
+	// vogel:component bpms end
 }
 
 func TestNewRouter_RoleMatrix(t *testing.T) {
 	A, F, U := allowed, forbidden, unauthenticated
 	entryPath := "/audit/" + uuid.NewString()
+	// vogel:component bpms begin
+	casePath := "/cases/" + uuid.NewString()
+	// vogel:component bpms end
 
 	tests := []struct {
 		method, route, path string
@@ -82,6 +98,15 @@ func TestNewRouter_RoleMatrix(t *testing.T) {
 		{"GET", "/swagger/*", "/swagger/index.html", [5]outcome{A, A, A, A, A}},
 		{"GET", "/audit/", "/audit/", [5]outcome{U, U, F, F, A}},
 		{"GET", "/audit/{id}", entryPath, [5]outcome{U, U, F, A, A}},
+		// vogel:component bpms begin
+		{"POST", "/processes", "/processes", [5]outcome{U, U, F, F, A}},
+		{"GET", "/processes/{name}", "/processes/consulta", [5]outcome{U, U, F, F, A}},
+		{"POST", "/processes/{name}/cases", "/processes/consulta/cases", [5]outcome{U, U, F, F, A}},
+		{"GET", "/inbox", "/inbox", [5]outcome{U, U, F, F, A}},
+		{"GET", "/cases/{id}", casePath, [5]outcome{U, U, F, F, A}},
+		{"POST", "/cases/{id}/claim", casePath + "/claim", [5]outcome{U, U, F, F, A}},
+		{"POST", "/cases/{id}/submit", casePath + "/submit", [5]outcome{U, U, F, F, A}},
+		// vogel:component bpms end
 	}
 
 	router := newMatrixRouter(t)
@@ -133,6 +158,10 @@ func newMatrixRouter(t *testing.T) *chi.Mux {
 		Logger:        logger,
 		HealthHandler: handler.NewHealthHandler(okPinger{}, logger),
 		AuditHandler:  handler.NewAuditHandler(emptyAuditRepo{}, logger),
+		// vogel:component bpms begin
+
+		ProcessHandler: handler.NewProcessHandler(matrixProcessService{}, logger),
+		// vogel:component bpms end
 	})
 }
 

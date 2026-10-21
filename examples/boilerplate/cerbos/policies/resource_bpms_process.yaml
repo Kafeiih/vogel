@@ -1,0 +1,12 @@
+# Change together with cerbos/tests, rolematrix_test.go and docs/CERBOS_POLICIES.md.
+apiVersion: api.cerbos.dev/v1
+resourcePolicy:
+  version: "default"
+  resource: "bpms:process"
+  rules:
+    - actions: ["publish"]
+      effect: EFFECT_ALLOW
+      roles: ["admin"]
+    - actions: ["read", "start"]
+      effect: EFFECT_ALLOW
+      roles: ["admin", "operator"]

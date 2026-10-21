@@ -1,0 +1,100 @@
+name: BPMSTestSuite
+description: Who can publish processes and work their cases.
+principals:
+  admin:
+    id: admin-1
+    roles: ["admin"]
+  operator:
+    id: operator-1
+    roles: ["operator"]
+  auditor:
+    id: auditor-1
+    roles: ["auditor"]
+resources:
+  process:
+    id: consulta
+    kind: "bpms:process"
+  case:
+    id: case-1
+    kind: "bpms:case"
+tests:
+  - name: admin can do everything
+    input:
+      principals: ["admin"]
+      resources: ["process", "case"]
+      actions: ["publish", "read", "start", "inbox", "view", "claim", "submit"]
+    expected:
+      - principal: admin
+        resource: process
+        actions:
+          publish: EFFECT_ALLOW
+          read: EFFECT_ALLOW
+          start: EFFECT_ALLOW
+          inbox: EFFECT_DENY
+          view: EFFECT_DENY
+          claim: EFFECT_DENY
+          submit: EFFECT_DENY
+      - principal: admin
+        resource: case
+        actions:
+          publish: EFFECT_DENY
+          read: EFFECT_DENY
+          start: EFFECT_DENY
+          inbox: EFFECT_ALLOW
+          view: EFFECT_ALLOW
+          claim: EFFECT_ALLOW
+          submit: EFFECT_ALLOW
+
+  - name: operator works cases but cannot publish
+    input:
+      principals: ["operator"]
+      resources: ["process", "case"]
+      actions: ["publish", "read", "start", "inbox", "view", "claim", "submit"]
+    expected:
+      - principal: operator
+        resource: process
+        actions:
+          publish: EFFECT_DENY
+          read: EFFECT_ALLOW
+          start: EFFECT_ALLOW
+          inbox: EFFECT_DENY
+          view: EFFECT_DENY
+          claim: EFFECT_DENY
+          submit: EFFECT_DENY
+      - principal: operator
+        resource: case
+        actions:
+          publish: EFFECT_DENY
+          read: EFFECT_DENY
+          start: EFFECT_DENY
+          inbox: EFFECT_ALLOW
+          view: EFFECT_ALLOW
+          claim: EFFECT_ALLOW
+          submit: EFFECT_ALLOW
+
+  - name: any other role is denied
+    input:
+      principals: ["auditor"]
+      resources: ["process", "case"]
+      actions: ["publish", "read", "start", "inbox", "view", "claim", "submit"]
+    expected:
+      - principal: auditor
+        resource: process
+        actions:
+          publish: EFFECT_DENY
+          read: EFFECT_DENY
+          start: EFFECT_DENY
+          inbox: EFFECT_DENY
+          view: EFFECT_DENY
+          claim: EFFECT_DENY
+          submit: EFFECT_DENY
+      - principal: auditor
+        resource: case
+        actions:
+          publish: EFFECT_DENY
+          read: EFFECT_DENY
+          start: EFFECT_DENY
+          inbox: EFFECT_DENY
+          view: EFFECT_DENY
+          claim: EFFECT_DENY
+          submit: EFFECT_DENY

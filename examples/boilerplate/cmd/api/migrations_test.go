@@ -8,6 +8,8 @@ import (
 	// vogel:component bpms begin
 	documentmigrations "github.com/kafeiih/vogel/document/migrations"
 	workflowmigrations "github.com/kafeiih/vogel/workflow/migrations"
+
+	bpmsmigrations "github.com/kafeiih/vogel/examples/boilerplate/internal/infrastructure/bpms/migrations"
 	// vogel:component bpms end
 )
 
@@ -23,6 +25,7 @@ func TestMigrationSets(t *testing.T) {
 		// vogel:component bpms begin
 		{name: "workflow", tableName: workflowmigrations.DefaultTableName},
 		{name: "document", tableName: documentmigrations.DefaultTableName},
+		{name: "bpms", tableName: bpmsmigrations.TableName},
 		// vogel:component bpms end
 	}
 	if len(sets) != len(want) {

@@ -15,6 +15,15 @@ PDP image is built, validated and deployed.
 |---------------|--------|--------------------|----------------------|
 | `audit:entry` | `list` | `admin`            | `GET /audit`      |
 | `audit:entry` | `view` | `admin`, `auditor` | `GET /audit/{id}` |
+<!-- vogel:component bpms begin -->
+| `bpms:process` | `publish` | `admin` | `POST /processes` |
+| `bpms:process` | `read` | `admin`, `operator` | `GET /processes/{name}` |
+| `bpms:process` | `start` | `admin`, `operator` | `POST /processes/{name}/cases` |
+| `bpms:case` | `inbox` | `admin`, `operator` | `GET /inbox` |
+| `bpms:case` | `view` | `admin`, `operator` | `GET /cases/{id}` |
+| `bpms:case` | `claim` | `admin`, `operator` | `POST /cases/{id}/claim` |
+| `bpms:case` | `submit` | `admin`, `operator` | `POST /cases/{id}/submit` |
+<!-- vogel:component bpms end -->
 
 `internal/interfaces/http/rolematrix_test.go` pins the same matrix at the
 HTTP layer, with a stand-in for the PDP; keep it and the policy in sync.

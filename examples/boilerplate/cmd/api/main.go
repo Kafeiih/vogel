@@ -46,6 +46,7 @@ import (
 	// vogel:component worker end
 	// vogel:component bpms begin
 	"github.com/kafeiih/vogel/examples/boilerplate/internal/infrastructure/bpms"
+	bpmsmigrations "github.com/kafeiih/vogel/examples/boilerplate/internal/infrastructure/bpms/migrations"
 
 	// vogel:component bpms end
 	// vogel:component tracing begin
@@ -221,6 +222,7 @@ func migrationSets() []migrationSet {
 		// vogel:component bpms begin
 		{name: "workflow", fsys: workflowmigrations.FS(), opts: migrate.Options{TableName: workflowmigrations.DefaultTableName}},
 		{name: "document", fsys: documentmigrations.FS(), opts: migrate.Options{TableName: documentmigrations.DefaultTableName}},
+		{name: "bpms", fsys: bpmsmigrations.FS, opts: migrate.Options{TableName: bpmsmigrations.TableName}},
 		// vogel:component bpms end
 	}
 }
@@ -331,6 +333,9 @@ func runServer(migrateFirst bool) error {
 	auditRecorder := auditpkg.NewRecorder(auditRepo)
 	_ = auditRecorder // Remove once command handlers take it, with audit.SourceHTTP.
 
+	// vogel:component bpms begin
+	var processHandler *handler.ProcessHandler
+	// vogel:component bpms end
 	// vogel:component storage begin
 	if len(cfg.Storages) > 0 {
 		// vogel:component tracing begin
@@ -365,8 +370,14 @@ func runServer(migrateFirst bool) error {
 		if err != nil {
 			return fmt.Errorf("initializing bpms: %w", err)
 		}
-		_ = bpmsBase // Remove once handlers open and move cases, always on a pgx.Tx (see docs/BPMS.md).
-		appLogger.Info("bpms initialized", "definitions", len(bpmsBase.Engine.Definitions()))
+		processesCtx, processesCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer processesCancel()
+		processes, err := bpms.NewDomain(processesCtx, pool, bpmsBase.Engine, bpms.NewMemoryDirectory(profileHolders(cfg.BPMS.ProfileHolders)...))
+		if err != nil {
+			return fmt.Errorf("initializing bpms processes: %w", err)
+		}
+		processHandler = handler.NewProcessHandler(processes.Service, appLogger.Logger)
+		appLogger.Info("bpms initialized", "definitions", len(bpmsBase.Engine.Definitions()), "profile_holders", len(cfg.BPMS.ProfileHolders))
 		// vogel:component bpms end
 	}
 
@@ -393,6 +404,9 @@ func runServer(migrateFirst bool) error {
 		HealthHandler: healthHandler,
 		AuditHandler:  auditHandler,
 	}
+	// vogel:component bpms begin
+	deps.ProcessHandler = processHandler
+	// vogel:component bpms end
 	// vogel:component tracing begin
 	deps.Tracing = otel.Middleware()
 	// vogel:component tracing end
@@ -410,6 +424,16 @@ func runServer(migrateFirst bool) error {
 	return server.Start(httpiface.MetricsDrainer(metricsSrv, appLogger.Logger))
 }
 
+// vogel:component bpms begin
+func profileHolders(in []config.ProfileHolder) []bpms.ProfileHolder {
+	out := make([]bpms.ProfileHolder, 0, len(in))
+	for _, h := range in {
+		out = append(out, bpms.ProfileHolder{Position: h.Position, Unit: h.Unit, UserID: h.UserID})
+	}
+	return out
+}
+
+// vogel:component bpms end
 var (
 	cerbosProbeTimeout    = 5 * time.Second
 	cerbosProbeBudget     = 30 * time.Second

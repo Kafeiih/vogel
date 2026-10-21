@@ -111,3 +111,53 @@ func TestLoad_BPMS(t *testing.T) {
 		t.Errorf("BPMS = %+v, want the Gotenberg URL and the documents storage", cfg.BPMS)
 	}
 }
+
+func TestParseBPMSConfig_ProfileHolders(t *testing.T) {
+	t.Setenv("GOTENBERG_URL", "http://gotenberg:3000")
+	t.Setenv("BPMS_PROFILE_HOLDERS", " encargado@atencion=123 , encargado @ atencion = 456,jefe@ti=789 ")
+
+	cfg, err := parseBPMS(t)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []ProfileHolder{
+		{Position: "encargado", Unit: "atencion", UserID: "123"},
+		{Position: "encargado", Unit: "atencion", UserID: "456"},
+		{Position: "jefe", Unit: "ti", UserID: "789"},
+	}
+	if len(cfg.ProfileHolders) != len(want) {
+		t.Fatalf("ProfileHolders = %+v, want %+v", cfg.ProfileHolders, want)
+	}
+	for i := range want {
+		if cfg.ProfileHolders[i] != want[i] {
+			t.Errorf("ProfileHolders[%d] = %+v, want %+v", i, cfg.ProfileHolders[i], want[i])
+		}
+	}
+}
+
+func TestParseBPMSConfig_ProfileHoldersUnsetIsEmpty(t *testing.T) {
+	t.Setenv("GOTENBERG_URL", "http://gotenberg:3000")
+	unsetEnv(t, "BPMS_PROFILE_HOLDERS")
+
+	cfg, err := parseBPMS(t)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.ProfileHolders) != 0 {
+		t.Errorf("ProfileHolders = %+v, want none", cfg.ProfileHolders)
+	}
+}
+
+func TestParseBPMSConfig_InvalidProfileHolders(t *testing.T) {
+	for _, v := range []string{"encargado=123", "encargado@atencion", "@atencion=123", "encargado@=123", "encargado@atencion="} {
+		t.Run(v, func(t *testing.T) {
+			t.Setenv("GOTENBERG_URL", "http://gotenberg:3000")
+			t.Setenv("BPMS_PROFILE_HOLDERS", v)
+
+			_, err := parseBPMS(t)
+			if err == nil || !strings.Contains(err.Error(), "BPMS_PROFILE_HOLDERS: entry "+`"`+v+`"`+" must look like position@unit=user-id") {
+				t.Fatalf("error = %v, want a BPMS_PROFILE_HOLDERS format error", err)
+			}
+		})
+	}
+}

@@ -66,8 +66,16 @@
         "storage"
       ],
       "paths": [
+        "internal/domain/process",
+        "internal/application/process",
         "internal/infrastructure/bpms",
         "internal/infrastructure/config/config_bpms_test.go",
+        "internal/interfaces/http/handler/process_handler.go",
+        "internal/interfaces/http/handler/process_handler_test.go",
+        "internal/interfaces/http/rolematrix_bpms_test.go",
+        "cerbos/policies/resource_bpms_process.yaml",
+        "cerbos/policies/resource_bpms_case.yaml",
+        "cerbos/tests/resource_bpms_test.yaml",
         "docs/BPMS.md"
       ]
     }

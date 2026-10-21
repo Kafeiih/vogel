@@ -20,7 +20,6 @@ AWS SDK, SendGrid o go-mail.
 | [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) | Límites de confianza, flujos y clasificación de datos, superficie de ataque con lo que cubre `vogel` y lo que queda a cargo de cada servicio, casos de abuso y riesgos residuales. |
 | [`docs/security/OWASP_CHECKLIST.md`](docs/security/OWASP_CHECKLIST.md) | Auditoría contra la lista de verificación de OWASP: estado y evidencia de cada ítem, qué queda a cargo del consumidor y brechas pendientes. |
 | [`examples/api/`](examples/api/) | Una API ejecutable que monta el módulo completo en un solo proceso. La referencia más confiable sobre cómo encajan las piezas. |
-| [`examples/bpms/`](examples/bpms/) | Un modelo de procesos sobre `workflow`: definiciones JSON versionadas, tipos de campo como plugins con reglas CEL y responsables resueltos en vivo por perfil. Módulo Go aparte. |
 
 Este README es el inventario: qué contiene cada paquete y por qué. Los
 documentos de arriba cubren lo que el inventario no puede — cómo se usa todo

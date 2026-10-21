@@ -56,6 +56,10 @@ type Dependencies struct {
 	Logger        *slog.Logger
 	HealthHandler *handler.HealthHandler
 	AuditHandler  *handler.AuditHandler
+	// vogel:component bpms begin
+
+	ProcessHandler *handler.ProcessHandler
+	// vogel:component bpms end
 	// vogel:component tracing begin
 
 	Tracing func(http.Handler) http.Handler
@@ -130,12 +134,35 @@ func NewRouter(deps Dependencies) *chi.Mux {
 				r.With(vmw.RequirePermission(deps.AuthzChecker, "audit:entry", "view", deps.Logger, authMessages)).
 					Get("/{id}", deps.AuditHandler.GetByID)
 			})
+			// vogel:component bpms begin
+
+			if deps.ProcessHandler != nil {
+				mountProcessRoutes(r, deps)
+			}
+			// vogel:component bpms end
 		})
 	})
 
 	return r
 }
 
+// vogel:component bpms begin
+func mountProcessRoutes(r chi.Router, deps Dependencies) {
+	can := func(kind, action string) func(http.Handler) http.Handler {
+		return vmw.RequirePermission(deps.AuthzChecker, kind, action, deps.Logger, authMessages)
+	}
+	h := deps.ProcessHandler
+
+	r.With(can("bpms:process", "publish")).Post("/processes", h.Publish)
+	r.With(can("bpms:process", "read")).Get("/processes/{name}", h.Latest)
+	r.With(can("bpms:process", "start")).Post("/processes/{name}/cases", h.Start)
+	r.With(can("bpms:case", "inbox")).Get("/inbox", h.Inbox)
+	r.With(can("bpms:case", "view")).Get("/cases/{id}", h.View)
+	r.With(can("bpms:case", "claim")).Post("/cases/{id}/claim", h.Claim)
+	r.With(can("bpms:case", "submit")).Post("/cases/{id}/submit", h.Submit)
+}
+
+// vogel:component bpms end
 func swaggerHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Security-Policy", swaggerCSP)

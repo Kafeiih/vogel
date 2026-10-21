@@ -100,8 +100,9 @@ que cero y como máximo `1h`: un valor inválido impide arrancar.
 <!-- vogel:component storage end -->
 <!-- vogel:component bpms begin -->
 Base BPMS: `GOTENBERG_URL` (obligatoria), `GOTENBERG_TIMEOUT` (default
-`30s`, máximo `45s`) y `BPMS_DOCUMENT_STORAGE` (default `documents`, debe estar en
-`STORAGE_CONFIGS`). Ver `docs/BPMS.md`.
+`30s`, máximo `45s`), `BPMS_DOCUMENT_STORAGE` (default `documents`, debe estar en
+`STORAGE_CONFIGS`) y `BPMS_PROFILE_HOLDERS` (quién tiene cada perfil, como
+`posicion@unidad=user-id`). Ver `docs/BPMS.md`.
 <!-- vogel:component bpms end -->
 <!-- vogel:component notification begin -->
 Notificaciones: `NOTIFICATION_PROVIDER`, `NOTIFICATION_DEFAULT_FROM`,
@@ -339,8 +340,10 @@ migrate-up`, `make lint`, `make docker-build`, ...).
 <!-- vogel:component tracing end -->
 <!-- vogel:component bpms begin -->
 - **Base BPMS**: `vogel/workflow`, `vogel/action` y `vogel/document`
-  (+ `gotenberg`, `docflow`), armados por `internal/infrastructure/bpms`. El
-  proceso de negocio es propio y va en `internal/infrastructure/bpms/process.go`;
+  (+ `gotenberg`, `docflow`), armados por `internal/infrastructure/bpms`, y un
+  dominio de procesos en capas (`internal/domain/process`,
+  `internal/application/process`, `internal/infrastructure/bpms`, rutas
+  `/processes`, `/inbox` y `/cases`) con el proceso `consulta` ya publicado;
   ver `docs/BPMS.md`.
 <!-- vogel:component bpms end -->
 
@@ -369,13 +372,14 @@ en silencio — por eso `migrate.Options.TableName` es un parámetro obligatorio
 del llamador, no una constante escondida en la librería.
 <!-- vogel:component bpms begin -->
 
-Con la base BPMS este servicio monta además `vogel/workflow/migrations` y
-`vogel/document/migrations`, después de los dos de arriba:
+Con la base BPMS este servicio monta además tres conjuntos, después de los
+dos de arriba:
 
 | Conjunto | Tabla de versión |
 |---|---|
 | `vogel/workflow/migrations` | `workflow_db_version` |
 | `vogel/document/migrations` | `document_db_version` |
+| `internal/infrastructure/bpms/migrations` | `bpms_db_version` |
 
 `migrate down` tampoco los revierte.
 <!-- vogel:component bpms end -->
@@ -482,8 +486,8 @@ mismo patrón del lado del worker.
 - `docs/USAGE_GUIDE.md` — cómo agregar un módulo de negocio nuevo, paso a paso.
 - `docs/CERBOS_POLICIES.md` — cómo escribir políticas Cerbos para este boilerplate.
 <!-- vogel:component bpms begin -->
-- `docs/BPMS.md` — la base BPMS: definiciones, efectos, guards, handlers y la
-  regla de la transacción.
+- `docs/BPMS.md` — la base BPMS: el dominio de procesos, sus rutas,
+  definiciones, efectos, guards, handlers y la regla de la transacción.
 <!-- vogel:component bpms end -->
 <!-- vogel:component cerbos begin -->
 - `cerbos/README.md` — cómo se construye, valida y despliega la imagen del PDP

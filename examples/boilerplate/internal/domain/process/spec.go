@@ -1,59 +1,40 @@
-package main
+package process
 
 import (
 	"bytes"
-	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
 
+	"github.com/kafeiih/vogel/request"
 	"github.com/kafeiih/vogel/workflow"
 )
 
-// consultaJSON is the inquiry process this example publishes at boot when
-// no version of it exists yet.
-//
-//go:embed consulta.json
-var consultaJSON []byte
-
-// ProcessSpec is a process definition as an author writes it: the flow
-// graph, who handles each node, and each node's form. It carries no version:
-// the catalog assigns one when the spec is published.
 type ProcessSpec struct {
 	Name        string           `json:"name"`
 	Nodes       []NodeSpec       `json:"nodes"`
 	Transitions []TransitionSpec `json:"transitions"`
 }
 
-// NodeSpec is one node of a ProcessSpec.
 type NodeSpec struct {
-	ID       string `json:"id"`
-	Start    bool   `json:"start,omitempty"`
-	Terminal bool   `json:"terminal,omitempty"`
-	// Profile is who handles the node, as a profile (a position in a unit),
-	// never as a person. Who holds the profile is resolved live through a
-	// ProfileResolver. The start node has no profile: whoever opens the case
-	// fills it in.
-	Profile *ProfileSpec `json:"profile,omitempty"`
-	Form    []FieldSpec  `json:"form,omitempty"`
+	ID       string       `json:"id"`
+	Start    bool         `json:"start,omitempty"`
+	Terminal bool         `json:"terminal,omitempty"`
+	Profile  *ProfileSpec `json:"profile,omitempty"`
+	Form     []FieldSpec  `json:"form,omitempty"`
 }
 
-// ProfileSpec names a profile. Unit is required: cases in this example
-// belong to no unit, so there is no case unit to fall back to.
 type ProfileSpec struct {
 	Position string `json:"position"`
 	Unit     string `json:"unit,omitempty"`
 }
 
-// TransitionSpec is one edge of a ProcessSpec.
 type TransitionSpec struct {
 	From   string `json:"from"`
 	To     string `json:"to"`
 	Action string `json:"action"`
 }
 
-// ParseProcessSpec strictly decodes a spec. A "version" key is rejected
-// because versions are assigned on publish, never written by an author.
 func ParseProcessSpec(raw []byte) (ProcessSpec, error) {
 	var probe map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &probe); err != nil {
@@ -72,18 +53,41 @@ func ParseProcessSpec(raw []byte) (ProcessSpec, error) {
 	return spec, nil
 }
 
-// Process is a published, compiled spec: the engine definition plus one
-// compiled form per node that has fields.
 type Process struct {
 	Spec       ProcessSpec
 	Definition workflow.Definition
 	Forms      map[string]*Form
 }
 
-// CompileProcess validates spec as version and compiles it. It checks the
-// graph (workflow.Definition.Validate), every field type and option against
-// reg, and every visibleWhen rule. Any error means the spec cannot be
-// published.
+func (p *Process) ValidateNode(nodeID string, values, caseData map[string]any) (map[string]any, error) {
+	form, ok := p.Forms[nodeID]
+	if !ok {
+		if len(values) > 0 {
+			errs := request.FieldErrors{}
+			for k := range values {
+				errs[k] = "is not a field of this form"
+			}
+			return nil, &FormError{Fields: errs}
+		}
+		return nil, nil
+	}
+	clean, errs := form.Validate(values, caseData)
+	if len(errs) > 0 {
+		return nil, &FormError{Fields: errs}
+	}
+	return clean, nil
+}
+
+func (p *Process) ProfiledNodes() []string {
+	var ids []string
+	for _, n := range p.Definition.Nodes {
+		if !n.Eligible.IsZero() {
+			ids = append(ids, n.ID)
+		}
+	}
+	return ids
+}
+
 func CompileProcess(reg *FieldRegistry, spec ProcessSpec, version int) (*Process, error) {
 	def := workflow.Definition{Name: spec.Name, Version: version}
 	var allFields []FieldSpec

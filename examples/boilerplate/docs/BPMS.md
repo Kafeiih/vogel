@@ -1,7 +1,11 @@
 # Base BPMS
 
-El componente `bpms` arma, sin ningún proceso de negocio propio, las tres
-piezas de la base BPMS de `vogel`:
+El componente `bpms` arma las tres piezas de la base BPMS de `vogel` y, sobre
+ellas, un dominio de procesos listo para replicar: definiciones JSON
+versionadas con formularios, bandeja por perfil y el proceso `consulta` ya
+publicado.
+
+Las tres piezas de `vogel`:
 
 | Pieza | Paquete de `vogel` | Qué hace |
 |---|---|---|
@@ -14,9 +18,67 @@ encola) y el worker (que ejecuta) llaman a la misma función, así que los dos
 registran exactamente los mismos efectos. La API no corre ningún efecto:
 solo los encola; el worker los ejecuta con `action.AddWorker`.
 
-`migrate up` aplica dos conjuntos de migraciones más, cada uno con su tabla
-de versión: `vogel/workflow/migrations` (`workflow_db_version`) y
-`vogel/document/migrations` (`document_db_version`).
+`migrate up` aplica tres conjuntos de migraciones más, cada uno con su tabla
+de versión: `vogel/workflow/migrations` (`workflow_db_version`),
+`vogel/document/migrations` (`document_db_version`) y las del dominio de
+procesos, `internal/infrastructure/bpms/migrations` (`bpms_db_version`).
+
+## El dominio de procesos
+
+| Capa | Carpeta | Qué contiene |
+|---|---|---|
+| Dominio | `internal/domain/process` | `ProcessSpec` (el JSON que escribe un autor), `CompileProcess` (valida el grafo, cada campo y cada regla), tipos de campo (`FieldType`, `FieldRegistry`), formularios con reglas `visibleWhen` en CEL, el puerto `ProfileResolver` y los errores del dominio. No conoce la base de datos ni HTTP. |
+| Aplicación | `internal/application/process` | `Catalog` (publica y carga versiones, las registra en el motor) y `Service` (iniciar, bandeja, tomar, enviar, ver). Define sus puertos: `VersionRepository`, `ValueRepository`, `CaseReader`. |
+| Infraestructura | `internal/infrastructure/bpms` | Repositorios Postgres (`process_version`, `case_value`), migraciones, `MemoryDirectory` (implementa `ProfileResolver`), los procesos semilla en `processes/*.json` y `NewDomain`, que arma todo. |
+| Interfaces | `internal/interfaces/http/handler/process_handler.go` | Las rutas HTTP. El actor es el usuario autenticado (`auth.FromContext`). |
+
+### Rutas
+
+Todas exigen autenticación y pasan por Cerbos (`cerbos/policies/resource_bpms_*.yaml`):
+
+| Ruta | Recurso / acción | Roles |
+|---|---|---|
+| `POST /processes` | `bpms:process` / `publish` | `admin` |
+| `GET /processes/{name}` | `bpms:process` / `read` | `admin`, `operator` |
+| `POST /processes/{name}/cases` | `bpms:process` / `start` | `admin`, `operator` |
+| `GET /inbox` | `bpms:case` / `inbox` | `admin`, `operator` |
+| `GET /cases/{id}` | `bpms:case` / `view` | `admin`, `operator` |
+| `POST /cases/{id}/claim` | `bpms:case` / `claim` | `admin`, `operator` |
+| `POST /cases/{id}/submit` | `bpms:case` / `submit` | `admin`, `operator` |
+
+Cerbos decide por rol. El servicio decide por caso: solo quien tiene hoy el
+perfil del nodo actual puede tomar la tarea, solo quien la tomó puede
+enviarla (`Engine.Move` no compara el actor con el asignado) y solo ve un caso
+quien actuó en él, lo tiene tomado o tiene el perfil de su nodo actual.
+
+### Publicar y versionar
+
+Un proceso es un JSON con nodos, transiciones y un formulario por nodo (ver
+`internal/infrastructure/bpms/processes/consulta.json`). Publicar compila todo
+y guarda la siguiente versión, inmutable; un caso sigue siempre con la versión
+con la que se abrió. El arranque recarga todas las versiones guardadas y una
+que ya no compila hace fallar el arranque, en vez de dejar casos varados.
+
+Al arrancar, cada `processes/*.json` cuyo nombre todavía no tiene versión se
+publica como versión 1; si ya tiene, no se toca. Para cambiar un proceso
+publicado, publique una versión nueva con `POST /processes`. Varias réplicas
+pueden arrancar a la vez: solo una inserta la semilla.
+
+### Agregar un tipo de campo
+
+Implemente `process.FieldType` (`Key`, `ValidateConfig`, `Validate`,
+`CELType`) en `internal/domain/process/field.go` y agréguelo a
+`DefaultFieldTypes`. Ni el motor ni las versiones publicadas cambian.
+
+### Quién tiene un perfil
+
+Un nodo nombra un perfil (`{"position": "encargado", "unit": "atencion"}`),
+nunca una persona. `ProfileResolver` responde quién lo tiene en el momento de
+preguntar, así que un cambio de titular o una subrogancia se ve en la bandeja
+al instante, sin reasignar nada. `MemoryDirectory` lo implementa con lo que
+dice `BPMS_PROFILE_HOLDERS`; en producción reemplácelo por un cliente del
+directorio de la organización (SAFO) que implemente el mismo puerto y páselo a
+`bpms.NewDomain` en `cmd/api/main.go`.
 
 ## Configuración
 
@@ -25,13 +87,16 @@ de versión: `vogel/workflow/migrations` (`workflow_db_version`) y
 | `GOTENBERG_URL` | — (obligatoria) | URL base de Gotenberg, p. ej. `http://localhost:3001` (local) o `http://gotenberg:3000` (compose de despliegue). |
 | `GOTENBERG_TIMEOUT` | `30s` | Tope de una conversión a PDF. Mayor que cero y como máximo `45s`: River cancela el trabajo al minuto y la subida y el insert necesitan su margen. |
 | `BPMS_DOCUMENT_STORAGE` | `documents` | Backend de `STORAGE_CONFIGS` donde se guardan los PDF. Si no está en `STORAGE_CONFIGS`, el arranque falla. |
+| `BPMS_PROFILE_HOLDERS` | vacío | Quién tiene cada perfil para `MemoryDirectory`, como `posicion@unidad=user-id` separados por coma (el user id es el `sub` de Zitadel), p. ej. `encargado@atencion=312345678901234567`. Repita la entrada para más de una persona. Vacío: nadie tiene perfiles y las bandejas quedan vacías. |
 
 `make dev-infra` levanta Gotenberg en `127.0.0.1:3001` (el 3000 queda libre para el frontend). Chromium tiene prohibido conectarse a cualquier IP, privada o pública, y no ejecuta JavaScript: una plantilla debe ser autocontenida (CSS en línea, imágenes como `data:` URI), y así un dato que llegue a la plantilla no puede hacer que Gotenberg pida una URL (SSRF). No trae un S3 local:
 apunte `STORAGE_DOCUMENTS_*` a un endpoint S3-compatible.
 
-## Dónde va el proceso de su servicio
+## Procesos definidos en código, con efectos
 
-Todo lo propio va en `service`, en `internal/infrastructure/bpms/process.go`:
+Las definiciones JSON no declaran efectos ni guards. Un proceso que los
+necesite (generar un PDF, notificar) se define en Go, en `service`, en
+`internal/infrastructure/bpms/process.go`:
 
 ```go
 var service = Process{

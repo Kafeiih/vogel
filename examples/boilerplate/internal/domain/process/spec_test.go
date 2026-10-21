@@ -1,7 +1,8 @@
-package main
+package process
 
 import (
 	"encoding/json"
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -12,7 +13,9 @@ import (
 
 func loadConsultaSpec(t *testing.T) ProcessSpec {
 	t.Helper()
-	spec, err := ParseProcessSpec(consultaJSON)
+	raw, err := os.ReadFile("../../infrastructure/bpms/processes/consulta.json")
+	require.NoError(t, err)
+	spec, err := ParseProcessSpec(raw)
 	require.NoError(t, err)
 	return spec
 }
@@ -111,4 +114,32 @@ func TestProcessSpecRoundTrips(t *testing.T) {
 	assert.JSONEq(t, string(raw), string(rawAgain))
 	assert.Equal(t, spec.Name, again.Name)
 	assert.Len(t, again.Nodes, len(spec.Nodes))
+}
+
+func TestProcessValidateNode(t *testing.T) {
+	p, err := CompileProcess(testRegistry(t), loadConsultaSpec(t), 1)
+	require.NoError(t, err)
+
+	clean, err := p.ValidateNode("respuesta", map[string]any{"respuesta": "listo"}, nil)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]any{"respuesta": "listo"}, clean)
+
+	_, err = p.ValidateNode("respuesta", map[string]any{}, nil)
+	var formErr *FormError
+	require.ErrorAs(t, err, &formErr)
+	assert.Equal(t, "is required", formErr.Fields["respuesta"])
+
+	clean, err = p.ValidateNode("cerrada", nil, nil)
+	require.NoError(t, err)
+	assert.Nil(t, clean)
+
+	_, err = p.ValidateNode("cerrada", map[string]any{"x": "y"}, nil)
+	require.ErrorAs(t, err, &formErr)
+	assert.Equal(t, "is not a field of this form", formErr.Fields["x"])
+}
+
+func TestProcessProfiledNodes(t *testing.T) {
+	p, err := CompileProcess(testRegistry(t), loadConsultaSpec(t), 1)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"respuesta"}, p.ProfiledNodes())
 }

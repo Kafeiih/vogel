@@ -26,8 +26,12 @@ GRANT SELECT, INSERT ON audit_log TO app_runtime;
 REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON goose_db_version, vogel_db_version FROM app_runtime;
 GRANT SELECT ON goose_db_version, vogel_db_version TO app_runtime;
 -- vogel:component bpms begin
-REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON workflow_db_version, document_db_version FROM app_runtime;
-GRANT SELECT ON workflow_db_version, document_db_version TO app_runtime;
+REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON workflow_db_version, document_db_version, bpms_db_version FROM app_runtime;
+GRANT SELECT ON workflow_db_version, document_db_version, bpms_db_version TO app_runtime;
+
+-- Published process versions and case values are append-only.
+REVOKE UPDATE, DELETE, TRUNCATE ON process_version, case_value FROM app_runtime;
+GRANT SELECT, INSERT ON process_version, case_value TO app_runtime;
 -- vogel:component bpms end
 
 -- vogel:component worker begin

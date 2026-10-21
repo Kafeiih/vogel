@@ -1,0 +1,10 @@
+# Change together with cerbos/tests, rolematrix_test.go and docs/CERBOS_POLICIES.md.
+# Per-case checks (profile holder, claimant, related actor) run in the service.
+apiVersion: api.cerbos.dev/v1
+resourcePolicy:
+  version: "default"
+  resource: "bpms:case"
+  rules:
+    - actions: ["inbox", "view", "claim", "submit"]
+      effect: EFFECT_ALLOW
+      roles: ["admin", "operator"]
