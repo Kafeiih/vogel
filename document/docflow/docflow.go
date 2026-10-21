@@ -38,7 +38,7 @@ type BuildFunc func(ctx context.Context, r action.Run) (document.GenerateInput, 
 // generates at most one document: the source key defaults to
 // "<case id>/<event seq>/<effect>", so a retried job returns the document a
 // previous attempt stored. Input the document package rejects as invalid, a
-// template that fails to parse or execute, a render the Renderer rejects
+// template that fails to parse or execute, a document the Renderer rejects
 // (document.ErrRenderRejected) and an empty PDF cancel the job, since a
 // retry cannot fix them; every other error, including one from build, is
 // returned so River retries. db is where the metadata row

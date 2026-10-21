@@ -1,6 +1,6 @@
 // Package gotenberg is a document.Renderer backed by a Gotenberg server's
-// Chromium HTML route. It talks plain HTTP (no Go SDK), so the only
-// dependency is the standard library.
+// Chromium HTML route. It talks plain HTTP (no Go SDK), so it depends only
+// on the standard library and the document package.
 //
 // The request shape follows the Gotenberg docs
 // (https://gotenberg.dev/docs/convert-with-chromium/convert-html-to-pdf,
@@ -46,8 +46,8 @@ var (
 	// the body is discarded. It also wraps document.ErrRenderRejected.
 	ErrResponseTooLarge = errors.New("gotenberg: response exceeds the configured size limit")
 	// ErrUnexpectedStatus reports a non-2xx response. The error text carries
-	// the status code and the start of Gotenberg's plain-text message. A 4xx
-	// other than 408 and 429 also wraps document.ErrRenderRejected.
+	// the status code and the start of Gotenberg's plain-text message. A 400,
+	// 403, 409, 413 or 422 also wraps document.ErrRenderRejected.
 	ErrUnexpectedStatus = errors.New("gotenberg: unexpected response status")
 )
 
@@ -147,9 +147,16 @@ func (r *Renderer) Render(ctx context.Context, html []byte) ([]byte, error) {
 }
 
 // permanentStatus reports whether a status means Gotenberg cannot convert
-// this HTML, so sending it again cannot help.
+// this HTML, so sending it again cannot help. Every other status is retried,
+// including 401 and 404: they usually come from a proxy or a wrong base URL,
+// which an operator can fix while the job is still retrying.
 func permanentStatus(code int) bool {
-	return code >= 400 && code < 500 && code != http.StatusRequestTimeout && code != http.StatusTooManyRequests
+	switch code {
+	case http.StatusBadRequest, http.StatusForbidden, http.StatusConflict,
+		http.StatusRequestEntityTooLarge, http.StatusUnprocessableEntity:
+		return true
+	}
+	return false
 }
 
 // rejected keeps err's text and adds document.ErrRenderRejected to its chain.

@@ -274,9 +274,9 @@ timeout". Las cabeceras se limitan a 64 KiB (`maxHeaderBytes`).
 un `PUT` al bucket falso, que corre en este mismo servidor.
 
 `router_test.go` recorre el router con `chi.Walk` y falla si alguna ruta
-bajo `/api/` responde sin pasar por `RequirePermission` o `RequireAccess`,
-o si aparece una ruta pública fuera de `/api/` que no esté declarada en
-`publicRoutes` (hoy, `/healthz` y el `GET`/`PUT` de `/fake-storage/*`). `rolematrix_test.go` fija, para cada ruta y cada tipo de
+que no esté declarada en `publicRoutes` (hoy, `/healthz` y el `GET`/`PUT` de
+`/fake-storage/*`) responde sin pasar por `RequirePermission` o
+`RequireAccess`. `rolematrix_test.go` fija, para cada ruta y cada tipo de
 llamador (anónimo, token inválido, usuario común, dueño, admin), si los
 guards lo dejan pasar, y falla si aparece una ruta sin fila en la matriz.
 
