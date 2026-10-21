@@ -23,7 +23,7 @@ de versión: `vogel/workflow/migrations` (`workflow_db_version`) y
 | Variable | Default | Efecto |
 |---|---|---|
 | `GOTENBERG_URL` | — (obligatoria) | URL base de Gotenberg, p. ej. `http://localhost:3001` (local) o `http://gotenberg:3000` (compose de despliegue). |
-| `GOTENBERG_TIMEOUT` | `30s` | Tope de una conversión a PDF. Debe ser mayor que cero. |
+| `GOTENBERG_TIMEOUT` | `30s` | Tope de una conversión a PDF. Mayor que cero y como máximo `45s`: River cancela el trabajo al minuto y la subida y el insert necesitan su margen. |
 | `BPMS_DOCUMENT_STORAGE` | `documents` | Backend de `STORAGE_CONFIGS` donde se guardan los PDF. Si no está en `STORAGE_CONFIGS`, el arranque falla. |
 
 `make dev-infra` levanta Gotenberg en `127.0.0.1:3001` (el 3000 queda libre para el frontend). Chromium tiene prohibido conectarse a cualquier IP, privada o pública, y no ejecuta JavaScript: una plantilla debe ser autocontenida (CSS en línea, imágenes como `data:` URI), y así un dato que llegue a la plantilla no puede hacer que Gotenberg pida una URL (SSRF). No trae un S3 local:
@@ -44,7 +44,10 @@ var service = Process{
 `bpms.New` los registra en ese orden: efectos, guards y después las
 `Definition`. `Engine.Register` rechaza una `Definition` que nombra un efecto
 que el registro no conoce (`workflow.ErrUnknownEffect`), así que un nombre mal
-escrito hace fallar el arranque, no el primer caso.
+escrito hace fallar el arranque, no el primer caso. En un despliegue
+escalonado, un worker que todavía corre la versión anterior puede tomar el
+trabajo de un efecto nuevo: no lo cancela, lo reintenta con backoff hasta que
+lo toma un worker nuevo.
 
 ### 1. Declarar una `Definition` con efectos
 
@@ -86,7 +89,11 @@ Guards: func(e *workflow.Engine, docs *document.Service) error {
 ### 3. Registrar un handler
 
 `docflow.Generate` genera un PDF por corrida, idempotente ante reintentos
-(la clave de origen es `<caso>/<seq>/<efecto>`):
+(la clave de origen es `<caso>/<seq>/<efecto>`). Cancela el trabajo sin
+reintentar cuando reintentar no sirve: entrada inválida, plantilla que falla,
+PDF vacío o un documento que Gotenberg rechaza (un 4xx salvo 408 y 429, o un
+PDF más grande que el límite). Un Gotenberg caído, lento o saturado se
+reintenta:
 
 ```go
 Effects: func(r *action.Registry, docs *document.Service, db pgxtx.DBTX) error {
@@ -143,5 +150,7 @@ err := txm.WithTx(ctx, func(ctx context.Context) error {
 ```
 
 Los PDF quedan en el storage aunque la transacción que registró su fila haga
-rollback (el storage no es transaccional): un barrido de objetos sin fila en
-`document_record` los limpia.
+rollback (el storage no es transaccional), y también si falla el borrado de
+limpieza después de un insert fallido. Ni `vogel` ni este boilerplate traen un
+barrido de esos objetos huérfanos: si importan, el servicio debe programar uno
+que borre los objetos del prefijo `documents/` sin fila en `document_record`.

@@ -100,7 +100,7 @@ que cero y como máximo `1h`: un valor inválido impide arrancar.
 <!-- vogel:component storage end -->
 <!-- vogel:component bpms begin -->
 Base BPMS: `GOTENBERG_URL` (obligatoria), `GOTENBERG_TIMEOUT` (default
-`30s`) y `BPMS_DOCUMENT_STORAGE` (default `documents`, debe estar en
+`30s`, máximo `45s`) y `BPMS_DOCUMENT_STORAGE` (default `documents`, debe estar en
 `STORAGE_CONFIGS`). Ver `docs/BPMS.md`.
 <!-- vogel:component bpms end -->
 <!-- vogel:component notification begin -->
@@ -351,7 +351,7 @@ deliberadamente una librería de ejecución (`Up`/`Down`/`Status`), no de
 autoría de migraciones. Se conserva porque sigue siendo una comodidad de
 desarrollo real y no depende de nada que se haya borrado.
 
-### Tres conjuntos de migraciones, dos tablas de versión
+### Conjuntos de migraciones y tablas de versión
 
 `cmd/api/main.go` declara los conjuntos en `migrationSets()` y aplica cada uno
 contra su propia tabla de versión de goose. `./api start-from-migrate` y
@@ -363,18 +363,14 @@ discreto del despliegue deja la base igual que `start-from-migrate`:
 | Las de este servicio (`internal/infrastructure/database/migrations/`) | `goose_db_version` (default) |
 | `vogel/audit/migrations` | `vogel_db_version` |
 
-Un tercer conjunto, `vogel/workflow/migrations` (tabla `workflow_db_version`),
-existe en `vogel` pero **no se monta acá** porque este boilerplate no usa
-`vogel/workflow` — ver `docs/USAGE_GUIDE.md` si su servicio sí necesita un
-motor de BPM/workflow. Los tres conjuntos numeran independientemente desde
-`001`; con una tabla compartida, el segundo en correr se vería como "ya
-aplicado" y se saltearía en silencio — por eso `migrate.Options.TableName` es
-un parámetro obligatorio del llamador, no una constante escondida en la
-librería.
+Cada conjunto numera independientemente desde `001`; con una tabla
+compartida, el segundo en correr se vería como "ya aplicado" y se saltearía
+en silencio — por eso `migrate.Options.TableName` es un parámetro obligatorio
+del llamador, no una constante escondida en la librería.
 <!-- vogel:component bpms begin -->
 
-Con la base BPMS este servicio sí monta `vogel/workflow/migrations` y
-también `vogel/document/migrations`, después de los dos de arriba:
+Con la base BPMS este servicio monta además `vogel/workflow/migrations` y
+`vogel/document/migrations`, después de los dos de arriba:
 
 | Conjunto | Tabla de versión |
 |---|---|

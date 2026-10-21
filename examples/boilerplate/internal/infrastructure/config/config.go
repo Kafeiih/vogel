@@ -442,7 +442,11 @@ func parseTracingConfig(errs *config.Errors, env, version string) otel.Config {
 
 // vogel:component tracing end
 // vogel:component bpms begin
-const defaultDocumentStorage = "documents"
+const (
+	defaultDocumentStorage = "documents"
+	// River cancels a job after 1m (JobTimeoutDefault): leave room for the upload and the insert.
+	maxGotenbergTimeout = 45 * time.Second
+)
 
 func parseBPMSConfig(errs *config.Errors) BPMSConfig {
 	cfg := BPMSConfig{
@@ -451,6 +455,10 @@ func parseBPMSConfig(errs *config.Errors) BPMSConfig {
 			BaseURL: errs.Require("GOTENBERG_URL"),
 			Timeout: positiveDuration(errs, "GOTENBERG_TIMEOUT", gotenberg.DefaultTimeout),
 		},
+	}
+	if cfg.Gotenberg.Timeout > maxGotenbergTimeout {
+		errs.Addf("GOTENBERG_TIMEOUT: must be at most %s, got %s", maxGotenbergTimeout, cfg.Gotenberg.Timeout)
+		cfg.Gotenberg.Timeout = gotenberg.DefaultTimeout
 	}
 	if cfg.Gotenberg.BaseURL != "" {
 		if _, err := gotenberg.New(cfg.Gotenberg); err != nil {
