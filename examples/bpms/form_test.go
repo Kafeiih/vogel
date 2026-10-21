@@ -107,14 +107,14 @@ func TestFormValidateDropsHiddenFields(t *testing.T) {
 
 func TestFormValidateEvaluatesRulesAgainstEarlierCaseData(t *testing.T) {
 	all := append(consultaFields(), FieldSpec{
-		Key: "compensacion", Type: "text", Label: "Compensación", Required: true, VisibleWhen: `tema == "reclamo"`,
+		Key: "plazo", Type: "text", Label: "Plazo", Required: true, VisibleWhen: `tema == "reclamo"`,
 	})
 	respuesta := all[len(all)-1:]
 	form, err := CompileForm(testRegistry(t), all, respuesta)
 	require.NoError(t, err)
 
 	_, errs := form.Validate(map[string]any{}, map[string]any{"tema": "reclamo"})
-	assert.Equal(t, map[string]string{"compensacion": "is required"}, map[string]string(errs))
+	assert.Equal(t, map[string]string{"plazo": "is required"}, map[string]string(errs))
 
 	_, errs = form.Validate(map[string]any{}, map[string]any{"tema": "general"})
 	assert.Empty(t, errs)

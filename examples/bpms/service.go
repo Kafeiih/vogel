@@ -103,7 +103,8 @@ func (s *Service) Inbox(ctx context.Context, actor string) ([]workflow.Case, err
 		return nil, err
 	}
 	out := make([]workflow.Case, 0, len(unclaimed))
-	for _, c := range unclaimed {
+	for i := range unclaimed {
+		c := &unclaimed[i]
 		e, err := s.engine.EligibilityFor(ctx, s.pool, c.ID)
 		if err != nil {
 			return nil, err
@@ -113,7 +114,7 @@ func (s *Service) Inbox(ctx context.Context, actor string) ([]workflow.Case, err
 			return nil, err
 		}
 		if ok {
-			out = append(out, c)
+			out = append(out, *c)
 		}
 	}
 

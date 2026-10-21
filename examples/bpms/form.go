@@ -135,7 +135,8 @@ func (f *Form) Validate(submitted, caseData map[string]any) (map[string]any, req
 	}
 
 	declared := make(map[string]bool, len(f.fields))
-	for _, cf := range f.fields {
+	for i := range f.fields {
+		cf := &f.fields[i]
 		declared[cf.spec.Key] = true
 		if v, ok := submitted[cf.spec.Key]; ok {
 			if _, isString := v.(string); isString {
@@ -150,7 +151,8 @@ func (f *Form) Validate(submitted, caseData map[string]any) (map[string]any, req
 	}
 
 	out := make(map[string]any, len(f.fields))
-	for _, cf := range f.fields {
+	for i := range f.fields {
+		cf := &f.fields[i]
 		key := cf.spec.Key
 		if cf.visible != nil {
 			res, _, err := cf.visible.Eval(vars)

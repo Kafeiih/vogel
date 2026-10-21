@@ -94,8 +94,9 @@ func (a *testApp) startCase() string {
 
 func inboxIDs(t *testing.T, body map[string]any) []string {
 	t.Helper()
-	var ids []string
-	for _, item := range body["data"].([]any) {
+	items := body["data"].([]any)
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
 		ids = append(ids, item.(map[string]any)["id"].(string))
 	}
 	return ids
