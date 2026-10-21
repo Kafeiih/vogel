@@ -2,8 +2,9 @@
 # current. Dependabot rewrites both the commit SHA and the trailing
 # "# vX.Y.Z" comment of each action.
 #
-# Go modules are listed too, for both modules in this repository (the root
-# library and examples/boilerplate, which has its own go.mod). govulncheck in
+# Go modules are listed too, for every module in this repository (the root
+# library, and examples/boilerplate and examples/bpms, which have their own
+# go.mod). govulncheck in
 # CI and Dependabot do different jobs: govulncheck fails only when the code
 # reaches a function with a KNOWN vulnerability, so it says nothing about a
 # dependency that is merely old, and it reacts only after an advisory is
@@ -54,6 +55,16 @@ updates:
     commit-message:
       prefix: build(deps)
 
+  - package-ecosystem: gomod
+    directory: /examples/bpms
+    schedule:
+      interval: weekly
+    groups:
+      gomod-bpms:
+        patterns: ["*"]
+    commit-message:
+      prefix: build(deps)
+
   # cerbos/ has its own Dockerfile (the PDP image); its Cerbos pin must move
   # together with the one in deploy/docker-compose.developer.yaml, which the
   # docker-compose updater below bumps in a separate PR.
@@ -76,6 +87,7 @@ updates:
   - package-ecosystem: docker-compose
     directories:
       - /examples/api
+      - /examples/bpms
       - /examples/boilerplate/deploy
     schedule:
       interval: weekly
