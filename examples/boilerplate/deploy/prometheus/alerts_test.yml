@@ -1,15 +1,9 @@
-# Unit tests for alerts.yml, run in CI with `promtool test rules`.
-# Every alert has a firing case and a silent case.
 rule_files:
   - alerts.yml
 
 evaluation_interval: 1m
 
 tests:
-  # 10% of requests fail for 2h: far above 14.4x the 0.5% budget, so the fast
-  # burn fires. With only 2h of history the 3d ratio is a 2h ratio, so the
-  # slow burn condition also holds; its for: 1h makes it fire only after an
-  # hour of it.
   - interval: 1m
     input_series:
       - series: 'http_requests_total{job="api",status="200"}'
@@ -37,7 +31,6 @@ tests:
               summary: The 99.5% availability SLO is spending its error budget faster than it accrues
               description: Open a ticket; at this pace the 30-day budget runs out before the window ends.
 
-  # 0.1% of requests fail: inside the budget, neither burn alert fires.
   - interval: 1m
     input_series:
       - series: 'http_requests_total{job="api",status="200"}'
@@ -52,7 +45,6 @@ tests:
         alertname: SLOAvailabilitySlowBurn
         exp_alerts: []
 
-  # Target down for 3 minutes, then a target that is up.
   - interval: 1m
     input_series:
       - series: 'up{job="api",instance="api:9090"}'
@@ -70,7 +62,6 @@ tests:
             exp_annotations:
               summary: The API target is not being scraped
 
-  # /v1/healthz answers 503 every minute; a healthy probe stays silent.
   - interval: 1m
     input_series:
       - series: 'http_requests_total{job="api",path="/v1/healthz",status="503"}'
@@ -92,7 +83,6 @@ tests:
         alertname: HealthCheckFailing
         exp_alerts: []
 
-  # Every request on /slow takes ~5s; on /fast every request is under 5ms.
   - interval: 1m
     input_series:
       - series: 'http_request_duration_seconds_bucket{job="api",path="/slow",le="2.5"}'
@@ -115,7 +105,6 @@ tests:
             exp_annotations:
               summary: "p99 latency above 2s on /slow"
 
-  # 120 rejected requests per minute fire it; 10 per minute do not.
   - interval: 1m
     input_series:
       - series: 'http_requests_total{job="api",status="429"}'
@@ -137,7 +126,6 @@ tests:
         alertname: RateLimitingExcessive
         exp_alerts: []
 
-  # 1500 goroutines for 12 minutes fire it; 200 do not.
   - interval: 1m
     input_series:
       - series: 'go_goroutines{job="api",instance="api:9090"}'
@@ -155,7 +143,6 @@ tests:
             exp_annotations:
               summary: Goroutine count above 1000 for 10 minutes
 
-  # Every pool connection in use for over a minute; a pool with room is silent.
   - interval: 1m
     input_series:
       - series: 'db_pool_connections_acquired{instance="api:9090"}'
@@ -176,7 +163,6 @@ tests:
             exp_annotations:
               summary: "Every pool connection is in use on api:9090"
 
-  # Every acquire waits ~2s on one instance; sub-millisecond on the other.
   - interval: 1m
     input_series:
       - series: 'db_pool_acquire_wait_seconds_bucket{instance="api:9090",le="1"}'
@@ -200,8 +186,6 @@ tests:
               summary: "p99 wait for a pool connection above 1s on api:9090"
               description: With the default DB_ACQUIRE_TIMEOUT (3s) this is close to requests failing with context.DeadlineExceeded.
 
-  # A connection held past the 10s bucket fires the leak alert, with the
-  # bucket spelled both ways; holds all under 10s are silent.
   - interval: 1m
     input_series:
       - series: 'db_pool_conn_hold_seconds_count{instance="prom3:9090"}'
@@ -233,8 +217,6 @@ tests:
               summary: "Connections held longer than DB_LEAK_THRESHOLD on prom2:9090"
               description: The api/worker log has a WARN naming the code that acquired them.
 
-  # A hold histogram without a 10s bucket disables the leak alert; this
-  # catches it. One with the bucket is silent.
   - interval: 1m
     input_series:
       - series: 'db_pool_conn_hold_seconds_count{instance="nobucket:9090"}'
@@ -256,7 +238,6 @@ tests:
               summary: "DBConnectionHeldTooLong cannot fire on nobucket:9090: no le=10 bucket"
   # vogel:component worker begin
 
-  # Worker target down for 3 minutes; an up worker is silent.
   - interval: 1m
     input_series:
       - series: 'up{job="worker",instance="worker:9091"}'
@@ -275,8 +256,6 @@ tests:
               summary: The worker target is not being scraped
               description: Jobs are not being processed or not observed. See RUNBOOK.md (worker).
 
-  # send_email fails 3 of 10 attempts; example fails 1 of 100. Only
-  # send_email crosses 10%. Error and panic both count.
   - interval: 1m
     input_series:
       - series: 'river_job_duration_seconds_count{job="worker",kind="send_email",outcome="success"}'
@@ -303,7 +282,6 @@ tests:
               summary: "More than 10% of send_email job attempts fail"
               description: The worker log has the job errors; see RUNBOOK.md (worker).
 
-  # report jobs all take between 60s and 120s; email jobs finish under 1s.
   - interval: 1m
     input_series:
       - series: 'river_job_duration_seconds_bucket{job="worker",kind="report",le="1"}'

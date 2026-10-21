@@ -1,13 +1,3 @@
-# Local development dependencies only (make dev-infra); the deploy stack is
-# docker-compose.yaml. Images are pinned by exact version and multi-arch
-# digest, like the deploy compose and the Dockerfile, so every developer runs
-# the same bytes; Dependabot proposes the bumps (see RUNBOOK.md, "Parches").
-# vogel:component storage begin
-#
-# No S3-compatible store is bundled: the minio/minio image is no longer
-# published on Docker Hub. Point STORAGE_* at any S3-compatible endpoint if
-# you need one (storage is optional, see the README).
-# vogel:component storage end
 services:
   postgres:
     image: postgres:17.11-alpine3.24@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
@@ -15,8 +5,6 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: bluprint_dev
-    # Published on the host for local tools (psql, IDEs, "make dev"). Local
-    # development only: the deploy compose publishes no database port.
     ports:
       - "5433:5432"
     volumes:
@@ -29,11 +17,6 @@ services:
       retries: 5
 
   # vogel:component cerbos begin
-  # Serves gRPC without TLS: run the app with CERBOS_PLAINTEXT=true locally.
-  # Serves ../cerbos/policies through bind mounts with hot reload, so a policy
-  # edit applies without a restart. Same Cerbos version as cerbos/Dockerfile;
-  # the deploy stack runs the built image with the policies baked in instead
-  # (see cerbos/README.md for why).
   cerbos:
     image: ghcr.io/cerbos/cerbos:0.56.0@sha256:540643bc67ba628011a150ad1d3370f285daa38995be5cd7a4be181da902bec1
     command: ["server", "--config=/config/.cerbos.yaml"]

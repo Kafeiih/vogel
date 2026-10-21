@@ -48,13 +48,15 @@ for combo in "${combos[@]}"; do
 		fi
 		{
 			echo "APP_VERSION=0.0.0"
-			echo "POSTGRES_PASSWORD=x"
+			echo "DB_HOST=postgres"
+			echo "DB_NAME=db"
 			echo "APP_MIGRATOR_PASSWORD=x"
 			echo "APP_RUNTIME_PASSWORD=x"
 			echo "CERBOS_HOST=cerbos:3593"
 			echo "CERBOS_PLAINTEXT=true"
 		} >deploy/.env
 		docker compose -f deploy/docker-compose.yaml config -q
+		docker compose -f deploy/docker-compose.yaml --profile bundled-db --profile tools config -q
 		docker compose -f deploy/docker-compose.developer.yaml config -q
 		if grep -rIlE 'vogel:(component [a-z]+|only) (begin|end)' . >/dev/null; then
 			echo "FAIL: $name still has marker lines" >&2

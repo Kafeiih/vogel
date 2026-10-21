@@ -270,12 +270,14 @@ se toma de `deploy/.env` o, si no está, vale `river`.
 aplicación. El compose ya aplica la receta de la sección «Un rol para
 migrar, otro para servir» del README de `vogel`: `deploy/initdb/10-roles.sh`
 crea `app_migrator` (dueño del esquema, lo usan `migrate` y `grants`) y
-`app_runtime` (el de los procesos que sirven) en el primer arranque del
-volumen, y el servicio `grants` aplica `deploy/initdb/runtime-grants.sql` después de
-cada `migrate up`. Las contraseñas salen de `deploy/.env`
-(`POSTGRES_PASSWORD`, `APP_MIGRATOR_PASSWORD`, `APP_RUNTIME_PASSWORD`,
-obligatorias) y Postgres no publica ningún puerto en el host. Detalle,
-incluido TLS en producción, en la sección 0 de `deploy/RUNBOOK.md`.
+`app_runtime` (el de los procesos que sirven), y el servicio `grants` aplica
+`deploy/initdb/runtime-grants.sql` después de cada `migrate up`. Cada
+ambiente es un host con su `deploy/.env` (plantilla completa en
+`deploy/env.example`). Producción usa AWS RDS con `sslmode=verify-full`:
+los roles se crean una vez con el usuario master (`db-roles`) y el bundle de
+la CA de RDS se monta en los contenedores. Los demás ambientes pueden usar el
+Postgres empaquetado con `COMPOSE_PROFILES=bundled-db`, que no publica
+puertos en el host. Detalle en la sección 0 de `deploy/RUNBOOK.md`.
 Verificación:
 
 ```bash

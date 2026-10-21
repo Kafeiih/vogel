@@ -6,39 +6,59 @@ Guia de respuesta a incidentes para el equipo de operaciones.
 
 ## 0. Configuracion del compose de despliegue
 
-`deploy/docker-compose.yaml` lee `deploy/.env` (nunca se commitea; el
-`.gitignore` lo excluye). La plantilla es `deploy/env.example`: copiarla a
-`deploy/.env` y completarla. Ese archivo cumple dos funciones: compose lo usa
-para interpolar las variables `${...}` del propio compose y lo pasa como
-`env_file` a los procesos que sirven (`api`, y `worker` si existe). Variables obligatorias (si falta alguna,
-`docker compose` falla antes de crear contenedores):
+Cada ambiente (testing, staging, produccion) es un host propio con su
+`deploy/.env`, que nunca se commitea, y Docker Compose 2.20 o posterior. La plantilla es `deploy/env.example`:
+copiarla a `deploy/.env` y completarla. Compose usa ese archivo para
+interpolar las variables `${...}` del propio compose y lo pasa como
+`env_file` a los procesos que sirven (`api`, y `worker` si existe).
+Variables obligatorias (si falta alguna, `docker compose` falla antes de
+crear contenedores):
 
 | Variable | Uso |
 |---|---|
-| `POSTGRES_PASSWORD` | Superusuario `postgres`; solo lo usa el contenedor de Postgres |
-| `APP_MIGRATOR_PASSWORD` | Rol `app_migrator`, dueño del esquema y las tablas; solo lo usan `migrate` y `grants` |
-| `APP_RUNTIME_PASSWORD` | Rol `app_runtime` de `api` (y `worker`, si existe): sin ser dueño de nada, `SELECT` e `INSERT` sobre `audit_log` |
-| `APP_ENV` | `development` con este compose, `production` en produccion. Ya no decide el TLS hacia la base (eso es `DB_REQUIRE_TLS`, abajo); en `production` rechaza `SWAGGER_ENABLED=true` |
 | `APP_VERSION` | Tag de las imagenes `ghcr.io/kafeiih/vogel-boilerplate*` del servicio (nunca `latest`); la API tambien lo informa como su version |
-| `ZITADEL_ISSUER`, `ZITADEL_CLIENT_ID`, `CERBOS_HOST`, ... | Configuracion de la aplicacion, igual que en el `.env` de desarrollo |
+| `APP_ENV` | `production` en produccion (logs en JSON, Swagger prohibido); otro nombre, p. ej. `staging`, en los demas ambientes |
+| `DB_HOST`, `DB_NAME` | Host y base; el compose arma con ellos los DSN de los dos roles (`DB_PORT` y `DB_SSLMODE` son opcionales: `5432` y `verify-full`) |
+| `APP_MIGRATOR_PASSWORD` | Rol `app_migrator`, dueño del esquema; solo lo usan `migrate`, `grants` y la creacion de roles. Los procesos que sirven la reciben vacia |
+| `APP_RUNTIME_PASSWORD` | Rol `app_runtime`, con el que sirven `api` (y `worker`, si existe) |
+| `ZITADEL_ISSUER`, `ZITADEL_CLIENT_ID`, `CERBOS_HOST`, ... | Configuracion de la aplicacion; la plantilla lista todas, con las opcionales comentadas y su valor por defecto |
 
-Ajustes que no son obligatorios pero conviene conocer (los valores por
-defecto entre parentesis; un valor que no se puede interpretar hace fallar el
-arranque):
-
-| Variable | Uso |
-|---|---|
-| `DB_REQUIRE_TLS` | (`true`, con cualquier `APP_ENV`) exige `sslmode=verify-full` o `verify-ca` en `DB_URL`. Rige también `api migrate`. El compose lo fija en `false` solo para `migrate` y los procesos que sirven, porque el Postgres empaquetado no sirve TLS (ver abajo); no definirlo en `deploy/.env` |
-| `ZITADEL_HTTP_TIMEOUT` | (`10s`, mayor que cero) tiempo maximo de cada request hacia el issuer (discovery, JWKS, introspeccion) |
-| `ZITADEL_MAX_TOKEN_LIFETIME` | (`12h`; `0` desactiva el control) vida maxima aceptada de un token (`exp - iat`) |
-| `ZITADEL_ALLOWED_AUTHORIZED_PARTIES` | (vacio: no se controla `azp`) client IDs aceptados como `azp`, separados por coma |
-| `ZITADEL_INTROSPECTION` | (`false`) valida cada token contra el endpoint de introspeccion, para que una revocacion tenga efecto antes de que expire; exige exactamente uno de `ZITADEL_INTROSPECTION_KEY_FILE` o `ZITADEL_INTROSPECTION_CLIENT_SECRET`, y acepta `ZITADEL_INTROSPECTION_CACHE_TTL` (`30s`) y `ZITADEL_INTROSPECTION_CACHE_MAX_ENTRIES` (`10000`) |
-
-Las tres contraseñas viajan dentro de URLs `postgres://`: generarlas sin
+Las contraseñas viajan dentro de URLs `postgres://`: generarlas sin
 caracteres especiales, p. ej. `openssl rand -hex 24`. Los procesos que sirven
-reciben `POSTGRES_PASSWORD` y `APP_MIGRATOR_PASSWORD` vacias aunque esten en
-`.env`, para que el proceso que atiende requests no tenga credenciales capaces
-de alterar el esquema.
+reciben `POSTGRES_PASSWORD` y `APP_MIGRATOR_PASSWORD` vacias aunque esten
+en `.env`, para que el proceso que atiende requests no
+tenga credenciales capaces de alterar el esquema.
+
+**Base de datos.** Produccion usa AWS RDS; los demas ambientes pueden usar
+RDS o el Postgres empaquetado:
+
+- **RDS** (por defecto): `DB_HOST` es el endpoint de la instancia y los DSN
+  usan `sslmode=verify-full` con `/etc/ssl/rds/global-bundle.pem`. La CA
+  de RDS no viene en la imagen: descargar el bundle una vez por host, junto
+  al compose (o en la ruta de `RDS_CA_BUNDLE`); si falta, `docker compose up`
+  falla nombrando la ruta:
+  ```bash
+  curl -fsSo deploy/rds-global-bundle.pem https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
+  ```
+  Los roles se crean **una vez por instancia** con el usuario master de RDS,
+  que no se guarda en `.env` (solo vive en el shell de esa ejecucion; empezar
+  la linea con un espacio para que la clave no quede en el historial):
+  ```bash
+   DB_ADMIN_USER=<master> DB_ADMIN_PASSWORD=<clave-master> \
+    docker compose -f deploy/docker-compose.yaml --profile tools run --rm db-roles
+  ```
+  Se conecta a `DB_HOST` y `DB_NAME` de `.env`. Repetirlo es seguro: crea
+  el rol que falte y rota las dos contraseñas a las de `.env`.
+- **Postgres empaquetado** (testing o staging): descomentar el bloque
+  correspondiente de la plantilla, que fija `COMPOSE_PROFILES=bundled-db`
+  (asi todo comando de compose incluye el servicio `postgres`),
+  `DB_HOST=postgres`, `DB_SSLMODE=disable`, `DB_REQUIRE_TLS=false` y
+  `POSTGRES_PASSWORD`. Los roles
+  los crea `deploy/initdb/10-roles.sh` en el **primer** arranque del volumen;
+  para un volumen existente, ver «Actualizar un volumen existente». Sin TLS:
+  solo es aceptable dentro de la red privada del compose, nunca en produccion.
+  El bundle de RDS tambien debe existir en estos hosts (el compose lo monta
+  siempre); descargarlo igual que arriba.
 
 `migrate`, `grants` y los procesos que sirven corren con el sistema de
 archivos raiz de solo lectura (`read_only: true`) y un `tmpfs` chico en
@@ -61,34 +81,24 @@ trabajos; ver `cmd/worker/heartbeat.go`) en los ultimos 30s. Un worker `unhealth
 colgado o deteniendose; no indica por si solo que la base este caida.
 <!-- vogel:component worker end -->
 
-Los roles los crea `deploy/initdb/10-roles.sh` en el **primer** arranque del
-volumen (`/docker-entrypoint-initdb.d`). El script es idempotente: correrlo
-otra vez a mano (ver «Actualizar un volumen existente») crea
-el rol que falte y fija las dos contraseñas a los valores actuales de
-`deploy/.env`. Despues de cada `migrate up`, el servicio de una
-sola ejecucion `grants` aplica `deploy/initdb/runtime-grants.sql` como
-`app_migrator`: `SELECT`/`INSERT` sobre `audit_log` y `SELECT` sobre las
-tablas de version de goose.
+Despues de cada `migrate up`, el servicio de una sola ejecucion `grants`
+aplica `deploy/initdb/runtime-grants.sql` como `app_migrator`:
+`SELECT`/`INSERT` sobre `audit_log` y `SELECT` sobre las tablas de version de
+goose.
 <!-- vogel:component worker begin -->
 Tambien DML sobre las tablas de River.
 <!-- vogel:component worker end -->
-Las tablas
-propias de la aplicacion reciben DML de `app_runtime` por los privilegios por
-defecto que deja `10-roles.sh`.
+Las tablas propias de la aplicacion reciben DML de `app_runtime` por los
+privilegios por defecto que deja `10-roles.sh`.
 
-Postgres no publica puertos en el host: solo es accesible desde la red del
-compose. Para inspeccionarlo:
+Con el Postgres empaquetado, la base no publica puertos en el host: solo es
+accesible desde la red del compose. Para inspeccionarla:
 `docker compose -f deploy/docker-compose.yaml exec postgres psql -U postgres boilerplate_db`.
 (`docker-compose.developer.yaml` si publica el 5433, solo para desarrollo.)
 
-**TLS:** dentro de la red del compose los DSN usan `sslmode=disable` porque
-el Postgres empaquetado no sirve certificado, y por eso el compose fija
-`DB_REQUIRE_TLS=false` en `migrate` y los procesos que sirven (con su valor por defecto, `true`,
-el arranque rechaza ese DSN sea cual sea `APP_ENV`). Eso solo es aceptable en
-una red privada de compose. **En produccion** la base debe ser un PostgreSQL
-con TLS, los DSN deben usar `sslmode=verify-full` (con `sslrootcert` si la CA
-es privada) y hay que quitar ese `DB_REQUIRE_TLS=false` del compose: con
-`DB_REQUIRE_TLS=true` se rechazan `disable`, `allow`, `prefer` y `require`.
+**TLS:** `DB_REQUIRE_TLS` (por defecto `true`, con cualquier `APP_ENV`)
+rechaza `disable`, `allow`, `prefer` y `require`; con RDS se deja sin definir.
+Solo el bloque del Postgres empaquetado lo pone en `false`.
 
 **Swagger:** `APP_ENV=development` no lo activa. La UI y la spec solo se
 sirven con `SWAGGER_ENABLED=true`, que `deploy/.env` no debe definir; con
@@ -253,12 +263,20 @@ curl -s http://localhost:8080/v1/healthz | jq .
 # Conectividad directa a PostgreSQL
 pg_isready -h <DB_HOST> -p 5432 -U <DB_USER>
 
-# Estado del container de PostgreSQL
+# Postgres empaquetado: estado del container
 docker ps | grep postgres
 docker logs postgres --tail 50
 ```
 
-**Si PostgreSQL esta caido:**
+**Si RDS esta caido o no acepta conexiones:**
+
+1. Revisar el estado de la instancia y sus eventos en la consola de RDS
+   (reinicio, failover, mantenimiento, almacenamiento lleno)
+2. Verificar que el security group de RDS permite el 5432 desde este host
+3. Verificar el bundle de la CA: `deploy/rds-global-bundle.pem` (o
+   `RDS_CA_BUNDLE`) existe; sin el, `verify-full` rechaza el certificado
+
+**Si el Postgres empaquetado esta caido:**
 
 1. Reiniciar el container: `docker compose -f deploy/docker-compose.yaml restart postgres`
 2. Esperar al healthcheck (5s interval, 3 retries)
@@ -576,13 +594,17 @@ servidor y saber cuanto tarda. Un respaldo que nunca se restauro no cuenta.
 
 | Elemento | Minimo |
 |---|---|
-| Que | `pg_dump -Fc` diario de `boilerplate_db` (o snapshots del servicio gestionado con PITR) |
+| Que | RDS: backups automaticos con PITR (retencion de al menos 7 dias) y un snapshot manual antes de cada despliegue con migraciones. Postgres empaquetado: `pg_dump -Fc` diario de `boilerplate_db` |
 | Cifrado | En reposo, con una clave guardada fuera del servidor de la base (p. ej. `age` o `gpg` con clave publica, o el KMS del proveedor), y en transito |
 | Donde | Fuera del host y de la cuenta de la base (otro bucket o region), con escritura solo para el proceso de respaldo |
 | Retencion | 7 diarios, 4 semanales, 12 mensuales (ajustar a la politica de datos personales) |
 | Quien | Infraestructura |
 
-**Respaldo (ejemplo con `age`):**
+**Simulacro con RDS:** restaurar el snapshot (o un punto en el tiempo) a una
+instancia nueva, apuntar una copia de `deploy/.env` a ella y seguir desde el
+paso 5 de abajo.
+
+**Respaldo del Postgres empaquetado (ejemplo con `age`):**
 
 ```bash
 docker compose -f deploy/docker-compose.yaml exec -T postgres \
@@ -623,9 +645,10 @@ exposicion y, como minimo, una vez al año.
 
 | Secreto | Como rotarlo | Como verificar |
 |---|---|---|
-| `APP_RUNTIME_PASSWORD` | `ALTER ROLE` en el Postgres en marcha, sin recrear el contenedor ni el volumen: ver «Rotar las contraseñas de los roles» abajo | `/v1/healthz` responde 200, el worker (si existe) queda `healthy` y el log no muestra `password authentication failed` |
+| `APP_RUNTIME_PASSWORD` | `ALTER ROLE` en la base en marcha (RDS o empaquetada), sin recrear nada: ver «Rotar las contraseñas de los roles» abajo | `/v1/healthz` responde 200, el worker (si existe) queda `healthy` y el log no muestra `password authentication failed` |
 | `APP_MIGRATOR_PASSWORD` | Igual que la anterior; el valor nuevo lo usan `migrate` y `grants` en el proximo despliegue | `docker compose -f deploy/docker-compose.yaml run --rm migrate migrate status` |
-| `POSTGRES_PASSWORD` (superusuario) | `docker compose -f deploy/docker-compose.yaml exec postgres psql -U postgres -c "\password postgres"` y actualizar `deploy/.env` | `psql` con la contraseña nueva |
+| Usuario master de RDS | Rotarlo en la consola de RDS (o Secrets Manager); no vive en `deploy/.env` | `db-roles` con la clave nueva |
+| `POSTGRES_PASSWORD` (superusuario del Postgres empaquetado) | `docker compose -f deploy/docker-compose.yaml exec postgres psql -U postgres -c "\password postgres"` y actualizar `deploy/.env` | `psql` con la contraseña nueva |
 | Zitadel (clave o secreto de la aplicacion API, si se usa introspeccion) | Crear una clave nueva en la consola de Zitadel (aplicacion API → Keys), desplegarla, reiniciar `api` (y `worker`, si existe) y recien entonces borrar la vieja. `ZITADEL_CLIENT_ID` no es secreto | Las requests autenticadas responden 200; el log no muestra `initializing zitadel` |
 | Cerbos (certificado TLS del PDP) | Renovar el certificado en el PDP; si es de una CA propia, desplegar primero la CA nueva en los clientes | Las rutas con `RequirePermission` responden 200 o 403, no 503 |
 
@@ -667,6 +690,8 @@ el contenedor ni, mucho menos, el volumen.
    ```
    (`app_migrator` para `APP_MIGRATOR_PASSWORD`.) Las conexiones ya abiertas
    siguen funcionando; las nuevas exigen el valor nuevo.
+   Con RDS, en vez de los pasos 2 y 3: actualizar `deploy/.env` y correr
+   `db-roles` (seccion 0), que fija las dos contraseñas a las de `.env`.
 3. Actualizar `APP_RUNTIME_PASSWORD` en `deploy/.env` (o en el gestor de
    secretos).
 4. Recrear solo los procesos que usan ese rol, **sin** tocar Postgres:

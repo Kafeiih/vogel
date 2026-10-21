@@ -1,6 +1,3 @@
-# Tests for policies/resource_audit_entry.yaml. The "_test.yaml" suffix is
-# how `cerbos compile` finds test suites, and test suites take no apiVersion
-# (adding one fails strict unmarshalling).
 name: AuditEntryTestSuite
 description: Who can list and view audit log entries.
 principals:

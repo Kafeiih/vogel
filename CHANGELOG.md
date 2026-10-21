@@ -100,6 +100,29 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   `action.NotifyHandler`) y por qué `Open`/`Move` reciben la `pgx.Tx`. Sin
   `bpms` el proyecto generado no cambia.
 
+### Cambiado
+
+- **`examples/boilerplate`: el despliegue usa RDS en producción y una
+  plantilla completa por ambiente.** `deploy/env.example` lista toda la
+  configuración de un host (base, HTTP, Zitadel, Cerbos y los componentes
+  opcionales, con sus valores por defecto). El compose arma los DSN de los
+  dos roles a partir de `DB_HOST`, `DB_NAME` y sus contraseñas (cada dato una
+  sola vez), con `sslmode=verify-full` y el bundle de la CA de RDS montado en
+  los contenedores. El Postgres empaquetado queda
+  detrás del profile `bundled-db` para los ambientes que no son producción, y
+  el nuevo servicio `db-roles` crea los roles en RDS con el usuario master,
+  que ya no necesita ser superusuario. Cada servicio rota sus logs, `api` se
+  reinicia solo como el worker (`restart: unless-stopped`) y `API_PORT` elige
+  el puerto publicado. **Migración:** en un `deploy/.env`
+  existente, agregar `DB_HOST` y `DB_NAME`; con el Postgres empaquetado,
+  `DB_HOST=postgres`, `DB_SSLMODE=disable`, `DB_REQUIRE_TLS=false` y
+  `COMPOSE_PROFILES=bundled-db`. Todo host baja el bundle de RDS (ver la
+  sección 0 del RUNBOOK).
+- **`examples/boilerplate`: los YAML y los `env.example` no tienen
+  comentarios**, salvo los marcadores del generador, las versiones al lado de
+  las acciones fijadas por SHA y notas de una línea donde un cambio rompe o
+  expone algo.
+
 ## [0.13.2] — 2026-10-20
 
 ### Cambiado

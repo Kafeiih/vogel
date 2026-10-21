@@ -97,6 +97,11 @@
       "to": "{{.DBName}}_db"
     },
     {
+      "path": "deploy/env.example",
+      "from": "boilerplate_db",
+      "to": "{{.DBName}}_db"
+    },
+    {
       "path": "deploy/docker-compose.developer.yaml",
       "from": "bluprint_dev",
       "to": "{{.DBName}}_dev"
