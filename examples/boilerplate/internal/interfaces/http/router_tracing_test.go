@@ -49,8 +49,8 @@ func TestNewRouter_MountsTracingFirst(t *testing.T) {
 		path string
 		want int
 	}{
-		{"/v1/livez", http.StatusOK},
-		{"/v1/audit/", http.StatusUnauthorized},
+		{"/livez", http.StatusOK},
+		{"/audit/", http.StatusUnauthorized},
 		{"/nope", http.StatusNotFound},
 	} {
 		t.Run(tc.path, func(t *testing.T) {

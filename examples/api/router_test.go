@@ -58,8 +58,8 @@ var routeParam = regexp.MustCompile(`\{[^}]*\}`)
 // (typically a 500 from vmw.Recovery). This checks behaviour, not how the
 // route was written: it does not depend on middleware function names, on
 // r.With versus r.Use, or on how chi nests sub-routers, so it keeps working
-// when routes are reorganised. Routes outside /api/ must be listed in
-// publicRoutes, so a new unauthenticated endpoint is a deliberate choice.
+// when routes are reorganised. Every route not listed in publicRoutes is
+// probed, so a new unauthenticated endpoint is a deliberate choice.
 func TestNewRouter_EveryAPIRouteIsGuarded(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	metrics, err := vmw.NewMetrics(prometheus.NewRegistry())
@@ -77,10 +77,7 @@ func TestNewRouter_EveryAPIRouteIsGuarded(t *testing.T) {
 	var apiRoutes int
 	walk := func(method, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
 		key := method + " " + route
-		if !strings.HasPrefix(route, "/api/") {
-			if !publicRoutes[key] {
-				t.Errorf("%s is served outside /api/ without being listed in publicRoutes", key)
-			}
+		if publicRoutes[key] {
 			return nil
 		}
 		apiRoutes++
@@ -100,7 +97,7 @@ func TestNewRouter_EveryAPIRouteIsGuarded(t *testing.T) {
 		t.Fatalf("chi.Walk: %v", err)
 	}
 	if apiRoutes == 0 {
-		t.Fatal("chi.Walk found no /api/ routes; the test is not inspecting the real router")
+		t.Fatal("chi.Walk found no guarded routes; the test is not inspecting the real router")
 	}
 }
 
@@ -110,24 +107,24 @@ func TestGuardProbe_DetectsUnguardedRoute(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	r := chi.NewRouter()
 	r.Use(vmw.Recovery(logger))
-	r.Route("/api/v1", func(r chi.Router) {
+	r.Group(func(r chi.Router) {
 		r.Use(vmw.Authenticate(acceptAll{}, logger))
 		r.With(vmw.RequirePermission(denyAll{}, "x", "read", logger)).Get("/guarded", okHandler)
 		r.Get("/unguarded", okHandler)
 	})
 
 	codes := map[string]int{}
-	for _, path := range []string{"/api/v1/guarded", "/api/v1/unguarded"} {
+	for _, path := range []string{"/guarded", "/unguarded"} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		req.Header.Set("Authorization", "Bearer probe")
 		rec := httptest.NewRecorder()
 		r.ServeHTTP(rec, req)
 		codes[path] = rec.Code
 	}
-	if codes["/api/v1/guarded"] != http.StatusForbidden {
-		t.Errorf("guarded route = %d, want 403", codes["/api/v1/guarded"])
+	if codes["/guarded"] != http.StatusForbidden {
+		t.Errorf("guarded route = %d, want 403", codes["/guarded"])
 	}
-	if codes["/api/v1/unguarded"] == http.StatusForbidden {
+	if codes["/unguarded"] == http.StatusForbidden {
 		t.Error("unguarded route = 403; the probe could not tell it from a guarded one")
 	}
 }

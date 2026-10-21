@@ -45,7 +45,7 @@ func get(router http.Handler, path string) *httptest.ResponseRecorder {
 
 func TestNewRouter_SwaggerAbsentWhenDisabled(t *testing.T) {
 	router := newRouterWithConfig(t, RouterConfig{})
-	for _, path := range []string{"/v1/swagger/index.html", "/v1/swagger/doc.json"} {
+	for _, path := range []string{"/swagger/index.html", "/swagger/doc.json"} {
 		if rec := get(router, path); rec.Code != http.StatusNotFound {
 			t.Errorf("GET %s = %d, want %d", path, rec.Code, http.StatusNotFound)
 		}
@@ -54,9 +54,9 @@ func TestNewRouter_SwaggerAbsentWhenDisabled(t *testing.T) {
 
 func TestNewRouter_SwaggerServedWithItsOwnCSPWhenEnabled(t *testing.T) {
 	router := newRouterWithConfig(t, RouterConfig{EnableSwagger: true})
-	rec := get(router, "/v1/swagger/index.html")
+	rec := get(router, "/swagger/index.html")
 	if rec.Code != http.StatusOK {
-		t.Fatalf("GET /v1/swagger/index.html = %d, want %d", rec.Code, http.StatusOK)
+		t.Fatalf("GET /swagger/index.html = %d, want %d", rec.Code, http.StatusOK)
 	}
 	if got := rec.Header().Get("Content-Security-Policy"); got != swaggerCSP {
 		t.Errorf("Content-Security-Policy = %q, want %q", got, swaggerCSP)
@@ -68,7 +68,7 @@ func TestNewRouter_SwaggerServedWithItsOwnCSPWhenEnabled(t *testing.T) {
 
 func TestNewRouter_CORSDoesNotAllowCredentials(t *testing.T) {
 	router := newRouterWithConfig(t, RouterConfig{CORSOrigins: []string{"https://app.example.org"}})
-	req := httptest.NewRequest(http.MethodOptions, "/v1/audit/", nil)
+	req := httptest.NewRequest(http.MethodOptions, "/audit/", nil)
 	req.RemoteAddr = "203.0.113.9:1234"
 	req.Header.Set("Origin", "https://app.example.org")
 	req.Header.Set("Access-Control-Request-Method", http.MethodGet)
@@ -101,14 +101,14 @@ func assertSecurityHeaders(t *testing.T, rec *httptest.ResponseRecorder) {
 func TestNewRouter_EarlyRejectionsCarrySecurityHeaders(t *testing.T) {
 	t.Run("401 from Authenticate", func(t *testing.T) {
 		router := newRouterWithConfig(t, RouterConfig{})
-		rec := get(router, "/v1/audit/")
+		rec := get(router, "/audit/")
 		if rec.Code != http.StatusUnauthorized {
-			t.Fatalf("GET /v1/audit/ without a token = %d, want %d", rec.Code, http.StatusUnauthorized)
+			t.Fatalf("GET /audit/ without a token = %d, want %d", rec.Code, http.StatusUnauthorized)
 		}
 		assertSecurityHeaders(t, rec)
 	})
 
-	t.Run("404 outside /v1", func(t *testing.T) {
+	t.Run("404 for an unknown route", func(t *testing.T) {
 		router := newRouterWithConfig(t, RouterConfig{})
 		rec := get(router, "/nope")
 		if rec.Code != http.StatusNotFound {
@@ -121,10 +121,10 @@ func TestNewRouter_EarlyRejectionsCarrySecurityHeaders(t *testing.T) {
 		router := newRouterWithConfig(t, RouterConfig{})
 		var rec *httptest.ResponseRecorder
 		for range 101 {
-			rec = get(router, "/v1/livez")
+			rec = get(router, "/livez")
 		}
 		if rec.Code != http.StatusTooManyRequests {
-			t.Fatalf("101st GET /v1/livez = %d, want %d", rec.Code, http.StatusTooManyRequests)
+			t.Fatalf("101st GET /livez = %d, want %d", rec.Code, http.StatusTooManyRequests)
 		}
 		assertSecurityHeaders(t, rec)
 	})

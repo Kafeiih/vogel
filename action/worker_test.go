@@ -39,14 +39,14 @@ func TestWorker_RunsRegisteredHandlerWithRun(t *testing.T) {
 	}, got)
 }
 
-func TestWorker_UnknownEffect_CancelsJob(t *testing.T) {
+func TestWorker_UnknownEffect_IsRetried(t *testing.T) {
 	r, _ := newRegistry(t)
 
 	err := action.NewWorker(r).Work(context.Background(), job(action.Args{Effect: "missing"}))
 
+	require.ErrorIs(t, err, workflow.ErrUnknownEffect)
 	var cancel *rivertype.JobCancelError
-	require.ErrorAs(t, err, &cancel, "an unknown effect can never succeed: cancel, do not retry")
-	assert.ErrorIs(t, err, workflow.ErrUnknownEffect)
+	assert.False(t, errors.As(err, &cancel), "a worker from an older deploy may not know the effect yet: retry, do not cancel")
 }
 
 func TestWorker_HandlerError_IsReturnedForRetry(t *testing.T) {

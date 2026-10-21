@@ -59,7 +59,7 @@ const docTemplate = `{
 var SwaggerInfo = &swag.Spec{
 	Version:          "1.0",
 	Host:             "",
-	BasePath:         "/v1",
+	BasePath:         "/",
 	Schemes:          []string{},
 	Title:            "Go Bluprint API",
 	Description:      "Boilerplate para microservicios institucionales/gubernamentales.",

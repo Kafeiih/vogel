@@ -69,8 +69,8 @@ func NewRouter(
 	r.Get("/healthz", healthzHandler(pool))
 
 	// The fake bucket (fakeStorage.Handler) stands in for the object store's
-	// own endpoint, which is why it sits outside /api/v1 with no
-	// Authenticate or rate limit: a client reaches it with a presigned URL,
+	// own endpoint, which is why it sits outside the authenticated group with
+	// no Authenticate or rate limit: a client reaches it with a presigned URL,
 	// and that URL's signature is the only credential it checks. Only GET
 	// (download) and PUT (upload) exist. With storage/s3 these two lines go
 	// away: the presigned URLs point at the bucket itself. The access log
@@ -88,7 +88,7 @@ func NewRouter(
 	// or the other.
 	requireDelete := vmw.RequireAccess(guard, "documents:document", "delete", logger)
 
-	r.Route("/api/v1", func(r chi.Router) {
+	r.Group(func(r chi.Router) {
 		// Per-client-IP budget, checked BEFORE Authenticate so a client
 		// guessing tokens is throttled too, and after StructuredLogger and
 		// metrics so every 429 is logged and counted. /healthz stays outside

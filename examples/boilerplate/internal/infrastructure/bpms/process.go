@@ -7,15 +7,13 @@ import (
 	"github.com/kafeiih/vogel/workflow"
 )
 
-// Process is what a service adds to the engine; see docs/BPMS.md.
 type Process struct {
 	Effects     func(r *action.Registry, docs *document.Service, db pgxtx.DBTX) error
 	Guards      func(e *workflow.Engine, docs *document.Service) error
 	Definitions func() []workflow.Definition
 }
 
-// service is this service's Process. Add its effect handlers, guards and
-// Definitions here: the API and the worker both build from it.
+// Add this service's effects, guards and Definitions here (docs/BPMS.md).
 var service = Process{
 	Effects: func(r *action.Registry, docs *document.Service, db pgxtx.DBTX) error {
 		return nil

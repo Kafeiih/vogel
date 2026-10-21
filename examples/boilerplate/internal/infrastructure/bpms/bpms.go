@@ -17,7 +17,6 @@ import (
 )
 
 type Deps struct {
-	// DB is where effect handlers write outside a request, typically the pool.
 	DB            pgxtx.DBTX
 	Queue         worker.Queue
 	Storage       storage.Storage
@@ -32,8 +31,6 @@ type BPMS struct {
 	Documents *document.Service
 }
 
-// New builds the API (dispatch) and worker (run) sides from the same Process,
-// so both registries hold the same effects.
 func New(d Deps) (*BPMS, error) {
 	return build(d, service)
 }

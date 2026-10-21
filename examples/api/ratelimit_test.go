@@ -34,7 +34,7 @@ func newTestLimiter(limit int, window time.Duration) (*ipRateLimiter, *fakeClock
 
 func requestFrom(t *testing.T, h http.Handler, remoteAddr string) *httptest.ResponseRecorder {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/documents", nil)
+	req := httptest.NewRequest(http.MethodGet, "/documents", nil)
 	req.RemoteAddr = remoteAddr
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)

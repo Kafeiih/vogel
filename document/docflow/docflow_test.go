@@ -3,6 +3,7 @@ package docflow_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 
@@ -184,4 +185,43 @@ func TestGenerate_TemplateFailureCancelsTheJob(t *testing.T) {
 	err := h.Handle(context.Background(), run())
 	require.ErrorIs(t, err, document.ErrTemplate)
 	assert.True(t, action.IsCancel(err), "a template that cannot execute never succeeds on retry")
+}
+
+type fixedRenderer struct {
+	pdf []byte
+	err error
+}
+
+func (f fixedRenderer) Render(context.Context, []byte) ([]byte, error) { return f.pdf, f.err }
+
+func generateWith(t *testing.T, r document.Renderer) error {
+	t.Helper()
+	svc := document.NewService(&memRepo{}, &memStore{}, r, document.Config{}, nil)
+	h := docflow.Generate(svc, nil, func(context.Context, action.Run) (document.GenerateInput, error) {
+		return document.GenerateInput{Template: acta, Data: map[string]any{"N": 1}}, nil
+	})
+	return h.Handle(context.Background(), run())
+}
+
+func TestGenerate_RejectedRenderCancelsTheJob(t *testing.T) {
+	err := generateWith(t, fixedRenderer{err: fmt.Errorf("renderer: 409: %w", document.ErrRenderRejected)})
+
+	require.ErrorIs(t, err, document.ErrRenderRejected)
+	assert.True(t, action.IsCancel(err), "a render the renderer rejects never succeeds on retry")
+}
+
+func TestGenerate_EmptyPDFCancelsTheJob(t *testing.T) {
+	err := generateWith(t, fixedRenderer{pdf: []byte{}})
+
+	require.ErrorIs(t, err, document.ErrEmptyPDF)
+	assert.True(t, action.IsCancel(err), "an empty pdf for the same input never succeeds on retry")
+}
+
+func TestGenerate_TransientRenderErrorIsRetried(t *testing.T) {
+	boom := errors.New("renderer unavailable")
+
+	err := generateWith(t, fixedRenderer{err: boom})
+
+	require.ErrorIs(t, err, boom)
+	assert.False(t, action.IsCancel(err))
 }

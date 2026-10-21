@@ -189,7 +189,7 @@ func (m *Metrics) Middleware(next http.Handler) http.Handler {
 	})
 }
 
-// routePatternOf returns the chi route pattern (e.g. "/v1/audit/{id}") used
+// routePatternOf returns the chi route pattern (e.g. "/audit/{id}") used
 // as the path label instead of the actual path, to avoid high-cardinality
 // labels, or "unknown" when there is none.
 func routePatternOf(r *http.Request) string {

@@ -64,7 +64,7 @@ tests:
 
   - interval: 1m
     input_series:
-      - series: 'http_requests_total{job="api",path="/v1/healthz",status="503"}'
+      - series: 'http_requests_total{job="api",path="/healthz",status="503"}'
         values: '0+1x10'
     alert_rule_test:
       - eval_time: 5m
@@ -73,10 +73,10 @@ tests:
           - exp_labels:
               severity: critical
             exp_annotations:
-              summary: /v1/healthz is answering 503; see RUNBOOK.md (DB caida)
+              summary: /healthz is answering 503; see RUNBOOK.md (DB caida)
   - interval: 1m
     input_series:
-      - series: 'http_requests_total{job="api",path="/v1/healthz",status="200"}'
+      - series: 'http_requests_total{job="api",path="/healthz",status="200"}'
         values: '0+1x10'
     alert_rule_test:
       - eval_time: 5m

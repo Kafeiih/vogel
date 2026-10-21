@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -417,4 +418,56 @@ func TestGenerate_TemplateFailure_IsErrTemplate(t *testing.T) {
 	in.Data = map[string]any{}
 	_, err = f.svc.Generate(context.Background(), nil, in)
 	require.ErrorIs(t, err, document.ErrTemplate, "missing key")
+}
+
+type hangingDeleteStorage struct {
+	*fakeStorage
+	deleteErr chan error
+}
+
+func (s *hangingDeleteStorage) Delete(ctx context.Context, _ string) error {
+	<-ctx.Done()
+	s.deleteErr <- ctx.Err()
+	return ctx.Err()
+}
+
+type ctxKey struct{}
+
+type ctxRecordingHandler struct {
+	mu   sync.Mutex
+	seen []any
+}
+
+func (h *ctxRecordingHandler) Enabled(context.Context, slog.Level) bool { return true }
+func (h *ctxRecordingHandler) WithAttrs([]slog.Attr) slog.Handler       { return h }
+func (h *ctxRecordingHandler) WithGroup(string) slog.Handler            { return h }
+func (h *ctxRecordingHandler) Handle(ctx context.Context, _ slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.seen = append(h.seen, ctx.Value(ctxKey{}))
+	return nil
+}
+
+func TestGenerate_InsertError_CleanupDeleteIsBoundedAndLoggedWithContext(t *testing.T) {
+	store := &hangingDeleteStorage{fakeStorage: newFakeStorage(), deleteErr: make(chan error, 1)}
+	repo := &fakeRepo{insertErr: errors.New("insert failed")}
+	logs := &ctxRecordingHandler{}
+	svc := document.NewService(repo, store, &fakeRenderer{pdf: []byte("%PDF-1.7 fake")},
+		document.Config{CleanupTimeout: 20 * time.Millisecond}, slog.New(logs))
+	ctx := context.WithValue(context.Background(), ctxKey{}, "req-1")
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := svc.Generate(ctx, nil, input())
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		require.ErrorIs(t, err, repo.insertErr)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Generate hung on a Delete that never returns")
+	}
+	assert.ErrorIs(t, <-store.deleteErr, context.DeadlineExceeded)
+	assert.Equal(t, []any{"req-1"}, logs.seen, "the cleanup failure is logged with the caller's context")
 }

@@ -15,6 +15,16 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   del ejemplo que actualice con su `.env` anterior debe sumar esas variables
   (ver `deploy/env.example`) y un servicio Gotenberg. Los servicios generados
   con `create-vogel-app` no cambian: `bpms` está apagado por defecto.
+- **`examples/boilerplate` y `examples/api` sirven sus rutas en `/`.** Se
+  quitó el prefijo de versión del router (`/v1` en el boilerplate, `/api/v1`
+  en `examples/api`): `/healthz`, `/readyz`, `/livez`, `/swagger/` y
+  `/audit` cuelgan de la raíz, y el `basePath` de Swagger es `/`. Versionar
+  queda a cargo del proxy inverso (nginx), que publica cada versión de la app
+  bajo su propio prefijo. **Migración:** un cliente o un proxy que llamaba a
+  `/v1/...` debe apuntar a `/...` (o el proxy debe reescribir su prefijo), y
+  un servicio ya generado que quiera seguir el ejemplo cambia su
+  `r.Route("/v1", ...)` por `r.Group(...)`, el healthcheck del `Dockerfile`
+  y las alertas de Prometheus sobre `path="/v1/healthz"`.
 
 ### Agregado
 
@@ -55,9 +65,15 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   tiene un documento de una plantilla. `document/docflow` lo une con el motor
   y con `action`: `Exists` es el guard que impide avanzar sin el documento y
   `Generate` es el handler de un efecto que genera documentos, idempotente por
-  `<caso>/<seq>/<efecto>`; una entrada inválida o una plantilla que no
-  compila o no se puede ejecutar (`ErrTemplate`) cancela el trabajo en vez de
-  reintentarlo. Un dominio o external id igual a `.` o `..` se rechaza, porque
+  `<caso>/<seq>/<efecto>`; una entrada inválida, una plantilla que no compila
+  o no se puede ejecutar (`ErrTemplate`), un PDF vacío (`ErrEmptyPDF`) o un
+  documento que el `Renderer` rechaza (`ErrRenderRejected`: en
+  `document/gotenberg`, un 400, 403, 409, 413 o 422, o un PDF más grande que
+  el límite) cancela el trabajo en vez de reintentarlo; un Gotenberg caído,
+  lento, saturado o mal configurado (por ejemplo un 401 o 404 de un proxy o
+  de una URL equivocada) se reintenta. El borrado de limpieza después de un insert
+  fallido tiene su propio tope (`Config.CleanupTimeout`, `10s` por defecto) y
+  su falla se registra con el contexto del llamador. Un dominio o external id igual a `.` o `..` se rechaza, porque
   forma parte de la clave de almacenamiento. La firma electrónica queda
   fuera de alcance: sólo se define la interfaz `Signer`.
 
@@ -76,9 +92,13 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   redespachar el mismo evento no los duplica. `action.Worker` (registrado con
   `action.AddWorker`) busca el `Handler` por nombre: sus errores se
   reintentan, `river.JobCancel(err)` falla en forma permanente y un efecto
-  desconocido cancela el trabajo. `NotifyHandler` envía por un
+  desconocido se reintenta con backoff: en un despliegue escalonado, un worker
+  de la versión anterior puede tomar el trabajo de un efecto que sólo registra
+  la nueva. `NotifyHandler` envía por un
   `notification.Notifier` los mensajes que arma el llamador, validando cada
-  uno antes de enviar. El efecto `webhook` queda planificado.
+  uno antes de enviar; con más de un mensaje, el trabajo del efecto encola un
+  trabajo por mensaje (`Args.Part`/`Run.Part`), así que un envío fallido
+  reintenta sólo ese mensaje y no reenvía los que ya salieron. El efecto `webhook` queda planificado.
 
 - **Boilerplate: componente opcional `bpms`.** `create-vogel-app --with bpms`
   (apagado por defecto; requiere `worker` y `storage`) arma la base BPMS en el
@@ -91,7 +111,8 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   efectos, y solo el worker los ejecuta (`action.AddWorker`). `migrate up`
   aplica también `workflow/migrations` (`workflow_db_version`) y
   `document/migrations` (`document_db_version`). Configuración nueva:
-  `GOTENBERG_URL` (obligatoria), `GOTENBERG_TIMEOUT` (`30s`) y
+  `GOTENBERG_URL` (obligatoria), `GOTENBERG_TIMEOUT` (`30s`, como máximo
+  `45s` para terminar dentro del minuto que River le da a un trabajo) y
   `BPMS_DOCUMENT_STORAGE` (`documents`, debe estar en `STORAGE_CONFIGS`).
   Los compose de desarrollo y despliegue suman un servicio Gotenberg
   (`gotenberg/gotenberg:8.38.1-chromium`, fijado por digest), y
@@ -118,6 +139,10 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   `DB_HOST=postgres`, `DB_SSLMODE=disable`, `DB_REQUIRE_TLS=false` y
   `COMPOSE_PROFILES=bundled-db`. Todo host baja el bundle de RDS (ver la
   sección 0 del RUNBOOK).
+- **`examples/boilerplate`: `deploy/env.example` deja `DB_HOST` vacío**, así
+  que compose falla si no se completa en vez de aceptar un host de ejemplo, y
+  declara `STORAGE_CONFIGS` en una sola línea: con `bpms`, descomentar otro
+  storage ya no queda pisado en silencio por una segunda línea.
 - **`examples/boilerplate`: los YAML y los `env.example` no tienen
   comentarios**, salvo los marcadores del generador, las versiones al lado de
   las acciones fijadas por SHA y notas de una línea donde un cambio rompe o

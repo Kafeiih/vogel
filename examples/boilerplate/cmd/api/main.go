@@ -72,7 +72,7 @@ import (
 //	@license.name	Apache 2.0
 //	@license.url	http://www.apache.org/licenses/LICENSE-2.0.html
 
-// @BasePath					/v1
+// @BasePath					/
 //
 // @securityDefinitions.apikey	ApiKeyAuth
 // @in							header
@@ -401,7 +401,7 @@ func runServer(migrateFirst bool) error {
 
 	docs.SwaggerInfo.Version = cfg.App.Version
 	docs.SwaggerInfo.Host = cfg.App.Url
-	docs.SwaggerInfo.BasePath = "/v1"
+	docs.SwaggerInfo.BasePath = "/"
 
 	server := httpiface.NewServer(cfg.App.Port, router, appLogger.Logger)
 

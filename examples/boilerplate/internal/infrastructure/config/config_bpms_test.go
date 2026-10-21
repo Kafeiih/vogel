@@ -37,15 +37,15 @@ func TestParseBPMSConfig_Defaults(t *testing.T) {
 
 func TestParseBPMSConfig_ReadsOverrides(t *testing.T) {
 	t.Setenv("GOTENBERG_URL", "https://pdf.internal")
-	t.Setenv("GOTENBERG_TIMEOUT", "2m")
+	t.Setenv("GOTENBERG_TIMEOUT", "45s")
 	t.Setenv("BPMS_DOCUMENT_STORAGE", "private")
 
 	cfg, err := parseBPMS(t)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.Gotenberg.Timeout != 2*time.Minute || cfg.DocumentStorage != "private" {
-		t.Errorf("got %+v, want a 2m timeout and the private storage", cfg)
+	if cfg.Gotenberg.Timeout != 45*time.Second || cfg.DocumentStorage != "private" {
+		t.Errorf("got %+v, want a 45s timeout and the private storage", cfg)
 	}
 }
 
@@ -59,6 +59,7 @@ func TestParseBPMSConfig_Invalid(t *testing.T) {
 		{"zero timeout", "http://gotenberg:3000", "0s", "GOTENBERG_TIMEOUT: must be greater than zero"},
 		{"negative timeout", "http://gotenberg:3000", "-1s", "GOTENBERG_TIMEOUT: must be greater than zero"},
 		{"unparsable timeout", "http://gotenberg:3000", "soon", "GOTENBERG_TIMEOUT"},
+		{"timeout past the job timeout", "http://gotenberg:3000", "46s", "GOTENBERG_TIMEOUT: must be at most 45s, got 46s"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.url == "" {

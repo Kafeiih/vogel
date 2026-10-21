@@ -26,11 +26,17 @@ type Config struct {
 	Now func() time.Time
 	// KeyPrefix is the storage key prefix. Empty uses DefaultKeyPrefix.
 	KeyPrefix string
+	// CleanupTimeout bounds the best-effort Delete Generate runs after a
+	// failed insert. Zero uses DefaultCleanupTimeout.
+	CleanupTimeout time.Duration
 }
 
 // DefaultKeyPrefix is the storage key prefix used when Config.KeyPrefix is
 // empty.
 const DefaultKeyPrefix = "documents"
+
+// DefaultCleanupTimeout is the Config.CleanupTimeout used when it is zero.
+const DefaultCleanupTimeout = 10 * time.Second
 
 // verificationKeyBytes is the entropy of a verification key: 32 bytes (256
 // bits), encoded as 43 characters of unpadded URL-safe base64.
@@ -73,6 +79,8 @@ type Service struct {
 	logger   *slog.Logger
 	now      func() time.Time
 	prefix   string
+
+	cleanupTimeout time.Duration
 }
 
 // NewService creates a Service. A nil logger falls back to slog.Default().
@@ -88,7 +96,11 @@ func NewService(repo Repository, store storage.Storage, renderer Renderer, cfg C
 	if prefix == "" {
 		prefix = DefaultKeyPrefix
 	}
-	return &Service{repo: repo, store: store, renderer: renderer, logger: logger, now: now, prefix: prefix}
+	cleanupTimeout := cfg.CleanupTimeout
+	if cleanupTimeout <= 0 {
+		cleanupTimeout = DefaultCleanupTimeout
+	}
+	return &Service{repo: repo, store: store, renderer: renderer, logger: logger, now: now, prefix: prefix, cleanupTimeout: cleanupTimeout}
 }
 
 // Generate executes in.Template against in.Data, renders the HTML to PDF,
@@ -167,9 +179,12 @@ func (s *Service) Generate(ctx context.Context, db pgxtx.DBTX, in GenerateInput)
 	if err := s.repo.Insert(ctx, db, doc); err != nil {
 		// Best effort: the row is the only reference to the object, so an
 		// object without one is garbage. A cancelled ctx would also cancel
-		// the cleanup, hence WithoutCancel.
-		if delErr := s.store.Delete(context.WithoutCancel(ctx), doc.StorageKey); delErr != nil {
-			s.logger.Error("document: failed to delete uploaded object after insert failure",
+		// the cleanup, hence WithoutCancel, bounded by cleanupTimeout.
+		delCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.cleanupTimeout)
+		delErr := s.store.Delete(delCtx, doc.StorageKey)
+		cancel()
+		if delErr != nil {
+			s.logger.ErrorContext(ctx, "document: failed to delete uploaded object after insert failure",
 				"storage_key", doc.StorageKey, "error", delErr)
 		}
 		return nil, fmt.Errorf("document: insert metadata: %w", err)

@@ -13,8 +13,8 @@ PDP image is built, validated and deployed.
 
 | Resource Kind | Action | Allowed roles      | Used In              |
 |---------------|--------|--------------------|----------------------|
-| `audit:entry` | `list` | `admin`            | `GET /v1/audit`      |
-| `audit:entry` | `view` | `admin`, `auditor` | `GET /v1/audit/{id}` |
+| `audit:entry` | `list` | `admin`            | `GET /audit`      |
+| `audit:entry` | `view` | `admin`, `auditor` | `GET /audit/{id}` |
 
 `internal/interfaces/http/rolematrix_test.go` pins the same matrix at the
 HTTP layer, with a stand-in for the PDP; keep it and the policy in sync.

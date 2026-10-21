@@ -67,7 +67,7 @@ var matrixRoles = []struct {
 // need a database and are covered by handler_integration_test.go.
 func TestNewRouter_RoleMatrix(t *testing.T) {
 	A, F, U := allowed, forbidden, unauthenticated
-	docPath := "/api/v1/documents/" + ownedDocID
+	docPath := "/documents/" + ownedDocID
 
 	// Columns follow matrixRoles: anonymous, malformed, plain, author, owner, admin.
 	tests := []struct {
@@ -79,22 +79,22 @@ func TestNewRouter_RoleMatrix(t *testing.T) {
 		// presigned signature every caller, admin included, gets its 403.
 		{"GET", "/fake-storage/*", "/fake-storage/documents/" + ownedDocID, [6]outcome{F, F, F, F, F, F}},
 		{"PUT", "/fake-storage/*", "/fake-storage/documents/" + ownedDocID, [6]outcome{F, F, F, F, F, F}},
-		{"POST", "/api/v1/documents", "/api/v1/documents", [6]outcome{U, U, F, F, F, A}},
-		{"GET", "/api/v1/documents", "/api/v1/documents", [6]outcome{U, U, A, A, A, A}},
-		{"GET", "/api/v1/documents/{id}", docPath, [6]outcome{U, U, A, A, A, A}},
-		{"GET", "/api/v1/documents/{id}/history", docPath + "/history", [6]outcome{U, U, A, A, A, A}},
-		{"GET", "/api/v1/documents/{id}/download-url", docPath + "/download-url", [6]outcome{U, U, A, A, A, A}},
-		{"POST", "/api/v1/documents/{id}/upload-url", docPath + "/upload-url", [6]outcome{U, U, F, F, F, A}},
-		{"POST", "/api/v1/documents/{id}/file", docPath + "/file", [6]outcome{U, U, F, F, F, A}},
-		{"POST", "/api/v1/documents/{id}/transitions", docPath + "/transitions", [6]outcome{U, U, F, F, F, A}},
-		{"POST", "/api/v1/documents/{id}/claim", docPath + "/claim", [6]outcome{U, U, F, F, F, A}},
-		{"DELETE", "/api/v1/documents/{id}", docPath, [6]outcome{U, U, F, F, A, A}},
-		{"DELETE", "/api/v1/documents/{id}", "/api/v1/documents/" + otherDocID, [6]outcome{U, U, F, F, F, A}},
-		{"GET", "/api/v1/inbox", "/api/v1/inbox", [6]outcome{U, U, A, A, A, A}},
+		{"POST", "/documents", "/documents", [6]outcome{U, U, F, F, F, A}},
+		{"GET", "/documents", "/documents", [6]outcome{U, U, A, A, A, A}},
+		{"GET", "/documents/{id}", docPath, [6]outcome{U, U, A, A, A, A}},
+		{"GET", "/documents/{id}/history", docPath + "/history", [6]outcome{U, U, A, A, A, A}},
+		{"GET", "/documents/{id}/download-url", docPath + "/download-url", [6]outcome{U, U, A, A, A, A}},
+		{"POST", "/documents/{id}/upload-url", docPath + "/upload-url", [6]outcome{U, U, F, F, F, A}},
+		{"POST", "/documents/{id}/file", docPath + "/file", [6]outcome{U, U, F, F, F, A}},
+		{"POST", "/documents/{id}/transitions", docPath + "/transitions", [6]outcome{U, U, F, F, F, A}},
+		{"POST", "/documents/{id}/claim", docPath + "/claim", [6]outcome{U, U, F, F, F, A}},
+		{"DELETE", "/documents/{id}", docPath, [6]outcome{U, U, F, F, A, A}},
+		{"DELETE", "/documents/{id}", "/documents/" + otherDocID, [6]outcome{U, U, F, F, F, A}},
+		{"GET", "/inbox", "/inbox", [6]outcome{U, U, A, A, A, A}},
 		// fakeChecker allows every "read", so any authenticated caller can
 		// read the audit log. A real policy would usually restrict it.
-		{"GET", "/api/v1/audit", "/api/v1/audit", [6]outcome{U, U, A, A, A, A}},
-		{"GET", "/api/v1/audit/{id}", "/api/v1/audit/" + otherDocID, [6]outcome{U, U, A, A, A, A}},
+		{"GET", "/audit", "/audit", [6]outcome{U, U, A, A, A, A}},
+		{"GET", "/audit/{id}", "/audit/" + otherDocID, [6]outcome{U, U, A, A, A, A}},
 	}
 
 	handler := newMatrixRouter(t)
@@ -176,12 +176,12 @@ func outcomeOf(code int) outcome {
 // from vogel's access guard and not from somewhere else.
 func TestNewRouter_RoleMatrixForbiddenIsTheGuard(t *testing.T) {
 	handler := newMatrixRouter(t)
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/documents", nil)
+	req := httptest.NewRequest(http.MethodPost, "/documents", nil)
 	req.Header.Set("Authorization", "Bearer u1:alice:")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "FORBIDDEN") {
-		t.Errorf("POST /api/v1/documents as plain user = %d %s, want 403 FORBIDDEN", rec.Code, rec.Body.String())
+		t.Errorf("POST /documents as plain user = %d %s, want 403 FORBIDDEN", rec.Code, rec.Body.String())
 	}
 }

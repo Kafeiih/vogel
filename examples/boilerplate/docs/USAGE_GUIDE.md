@@ -542,7 +542,7 @@ Crear tests para cada capa:
 
 ```bash
 make gen-docs
-# Verificar en http://localhost:8080/v1/swagger/
+# Verificar en http://localhost:8080/swagger/
 ```
 
 ---

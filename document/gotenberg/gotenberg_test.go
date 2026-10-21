@@ -3,6 +3,7 @@ package gotenberg_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -117,4 +118,52 @@ func TestNew_RejectsInvalidBaseURL(t *testing.T) {
 		_, err := gotenberg.New(gotenberg.Config{BaseURL: base})
 		assert.Error(t, err, base)
 	}
+}
+
+func TestRender_StatusDecidesWhetherARetryCanHelp(t *testing.T) {
+	for _, tc := range []struct {
+		status   int
+		rejected bool
+	}{
+		{http.StatusBadRequest, true},
+		{http.StatusForbidden, true},
+		{http.StatusConflict, true},
+		{http.StatusRequestEntityTooLarge, true},
+		{http.StatusUnprocessableEntity, true},
+		{http.StatusUnauthorized, false},
+		{http.StatusNotFound, false},
+		{http.StatusRequestTimeout, false},
+		{http.StatusTooManyRequests, false},
+		{http.StatusInternalServerError, false},
+		{http.StatusServiceUnavailable, false},
+	} {
+		t.Run(http.StatusText(tc.status), func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				http.Error(w, "nope", tc.status)
+			}))
+			defer srv.Close()
+			r, err := gotenberg.New(gotenberg.Config{BaseURL: srv.URL})
+			require.NoError(t, err)
+
+			_, err = r.Render(context.Background(), []byte("<p>x</p>"))
+
+			require.ErrorIs(t, err, gotenberg.ErrUnexpectedStatus)
+			assert.Equal(t, tc.rejected, errors.Is(err, document.ErrRenderRejected))
+		})
+	}
+}
+
+func TestRender_OversizedResponse_IsRejected(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(strings.Repeat("x", 11)))
+	}))
+	defer srv.Close()
+	r, err := gotenberg.New(gotenberg.Config{BaseURL: srv.URL, MaxResponseBytes: 10})
+	require.NoError(t, err)
+
+	_, err = r.Render(context.Background(), []byte("<p>x</p>"))
+
+	require.ErrorIs(t, err, gotenberg.ErrResponseTooLarge)
+	assert.ErrorIs(t, err, document.ErrRenderRejected)
+	assert.Equal(t, "gotenberg: response exceeds the configured size limit (10 bytes)", err.Error())
 }

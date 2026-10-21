@@ -16,7 +16,7 @@
 // the Registry and calls its Handler with a Run describing the case and the
 // event. A Handler error is retried by River with its usual backoff; return
 // river.JobCancel(err) from a Handler for a failure that can never succeed,
-// so River stops retrying. Jobs are unique on (case id, seq, effect), so a
+// so River stops retrying. Jobs are unique on (case id, seq, effect, part), so a
 // re-dispatch of the same event while its job is still retained by River is
 // a no-op. Execution is at-least-once: a Handler must tolerate running again
 // after a crash or a retry.
@@ -85,6 +85,10 @@ type Run struct {
 	ActorID string
 	// Attempt is River's attempt number, starting at 1.
 	Attempt int
+	// Part is zero for the effect itself. A Handler that fans an effect out
+	// into one job per item (NotifyHandler does, one per message) runs again
+	// with Part set to the 1-based item that job handles.
+	Part int
 }
 
 // Handler runs one effect. Returning an error makes River retry the job;
@@ -106,12 +110,15 @@ func IsCancel(err error) bool {
 	return errors.As(err, &cancel)
 }
 
-// Args is the River job payload for one effect. CaseID, Seq and Effect are
-// the uniqueness key; the rest is the case reference copied at dispatch time.
+// Args is the River job payload for one effect. CaseID, Seq, Effect and Part
+// are the uniqueness key; the rest is the case reference copied at dispatch
+// time. Part is zero for the effect job and the 1-based item of a fan-out job
+// (see Run.Part).
 type Args struct {
 	CaseID     uuid.UUID `json:"case_id" river:"unique"`
 	Seq        int64     `json:"seq" river:"unique"`
 	Effect     string    `json:"effect" river:"unique"`
+	Part       int       `json:"part,omitempty" river:"unique"`
 	Definition string    `json:"definition"`
 	Version    int       `json:"version"`
 	Domain     string    `json:"domain"`

@@ -21,7 +21,7 @@ import (
 )
 
 // fakeStoragePath is where the fake bucket is served, on this example's own
-// server and outside /api/v1: a real bucket is its own origin, reached with
+// server and outside the authenticated routes: a real bucket is its own origin, reached with
 // a presigned URL and no bearer token.
 const fakeStoragePath = "/fake-storage/"
 
