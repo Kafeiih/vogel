@@ -14,6 +14,9 @@
 # net/http side of CVE-2026-78669) clear only if the next release is built
 # with Go 1.27.2 or later: check its Go version before dropping any entry.
 #
+# Added 2026-10-21: CVE-2026-111943 (crypto/x509) is fixed in Go 1.27.3; the
+# next Cerbos release clears it only if built with Go 1.27.3 or later.
+#
 # Each entry expires: when it does, CI fails again. Bump the Cerbos version in
 # cerbos/Dockerfile and deploy/docker-compose.developer.yaml if a fixed
 # release is out, or renew the date with a reason.
@@ -24,3 +27,5 @@ CVE-2026-78667 exp:2026-12-15
 CVE-2026-78669 exp:2026-12-15
 # crypto/tls: multiple ECH outer extension references (stdlib)
 CVE-2026-97031 exp:2026-12-15
+# crypto/x509 (stdlib)
+CVE-2026-111943 exp:2026-12-15
