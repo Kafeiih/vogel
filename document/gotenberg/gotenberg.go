@@ -47,7 +47,7 @@ var (
 	ErrResponseTooLarge = errors.New("gotenberg: response exceeds the configured size limit")
 	// ErrUnexpectedStatus reports a non-2xx response. The error text carries
 	// the status code and the start of Gotenberg's plain-text message. A 400,
-	// 403, 409, 413 or 422 also wraps document.ErrRenderRejected.
+	// 409 or 422 also wraps document.ErrRenderRejected.
 	ErrUnexpectedStatus = errors.New("gotenberg: unexpected response status")
 )
 
@@ -148,12 +148,12 @@ func (r *Renderer) Render(ctx context.Context, html []byte) ([]byte, error) {
 
 // permanentStatus reports whether a status means Gotenberg cannot convert
 // this HTML, so sending it again cannot help. Every other status is retried,
-// including 401 and 404: they usually come from a proxy or a wrong base URL,
-// which an operator can fix while the job is still retrying.
+// including 401, 403, 404 and 413: a proxy, a WAF or a wrong base URL in
+// front of Gotenberg returns them too, and an operator can fix that while
+// the job is still retrying.
 func permanentStatus(code int) bool {
 	switch code {
-	case http.StatusBadRequest, http.StatusForbidden, http.StatusConflict,
-		http.StatusRequestEntityTooLarge, http.StatusUnprocessableEntity:
+	case http.StatusBadRequest, http.StatusConflict, http.StatusUnprocessableEntity:
 		return true
 	}
 	return false

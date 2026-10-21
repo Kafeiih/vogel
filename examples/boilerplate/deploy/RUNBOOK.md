@@ -807,6 +807,30 @@ docker logs worker --since 30m | grep -i error
 - `WorkerJobSlowP95`: el p95 de un `kind` supera 60s. Revisar dependencias
   externas del job (SMTP, S3) y slow queries (seccion 3). El umbral es un
   punto de partida: ajustalo a la duracion esperada de cada job.
+<!-- vogel:component bpms begin -->
+
+**Efectos BPMS sin handler.** Un job `vogel_action` cuyo efecto el worker no
+tiene registrado falla con `effect not known to the effect sink` y River lo
+reintenta con backoff hasta agotar sus intentos (25 por defecto, a lo largo de
+dias). En un despliegue escalonado es esperable y se resuelve solo cuando el
+worker nuevo toma el job. Si el efecto se borro o se renombro a proposito,
+esos jobs nunca van a correr: listarlos y cancelarlos con un rol que tenga DML
+sobre River (`WORKER_SCHEMA`, `river` por defecto):
+
+```sql
+SELECT id, args->>'effect' AS effect, args->>'case_id' AS case_id, attempt, state
+FROM river.river_job
+WHERE kind = 'vogel_action' AND args->>'effect' = '<efecto>'
+  AND state IN ('available', 'retryable', 'scheduled');
+
+UPDATE river.river_job SET state = 'cancelled', finalized_at = now()
+WHERE kind = 'vogel_action' AND args->>'effect' = '<efecto>'
+  AND state IN ('available', 'retryable', 'scheduled');
+```
+
+Un job en `running` no se toca: termina su intento y queda `retryable`, y se
+cancela en la siguiente pasada.
+<!-- vogel:component bpms end -->
 
 ---
 

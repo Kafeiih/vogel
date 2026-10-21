@@ -68,10 +68,10 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   `<caso>/<seq>/<efecto>`; una entrada inválida, una plantilla que no compila
   o no se puede ejecutar (`ErrTemplate`), un PDF vacío (`ErrEmptyPDF`) o un
   documento que el `Renderer` rechaza (`ErrRenderRejected`: en
-  `document/gotenberg`, un 400, 403, 409, 413 o 422, o un PDF más grande que
-  el límite) cancela el trabajo en vez de reintentarlo; un Gotenberg caído,
-  lento, saturado o mal configurado (por ejemplo un 401 o 404 de un proxy o
-  de una URL equivocada) se reintenta. El borrado de limpieza después de un insert
+  `document/gotenberg`, un 400, 409 o 422, o un PDF más grande que el límite)
+  cancela el trabajo en vez de reintentarlo; un Gotenberg caído, lento,
+  saturado o mal configurado (por ejemplo un 401, 403, 404 o 413 de un proxy,
+  un WAF o una URL equivocada) se reintenta. El borrado de limpieza después de un insert
   fallido tiene su propio tope (`Config.CleanupTimeout`, `10s` por defecto) y
   su falla se registra con el contexto del llamador. Un dominio o external id igual a `.` o `..` se rechaza, porque
   forma parte de la clave de almacenamiento. La firma electrónica queda
