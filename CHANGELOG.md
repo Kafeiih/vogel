@@ -29,9 +29,12 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   imagen de `.github/workflows/release.yaml` firma el digest publicado con la
   clave de los *secrets* `COSIGN_PRIVATE_KEY` y `COSIGN_PASSWORD`, sin subir
   la firma al log público de Sigstore; sin esos *secrets*, el release falla
-  antes de crear los tags. **Migración:** antes del próximo release, un
-  servicio generado debe crear el par de claves y los dos *secrets* (ver
-  "Publicar imágenes y CI" en el README del boilerplate).
+  antes de crear los tags. **Migración:** un servicio generado a partir de
+  esta versión debe crear el par de claves y los dos *secrets* antes de su
+  primer release (ver "Publicar imágenes y CI" en el README del
+  boilerplate). Los servicios ya generados tienen su propia copia del
+  workflow y no cambian; para firmar sus imágenes deben copiar los pasos de
+  firma y crear la clave.
 
 ### Agregado
 
