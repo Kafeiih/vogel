@@ -60,15 +60,23 @@ módulos del repositorio, generado por `.github/workflows/release.yaml` con
 | `vogel-boilerplate.cdx.json` | `examples/boilerplate`, módulo aparte con sus propias dependencias |
 | `SHA256SUMS` | Hash SHA-256 de los dos archivos anteriores |
 
-Para descargarlos y comprobarlos (reemplazar `v0.13.2` por la versión):
+Para descargarlos y comprobarlos (reemplazar `v0.14.0` por la versión):
 
 ```bash
-gh release download v0.13.2 -R Kafeiih/vogel -p '*.cdx.json' -p SHA256SUMS
+gh release download v0.14.0 -R Kafeiih/vogel -p '*.cdx.json' -p SHA256SUMS
 sha256sum -c SHA256SUMS
 ```
 
 `SHA256SUMS` sale del mismo release, así que detecta una descarga corrupta,
-no un release alterado. Un escáner de SBOM (p. ej. `grype sbom:vogel.cdx.json`
+no un release alterado. Desde `v0.14.0` cada archivo lleva además una
+atestación de procedencia firmada por el workflow de release, que sí detecta
+un archivo alterado o subido a mano:
+
+```bash
+gh attestation verify vogel.cdx.json --repo Kafeiih/vogel
+```
+
+Un escáner de SBOM (p. ej. `grype sbom:vogel.cdx.json`
 u OWASP Dependency-Track) puede cruzar ese inventario con vulnerabilidades
 publicadas después del release.
 
