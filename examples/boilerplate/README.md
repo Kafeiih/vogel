@@ -461,7 +461,16 @@ cosign verify --key cosign.pub --insecure-ignore-tlog=true \
 ```
 
 `--insecure-ignore-tlog` es necesario porque la firma no está en el log
-público; la confianza viene de la clave. Para rotarla, genere un par nuevo,
+público; la confianza viene de la clave.
+
+Commitee `cosign.pub` en `deploy/cosign.pub`: `deploy/verify-images.sh`
+(o `make deploy`) baja las imágenes del compose, verifica la firma de cada
+imagen que no está fijada por digest y falla si una no la tiene, así que el
+host despliega solo lo que publicó el release (ver la sección "Verificar las
+firmas antes de desplegar" del RUNBOOK). El host necesita `cosign`, por
+ejemplo con `go install github.com/sigstore/cosign/v3/cmd/cosign@v3.1.4` o
+el binario de su
+[release](https://github.com/sigstore/cosign/releases/tag/v3.1.4). Para rotarla, genere un par nuevo,
 reemplace los dos *secrets* y distribuya el `cosign.pub` nuevo: las imágenes
 anteriores se siguen verificando con la clave pública anterior.
 

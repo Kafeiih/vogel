@@ -223,6 +223,9 @@ jobs:
       - name: Release template image names
         run: examples/boilerplate/.github/workflows/image-ref_test.sh
 
+      - name: Deploy image signature check
+        run: examples/boilerplate/deploy/verify-images_test.sh
+
       # create-vogel-app turns this boilerplate into new repositories by
       # deleting component-marked blocks. Generate every combination from this
       # checkout and build, vet and test each, so a marker placed wrong fails

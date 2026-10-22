@@ -129,6 +129,28 @@ docker compose -f deploy/docker-compose.yaml logs cerbos | grep "executable poli
 ```
 <!-- vogel:component cerbos end -->
 
+### Verificar las firmas antes de desplegar
+
+El release firma cada imagen del servicio con cosign (ver "Publicar imagenes
+y CI" en el README). Desplegar siempre con:
+
+```bash
+deploy/verify-images.sh && docker compose -f deploy/docker-compose.yaml up -d
+```
+
+(o `make deploy`). El script baja las imagenes y verifica, por el digest que
+acaba de bajar, la firma de cada imagen que no esta fijada por digest (las
+del servicio); si una no tiene firma valida, sale con error y no se despliega
+nada. `up -d` no vuelve a bajar una imagen que ya esta local, asi que levanta
+justo lo que se verifico. Necesita `cosign` en el host y la clave publica en
+`deploy/cosign.pub` (o en la ruta de `COSIGN_PUBLIC_KEY`).
+
+Una firma rechazada es un incidente: la imagen del registry no es la que
+publico el release. No desplegar, avisar segun la seccion 12 y comparar el
+digest con el del run del release. `IMAGE_VERIFY=off` salta la verificacion
+(con un aviso) y solo vale para versiones publicadas antes de que el release
+firmara.
+
 ### Parches
 
 Nada se actualiza solo: las imagenes y los modulos estan fijados para que
@@ -203,7 +225,7 @@ sobre un volumen vacio) y todas las tablas son de `postgres`, asi que
    Si se cambio `WORKER_SCHEMA`, agregue `-v worker_schema=<esquema>` al
    `psql` (por defecto el script usa `river`).
 <!-- vogel:component worker end -->
-6. Desplegar normalmente: `docker compose -f deploy/docker-compose.yaml up -d`.
+6. Desplegar normalmente: `deploy/verify-images.sh && docker compose -f deploy/docker-compose.yaml up -d`.
    `migrate` corre como `app_migrator`, `grants` aplica
    `runtime-grants.sql` y los procesos que sirven arrancan como `app_runtime`.
 7. Cambiar la contraseña del superusuario, que en el compose anterior era
@@ -443,9 +465,10 @@ curl -s http://localhost:8080/metrics | grep 'http_requests_total.*429'
 
 ```bash
 # Volver a la version anterior
-docker compose -f deploy/docker-compose.yaml pull   # si hay imagen nueva
+# Cambiar APP_VERSION en deploy/.env al tag anterior; el script baja esa
+# version y verifica su firma antes de bajar el servicio
+deploy/verify-images.sh
 docker compose -f deploy/docker-compose.yaml down
-# Cambiar APP_VERSION en deploy/.env al tag anterior
 docker compose -f deploy/docker-compose.yaml up -d
 ```
 
