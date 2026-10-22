@@ -62,7 +62,9 @@ Divulgación coordinada:
 
 Las vulnerabilidades conocidas en dependencias las detecta `govulncheck` en
 CI y las mantiene al día Dependabot; si una afecta a `vogel` de forma
-alcanzable, también puede reportarse por esta vía.
+alcanzable, también puede reportarse por esta vía. Los criterios para sumar
+o mantener una dependencia están en
+[`docs/security/DEPENDENCIES.md`](docs/security/DEPENDENCIES.md).
 
 El modelo de amenazas de la librería, con lo que `vogel` controla y lo que
 queda a cargo de cada servicio, está en

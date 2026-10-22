@@ -25,9 +25,25 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   un servicio ya generado que quiera seguir el ejemplo cambia su
   `r.Route("/v1", ...)` por `r.Group(...)`, el healthcheck del `Dockerfile`
   y las alertas de Prometheus sobre `path="/v1/healthz"`.
+- **El release del boilerplate firma las imágenes con cosign.** Cada job de
+  imagen de `.github/workflows/release.yaml` firma el digest publicado con la
+  clave de los *secrets* `COSIGN_PRIVATE_KEY` y `COSIGN_PASSWORD`, sin subir
+  la firma al log público de Sigstore; sin esos *secrets*, el release falla
+  antes de crear los tags. **Migración:** antes del próximo release, un
+  servicio generado debe crear el par de claves y los dos *secrets* (ver
+  "Publicar imágenes y CI" en el README del boilerplate).
 
 ### Agregado
 
+- **Release: atestación de procedencia firmada sobre los SBOM.** El release
+  de `vogel` firma con Sigstore (`actions/attest-build-provenance`) una
+  atestación sobre `vogel.cdx.json`, `vogel-boilerplate.cdx.json` y
+  `SHA256SUMS`; se verifica con
+  `gh attestation verify <archivo> --repo Kafeiih/vogel`.
+- **`docs/security/DEPENDENCIES.md`: criterios para sumar y mantener
+  dependencias** (necesidad, identidad, mantenimiento, vulnerabilidades,
+  licencia) y cuándo una se considera abandonada. El template de PR los
+  enlaza.
 - **Boilerplate: dominio de procesos en el componente `bpms`.**
   `create-vogel-app --with bpms` genera un dominio en capas
   (`internal/domain/process`, `internal/application/process`,

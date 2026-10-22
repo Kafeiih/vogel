@@ -17,6 +17,6 @@ consumer must do. -->
 - [ ] All new input (body, params, query, headers, files) is validated and bounded.
 - [ ] No secrets, tokens or personal data are logged, returned in errors or stored unredacted in `audit_log`.
 - [ ] SQL uses parameters only; no query is built by concatenating input.
-- [ ] New dependencies were reviewed (maintenance, license, `govulncheck`) and are really needed.
+- [ ] New dependencies meet `docs/security/DEPENDENCIES.md` (need, identity, maintenance, `govulncheck`, license).
 - [ ] `CHANGELOG.md` describes every consumer-visible change, breaking changes called out.
 - [ ] `docs/THREAT_MODEL.md` is updated if this adds an entry point, an external service or a new kind of personal data.
