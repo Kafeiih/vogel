@@ -222,7 +222,8 @@ func (h *ProcessHandler) fail(w http.ResponseWriter, r *http.Request, err error)
 	case errors.Is(err, domain.ErrNotHolder), errors.Is(err, domain.ErrNotClaimant), errors.Is(err, domain.ErrNoAccess):
 		response.Error(w, r, http.StatusForbidden, response.CodeForbidden, err.Error())
 	case errors.Is(err, workflow.ErrAlreadyAssigned), errors.Is(err, workflow.ErrConflict),
-		errors.Is(err, workflow.ErrCaseClosed), errors.Is(err, workflow.ErrInvalidTransition):
+		errors.Is(err, workflow.ErrCaseClosed), errors.Is(err, workflow.ErrInvalidTransition),
+		errors.Is(err, domain.ErrPublishConflict):
 		response.Error(w, r, http.StatusConflict, response.CodeConflict, err.Error())
 	default:
 		h.logger.ErrorContext(r.Context(), "bpms request failed", "path", r.URL.Path, "error", err)

@@ -12,6 +12,7 @@ var (
 	ErrNotHolder       = errors.New("actor does not hold the profile for this task")
 	ErrNotClaimant     = errors.New("task is not claimed by this actor")
 	ErrNoAccess        = errors.New("actor has no access to this case")
+	ErrPublishConflict = errors.New("another version of this process was published concurrently")
 )
 
 type FormError struct {

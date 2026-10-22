@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/kafeiih/vogel/auth"
+	"github.com/kafeiih/vogel/httpx/response"
 	"github.com/kafeiih/vogel/request"
 	"github.com/kafeiih/vogel/workflow"
 
@@ -213,6 +215,12 @@ func TestProcessHandler_Publish(t *testing.T) {
 	code, body = serveProcess(t, svc, http.MethodPost, "/processes", "admin-1", validSpec)
 	if code != http.StatusUnprocessableEntity || !strings.Contains(body["message"].(string), "rut") {
 		t.Fatalf("compile error: status = %d body = %v, want 422 naming the cause", code, body)
+	}
+
+	svc = &stubProcessService{err: fmt.Errorf("publish %q: store: %w", "consulta", domain.ErrPublishConflict)}
+	code, body = serveProcess(t, svc, http.MethodPost, "/processes", "admin-1", validSpec)
+	if code != http.StatusConflict || body["code"] != response.CodeConflict {
+		t.Fatalf("concurrent publish: status = %d body = %v, want 409 CONFLICT", code, body)
 	}
 
 	svc = &stubProcessService{err: errors.New("duplicate key")}

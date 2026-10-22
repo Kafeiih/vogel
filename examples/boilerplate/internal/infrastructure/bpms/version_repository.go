@@ -2,18 +2,25 @@ package bpms
 
 import (
 	"context"
+	"errors"
 	"fmt"
+
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/kafeiih/vogel/pgxtx"
 
 	"github.com/kafeiih/vogel/examples/boilerplate/internal/application/process"
+	domain "github.com/kafeiih/vogel/examples/boilerplate/internal/domain/process"
 )
+
+const uniqueViolationCode = "23505"
 
 type VersionRepository struct{}
 
 func NewVersionRepository() *VersionRepository { return &VersionRepository{} }
 
-// Two concurrent publishes of one name collide on the primary key; one fails.
+// Two concurrent publishes of one name collide on the primary key; the loser
+// gets domain.ErrPublishConflict and may retry.
 func (VersionRepository) Insert(ctx context.Context, db pgxtx.DBTX, name string, spec []byte) (int, error) {
 	var version int
 	err := db.QueryRow(ctx, `
@@ -21,6 +28,10 @@ func (VersionRepository) Insert(ctx context.Context, db pgxtx.DBTX, name string,
 		SELECT $1, COALESCE(MAX(version), 0) + 1, $2
 		FROM process_version WHERE name = $1
 		RETURNING version`, name, spec).Scan(&version)
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == uniqueViolationCode {
+		return 0, fmt.Errorf("insert process version: %w", domain.ErrPublishConflict)
+	}
 	if err != nil {
 		return 0, fmt.Errorf("insert process version: %w", err)
 	}

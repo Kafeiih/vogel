@@ -56,7 +56,8 @@ quien actuó en él, lo tiene tomado o tiene el perfil de su nodo actual.
 Un proceso es un JSON con nodos, transiciones y un formulario por nodo (ver
 `internal/infrastructure/bpms/processes/consulta.json`). Publicar compila todo
 y guarda la siguiente versión, inmutable; un caso sigue siempre con la versión
-con la que se abrió. El arranque recarga todas las versiones guardadas y una
+con la que se abrió. Si dos publicaciones del mismo proceso llegan a la vez,
+una responde `409 CONFLICT` y se puede reintentar. El arranque recarga todas las versiones guardadas y una
 que ya no compila hace fallar el arranque, en vez de dejar casos varados.
 
 Al arrancar, cada `processes/*.json` cuyo nombre todavía no tiene versión se

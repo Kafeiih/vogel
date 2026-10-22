@@ -161,6 +161,13 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   las acciones fijadas por SHA y notas de una línea donde un cambio rompe o
   expone algo.
 
+### Corregido
+
+- **`examples/boilerplate`: publicar dos versiones del mismo proceso a la vez
+  responde 409.** `POST /processes` respondía 500 cuando dos publicaciones
+  chocaban por el número de versión; ahora la que pierde recibe
+  `409 CONFLICT` y se puede reintentar.
+
 ## [0.13.2] — 2026-10-20
 
 ### Cambiado
