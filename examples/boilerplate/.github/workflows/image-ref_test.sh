@@ -20,7 +20,7 @@ expect_ok() {
 		failed=1
 		return
 	fi
-	for want in "name=$4" "ref=$5" "org.opencontainers.image.version=$6" \
+	for want in "name=$4" "ref=$5" "version=$6" "org.opencontainers.image.version=$6" \
 		"org.opencontainers.image.source=https://github.com/$2" \
 		"org.opencontainers.image.revision=abc123"; do
 		if ! grep -qxF "$want" <<<"$out"; then
