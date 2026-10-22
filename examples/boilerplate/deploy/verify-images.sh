@@ -5,6 +5,10 @@
 # Images pinned by digest (third-party ones such as postgres) are fixed by
 # their hash and need no signature.
 #
+# The signature must also carry the image's tag as its "version"
+# annotation (release.yaml adds it), so a tag moved to an older signed digest
+# is refused too.
+#
 # Each image is verified by the digest that was just pulled, so
 # `docker compose up -d` afterwards runs exactly what was verified: it does
 # not pull again an image that is already local.
@@ -55,9 +59,9 @@ while IFS= read -r image; do
 	# as host:5000/name has its ':' before a '/').
 	repo="$image"
 	last="${image##*/}"
-	if [[ "$last" == *:* ]]; then
-		repo="${image%:*}"
-	fi
+	[[ "$last" == *:* ]] || fail "$image: no version tag to check the signature against"
+	repo="${image%:*}"
+	version="${image##*:}"
 
 	# Exact prefix match: only this repository's digest, never one whose
 	# name merely contains it.
@@ -65,7 +69,8 @@ while IFS= read -r image; do
 		awk -v prefix="${repo}@sha256:" 'index($0, prefix) == 1 { print; exit }')"
 	[ -n "$ref" ] || fail "$image: no registry digest after pulling it"
 
-	if ! out="$(cosign verify --key "$key" --insecure-ignore-tlog=true "$ref" 2>&1)"; then
+	if ! out="$(cosign verify --key "$key" --insecure-ignore-tlog=true \
+		-a "version=$version" "$ref" 2>&1)"; then
 		echo "$out" >&2
 		fail "$image ($ref): signature check failed, do not deploy it"
 	fi

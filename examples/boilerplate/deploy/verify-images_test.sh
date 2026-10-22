@@ -91,6 +91,7 @@ check "own image verified by digest" "grep -qF 'ghcr.io/acme/svc@sha256:$(digest
 check "worker image verified by digest" "grep -qF 'ghcr.io/acme/svc-worker@sha256:$(digest_of ghcr.io/acme/svc-worker)' '$tmp/log'"
 check "a repository that only contains the name is not used" '! grep -q "cosign.*mirror.example" "$tmp/log"'
 check "digest-pinned image is not verified" '! grep -q "cosign.*postgres" "$tmp/log"'
+check "own image signature must carry its tag as version" "grep -qF -- '-a version=1.2.0 ghcr.io/acme/svc@sha256:' '$tmp/log'"
 check "key and tlog flags are passed" "grep -qF -- '--key $tmp/cosign.pub --insecure-ignore-tlog=true' '$tmp/log'"
 check "pull runs before the first check" '[ "$(grep -n "compose.*pull" "$tmp/log" | cut -d: -f1)" -lt "$(grep -n "^cosign" "$tmp/log" | head -1 | cut -d: -f1)" ]'
 check "count is reported" 'grep -qF "2 image(s) verified" <<<"$out"'
@@ -98,6 +99,10 @@ check "count is reported" 'grep -qF "2 image(s) verified" <<<"$out"'
 # A registry with a port keeps its ':' in the repository name.
 run "$ported"
 check "registry port is kept" "[ \"\$code\" = 0 ] && grep -qF 'registry.local:5000/acme/svc@sha256:$(digest_of registry.local:5000/acme/svc)' '$tmp/log'"
+
+# An image without a tag has no version to check against.
+run "ghcr.io/acme/svc"
+check "untagged image is refused" '[ "$code" = 1 ] && grep -qF "no version tag" <<<"$out"'
 
 # An unsigned image stops the deploy and names the image.
 bad="ghcr.io/acme/svc-worker@sha256:$(digest_of ghcr.io/acme/svc-worker)"

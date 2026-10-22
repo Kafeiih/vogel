@@ -140,8 +140,10 @@ deploy/verify-images.sh && docker compose -f deploy/docker-compose.yaml up -d
 
 (o `make deploy`). El script baja las imagenes y verifica, por el digest que
 acaba de bajar, la firma de cada imagen que no esta fijada por digest (las
-del servicio); si una no tiene firma valida, sale con error y no se despliega
-nada. `up -d` no vuelve a bajar una imagen que ya esta local, asi que levanta
+del servicio), y que esa firma diga la version del tag (la anotacion
+`version` que agrega el release, asi un tag movido a una imagen anterior
+tambien se rechaza); si una no tiene firma valida, sale con error y no se
+despliega nada. `up -d` no vuelve a bajar una imagen que ya esta local, asi que levanta
 justo lo que se verifico. Necesita `cosign` en el host y la clave publica en
 `deploy/cosign.pub` (o en la ruta de `COSIGN_PUBLIC_KEY`).
 

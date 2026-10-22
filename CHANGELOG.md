@@ -27,8 +27,9 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   y las alertas de Prometheus sobre `path="/v1/healthz"`.
 - **El release del boilerplate firma las imágenes con cosign.** Cada job de
   imagen de `.github/workflows/release.yaml` firma el digest publicado con la
-  clave de los *secrets* `COSIGN_PRIVATE_KEY` y `COSIGN_PASSWORD`, sin subir
-  la firma al log público de Sigstore; sin esos *secrets*, el release falla
+  clave de los *secrets* `COSIGN_PRIVATE_KEY` y `COSIGN_PASSWORD`, con la
+  versión del release como anotación (`version`) y sin subir la firma al log
+  público de Sigstore; sin esos *secrets*, el release falla
   antes de crear los tags. **Migración:** un servicio generado a partir de
   esta versión debe crear el par de claves y los dos *secrets* antes de su
   primer release (ver "Publicar imágenes y CI" en el README del
@@ -46,8 +47,10 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 - **Boilerplate: `deploy/verify-images.sh` verifica las firmas antes de
   desplegar.** Baja las imágenes de `deploy/docker-compose.yaml` y verifica
   con cosign y `deploy/cosign.pub`, por el digest recién bajado, cada imagen
-  que no está fijada por digest; si una no tiene firma válida sale con error
-  y no se despliega nada. `make deploy` lo corre antes de `docker compose up
+  que no está fijada por digest, y exige que la anotación `version` de la
+  firma coincida con el tag (un tag movido a una imagen anterior, también
+  firmada, se rechaza); si una no tiene firma válida sale con error y no se
+  despliega nada. `make deploy` lo corre antes de `docker compose up
   -d`, y el RUNBOOK lo usa al desplegar y al volver atrás. `IMAGE_VERIFY=off`
   baja las imágenes sin verificarlas, con un aviso, para versiones publicadas
   antes de firmar.

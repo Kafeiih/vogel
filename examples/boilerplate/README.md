@@ -457,8 +457,13 @@ verificar una imagen antes de desplegarla:
 
 ```bash
 cosign verify --key cosign.pub --insecure-ignore-tlog=true \
-  ghcr.io/<owner>/<repo>:X.Y.Z
+  -a version=X.Y.Z ghcr.io/<owner>/<repo>:X.Y.Z
 ```
+
+La firma lleva la versión del release como anotación (`version`), y
+`-a version=X.Y.Z` la exige: sin eso, alguien con escritura en el registry
+podría mover el tag `X.Y.Z` a una imagen anterior, también firmada, y la
+verificación pasaría.
 
 `--insecure-ignore-tlog` es necesario porque la firma no está en el log
 público; la confianza viene de la clave.

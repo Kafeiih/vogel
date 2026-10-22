@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-# Prints the GitHub step outputs "name", "ref" and "labels" for one image of
-# this repository: name is ghcr.io/<owner>/<repo><suffix> and ref is
-# <name>:<version>, where the version is the pushed tag without its leading
-# "v". Used by release.yaml; image-ref_test.sh pins its behavior.
+# Prints the GitHub step outputs "name", "ref", "version" and "labels" for one
+# image of this repository: name is ghcr.io/<owner>/<repo><suffix>, version is
+# the pushed tag without its leading "v" and ref is <name>:<version>. Used by release.yaml; image-ref_test.sh pins its behavior.
 #
 # Usage: image-ref.sh <suffix>   ("" for the api, -worker, -cerbos)
 #
@@ -25,6 +24,7 @@ version="${tag#v}"
 
 echo "name=ghcr.io/${repository}${suffix}"
 echo "ref=ghcr.io/${repository}${suffix}:${version}"
+echo "version=${version}"
 {
 	echo "labels<<EOF"
 	echo "org.opencontainers.image.source=${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY}"
