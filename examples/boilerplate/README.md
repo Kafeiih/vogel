@@ -439,6 +439,41 @@ bien. La primera publicación crea paquetes privados: vincúlelos al
 repositorio y elija su visibilidad en la configuración del paquete.
 `deploy/docker-compose.yaml` descarga esas imágenes con `APP_VERSION`.
 
+Cada imagen se firma con [cosign](https://docs.sigstore.dev/cosign/) y una
+clave del repositorio antes de crear los tags; sin la clave, el release
+falla. La firma no se sube al log público de transparencia de Sigstore, así
+que un servicio privado no publica su nombre. Antes del primer release, cree
+el par de claves y guárdelo como *secrets* del repositorio:
+
+```bash
+cosign generate-key-pair            # pide una contraseña; crea cosign.key y cosign.pub
+gh secret set COSIGN_PRIVATE_KEY < cosign.key
+gh secret set COSIGN_PASSWORD       # la misma contraseña
+```
+
+Guarde `cosign.key` fuera del repositorio (el `.gitignore` ya ignora
+`*.key`) y publique `cosign.pub` donde lo lean quienes despliegan. Para
+verificar una imagen antes de desplegarla:
+
+```bash
+cosign verify --key cosign.pub --insecure-ignore-tlog=true \
+  ghcr.io/<owner>/<repo>:X.Y.Z
+```
+
+`--insecure-ignore-tlog` es necesario porque la firma no está en el log
+público; la confianza viene de la clave.
+
+Commitee `cosign.pub` en `deploy/cosign.pub`: `deploy/verify-images.sh`
+(o `make deploy`) baja las imágenes del compose, verifica la firma de cada
+imagen que no está fijada por digest y falla si una no la tiene, así que el
+host despliega solo lo que publicó el release (ver la sección "Verificar las
+firmas antes de desplegar" del RUNBOOK). El host necesita `cosign`, por
+ejemplo con `go install github.com/sigstore/cosign/v3/cmd/cosign@v3.1.4` o
+el binario de su
+[release](https://github.com/sigstore/cosign/releases/tag/v3.1.4). Para rotarla, genere un par nuevo,
+reemplace los dos *secrets* y distribuya el `cosign.pub` nuevo: las imágenes
+anteriores se siguen verificando con la clave pública anterior.
+
 `.github/workflows/ci.yaml` corre lint, tests, `govulncheck`, `gitleaks` y
 Trivy en cada push a `main`, en cada pull request y cada lunes.
 <!-- vogel:only begin -->

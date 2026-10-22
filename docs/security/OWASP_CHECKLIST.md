@@ -18,8 +18,8 @@ cargo del servicio consumidor.
 
 | Estado | Ítems |
 |---|---|
-| PASS | 79 |
-| PARTIAL | 8 |
+| PASS | 83 |
+| PARTIAL | 4 |
 | FAIL | 0 |
 | CONSUMER | 26 |
 | N/A | 80 |
@@ -195,7 +195,7 @@ un Bearer token que se valida en el servidor.
 | 10.5 | H | Lockfiles versionados | PASS | `go.sum`, `examples/boilerplate/go.sum`; cambios revisados por `.github/CODEOWNERS` |
 | 10.6 | H | Debug y credenciales por defecto apagados en producción | PASS | Swagger rechazado en producción (`TestLoad_SwaggerRefusedInProduction`); logs JSON en `production` (`logger/logger.go:36`); compose sin contraseñas por defecto (`examples/boilerplate/deploy/docker-compose.yaml:176`) |
 | 10.7 | M | Cifrado en reposo con AES-GCM o KMS | CONSUMER | `vogel` no cifra datos en reposo ni implementa criptografía propia (solo SHA-256 para la clave de caché, `auth/zitadel/introspection.go:221`) |
-| 10.8 | M | Revisión del mantenimiento de dependencias | PARTIAL | Dependabot semanal y CODEOWNERS en `go.mod`; no hay un criterio escrito para evaluar si una dependencia está abandonada |
+| 10.8 | M | Revisión del mantenimiento de dependencias | PASS | Dependabot semanal, CODEOWNERS en `go.mod` y criterio escrito de dependencia abandonada, con repaso en cada versión menor (`docs/security/DEPENDENCIES.md`) |
 | 10.9 | L | SBOM | PASS | CycloneDX por release (`.github/workflows/release.yaml:48`) |
 
 ## 11. Errores y logs
@@ -319,11 +319,11 @@ SAML, y no tiene webhooks, pagos ni scripts de terceros.
 | 18.2 | C | Acciones fijadas por SHA completo | PASS | Todas las `uses:` de `.github/workflows/` con SHA de 40 caracteres; Dependabot las actualiza (`.github/dependabot.yml`) |
 | 18.3 | H | Instalación reproducible desde lockfile | PASS | `go.sum` verificado por la toolchain; cambios bajo CODEOWNERS (`.github/CODEOWNERS`) |
 | 18.4 | H | Scripts de instalación desactivados | N/A | Los módulos de Go no ejecutan scripts al instalarse |
-| 18.5 | H | Revisión de dependencias nuevas | PARTIAL | `go.mod` y `go.sum` requieren revisión del dueño (`.github/CODEOWNERS`), pero no hay criterios escritos (mantenimiento, typosquatting) |
-| 18.6 | H | Credenciales de publicación acotadas; procedencia | PARTIAL | Sin tokens de registro (el módulo se publica por tag y `proxy.golang.org`); tags `v*` protegidos por ruleset (configuración de GitHub). Sin atestaciones de procedencia |
+| 18.5 | H | Revisión de dependencias nuevas | PASS | `go.mod` y `go.sum` requieren revisión del dueño (`.github/CODEOWNERS`) con criterios escritos: necesidad, identidad (typosquatting), mantenimiento, vulnerabilidades, licencia (`docs/security/DEPENDENCIES.md`) |
+| 18.6 | H | Credenciales de publicación acotadas; procedencia | PASS | Sin tokens de registro (el módulo se publica por tag y `proxy.golang.org`); tags `v*` protegidos por ruleset (configuración de GitHub). El release firma una atestación de procedencia sobre los SBOM (`.github/workflows/release.yaml`, `actions/attest-build-provenance`); las imágenes del boilerplate llevan *provenance* de buildx (`mode=max`) |
 | 18.7 | H | `GITHUB_TOKEN` de solo lectura; sin interpolar input en `run:` | PASS | `contents: read` por defecto, `contents: write` solo en el job de publicación (`.github/workflows/release.yaml:66`); ningún `run:` interpola título, cuerpo ni rama de un PR |
 | 18.8 | M | SBOM por release | PASS | `.github/workflows/release.yaml:48` (CycloneDX + `SHA256SUMS`) |
-| 18.9 | M | Artefactos e imágenes firmados | PARTIAL | El módulo se verifica contra `sum.golang.org`; el SBOM lleva sumas SHA-256 pero sin firma, y las imágenes del boilerplate no se firman |
+| 18.9 | M | Artefactos e imágenes firmados | PASS | El módulo se verifica contra `sum.golang.org`; los SBOM y `SHA256SUMS` van firmados por la atestación de Sigstore (`gh attestation verify`), y el release del boilerplate firma cada imagen con cosign y la clave del repositorio (`examples/boilerplate/.github/workflows/release.yaml`) |
 | 18.10 | M | Imágenes Docker (prácticas del ítem Node.js) | PASS | El ítem es de Node.js; el equivalente en Go se cumple: digest fijado, multi-stage, no root, `.dockerignore` sin `.env` ni `.git`, `HEALTHCHECK` (`examples/boilerplate/Dockerfile:64`, `examples/boilerplate/Dockerfile:85`) |
 | 18.11 | M | Registro privado o proxy | N/A | Las rutas de módulo de Go son URLs, sin confusión de dependencias por nombre; `proxy.golang.org` conserva versiones publicadas |
 | 18.12 | L | Pinning de certificados | N/A | No se usa |
@@ -352,5 +352,5 @@ SAML, y no tiene webhooks, pagos ni scripts de terceros.
 | 6 | Sin normalización Unicode antes de validar | 4.9 | Abierta |
 | 7 | Fallos de validación de input sin evento de log | 11.2 | Abierta |
 | 8 | Sin claves de idempotencia genéricas | 17.13 | Abierta |
-| 9 | Sin criterios escritos para adoptar o mantener dependencias | 10.8, 18.5 | Abierta |
-| 10 | Sin atestaciones de procedencia ni firma de SBOM e imágenes | 18.6, 18.9 | Abierta |
+| 9 | Sin criterios escritos para adoptar o mantener dependencias | 10.8, 18.5 | Cerrada (2026-10-22): `docs/security/DEPENDENCIES.md` |
+| 10 | Sin atestaciones de procedencia ni firma de SBOM e imágenes | 18.6, 18.9 | Cerrada (2026-10-22): atestación de procedencia sobre los SBOM y firma cosign de las imágenes del boilerplate |

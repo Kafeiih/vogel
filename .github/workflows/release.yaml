@@ -1,15 +1,17 @@
 name: Release
 
 # On every version tag, build a CycloneDX SBOM for each Go module in this
-# repository and attach them to the GitHub Release of that tag (created if
-# it does not exist yet, updated if it does).
+# repository, sign a build provenance attestation over them (Sigstore,
+# through GitHub artifact attestations) and attach them to the GitHub Release
+# of that tag (created if it does not exist yet, updated if it does).
 on:
   push:
     tags: ["v*"]
 
 # Least privilege: everything runs read-only except the one job that writes
-# the release, and that job neither checks out the repository nor runs the
-# SBOM generator: it only downloads the files and calls gh.
+# the release and the attestation, and that job neither checks out the
+# repository nor runs the SBOM generator: it only downloads the files, signs
+# them and calls gh.
 permissions:
   contents: read
 
@@ -64,11 +66,24 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: write
+      # The OIDC token signs the attestation (Sigstore); attestations: write
+      # stores it in the repository.
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: sbom
           path: sbom
+
+      # Verify with:
+      #   gh attestation verify vogel.cdx.json --repo Kafeiih/vogel
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            sbom/vogel.cdx.json
+            sbom/vogel-boilerplate.cdx.json
+            sbom/SHA256SUMS
 
       # No checkout: gh gets the repository from GH_REPO, so this job holds a
       # write token without running any code from the repository.

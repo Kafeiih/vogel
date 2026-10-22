@@ -205,3 +205,6 @@ jobs:
 
       - name: image-ref test
         run: .github/workflows/image-ref_test.sh
+
+      - name: verify-images test
+        run: deploy/verify-images_test.sh

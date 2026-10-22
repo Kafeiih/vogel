@@ -25,9 +25,36 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   un servicio ya generado que quiera seguir el ejemplo cambia su
   `r.Route("/v1", ...)` por `r.Group(...)`, el healthcheck del `Dockerfile`
   y las alertas de Prometheus sobre `path="/v1/healthz"`.
+- **El release del boilerplate firma las imágenes con cosign.** Cada job de
+  imagen de `.github/workflows/release.yaml` firma el digest publicado con la
+  clave de los *secrets* `COSIGN_PRIVATE_KEY` y `COSIGN_PASSWORD`, sin subir
+  la firma al log público de Sigstore; sin esos *secrets*, el release falla
+  antes de crear los tags. **Migración:** un servicio generado a partir de
+  esta versión debe crear el par de claves y los dos *secrets* antes de su
+  primer release (ver "Publicar imágenes y CI" en el README del
+  boilerplate). Los servicios ya generados tienen su propia copia del
+  workflow y no cambian; para firmar sus imágenes deben copiar los pasos de
+  firma y crear la clave.
 
 ### Agregado
 
+- **Release: atestación de procedencia firmada sobre los SBOM.** El release
+  de `vogel` firma con Sigstore (`actions/attest-build-provenance`) una
+  atestación sobre `vogel.cdx.json`, `vogel-boilerplate.cdx.json` y
+  `SHA256SUMS`; se verifica con
+  `gh attestation verify <archivo> --repo Kafeiih/vogel`.
+- **Boilerplate: `deploy/verify-images.sh` verifica las firmas antes de
+  desplegar.** Baja las imágenes de `deploy/docker-compose.yaml` y verifica
+  con cosign y `deploy/cosign.pub`, por el digest recién bajado, cada imagen
+  que no está fijada por digest; si una no tiene firma válida sale con error
+  y no se despliega nada. `make deploy` lo corre antes de `docker compose up
+  -d`, y el RUNBOOK lo usa al desplegar y al volver atrás. `IMAGE_VERIFY=off`
+  baja las imágenes sin verificarlas, con un aviso, para versiones publicadas
+  antes de firmar.
+- **`docs/security/DEPENDENCIES.md`: criterios para sumar y mantener
+  dependencias** (necesidad, identidad, mantenimiento, vulnerabilidades,
+  licencia) y cuándo una se considera abandonada. El template de PR los
+  enlaza.
 - **Boilerplate: dominio de procesos en el componente `bpms`.**
   `create-vogel-app --with bpms` genera un dominio en capas
   (`internal/domain/process`, `internal/application/process`,

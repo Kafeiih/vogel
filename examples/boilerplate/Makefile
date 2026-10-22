@@ -9,7 +9,7 @@ export DB_URL
 require-db-url:
 	@test -n "$(DB_URL)" || { echo "DB_URL no está definida: cree .env (ver README, Arranque rápido) o expórtela." >&2; exit 1; }
 
-.PHONY: dev build test migrate lint docker gen-docs migrate-up migrate-down migrate-status migrate-create require-db-url
+.PHONY: dev build test migrate lint docker gen-docs migrate-up migrate-down migrate-status migrate-create require-db-url deploy
 # vogel:component worker begin
 .PHONY: worker build-worker
 # vogel:component worker end
@@ -78,6 +78,12 @@ docker-build:
 # vogel:component worker end
 
 docker-run:
+	docker compose -f deploy/docker-compose.yaml up -d
+
+# Despliega solo si las imágenes propias llevan una firma válida (ver
+# deploy/verify-images.sh).
+deploy:
+	./deploy/verify-images.sh
 	docker compose -f deploy/docker-compose.yaml up -d
 
 # vogel:component cerbos begin
