@@ -131,7 +131,7 @@ docker compose -f deploy/docker-compose.yaml logs cerbos | grep "executable poli
 
 ### Verificar las firmas antes de desplegar
 
-El release firma cada imagen del servicio con cosign (ver "Publicar imagenes
+El release firma cada imagen del servicio con cosign (ver "Publicar imágenes
 y CI" en el README). Desplegar siempre con:
 
 ```bash
@@ -166,9 +166,10 @@ revisa y despliega.
 | Paquetes del sistema de la imagen (`apk`) | En cada rebuild | El runtime parte de `alpine` fijado por digest: un rebuild sin bump no trae parches, por eso importa mergear el PR semanal de Dependabot |
 
 Objetivo sugerido (ajustarlo a la politica del equipo): mergear y desplegar
-el PR semanal de Dependabot dentro de la misma semana (reconstruir con
-`docker compose -f deploy/docker-compose.yaml build` y desplegar con un
-`APP_VERSION` nuevo, ver seccion 5), y corregir un hallazgo CRITICAL de Trivy
+el PR semanal de Dependabot dentro de la misma semana (publicar un tag
+`vX.Y.Z` nuevo, que el release construye y firma, y desplegarlo con ese
+`APP_VERSION`; una imagen construida en el host no lleva firma y
+`deploy/verify-images.sh` la rechaza), y corregir un hallazgo CRITICAL de Trivy
 en produccion en 48 horas.
 
 **Si el workflow `Trivy` falla:**
@@ -471,6 +472,10 @@ deploy/verify-images.sh
 docker compose -f deploy/docker-compose.yaml down
 docker compose -f deploy/docker-compose.yaml up -d
 ```
+
+Si la version anterior se publico antes de que el release firmara, el script
+la rechaza: correrlo con `IMAGE_VERIFY=off deploy/verify-images.sh`, que la
+baja igual sin verificarla.
 
 **Si el problema es una migracion:**
 

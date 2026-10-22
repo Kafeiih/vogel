@@ -31,6 +31,7 @@ if [ "$1 $2" = "image inspect" ]; then
 	last="${image##*/}"
 	[[ "$last" == *:* ]] && repo="${image%:*}"
 	echo "other/repo@sha256:0000"
+	echo "mirror.example/${repo}@sha256:0000"
 	echo "${repo}@sha256:$(printf '%s' "$repo" | sha256sum | cut -c1-12)"
 	exit 0
 fi
@@ -46,6 +47,9 @@ case " $STUB_BAD " in *" $ref "*) echo "Error: no signatures found" >&2; exit 1 
 exit 0
 EOF
 chmod +x "$tmp/bin/docker" "$tmp/bin/cosign"
+# The same docker, without cosign.
+mkdir -p "$tmp/nocosign"
+cp "$tmp/bin/docker" "$tmp/nocosign/docker"
 
 digest_of() {
 	printf '%s' "$1" | sha256sum | cut -c1-12
@@ -85,6 +89,7 @@ run "$own $worker $pinned"
 check "signed images are accepted" '[ "$code" = 0 ]'
 check "own image verified by digest" "grep -qF 'ghcr.io/acme/svc@sha256:$(digest_of ghcr.io/acme/svc)' '$tmp/log'"
 check "worker image verified by digest" "grep -qF 'ghcr.io/acme/svc-worker@sha256:$(digest_of ghcr.io/acme/svc-worker)' '$tmp/log'"
+check "a repository that only contains the name is not used" '! grep -q "cosign.*mirror.example" "$tmp/log"'
 check "digest-pinned image is not verified" '! grep -q "cosign.*postgres" "$tmp/log"'
 check "key and tlog flags are passed" "grep -qF -- '--key $tmp/cosign.pub --insecure-ignore-tlog=true' '$tmp/log'"
 check "pull runs before the first check" '[ "$(grep -n "compose.*pull" "$tmp/log" | cut -d: -f1)" -lt "$(grep -n "^cosign" "$tmp/log" | head -1 | cut -d: -f1)" ]'
@@ -110,9 +115,16 @@ run "$own" COSIGN_PUBLIC_KEY="$tmp/missing.pub"
 check "missing key is refused" '[ "$code" = 1 ] && grep -qF "missing.pub not found" <<<"$out"'
 check "missing key pulls nothing" '[ ! -s "$tmp/log" ]'
 
-# IMAGE_VERIFY=off skips everything with a warning; other values are refused.
+# Without cosign nothing is pulled.
+run "$own" PATH="$tmp/nocosign:/usr/bin:/bin"
+check "missing cosign is refused" '[ "$code" = 1 ] && grep -qF "cosign is not installed" <<<"$out"'
+check "missing cosign pulls nothing" '[ ! -s "$tmp/log" ]'
+
+# IMAGE_VERIFY=off still pulls but checks nothing, with a warning; other
+# values are refused.
 run "$own" IMAGE_VERIFY=off
-check "IMAGE_VERIFY=off skips the check" '[ "$code" = 0 ] && grep -qF "WARNING" <<<"$out" && [ ! -s "$tmp/log" ]'
+check "IMAGE_VERIFY=off skips the check" '[ "$code" = 0 ] && grep -qF "WARNING" <<<"$out" && ! grep -q "^cosign" "$tmp/log"'
+check "IMAGE_VERIFY=off still pulls" 'grep -q "compose.*pull" "$tmp/log"'
 run "$own" IMAGE_VERIFY=maybe
 check "unknown IMAGE_VERIFY is refused" '[ "$code" = 1 ] && grep -qF "must be on or off" <<<"$out"'
 

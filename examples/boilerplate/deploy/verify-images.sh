@@ -13,8 +13,9 @@
 #
 # Environment:
 #   COSIGN_PUBLIC_KEY  public key file (default: deploy/cosign.pub)
-#   IMAGE_VERIFY       "on" (default) or "off" to skip the check, for images
-#                      published before signing existed; it prints a warning
+#   IMAGE_VERIFY       "on" (default) or "off" to pull without checking, for
+#                      images published before signing existed; it prints a
+#                      warning
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -29,7 +30,9 @@ fail() {
 case "${IMAGE_VERIFY:-on}" in
 on) ;;
 off)
+	# Still pull, so a rollback downloads before the service goes down.
 	echo "verify-images: WARNING: IMAGE_VERIFY=off, deploying images without checking their signatures" >&2
+	docker compose -f "$compose_file" pull --quiet
 	exit 0
 	;;
 *) fail "IMAGE_VERIFY must be on or off, got '${IMAGE_VERIFY}'" ;;
@@ -56,8 +59,10 @@ while IFS= read -r image; do
 		repo="${image%:*}"
 	fi
 
+	# Exact prefix match: only this repository's digest, never one whose
+	# name merely contains it.
 	ref="$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$image" |
-		grep -m1 -F "${repo}@sha256:" || true)"
+		awk -v prefix="${repo}@sha256:" 'index($0, prefix) == 1 { print; exit }')"
 	[ -n "$ref" ] || fail "$image: no registry digest after pulling it"
 
 	if ! out="$(cosign verify --key "$key" --insecure-ignore-tlog=true "$ref" 2>&1)"; then

@@ -49,7 +49,8 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   que no está fijada por digest; si una no tiene firma válida sale con error
   y no se despliega nada. `make deploy` lo corre antes de `docker compose up
   -d`, y el RUNBOOK lo usa al desplegar y al volver atrás. `IMAGE_VERIFY=off`
-  lo salta con un aviso, para versiones publicadas antes de firmar.
+  baja las imágenes sin verificarlas, con un aviso, para versiones publicadas
+  antes de firmar.
 - **`docs/security/DEPENDENCIES.md`: criterios para sumar y mantener
   dependencias** (necesidad, identidad, mantenimiento, vulnerabilidades,
   licencia) y cuándo una se considera abandonada. El template de PR los
