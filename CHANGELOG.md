@@ -6,6 +6,8 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ## [Unreleased]
 
+## [0.14.0] — 2026-10-22
+
 ### Cambios que rompen
 
 - **`examples/boilerplate` exige la configuración de BPMS.** El ejemplo trae
