@@ -25,6 +25,9 @@ cargo del servicio consumidor.
 | N/A | 80 |
 | **Total (secciones 1 a 18)** | **193** |
 
+Se cuentan ítems, no filas: una fila con un rango (p. ej. 16.1–16.3) cuenta
+cada ítem que cubre.
+
 Las secciones 19 (IA y LLM) y 20 (frameworks y runtimes específicos) no
 aplican y no se cuentan: ver [§19 y §20](#19-y-20-no-aplican).
 

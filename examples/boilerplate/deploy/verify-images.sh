@@ -19,7 +19,8 @@
 #   COSIGN_PUBLIC_KEY  public key file (default: deploy/cosign.pub)
 #   IMAGE_VERIFY       "on" (default) or "off" to pull without checking, for
 #                      images published before signing existed; it prints a
-#                      warning
+#                      warning, and deploys the local images if the pull
+#                      fails
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -34,9 +35,11 @@ fail() {
 case "${IMAGE_VERIFY:-on}" in
 on) ;;
 off)
-	# Still pull, so a rollback downloads before the service goes down.
+	# Still pull, so a rollback downloads before the service goes down; with
+	# the registry down, fall back to the images already on the host.
 	echo "verify-images: WARNING: IMAGE_VERIFY=off, deploying images without checking their signatures" >&2
-	docker compose -f "$compose_file" pull --quiet
+	docker compose -f "$compose_file" pull --quiet ||
+		echo "verify-images: WARNING: pull failed, using the images already on this host" >&2
 	exit 0
 	;;
 *) fail "IMAGE_VERIFY must be on or off, got '${IMAGE_VERIFY}'" ;;
@@ -63,10 +66,16 @@ while IFS= read -r image; do
 	repo="${image%:*}"
 	version="${image##*:}"
 
+	# Docker records Docker Hub repositories by their short name
+	# (docker.io/library/redis -> redis), so match that form.
+	short="${repo#docker.io/}"
+	short="${short#index.docker.io/}"
+	short="${short#library/}"
+
 	# Exact prefix match: only this repository's digest, never one whose
 	# name merely contains it.
 	ref="$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$image" |
-		awk -v prefix="${repo}@sha256:" 'index($0, prefix) == 1 { print; exit }')"
+		awk -v prefix="${short}@sha256:" 'index($0, prefix) == 1 { print; exit }')"
 	[ -n "$ref" ] || fail "$image: no registry digest after pulling it"
 
 	if ! out="$(cosign verify --key "$key" --insecure-ignore-tlog=true \

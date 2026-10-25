@@ -58,28 +58,14 @@ jobs:
         with:
           cosign-release: v3.1.4
 
-      # Signs the pushed digest with the repository's key (see "Publicar
-      # imágenes y CI" in the README). The empty signing config keeps the
-      # signature out of the public transparency log, so a private service
-      # publishes nothing about itself; verify with --insecure-ignore-tlog.
-      # The version annotation binds the signature to this release, so a tag
-      # moved to an older signed digest fails deploy/verify-images.sh.
+      # Signs the pushed digest; sign-image.sh explains the options.
       - name: Sign the pushed digest
         env:
           IMAGE: ${{ steps.image.outputs.name }}@${{ steps.build.outputs.digest }}
           VERSION: ${{ steps.image.outputs.version }}
           COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
-        run: |
-          set -euo pipefail
-          if [ -z "$COSIGN_PRIVATE_KEY" ]; then
-            echo "::error::COSIGN_PRIVATE_KEY is not set: create the key pair and the repository secrets described in the README before releasing" >&2
-            exit 1
-          fi
-          cosign signing-config create --out "$RUNNER_TEMP/signing-config.json"
-          cosign sign --yes --key env://COSIGN_PRIVATE_KEY \
-            --signing-config "$RUNNER_TEMP/signing-config.json" \
-            -a "version=$VERSION" "$IMAGE"
+        run: .github/workflows/sign-image.sh
 
   # vogel:component worker begin
   worker:
@@ -128,28 +114,14 @@ jobs:
         with:
           cosign-release: v3.1.4
 
-      # Signs the pushed digest with the repository's key (see "Publicar
-      # imágenes y CI" in the README). The empty signing config keeps the
-      # signature out of the public transparency log, so a private service
-      # publishes nothing about itself; verify with --insecure-ignore-tlog.
-      # The version annotation binds the signature to this release, so a tag
-      # moved to an older signed digest fails deploy/verify-images.sh.
+      # Signs the pushed digest; sign-image.sh explains the options.
       - name: Sign the pushed digest
         env:
           IMAGE: ${{ steps.image.outputs.name }}@${{ steps.build.outputs.digest }}
           VERSION: ${{ steps.image.outputs.version }}
           COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
-        run: |
-          set -euo pipefail
-          if [ -z "$COSIGN_PRIVATE_KEY" ]; then
-            echo "::error::COSIGN_PRIVATE_KEY is not set: create the key pair and the repository secrets described in the README before releasing" >&2
-            exit 1
-          fi
-          cosign signing-config create --out "$RUNNER_TEMP/signing-config.json"
-          cosign sign --yes --key env://COSIGN_PRIVATE_KEY \
-            --signing-config "$RUNNER_TEMP/signing-config.json" \
-            -a "version=$VERSION" "$IMAGE"
+        run: .github/workflows/sign-image.sh
 
   # vogel:component worker end
   # vogel:component cerbos begin
@@ -201,28 +173,14 @@ jobs:
         with:
           cosign-release: v3.1.4
 
-      # Signs the pushed digest with the repository's key (see "Publicar
-      # imágenes y CI" in the README). The empty signing config keeps the
-      # signature out of the public transparency log, so a private service
-      # publishes nothing about itself; verify with --insecure-ignore-tlog.
-      # The version annotation binds the signature to this release, so a tag
-      # moved to an older signed digest fails deploy/verify-images.sh.
+      # Signs the pushed digest; sign-image.sh explains the options.
       - name: Sign the pushed digest
         env:
           IMAGE: ${{ steps.image.outputs.name }}@${{ steps.build.outputs.digest }}
           VERSION: ${{ steps.image.outputs.version }}
           COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
-        run: |
-          set -euo pipefail
-          if [ -z "$COSIGN_PRIVATE_KEY" ]; then
-            echo "::error::COSIGN_PRIVATE_KEY is not set: create the key pair and the repository secrets described in the README before releasing" >&2
-            exit 1
-          fi
-          cosign signing-config create --out "$RUNNER_TEMP/signing-config.json"
-          cosign sign --yes --key env://COSIGN_PRIVATE_KEY \
-            --signing-config "$RUNNER_TEMP/signing-config.json" \
-            -a "version=$VERSION" "$IMAGE"
+        run: .github/workflows/sign-image.sh
 
   # vogel:component cerbos end
   publish:

@@ -475,9 +475,28 @@ host despliega solo lo que publicó el release (ver la sección "Verificar las
 firmas antes de desplegar" del RUNBOOK). El host necesita `cosign`, por
 ejemplo con `go install github.com/sigstore/cosign/v3/cmd/cosign@v3.1.4` o
 el binario de su
-[release](https://github.com/sigstore/cosign/releases/tag/v3.1.4). Para rotarla, genere un par nuevo,
-reemplace los dos *secrets* y distribuya el `cosign.pub` nuevo: las imágenes
-anteriores se siguen verificando con la clave pública anterior.
+[release](https://github.com/sigstore/cosign/releases/tag/v3.1.4).
+
+Para rotar la clave (ante una sospecha de exposición o, como mínimo, una vez
+al año):
+
+1. Genere el par nuevo con `cosign generate-key-pair` en un directorio fuera
+   del repositorio y reemplace los dos *secrets* (`COSIGN_PRIVATE_KEY` y
+   `COSIGN_PASSWORD`) como arriba: desde ahí, cada release firma con la
+   clave nueva.
+2. En **un solo commit**, renombre `deploy/cosign.pub` a
+   `deploy/cosign-<año>.pub` (las versiones ya publicadas siguen firmadas con
+   ella) y agregue el `cosign.pub` nuevo como `deploy/cosign.pub`. Así el
+   repositorio nunca queda sin la clave que usa `deploy/verify-images.sh`.
+3. Publique un release y despliéguelo. Hasta entonces, la versión desplegada
+   está firmada con la clave anterior (ver el párrafo siguiente).
+4. Borre la clave privada anterior.
+
+`deploy/verify-images.sh` verifica con una sola clave, así que para volver a
+una versión firmada con la clave anterior use
+`COSIGN_PUBLIC_KEY=deploy/cosign-<año>.pub deploy/verify-images.sh`. Si la
+clave anterior se expuso, no confíe en esas firmas: vuelva a publicar la
+versión con un tag nuevo, firmado con la clave nueva.
 
 `.github/workflows/ci.yaml` corre lint, tests, `govulncheck`, `gitleaks` y
 Trivy en cada push a `main`, en cada pull request y cada lunes.
