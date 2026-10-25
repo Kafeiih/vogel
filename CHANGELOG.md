@@ -6,6 +6,22 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ## [Unreleased]
 
+### Corregido
+
+- **`deploy/verify-images.sh` del boilerplate acepta imágenes de Docker
+  Hub con prefijo.** Una imagen como `docker.io/acme/svc:1.2.0` fallaba la
+  verificación aunque estuviera firmada, porque Docker guarda su digest con
+  el nombre corto (`acme/svc@sha256:...`). Ahora se compara con ese nombre.
+- **`IMAGE_VERIFY=off` ya no depende del registry.** Si el pull falla, avisa
+  y despliega las imágenes que ya están en el host.
+
+### Cambiado
+
+- **El release del boilerplate firma con `.github/workflows/sign-image.sh`**
+  en vez de repetir el paso en cada job, con su test en el CI. El README
+  explica paso a paso cómo rotar la clave de firma y cómo volver a una
+  versión firmada con la clave anterior.
+
 ## [0.14.0] — 2026-10-22
 
 ### Cambios que rompen

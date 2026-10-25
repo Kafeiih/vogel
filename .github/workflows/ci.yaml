@@ -223,6 +223,9 @@ jobs:
       - name: Release template image names
         run: examples/boilerplate/.github/workflows/image-ref_test.sh
 
+      - name: Release template image signing
+        run: examples/boilerplate/.github/workflows/sign-image_test.sh
+
       - name: Deploy image signature check
         run: examples/boilerplate/deploy/verify-images_test.sh
 

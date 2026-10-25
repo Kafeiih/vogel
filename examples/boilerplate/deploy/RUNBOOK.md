@@ -151,7 +151,12 @@ Una firma rechazada es un incidente: la imagen del registry no es la que
 publico el release. No desplegar, avisar segun la seccion 12 y comparar el
 digest con el del run del release. `IMAGE_VERIFY=off` salta la verificacion
 (con un aviso) y solo vale para versiones publicadas antes de que el release
-firmara.
+firmara. Igual intenta bajar las imagenes; si el registry no responde, avisa y
+despliega las imagenes que ya estan en el host.
+
+Una version firmada antes de rotar la clave se verifica con la clave publica
+anterior: `COSIGN_PUBLIC_KEY=deploy/cosign-<año>.pub deploy/verify-images.sh`
+(ver "Publicar imágenes y CI" en el README).
 
 ### Parches
 
