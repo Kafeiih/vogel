@@ -6,6 +6,19 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ## [Unreleased]
 
+### Agregado
+
+- **`request` y `validation` registran cada rechazo de input como evento de
+  seguridad.** `request.Validator.WriteErrors`, los cuerpos JSON rechazados
+  con 400, 413 o 415 y `validation.Write` emiten un log `WARN`
+  `request validation failed` con método, path (sin la query), IP, request
+  ID, status, código y, en los 400 por campos, los nombres de los campos que
+  fallaron. Nunca incluye el cuerpo, los valores ni los mensajes de error. Va
+  a `slog.Default()`, o al logger de `request.WithLogger` /
+  `validation.WithLogger`. Un handler que escriba su propio
+  `response.ValidationError` puede registrar el mismo evento con
+  `request.LogValidationFailure`. Cierra el ítem 11.2 del checklist OWASP.
+
 ### Corregido
 
 - **`deploy/verify-images.sh` del boilerplate acepta imágenes de Docker

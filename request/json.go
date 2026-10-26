@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"mime"
 	"net/http"
 	"strings"
@@ -46,6 +47,9 @@ type Decoder struct {
 	// configured is set by New; it tells a real configuration apart from the
 	// zero value, whose Messages would hold nil funcs.
 	configured bool
+	// logger receives the validation-failure security event; nil means
+	// slog.Default(). See WithLogger.
+	logger *slog.Logger
 }
 
 // New creates a Decoder starting from DefaultMessages, applying opts in
@@ -175,7 +179,7 @@ func (d *Decoder) decode(w http.ResponseWriter, r *http.Request, data any, maxBy
 	case errors.Is(err, io.EOF):
 		return nil
 	case err == nil, errors.As(err, &syntaxErr), errors.Is(err, io.ErrUnexpectedEOF):
-		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidJSON,
+		d.fail(w, r, http.StatusBadRequest, response.CodeInvalidJSON,
 			d.msgs().TrailingData)
 		return errTrailingData
 	default:
@@ -232,7 +236,7 @@ func (d *Decoder) checkContentType(w http.ResponseWriter, r *http.Request, decod
 		}
 	}
 
-	response.Error(w, r, http.StatusUnsupportedMediaType, response.CodeUnsupportedMediaType,
+	d.fail(w, r, http.StatusUnsupportedMediaType, response.CodeUnsupportedMediaType,
 		d.msgs().UnsupportedMediaType)
 	return errUnsupportedMediaType
 }
@@ -267,29 +271,29 @@ func (d *Decoder) writeDecodeError(w http.ResponseWriter, r *http.Request, err e
 
 	switch {
 	case errors.As(err, &syntaxErr):
-		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidJSON,
+		d.fail(w, r, http.StatusBadRequest, response.CodeInvalidJSON,
 			m.MalformedJSON(syntaxErr.Offset))
 
 	case errors.As(err, &unmarshalErr):
-		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidJSON,
+		d.fail(w, r, http.StatusBadRequest, response.CodeInvalidJSON,
 			m.WrongType(unmarshalErr.Field, unmarshalErr.Type.String()))
 
 	case errors.As(err, &maxBytesErr):
 		limitMB := float64(maxBytes) / (1024 * 1024)
-		response.Error(w, r, http.StatusRequestEntityTooLarge, response.CodeBodyTooLarge,
+		d.fail(w, r, http.StatusRequestEntityTooLarge, response.CodeBodyTooLarge,
 			m.BodyTooLarge(limitMB))
 
 	case errors.Is(err, io.EOF):
-		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidJSON,
+		d.fail(w, r, http.StatusBadRequest, response.CodeInvalidJSON,
 			m.EmptyBody)
 
 	case strings.HasPrefix(err.Error(), "json: unknown field"):
 		field := strings.TrimPrefix(err.Error(), "json: unknown field ")
-		response.Error(w, r, http.StatusBadRequest, response.CodeUnknownField,
+		d.fail(w, r, http.StatusBadRequest, response.CodeUnknownField,
 			m.UnknownField(field))
 
 	default:
-		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidJSON,
+		d.fail(w, r, http.StatusBadRequest, response.CodeInvalidJSON,
 			m.InvalidBody)
 	}
 }

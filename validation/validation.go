@@ -2,6 +2,7 @@ package validation
 
 import (
 	"errors"
+	"log/slog"
 	"net/http"
 	"reflect"
 	"strings"
@@ -18,6 +19,9 @@ import (
 type Validator struct {
 	validate *validator.Validate
 	messages Messages
+	// logger receives the security event Write logs on a validation
+	// failure; nil means slog.Default(). See WithLogger.
+	logger *slog.Logger
 }
 
 // New builds a Validator using validator.WithRequiredStructEnabled (so a
@@ -246,13 +250,15 @@ func (v *Validator) messageFor(field string, fe validator.FieldError) string {
 // Write validates v and reports true when it is valid, writing nothing to
 // w.
 //
-// On a validation failure it writes a response.ValidationError with the
-// per-field messages Struct produced and returns false. On a programming
-// error (see Struct) it writes a generic 500 via response.Error using
-// response.CodeInternalError, never the underlying Go error text, and
-// returns false. Write has no logger dependency — it cannot log the
-// underlying error itself — so a caller that wants the error logged should
-// call Struct directly instead:
+// On a validation failure it logs the same security event as
+// request.Validator.WriteErrors (request.LogValidationFailure, with the
+// failing field names only; see WithLogger), writes a
+// response.ValidationError with the per-field messages Struct produced and
+// returns false. On a programming error (see Struct) it writes a generic 500
+// via response.Error using response.CodeInternalError, never the underlying
+// Go error text, and returns false; it does not log that error, so a caller
+// that wants it logged should call Struct directly instead (and call
+// request.LogValidationFailure itself before writing the 400):
 //
 //	fields, err := v.Struct(&in)
 //	if err != nil {
@@ -273,6 +279,7 @@ func (v *Validator) Write(w http.ResponseWriter, r *http.Request, val any) bool 
 	if fields == nil {
 		return true
 	}
+	request.LogValidationFailure(v.logger, r, fields)
 	response.ValidationError(w, r, fields)
 	return false
 }

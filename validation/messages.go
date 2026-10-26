@@ -2,6 +2,7 @@ package validation
 
 import (
 	"fmt"
+	"log/slog"
 	"reflect"
 	"strings"
 )
@@ -87,6 +88,15 @@ func minMaxMessage(field, param string, kind reflect.Kind, comparator string) st
 
 // Option customizes a Validator built with New.
 type Option func(*Validator)
+
+// WithLogger sets the logger that receives the security event Write logs on
+// a validation failure (see request.WithLogger for its fields). Without it,
+// the event goes to slog.Default() as it is at the time of the failure.
+func WithLogger(l *slog.Logger) Option {
+	return func(v *Validator) {
+		v.logger = l
+	}
+}
 
 // WithMessages overrides the default user-facing messages. Any field left
 // nil keeps the DefaultMessages value — the same merge rule as

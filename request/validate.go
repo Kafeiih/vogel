@@ -1,6 +1,7 @@
 package request
 
 import (
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -24,6 +25,9 @@ type FieldErrors map[string]string
 type Validator struct {
 	errors   FieldErrors
 	messages Messages
+	// logger receives the security event WriteErrors logs; nil means
+	// slog.Default().
+	logger *slog.Logger
 }
 
 // NewValidator creates a ready-to-use Validator using DefaultMessages. Use
@@ -36,7 +40,11 @@ func NewValidator() *Validator {
 // NewValidator creates a ready-to-use Validator that records errors using d's
 // configured Messages.
 func (d *Decoder) NewValidator() *Validator {
-	return &Validator{errors: make(FieldErrors), messages: *d.msgs()}
+	v := &Validator{errors: make(FieldErrors), messages: *d.msgs()}
+	if d != nil {
+		v.logger = d.logger
+	}
+	return v
 }
 
 // HasErrors reports whether any validation errors have been recorded.
@@ -62,8 +70,11 @@ func (v *Validator) AddError(field, message string) {
 	v.errors[field] = message
 }
 
-// WriteErrors sends a 400 response with the accumulated field errors.
+// WriteErrors sends a 400 response with the accumulated field errors, and
+// logs the security event described in WithLogger with the failing field
+// names.
 func (v *Validator) WriteErrors(w http.ResponseWriter, r *http.Request) {
+	LogValidationFailure(v.logger, r, v.errors)
 	response.ValidationError(w, r, v.errors)
 }
 
