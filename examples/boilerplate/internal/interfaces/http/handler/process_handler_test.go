@@ -84,10 +84,6 @@ func (s *stubProcessService) Submit(_ context.Context, actor string, id uuid.UUI
 	return &workflow.Case{ID: id, State: "cerrada", Status: workflow.StatusClosed}, nil
 }
 
-func newProcessRouter(svc ProcessService) http.Handler {
-	return newProcessRouterWithLogger(svc, slog.New(slog.NewTextHandler(io.Discard, nil)))
-}
-
 func newProcessRouterWithLogger(svc ProcessService, logger *slog.Logger) http.Handler {
 	h := NewProcessHandler(svc, logger)
 	r := chi.NewRouter()
