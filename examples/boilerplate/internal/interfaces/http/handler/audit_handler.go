@@ -59,6 +59,7 @@ func (h *AuditHandler) List(w http.ResponseWriter, r *http.Request) {
 
 	entries, total, err := h.repo.List(r.Context(), filters)
 	if errors.Is(err, audit.ErrOffsetOutOfRange) {
+		request.LogValidationFailure(h.logger, r, request.FieldErrors{"offset": ""})
 		response.ErrorWith(w, r, http.StatusBadRequest, response.CodeValidationError,
 			"El offset está fuera de rango; acotá los filtros en lugar de seguir paginando",
 			response.WithField("offset"))
