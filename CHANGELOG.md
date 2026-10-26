@@ -17,6 +17,21 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ### Cambiado
 
+- **`request.Validator.MaxLen` y `Enum` normalizan a Unicode NFC antes de
+  validar.** El mismo texto recibe el mismo resultado aunque el cliente lo
+  envíe descompuesto: `José` escrito con `e` + U+0301 (5 runas) ya no supera
+  un `MaxLen` de 4, y coincide con la opción `"José"` de un `Enum`.
+  - `MaxLen` ahora devuelve la forma NFC (antes, el valor tal cual): quien
+    guarde el valor devuelto guarda la forma NFC. Unos pocos caracteres
+    excluidos de la composición, como U+0958, se alargan en NFC, así que un
+    valor de esos que estaba justo en el límite ahora puede superarlo.
+  - `Enum` compara también las opciones en NFC; si coincide, devuelve la
+    opción tal como la escribió quien llama, y si no, la forma NFC del valor.
+  - Los filtros de `GET /audit` no cambian: siguen acotando y buscando con el
+    valor tal como llegó, porque los registros de auditoría se guardan sin
+    normalizar.
+
+  Cierra el ítem 4.9 del checklist OWASP.
 - **El release del boilerplate firma con `.github/workflows/sign-image.sh`**
   en vez de repetir el paso en cada job, con su test en el CI. El README
   explica paso a paso cómo rotar la clave de firma y cómo volver a una

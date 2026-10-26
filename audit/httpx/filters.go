@@ -2,6 +2,7 @@ package httpx
 
 import (
 	"net/http"
+	"unicode/utf8"
 
 	"github.com/kafeiih/vogel/audit"
 	"github.com/kafeiih/vogel/request"
@@ -101,11 +102,22 @@ func FiltersFromRequest(v *request.Validator, r *http.Request) audit.Filters {
 	from := v.TimeQuery(r, paramFrom)
 	to := v.TimeQuery(r, paramTo)
 	resourceID := v.UUIDQuery(r, paramResourceID)
-	actorID := v.MaxLen(paramActorID, q.Get(paramActorID), MaxFilterLength)
-	resourceType := v.MaxLen(paramResourceType, q.Get(paramResourceType), MaxFilterLength)
-	operationName := v.MaxLen(paramOperationName, q.Get(paramOperationName), MaxFilterLength)
-	aggregateType := v.MaxLen(paramAggregateType, q.Get(paramAggregateType), MaxFilterLength)
-	aggregateID := v.MaxLen(paramAggregateID, q.Get(paramAggregateID), MaxFilterLength)
+	// Not v.MaxLen: it checks and returns the NFC form, but these filters
+	// must match audit rows as they were recorded (stored without
+	// normalizing, compared by equality), so the raw value is both what is
+	// bounded and what reaches the repository.
+	rawBounded := func(param string) string {
+		raw := q.Get(param)
+		if utf8.RuneCountInString(raw) > MaxFilterLength {
+			v.AddError(param, v.Messages().TooLong(param, MaxFilterLength))
+		}
+		return raw
+	}
+	actorID := rawBounded(paramActorID)
+	resourceType := rawBounded(paramResourceType)
+	operationName := rawBounded(paramOperationName)
+	aggregateType := rawBounded(paramAggregateType)
+	aggregateID := rawBounded(paramAggregateID)
 
 	return audit.Filters{
 		ActorID:           actorID,

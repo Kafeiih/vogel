@@ -10,6 +10,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"golang.org/x/text/unicode/norm"
 
 	"github.com/kafeiih/vogel/httpx/response"
 )
@@ -221,15 +222,19 @@ func (v *Validator) Messages() Messages {
 	return v.messages
 }
 
-// Enum validates that a string value is one of the allowed options.
-// Returns the value as-is if empty (optional field) or if it matches.
+// Enum validates that a string value is one of the allowed options. Both are
+// compared in Unicode NFC, so a decomposed "é" (e + U+0301) matches a composed
+// option and the other way around. A match returns the allowed option itself,
+// as written by the caller; a mismatch records NotAllowed and returns the NFC
+// form of the value. An empty value (optional field) is returned as-is.
 func (v *Validator) Enum(param, value string, allowed []string) string {
+	value = norm.NFC.String(value)
 	if value == "" {
 		return value
 	}
 	for _, a := range allowed {
-		if value == a {
-			return value
+		if value == norm.NFC.String(a) {
+			return a
 		}
 	}
 	v.AddError(param, v.messages.NotAllowed(param))
@@ -238,10 +243,15 @@ func (v *Validator) Enum(param, value string, allowed []string) string {
 
 // MaxLen validates that a string value is at most max characters long,
 // counted in runes (utf8.RuneCountInString), not bytes, so a multi-byte
-// character counts once. It records a TooLong error when the value is longer
-// and returns the value as-is either way; an empty value always passes, so
-// combine it with a required check when the field is mandatory.
+// character counts once. The value is normalized to Unicode NFC before
+// counting, so the same text gets the same verdict whether the client sent
+// "é" composed (1 rune) or decomposed as e + U+0301 (2 runes); a few
+// characters excluded from composition, such as U+0958, grow instead. It records a
+// TooLong error when the value is longer and returns the NFC form either way:
+// store that, not the raw input. An empty value always passes, so combine it
+// with a required check when the field is mandatory.
 func (v *Validator) MaxLen(param, value string, maxRunes int) string {
+	value = norm.NFC.String(value)
 	if utf8.RuneCountInString(value) > maxRunes {
 		v.AddError(param, v.messages.TooLong(param, maxRunes))
 	}

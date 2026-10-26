@@ -143,9 +143,10 @@ func (h *DocumentHandler) Create(w http.ResponseWriter, r *http.Request) {
 	if req.Title == "" || stringutil.Normalize(req.Title) == "" {
 		v.AddError("title", "title is required")
 	} else {
-		// MaxLen counts runes, so an accented title is not penalised for
-		// its UTF-8 byte length.
-		v.MaxLen("title", req.Title, maxTitleLength)
+		// MaxLen counts runes of the NFC form, so an accented title is not
+		// penalised for its UTF-8 byte length or for arriving decomposed;
+		// keep the NFC form it returns.
+		req.Title = v.MaxLen("title", req.Title, maxTitleLength)
 	}
 	kindOK := false
 	for _, k := range DocumentKinds {

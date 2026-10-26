@@ -197,6 +197,29 @@ func TestValidator_Enum(t *testing.T) {
 		v.Enum("status", "bogus", []string{"active", "inactive"})
 		assert.True(t, v.HasErrors())
 	})
+
+	t.Run("non-matching value comes back in NFC", func(t *testing.T) {
+		v := request.NewValidator()
+		assert.Equal(t, "caf\u00e9", v.Enum("status", "cafe\u0301", []string{"active"}))
+		assert.True(t, v.HasErrors())
+	})
+
+	// "rol" + "e" + U+0301 (NFD) is the same text as "rol\u00e9" (NFC): it
+	// matches and comes back in NFC.
+	t.Run("decomposed value matches its composed option", func(t *testing.T) {
+		v := request.NewValidator()
+		assert.Equal(t, "rol\u00e9", v.Enum("status", "role\u0301", []string{"rol\u00e9"}))
+		assert.False(t, v.HasErrors())
+	})
+
+	// Options are compared in NFC too, and a match returns the caller's own
+	// option, so it still equals the constant it came from.
+	t.Run("option written decomposed still matches", func(t *testing.T) {
+		v := request.NewValidator()
+		assert.Equal(t, "role\u0301", v.Enum("status", "rol\u00e9", []string{"role\u0301"}))
+		assert.Equal(t, "role\u0301", v.Enum("status", "role\u0301", []string{"role\u0301"}))
+		assert.False(t, v.HasErrors())
+	})
 }
 
 func TestValidator_PublicIDParam(t *testing.T) {
@@ -459,4 +482,45 @@ func TestValidator_MaxLen(t *testing.T) {
 			}
 		})
 	}
+}
+
+// MaxLen normalizes to NFC before counting, so the same text is accepted or
+// refused the same way whether the client sent it composed or decomposed, and
+// it returns the NFC form either way.
+func TestValidator_MaxLen_NormalizesToNFC(t *testing.T) {
+	const composed = "Jos\u00e9"    // NFC: 4 runes
+	const decomposed = "Jose\u0301" // NFD: 5 runes, the same text
+
+	tests := []struct {
+		name    string
+		value   string
+		max     int
+		wantErr bool
+	}{
+		{name: "composed at max", value: composed, max: 4},
+		{name: "decomposed at max", value: decomposed, max: 4},
+		{name: "composed over max", value: composed, max: 3, wantErr: true},
+		{name: "decomposed over max", value: decomposed, max: 3, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			v := request.NewValidator()
+
+			got := v.MaxLen("name", tt.value, tt.max)
+
+			assert.Equal(t, composed, got, "MaxLen returns the NFC form")
+			assert.Equal(t, tt.wantErr, v.HasErrors())
+		})
+	}
+}
+
+// A few characters excluded from composition grow under NFC: U+0958 is one
+// rune but its NFC form is two (U+0915 U+093C), so it no longer fits in 1.
+func TestValidator_MaxLen_CompositionExclusionGrows(t *testing.T) {
+	v := request.NewValidator()
+
+	got := v.MaxLen("name", "\u0958", 1)
+
+	assert.Equal(t, "\u0915\u093c", got)
+	assert.True(t, v.HasErrors())
 }

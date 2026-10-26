@@ -18,8 +18,8 @@ cargo del servicio consumidor.
 
 | Estado | Ítems |
 |---|---|
-| PASS | 83 |
-| PARTIAL | 4 |
+| PASS | 84 |
+| PARTIAL | 3 |
 | FAIL | 0 |
 | CONSUMER | 26 |
 | N/A | 80 |
@@ -120,7 +120,7 @@ un Bearer token que se valida en el servidor.
 | 4.6 | H | SSRF en URLs del usuario | N/A | Ninguna URL saliente viene del cliente: emisor, PDP y S3 salen de la configuración |
 | 4.7 | M | LDAP, XPath, XML, cabeceras | PASS | Sin LDAP, XPath ni XML. Cabeceras: el `X-Request-Id` del cliente se sanea a ASCII visible y largo acotado (`httpx/middleware/requestid.go:67`, `httpx/middleware/requestid_test.go`, `TestSanitizeClientRequestID`) |
 | 4.8 | M | Path traversal | PASS | La librería no abre rutas derivadas de input; claves de objeto generadas en el servidor (`examples/api/document.go:120`) |
-| 4.9 | L | Normalización Unicode y límites de largo antes de validar | PARTIAL | `MaxLen` cuenta runas (`request/validate.go:244`), pero no hay normalización NFC antes de validar; `stringutil.Normalize` es para búsqueda, no para validación |
+| 4.9 | L | Normalización Unicode y límites de largo antes de validar | PASS | `MaxLen` y `Enum` normalizan a NFC antes de validar y devuelven la forma NFC; `MaxLen` cuenta runas (`request/validate.go:230`, `request/validate.go:253`). Tests con la misma cadena en NFC y NFD: `request/validate_test.go` (`TestValidator_MaxLen_NormalizesToNFC`, `TestValidator_Enum`) |
 
 ## 5. XSS y cliente
 
@@ -352,7 +352,7 @@ SAML, y no tiene webhooks, pagos ni scripts de terceros.
 | 3 | El limitador de `examples/api` cuenta por IP del par directo: detrás de un proxy todos los clientes comparten la IP del proxy (documentado en `examples/api/ratelimit.go:28`) | 8.2 | Abierta (documentada) |
 | 4 | 6 hallazgos previos de `golangci-lint` en `auth/zitadel/introspection*.go` (idénticos en la base) | 14.5 | Abierta |
 | 5 | gitleaks y Trivy todavía no son checks requeridos de la protección de `master` | 10.1, 10.4 | Cerrada (2026-10-16): la protección de `master` los exige |
-| 6 | Sin normalización Unicode antes de validar | 4.9 | Abierta |
+| 6 | Sin normalización Unicode antes de validar | 4.9 | Cerrada (2026-10-25): `MaxLen` y `Enum` normalizan a NFC (`request/validate.go`) |
 | 7 | Fallos de validación de input sin evento de log | 11.2 | Abierta |
 | 8 | Sin claves de idempotencia genéricas | 17.13 | Abierta |
 | 9 | Sin criterios escritos para adoptar o mantener dependencias | 10.8, 18.5 | Cerrada (2026-10-22): `docs/security/DEPENDENCIES.md` |
