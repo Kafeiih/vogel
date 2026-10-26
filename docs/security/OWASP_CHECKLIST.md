@@ -18,8 +18,8 @@ cargo del servicio consumidor.
 
 | Estado | Ítems |
 |---|---|
-| PASS | 84 |
-| PARTIAL | 3 |
+| PASS | 85 |
+| PARTIAL | 2 |
 | FAIL | 0 |
 | CONSUMER | 26 |
 | N/A | 80 |
@@ -206,7 +206,7 @@ un Bearer token que se valida en el servidor.
 | ID | Sev. | Ítem | Estado | Evidencia |
 |---|---|---|---|---|
 | 11.1 | H | Manejador global: mensaje genérico al usuario, detalle al log | PASS | `httpx/middleware/recovery.go:12`; `httpx/response/error.go:88` |
-| 11.2 | H | Eventos de seguridad registrados | PARTIAL | Fallos de autenticación (`TestAuthenticate_FailureLog_CarriesRequestFieldsWithoutToken`) y de autorización (§3.7) se registran; cambios de datos van a `audit_log` (`audit/recorder.go:211`). Login, logout y MFA son de Zitadel. Los fallos de validación de input responden 400 pero no se registran como evento |
+| 11.2 | H | Eventos de seguridad registrados | PASS | Fallos de autenticación (`TestAuthenticate_FailureLog_CarriesRequestFieldsWithoutToken`) y de autorización (§3.7) se registran; cambios de datos van a `audit_log` (`audit/recorder.go:211`). Login, logout y MFA son de Zitadel. Los fallos de validación de input (400, 413, 415 de `request` y los 400 de `validation.Write`) se registran como evento `WARN` sin el payload: `request/log.go`, `request/log_test.go` (`TestValidator_WriteErrors_LogsSecurityEvent`, `TestDecoder_JSON_FailureLogsSecurityEventWithoutPayload`), `validation/log_test.go`; un 400 propio del consumidor usa `request.LogValidationFailure` |
 | 11.3 | H | Sin secretos en logs | PASS | Token nunca en el log (§1.10); redacción de claves sensibles en auditoría, fallando cerrado (`audit/redact.go:82`, `audit/redact_test.go`, `TestRecord_UnredactablePayload_FailsClosed`) |
 | 11.4 | M | UTC, usuario, IP, request ID y resultado, estructurado | PASS | `httpx/middleware/logger.go` (estado, `remote_addr`, `request_id`, `user_id`; `WithRemoteAddr` y `WithoutUserAgent` truncan u omiten los datos del cliente); UTC en `logger/logger_test.go` (`TestNew_TimestampsAreUTC`); `user_id` en `httpx/middleware/logger_test.go` (`TestStructuredLogger_LogsAuthenticatedUserID`) |
 | 11.5 | M | Logs fuera del host, a prueba de alteración, con retención | CONSUMER | `logger` escribe a stdout; ver `docs/THREAT_MODEL.md` §6 |
@@ -353,7 +353,7 @@ SAML, y no tiene webhooks, pagos ni scripts de terceros.
 | 4 | 6 hallazgos previos de `golangci-lint` en `auth/zitadel/introspection*.go` (idénticos en la base) | 14.5 | Abierta |
 | 5 | gitleaks y Trivy todavía no son checks requeridos de la protección de `master` | 10.1, 10.4 | Cerrada (2026-10-16): la protección de `master` los exige |
 | 6 | Sin normalización Unicode antes de validar | 4.9 | Cerrada (2026-10-25): `MaxLen` y `Enum` normalizan a NFC (`request/validate.go`) |
-| 7 | Fallos de validación de input sin evento de log | 11.2 | Abierta |
+| 7 | Fallos de validación de input sin evento de log | 11.2 | Cerrada (2026-10-26): `request` y `validation` registran cada rechazo de input como evento `WARN` (`request/log.go`) |
 | 8 | Sin claves de idempotencia genéricas | 17.13 | Abierta |
 | 9 | Sin criterios escritos para adoptar o mantener dependencias | 10.8, 18.5 | Cerrada (2026-10-22): `docs/security/DEPENDENCIES.md` |
 | 10 | Sin atestaciones de procedencia ni firma de SBOM e imágenes | 18.6, 18.9 | Cerrada (2026-10-22): atestación de procedencia sobre los SBOM y firma cosign de las imágenes del boilerplate |
