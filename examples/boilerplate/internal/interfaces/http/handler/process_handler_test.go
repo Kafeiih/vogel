@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -263,28 +262,6 @@ func TestProcessHandler_InboxViewClaimSubmit(t *testing.T) {
 		if code != tc.want || svc.gotActor != "user-2" {
 			t.Errorf("%s %s status = %d actor = %q body = %v", tc.method, tc.path, code, svc.gotActor, body)
 		}
-	}
-}
-
-// captureLogger returns a JSON logger writing to a buffer, and a func that
-// decodes every record written so far.
-func captureLogger(t *testing.T) (*slog.Logger, func() []map[string]any) {
-	t.Helper()
-	var buf bytes.Buffer
-	l := slog.New(slog.NewJSONHandler(&buf, nil))
-	return l, func() []map[string]any {
-		var records []map[string]any
-		for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
-			if line == "" {
-				continue
-			}
-			var rec map[string]any
-			if err := json.Unmarshal([]byte(line), &rec); err != nil {
-				t.Fatalf("decode log %q: %v", line, err)
-			}
-			records = append(records, rec)
-		}
-		return records
 	}
 }
 
