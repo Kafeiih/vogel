@@ -6,6 +6,8 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ## [Unreleased]
 
+## [0.15.0] — 2026-10-26
+
 ### Agregado
 
 - **`request` y `validation` registran cada rechazo de input como evento de
