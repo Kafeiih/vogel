@@ -192,6 +192,39 @@ func TestFiltersFromRequest_PassthroughStringFilters(t *testing.T) {
 	}
 }
 
+// The free-text filters reach the repository as sent, not in NFC as
+// request.Validator.MaxLen would return them: audit rows are stored without
+// normalizing, and the repository matches by equality, so an NFD filter must
+// keep finding an NFD row.
+func TestFiltersFromRequest_StringFiltersKeepTheirRawForm(t *testing.T) {
+	decomposed := "ord-e\u0301" // NFD: 6 runes, 5 in NFC
+	r := httptest.NewRequest(http.MethodGet, "/audit?aggregate_id="+url.QueryEscape(decomposed), nil)
+	v := request.NewValidator()
+
+	f := FiltersFromRequest(v, r)
+
+	if v.HasErrors() {
+		t.Fatalf("unexpected validation errors: %v", v.Errors())
+	}
+	if f.AggregateID != decomposed {
+		t.Errorf("AggregateID = %q, want the raw %q", f.AggregateID, decomposed)
+	}
+}
+
+// The repository receives the raw value, so the raw value is what stays
+// within MaxFilterLength, even when its NFC form would be shorter.
+func TestFiltersFromRequest_RawValueOverMaxIsRefused(t *testing.T) {
+	decomposed := strings.Repeat("e\u0301", MaxFilterLength) // 2×max runes, max in NFC
+	r := httptest.NewRequest(http.MethodGet, "/audit?aggregate_id="+url.QueryEscape(decomposed), nil)
+	v := request.NewValidator()
+
+	FiltersFromRequest(v, r)
+
+	if got, want := v.Errors()[paramAggregateID], request.DefaultMessages().TooLong(paramAggregateID, MaxFilterLength); got != want {
+		t.Errorf("aggregate_id error = %q, want %q", got, want)
+	}
+}
+
 // Ties the filter's accepted values to audit's declared ones in both
 // directions. Adding an Action or Status to audit fails here, which is the
 // point: whether a new domain value also becomes a filterable query value is a
