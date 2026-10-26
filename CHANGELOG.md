@@ -6,6 +6,17 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ## [Unreleased]
 
+### Agregado
+
+- **`request.LogRejection` registra un rechazo de input sin campos.** Emite
+  el mismo evento `WARN` `request validation failed` que
+  `request.LogValidationFailure`, con el status y el código que se le pasen
+  (por ejemplo, 400 `INVALID_JSON`), para un handler que decodifica el cuerpo
+  por su cuenta. El boilerplate registra ahora sus propios 400: los cuerpos
+  JSON inválidos de las rutas de procesos con `request.LogRejection`, y el
+  `offset` fuera de rango de `/audit` y los `FormError` de bpms con
+  `request.LogValidationFailure`.
+
 ## [0.15.0] — 2026-10-26
 
 ### Agregado

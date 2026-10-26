@@ -14,6 +14,7 @@ import (
 
 	"github.com/kafeiih/vogel/auth"
 	"github.com/kafeiih/vogel/httpx/response"
+	"github.com/kafeiih/vogel/request"
 	"github.com/kafeiih/vogel/workflow"
 
 	"github.com/kafeiih/vogel/examples/boilerplate/internal/application/process"
@@ -73,11 +74,13 @@ type caseViewResponse struct {
 func (h *ProcessHandler) Publish(w http.ResponseWriter, r *http.Request) {
 	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxProcessBodyBytes))
 	if err != nil {
+		request.LogRejection(h.logger, r, http.StatusBadRequest, response.CodeInvalidJSON)
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidJSON, "No se pudo leer el cuerpo")
 		return
 	}
 	spec, err := domain.ParseProcessSpec(raw)
 	if err != nil {
+		request.LogRejection(h.logger, r, http.StatusBadRequest, response.CodeInvalidJSON)
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidJSON, err.Error())
 		return
 	}
@@ -109,7 +112,7 @@ func (h *ProcessHandler) Start(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in submission
-	if !decodeStrict(w, r, &in) {
+	if !h.decodeStrict(w, r, &in) {
 		return
 	}
 	c, err := h.svc.Start(r.Context(), actor, chi.URLParam(r, "name"), in.Action, in.Values)
@@ -169,7 +172,7 @@ func (h *ProcessHandler) Submit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in submission
-	if !decodeStrict(w, r, &in) {
+	if !h.decodeStrict(w, r, &in) {
 		return
 	}
 	c, err := h.svc.Submit(r.Context(), actor, id, in.Action, in.Values)
@@ -202,10 +205,11 @@ func actorAndCase(w http.ResponseWriter, r *http.Request) (string, uuid.UUID, bo
 	return actor, id, true
 }
 
-func decodeStrict(w http.ResponseWriter, r *http.Request, dst any) bool {
+func (h *ProcessHandler) decodeStrict(w http.ResponseWriter, r *http.Request, dst any) bool {
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxProcessBodyBytes))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(dst); err != nil {
+		request.LogRejection(h.logger, r, http.StatusBadRequest, response.CodeInvalidJSON)
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidJSON, "JSON inválido")
 		return false
 	}
@@ -216,6 +220,7 @@ func (h *ProcessHandler) fail(w http.ResponseWriter, r *http.Request, err error)
 	var formErr *domain.FormError
 	switch {
 	case errors.As(err, &formErr):
+		request.LogValidationFailure(h.logger, r, formErr.Fields)
 		response.ValidationError(w, r, formErr.Fields)
 	case errors.Is(err, domain.ErrProcessNotFound), errors.Is(err, workflow.ErrCaseNotFound):
 		response.Error(w, r, http.StatusNotFound, response.CodeNotFound, err.Error())

@@ -83,8 +83,8 @@ func (s *stubProcessService) Submit(_ context.Context, actor string, id uuid.UUI
 	return &workflow.Case{ID: id, State: "cerrada", Status: workflow.StatusClosed}, nil
 }
 
-func newProcessRouter(svc ProcessService) http.Handler {
-	h := NewProcessHandler(svc, slog.New(slog.NewTextHandler(io.Discard, nil)))
+func newProcessRouterWithLogger(svc ProcessService, logger *slog.Logger) http.Handler {
+	h := NewProcessHandler(svc, logger)
 	r := chi.NewRouter()
 	r.Post("/processes", h.Publish)
 	r.Get("/processes/{name}", h.Latest)
@@ -98,12 +98,17 @@ func newProcessRouter(svc ProcessService) http.Handler {
 
 func serveProcess(t *testing.T, svc ProcessService, method, path, actor, body string) (int, map[string]any) {
 	t.Helper()
+	return serveProcessWithLogger(t, svc, slog.New(slog.NewTextHandler(io.Discard, nil)), method, path, actor, body)
+}
+
+func serveProcessWithLogger(t *testing.T, svc ProcessService, logger *slog.Logger, method, path, actor, body string) (int, map[string]any) {
+	t.Helper()
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
 	if actor != "" {
 		req = req.WithContext(auth.WithPrincipal(req.Context(), &auth.Principal{UserID: actor}))
 	}
 	rec := httptest.NewRecorder()
-	newProcessRouter(svc).ServeHTTP(rec, req)
+	newProcessRouterWithLogger(svc, logger).ServeHTTP(rec, req)
 	var out map[string]any
 	if rec.Body.Len() > 0 {
 		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
@@ -257,5 +262,57 @@ func TestProcessHandler_InboxViewClaimSubmit(t *testing.T) {
 		if code != tc.want || svc.gotActor != "user-2" {
 			t.Errorf("%s %s status = %d actor = %q body = %v", tc.method, tc.path, code, svc.gotActor, body)
 		}
+	}
+}
+
+func TestProcessHandler_RejectionsLogSecurityEvent(t *testing.T) {
+	for _, tc := range []struct {
+		name, path, body string
+		err              error
+		wantCode         string
+		wantFields       []any
+	}{
+		{"form error", "/processes/consulta/cases", `{"action":"enviar","values":{}}`,
+			&domain.FormError{Fields: request.FieldErrors{"tema": "is required", "correo": "is required"}},
+			response.CodeValidationError, []any{"correo", "tema"}},
+		{"malformed body", "/cases/" + uuid.NewString() + "/submit", `{`, nil, response.CodeInvalidJSON, nil},
+		{"unknown body field", "/processes/consulta/cases", `{"action":"enviar","extra":1}`, nil, response.CodeInvalidJSON, nil},
+		{"spec with a version", "/processes", `{"name":"x","version":2,"nodes":[],"transitions":[]}`, nil, response.CodeInvalidJSON, nil},
+		{"oversized spec", "/processes", `{"name":"` + strings.Repeat("x", maxProcessBodyBytes) + `"}`, nil, response.CodeInvalidJSON, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			l, records := captureLogger(t)
+			code, body := serveProcessWithLogger(t, &stubProcessService{err: tc.err}, l, http.MethodPost, tc.path, "user-1", tc.body)
+			if code != http.StatusBadRequest || body["code"] != tc.wantCode {
+				t.Fatalf("status = %d body = %v, want 400 %s", code, body, tc.wantCode)
+			}
+			recs := records()
+			if len(recs) != 1 {
+				t.Fatalf("logged %d records, want 1: %v", len(recs), recs)
+			}
+			rec := recs[0]
+			if rec["level"] != "WARN" || rec["msg"] != "request validation failed" {
+				t.Fatalf("record = %v, want the WARN validation event", rec)
+			}
+			if rec["status"] != float64(http.StatusBadRequest) || rec["code"] != tc.wantCode || rec["path"] != tc.path {
+				t.Fatalf("record = %v, want status 400, code %s, path %s", rec, tc.wantCode, tc.path)
+			}
+			got, logged := rec["fields"]
+			if (tc.wantFields == nil) == logged || (logged && fmt.Sprint(got) != fmt.Sprint(tc.wantFields)) {
+				t.Fatalf("fields = %v (logged %t), want %v", got, logged, tc.wantFields)
+			}
+		})
+	}
+}
+
+func TestProcessHandler_NonValidationErrorsLogNoValidationEvent(t *testing.T) {
+	l, records := captureLogger(t)
+	code, _ := serveProcessWithLogger(t, &stubProcessService{err: domain.ErrNotHolder}, l, http.MethodPost,
+		"/cases/"+uuid.NewString()+"/submit", "user-1", `{"action":"responder","values":{}}`)
+	if code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", code)
+	}
+	if recs := records(); len(recs) != 0 {
+		t.Fatalf("logged %v, want nothing", recs)
 	}
 }

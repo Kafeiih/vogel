@@ -161,3 +161,23 @@ func TestValidator_WriteErrors_DefaultsToSlogDefault(t *testing.T) {
 	assert.Equal(t, "request validation failed", recs[0]["msg"])
 	assert.Equal(t, []any{"title"}, recs[0]["fields"])
 }
+
+func TestLogRejection_LogsSecurityEventWithoutFields(t *testing.T) {
+	l, records := captureLogger(t)
+	r := withRequestContext(httptest.NewRequest(http.MethodPost, "/items?token=s3cr3t-value", nil))
+
+	request.LogRejection(l, r, http.StatusBadRequest, "INVALID_JSON")
+
+	recs := records()
+	require.Len(t, recs, 1)
+	rec := recs[0]
+	assert.Equal(t, "WARN", rec["level"])
+	assert.Equal(t, "request validation failed", rec["msg"])
+	assert.EqualValues(t, http.StatusBadRequest, rec["status"])
+	assert.Equal(t, "INVALID_JSON", rec["code"])
+	assert.Equal(t, http.MethodPost, rec["method"])
+	assert.Equal(t, "/items", rec["path"])
+	assert.Equal(t, "203.0.113.7", rec["ip"])
+	assert.Equal(t, "req-123", rec["request_id"])
+	assert.NotContains(t, rec, "fields")
+}

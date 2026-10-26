@@ -45,6 +45,16 @@ func LogValidationFailure(l *slog.Logger, r *http.Request, fields FieldErrors) {
 	logValidationFailure(l, r, http.StatusBadRequest, response.CodeValidationError, sortedFields(fields))
 }
 
+// LogRejection logs the security event described in WithLogger for a request
+// whose input was rejected as a whole, with status and code (for example 400
+// INVALID_JSON), to l or, when l is nil, to slog.Default(). A handler that
+// rejects input without this package, such as its own body decoding, calls it
+// so the rejection is logged the same way. No field names are logged; for a
+// 400 VALIDATION_ERROR over fields, use LogValidationFailure.
+func LogRejection(l *slog.Logger, r *http.Request, status int, code string) {
+	logValidationFailure(l, r, status, code, nil)
+}
+
 // logValidationFailure logs the security event for a rejected request. fields
 // holds the failing field names, or is nil when the whole body was refused.
 func logValidationFailure(l *slog.Logger, r *http.Request, status int, code string, fields []string) {

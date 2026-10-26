@@ -256,6 +256,29 @@ func TestList_OffsetAboveMax_Returns400(t *testing.T) {
 	}
 }
 
+func TestList_OffsetAboveMax_LogsSecurityEvent(t *testing.T) {
+	l, records := captureLogger(t)
+	h := NewAuditHandler(&stubRepo{}, l)
+
+	req := httptest.NewRequest(http.MethodGet, "/audit?offset="+strconv.Itoa(audit.MaxListOffset+1), nil)
+	h.List(httptest.NewRecorder(), req)
+
+	recs := records()
+	if len(recs) != 1 {
+		t.Fatalf("logged %d records, want 1: %v", len(recs), recs)
+	}
+	rec := recs[0]
+	if rec["level"] != "WARN" || rec["msg"] != "request validation failed" {
+		t.Fatalf("record = %v, want the WARN validation event", rec)
+	}
+	if rec["status"] != float64(http.StatusBadRequest) || rec["code"] != "VALIDATION_ERROR" || rec["path"] != "/audit" {
+		t.Fatalf("record = %v, want status 400, VALIDATION_ERROR, path /audit", rec)
+	}
+	if fields, _ := rec["fields"].([]any); len(fields) != 1 || fields[0] != "offset" {
+		t.Fatalf("fields = %v, want [offset]", rec["fields"])
+	}
+}
+
 func TestList_OffsetAtMax_Returns200(t *testing.T) {
 	repo := &stubRepo{}
 	h := newTestHandler(repo)
