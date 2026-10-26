@@ -6,6 +6,8 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ## [Unreleased]
 
+## [0.16.0] — 2026-10-26
+
 ### Agregado
 
 - **`request.LogRejection` registra un rechazo de input sin campos.** Emite
