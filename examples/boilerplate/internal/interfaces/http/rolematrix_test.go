@@ -95,7 +95,7 @@ func TestNewRouter_RoleMatrix(t *testing.T) {
 		{"GET", "/healthz", "/healthz", [5]outcome{A, A, A, A, A}},
 		{"GET", "/readyz", "/readyz", [5]outcome{A, A, A, A, A}},
 		{"GET", "/livez", "/livez", [5]outcome{A, A, A, A, A}},
-		{"GET", "/swagger/*", "/swagger/index.html", [5]outcome{A, A, A, A, A}},
+		{"GET", "/openapi.yaml", "/openapi.yaml", [5]outcome{A, A, A, A, A}},
 		{"GET", "/audit/", "/audit/", [5]outcome{U, U, F, F, A}},
 		{"GET", "/audit/{id}", entryPath, [5]outcome{U, U, F, A, A}},
 		// vogel:component bpms begin

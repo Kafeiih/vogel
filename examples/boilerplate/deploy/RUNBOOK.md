@@ -17,7 +17,7 @@ crear contenedores):
 | Variable | Uso |
 |---|---|
 | `APP_VERSION` | Tag de las imagenes `ghcr.io/kafeiih/vogel-boilerplate*` del servicio (nunca `latest`); la API tambien lo informa como su version |
-| `APP_ENV` | `production` en produccion (logs en JSON, Swagger prohibido); otro nombre, p. ej. `staging`, en los demas ambientes |
+| `APP_ENV` | `production` en produccion (logs en JSON, `SWAGGER_ENABLED` prohibido); otro nombre, p. ej. `staging`, en los demas ambientes |
 | `DB_HOST`, `DB_NAME` | Host y base; el compose arma con ellos los DSN de los dos roles (`DB_PORT` y `DB_SSLMODE` son opcionales: `5432` y `verify-full`) |
 | `APP_MIGRATOR_PASSWORD` | Rol `app_migrator`, dueño del esquema; solo lo usan `migrate`, `grants` y la creacion de roles. Los procesos que sirven la reciben vacia |
 | `APP_RUNTIME_PASSWORD` | Rol `app_runtime`, con el que sirven `api` (y `worker`, si existe) |
@@ -100,8 +100,8 @@ accesible desde la red del compose. Para inspeccionarla:
 rechaza `disable`, `allow`, `prefer` y `require`; con RDS se deja sin definir.
 Solo el bloque del Postgres empaquetado lo pone en `false`.
 
-**Swagger:** `APP_ENV=development` no lo activa. La UI y la spec solo se
-sirven con `SWAGGER_ENABLED=true`, que `deploy/.env` no debe definir; con
+**Contrato OpenAPI:** `APP_ENV=development` no lo activa. `/openapi.yaml`
+solo se sirve con `SWAGGER_ENABLED=true`, que `deploy/.env` no debe definir; con
 `APP_ENV=production` esa combinacion hace fallar el arranque.
 
 **Cerbos:** `CERBOS_HOST` y `CERBOS_PLAINTEXT` son obligatorias en

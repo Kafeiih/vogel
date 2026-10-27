@@ -9,7 +9,7 @@ export DB_URL
 require-db-url:
 	@test -n "$(DB_URL)" || { echo "DB_URL no está definida: cree .env (ver README, Arranque rápido) o expórtela." >&2; exit 1; }
 
-.PHONY: dev build test migrate lint docker gen-docs migrate-up migrate-down migrate-status migrate-create require-db-url deploy
+.PHONY: dev build test migrate lint docker generate lint-api mock-api migrate-up migrate-down migrate-status migrate-create require-db-url deploy
 # vogel:component worker begin
 .PHONY: worker build-worker
 # vogel:component worker end
@@ -106,6 +106,14 @@ dev-infra:
 dev-infra-down:
 	docker compose -f deploy/docker-compose.developer.yaml down
 
-# Generar documentación
-gen-docs:
-	@swag init -g main.go -d cmd/api,internal --output docs --parseDependency --parseInternal && swag fmt
+# Regenerar el servidor desde el contrato (api/openapi.yaml)
+generate:
+	go generate ./...
+
+# Validar el contrato
+lint-api:
+	npx --yes @redocly/cli@2.59.0 lint api/openapi.yaml
+
+# Servidor mock del contrato en http://localhost:4010
+mock-api:
+	npx --yes @stoplight/prism-cli@5.16.0 mock api/openapi.yaml

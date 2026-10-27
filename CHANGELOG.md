@@ -6,6 +6,41 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ## [Unreleased]
 
+### Agregado
+
+- **`httpx/openapi`: el pegamento de un servidor *contract-first*.** Para un
+  servidor generado con `oapi-codegen` (`chi-server` + `strict-server`) cuyas
+  rutas se registran a mano en chi: los handlers estrictos devuelven errores
+  que llevan su respuesta de vogel (`Fail`, `Respond`, `Invalid`), el
+  servidor se cablea con `ResponseErrorHandler` y `RequestErrorHandler`,
+  `RequestInContext`/`Request` le dan al handler el request para validar con
+  `request.Validator`, `ServeSpec` sirve el YAML tal cual y `Decode` /
+  `DecodeJSON[T]` hacen pasar el cuerpo por el chequeo de vogel (400/413/415)
+  antes del decodificador generado. El paquete no depende de `oapi-codegen`.
+- **`httpx/openapi/openapitest`.** `RoutesMatchSpec` falla si el router y el
+  spec no describen las mismas rutas (y si una entrada de `Ignore` ya no
+  existe); `SchemaMatchesType[T]` compara un schema con los tags JSON de un
+  tipo Go.
+
+### Cambiado
+
+- **El boilerplate sirve su API desde un contrato OpenAPI.**
+  `api/openapi.yaml` (3.1) es la fuente de verdad y el servidor se genera con
+  `oapi-codegen` v2.8.0, fijado como `tool` (`make generate`; `make lint-api`
+  y `make mock-api` lo validan y lo simulan). Las rutas siguen registradas a
+  mano con sus guards y `TestSpecAndRouterMatch` las mantiene en sync con el
+  contrato. Las rutas de bpms quedan descritas (reemplaza el #148) y su código
+  generado se borra con el componente. Las respuestas de todas las rutas no
+  cambian. El CI del boilerplate y `check-generated.sh` fallan si el código
+  generado no es el que produce `go generate`.
+
+### Quitado
+
+- **Swagger UI y swaggo del boilerplate.** `SWAGGER_ENABLED` sigue con sus
+  reglas (apagado por defecto, rechazado en producción) pero ahora sirve el
+  contrato en `/openapi.yaml`; `/swagger/*` ya no existe. Para explorarlo,
+  ver el README del boilerplate.
+
 ## [0.16.0] — 2026-10-26
 
 ### Agregado

@@ -1041,7 +1041,9 @@ go-licencias) — **no montés el `Handler` de vogel**: las anotaciones de
 swaggo se leen de los comentarios sobre la función handler concreta de la
 app, así que un `Handler` importado de otro módulo no puede llevarlas.
 Escribí un handler propio delgado que reutiliza el parseo y el mapeo de
-vogel:
+vogel. (Con un contrato OpenAPI en lugar de anotaciones, el handler propio
+implementa las operaciones del servidor generado con `vogel/httpx/openapi`;
+`examples/boilerplate` lo hace así.)
 
 ```go
 package handler

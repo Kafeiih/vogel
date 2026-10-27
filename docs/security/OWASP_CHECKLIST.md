@@ -124,14 +124,15 @@ un Bearer token que se valida en el servidor.
 
 ## 5. XSS y cliente
 
-`vogel` sirve JSON, no HTML. La única página HTML es Swagger UI en
-`examples/boilerplate`, apagada por defecto y rechazada en producción.
+`vogel` sirve JSON, no HTML. `examples/boilerplate` no sirve ninguna página
+HTML: su contrato OpenAPI (`/openapi.yaml`, YAML) está apagado por defecto y
+rechazado en producción.
 
 | ID | Sev. | Ítem | Estado | Evidencia |
 |---|---|---|---|---|
 | 5.1 | C | Codificación de salida por contexto | N/A | Sin plantillas HTML; las respuestas son JSON |
 | 5.2 | C | Sanitizar HTML del usuario | N/A | No se acepta ni se muestra HTML |
-| 5.3 | H | CSP desplegada | PASS | `default-src 'none'` (`httpx/middleware/security.go:28`); Swagger con su propia CSP (`examples/boilerplate/internal/interfaces/http/router.go:65`, `TestNewRouter_SwaggerServedWithItsOwnCSPWhenEnabled`) |
+| 5.3 | H | CSP desplegada | PASS | `default-src 'none'` (`httpx/middleware/security.go:28`); el boilerplate ya no sirve Swagger UI, así que ninguna ruta relaja la CSP (`TestNewRouter_SpecServedWithoutAuthenticationWhenEnabled` comprueba que `SecurityHeaders` sigue aplicando) |
 | 5.4 | H | URLs del usuario en `href`/`src` | N/A | Sin frontend |
 | 5.5 | H | `X-Frame-Options` o `frame-ancestors` | PASS | `httpx/middleware/security.go:25`; `httpx/middleware/security_test.go` (`TestSecurityHeaders_SetsAllHeaders`) |
 | 5.6 | M | JSON con `application/json` y `nosniff` | PASS | `httpx/response/success.go:17`, `httpx/response/error.go:104`; `nosniff` en `httpx/middleware/security.go:24` |
@@ -196,7 +197,7 @@ un Bearer token que se valida en el servidor.
 | 10.3 | H | Secretos rotables y rotación probada | CONSUMER | `config` solo lee el entorno; procedimiento en `examples/boilerplate/deploy/RUNBOOK.md` §10. Probar la rotación es del operador |
 | 10.4 | H | Escaneo de dependencias en CI que bloquea | PASS | `govulncheck` (`.github/workflows/ci.yaml:142`), Trivy semanal y por PR (`.github/workflows/trivy.yaml:58`), Dependabot (`.github/dependabot.yml`). `govulncheck`, Trivy y gitleaks son checks requeridos en `master` |
 | 10.5 | H | Lockfiles versionados | PASS | `go.sum`, `examples/boilerplate/go.sum`; cambios revisados por `.github/CODEOWNERS` |
-| 10.6 | H | Debug y credenciales por defecto apagados en producción | PASS | Swagger rechazado en producción (`TestLoad_SwaggerRefusedInProduction`); logs JSON en `production` (`logger/logger.go:36`); compose sin contraseñas por defecto (`examples/boilerplate/deploy/docker-compose.yaml:176`) |
+| 10.6 | H | Debug y credenciales por defecto apagados en producción | PASS | `SWAGGER_ENABLED` (sirve `/openapi.yaml`) rechazado en producción (`TestLoad_SwaggerRefusedInProduction`); logs JSON en `production` (`logger/logger.go:36`); compose sin contraseñas por defecto (`examples/boilerplate/deploy/docker-compose.yaml:176`) |
 | 10.7 | M | Cifrado en reposo con AES-GCM o KMS | CONSUMER | `vogel` no cifra datos en reposo ni implementa criptografía propia (solo SHA-256 para la clave de caché, `auth/zitadel/introspection.go:221`) |
 | 10.8 | M | Revisión del mantenimiento de dependencias | PASS | Dependabot semanal, CODEOWNERS en `go.mod` y criterio escrito de dependencia abandonada, con repaso en cada versión menor (`docs/security/DEPENDENCIES.md`) |
 | 10.9 | L | SBOM | PASS | CycloneDX por release (`.github/workflows/release.yaml:48`) |

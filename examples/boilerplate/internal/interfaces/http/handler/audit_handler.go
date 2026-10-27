@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -9,8 +10,11 @@ import (
 
 	"github.com/kafeiih/vogel/audit"
 	"github.com/kafeiih/vogel/audit/httpx"
+	"github.com/kafeiih/vogel/httpx/openapi"
 	"github.com/kafeiih/vogel/httpx/response"
 	"github.com/kafeiih/vogel/request"
+
+	"github.com/kafeiih/vogel/examples/boilerplate/internal/interfaces/http/apigen"
 )
 
 type AuditHandler struct {
@@ -25,87 +29,52 @@ func NewAuditHandler(repo audit.Repository, logger *slog.Logger) *AuditHandler {
 	}
 }
 
-// List godoc
-//
-//	@Summary		List audit entries
-//	@Description	Returns a filtered, paginated list of audit log entries
-//	@Tags			audit
-//	@Produce		json
-//	@Param			actor_id			query		string	false	"Filter by actor ID"
-//	@Param			resource_type		query		string	false	"Filter by resource type"
-//	@Param			resource_id			query		string	false	"Filtrar por ID de recurso (formato UUID)"	Format(uuid)
-//	@Param			operation_category	query		string	false	"Filter by operation category"	Enums(create, update, delete, execute)
-//	@Param			operation_name		query		string	false	"Filter by operation name"
-//	@Param			status				query		string	false	"Filter by status"				Enums(success, failed, partial, noop)
-//	@Param			aggregate_type		query		string	false	"Filter by aggregate type"
-//	@Param			aggregate_id		query		string	false	"Filter by aggregate ID"
-//	@Param			from				query		string	false	"Start date (RFC3339)"
-//	@Param			to					query		string	false	"End date (RFC3339)"
-//	@Param			limit				query		int		false	"Page size (max 100)"			default(20)
-//	@Param			offset				query		int		false	"Offset (max 100000)"			default(0)
-//	@Success		200					{object}	response.ListResponse
-//	@Failure		400					{object}	response.ValidationErrorResponse
-//	@Failure		500					{object}	response.ErrorResponse
-//	@Security		ApiKeyAuth
-//	@Router			/audit [get]
-func (h *AuditHandler) List(w http.ResponseWriter, r *http.Request) {
+func (h *AuditHandler) ListAuditEntries(ctx context.Context, _ apigen.ListAuditEntriesRequestObject) (apigen.ListAuditEntriesResponseObject, error) {
+	r := openapi.Request(ctx)
 	v := request.NewValidator()
 	filters := httpx.FiltersFromRequest(v, r)
 
 	if v.HasErrors() {
-		v.WriteErrors(w, r)
-		return
+		return nil, openapi.Invalid(v)
 	}
 
-	entries, total, err := h.repo.List(r.Context(), filters)
+	entries, total, err := h.repo.List(ctx, filters)
 	if errors.Is(err, audit.ErrOffsetOutOfRange) {
 		request.LogValidationFailure(h.logger, r, request.FieldErrors{"offset": ""})
-		response.ErrorWith(w, r, http.StatusBadRequest, response.CodeValidationError,
+		return nil, openapi.Respond(http.StatusBadRequest, response.CodeValidationError,
 			"El offset está fuera de rango; acotá los filtros en lugar de seguir paginando",
 			response.WithField("offset"))
-		return
 	}
 	if err != nil {
 		h.logger.Error("listing audit entries", "error", err, "path", r.URL.Path, "query", r.URL.RawQuery)
-		response.Error(w, r, http.StatusInternalServerError, response.CodeInternalError, "No se pudo listar las entradas de auditoría")
-		return
+		return nil, openapi.Respond(http.StatusInternalServerError, response.CodeInternalError, "No se pudo listar las entradas de auditoría")
 	}
 
-	response.JSONList(w, http.StatusOK, httpx.ToResponseList(entries), total, filters.Limit, filters.Offset)
+	return apigen.ListAuditEntries200JSONResponse{
+		Success: true,
+		Message: "OK",
+		Data:    httpx.ToResponseList(entries),
+		Meta:    apigen.ListMeta{Total: total, Limit: filters.Limit, Offset: filters.Offset},
+	}, nil
 }
 
-// GetByID godoc
-//
-//	@Summary		Get audit entry
-//	@Description	Returns a single audit log entry by ID
-//	@Tags			audit
-//	@Produce		json
-//	@Param			id	path		string	true	"Audit entry UUID"
-//	@Success		200	{object}	response.SuccessResponse
-//	@Failure		400	{object}	response.ValidationErrorResponse
-//	@Failure		404	{object}	response.ErrorResponse
-//	@Failure		500	{object}	response.ErrorResponse
-//	@Security		ApiKeyAuth
-//	@Router			/audit/{id} [get]
-func (h *AuditHandler) GetByID(w http.ResponseWriter, r *http.Request) {
+func (h *AuditHandler) GetAuditEntry(ctx context.Context, _ apigen.GetAuditEntryRequestObject) (apigen.GetAuditEntryResponseObject, error) {
+	r := openapi.Request(ctx)
 	v := request.NewValidator()
 	id := v.UUIDParam(r, "id")
 
 	if v.HasErrors() {
-		v.WriteErrors(w, r)
-		return
+		return nil, openapi.Invalid(v)
 	}
 
-	entry, err := h.repo.GetByID(r.Context(), id)
+	entry, err := h.repo.GetByID(ctx, id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			response.Error(w, r, http.StatusNotFound, response.CodeNotFound, "Entrada de auditoría no encontrada")
-			return
+			return nil, openapi.Respond(http.StatusNotFound, response.CodeNotFound, "Entrada de auditoría no encontrada")
 		}
 		h.logger.Error("getting audit entry", "error", err, "id", id)
-		response.Error(w, r, http.StatusInternalServerError, response.CodeInternalError, "No se pudo obtener la entrada de auditoría")
-		return
+		return nil, openapi.Respond(http.StatusInternalServerError, response.CodeInternalError, "No se pudo obtener la entrada de auditoría")
 	}
 
-	response.JSON(w, http.StatusOK, httpx.ToResponse(entry))
+	return apigen.GetAuditEntry200JSONResponse{Success: true, Message: "OK", Data: httpx.ToResponse(entry)}, nil
 }

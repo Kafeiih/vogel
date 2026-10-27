@@ -1,6 +1,7 @@
 package http
 
 import (
+	"bytes"
 	"io"
 	"log/slog"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 
 	vmw "github.com/kafeiih/vogel/httpx/middleware"
 
+	"github.com/kafeiih/vogel/examples/boilerplate/api"
 	"github.com/kafeiih/vogel/examples/boilerplate/internal/interfaces/http/handler"
 )
 
@@ -43,23 +45,26 @@ func get(router http.Handler, path string) *httptest.ResponseRecorder {
 	return rec
 }
 
-func TestNewRouter_SwaggerAbsentWhenDisabled(t *testing.T) {
+func TestNewRouter_SpecAbsentWhenDisabled(t *testing.T) {
 	router := newRouterWithConfig(t, RouterConfig{})
-	for _, path := range []string{"/swagger/index.html", "/swagger/doc.json"} {
+	for _, path := range []string{"/openapi.yaml", "/swagger/index.html"} {
 		if rec := get(router, path); rec.Code != http.StatusNotFound {
 			t.Errorf("GET %s = %d, want %d", path, rec.Code, http.StatusNotFound)
 		}
 	}
 }
 
-func TestNewRouter_SwaggerServedWithItsOwnCSPWhenEnabled(t *testing.T) {
+func TestNewRouter_SpecServedWithoutAuthenticationWhenEnabled(t *testing.T) {
 	router := newRouterWithConfig(t, RouterConfig{EnableSwagger: true})
-	rec := get(router, "/swagger/index.html")
+	rec := get(router, "/openapi.yaml")
 	if rec.Code != http.StatusOK {
-		t.Fatalf("GET /swagger/index.html = %d, want %d", rec.Code, http.StatusOK)
+		t.Fatalf("GET /openapi.yaml = %d, want %d", rec.Code, http.StatusOK)
 	}
-	if got := rec.Header().Get("Content-Security-Policy"); got != swaggerCSP {
-		t.Errorf("Content-Security-Policy = %q, want %q", got, swaggerCSP)
+	if got := rec.Header().Get("Content-Type"); got != "application/yaml" {
+		t.Errorf("Content-Type = %q, want application/yaml", got)
+	}
+	if !bytes.Equal(rec.Body.Bytes(), api.Spec()) {
+		t.Error("body is not api/openapi.yaml")
 	}
 	if got := rec.Header().Get("X-Frame-Options"); got != "DENY" {
 		t.Errorf("X-Frame-Options = %q, want DENY (SecurityHeaders must still apply)", got)

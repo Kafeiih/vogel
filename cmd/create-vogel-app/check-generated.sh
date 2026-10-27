@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Generates projects from this checkout's examples/boilerplate with
 # create-vogel-app, one per component combination, and checks that each one
-# builds, vets (integration tag included), passes its unit tests and renders
-# its compose files. A component marker placed wrong in the boilerplate
-# breaks one of these combinations, so CI runs this on every change.
+# builds, vets (integration tag included), regenerates its OpenAPI server
+# code unchanged, passes its unit tests and renders its compose files. A
+# component marker placed wrong in the boilerplate breaks one of these
+# combinations, so CI runs this on every change.
 #
 # Usage: cmd/create-vogel-app/check-generated.sh   (from the repository root)
 # Needs: go, docker (compose config only, no containers), network for
@@ -42,6 +43,14 @@ for combo in "${combos[@]}"; do
 		go build ./...
 		go vet ./...
 		go vet -tags=integration ./...
+		# The committed server code must be what go generate produces from the
+		# project's own api/openapi.yaml, with the component markers stripped.
+		before="$(find . -type f -exec sha256sum {} + | sort)"
+		go generate ./...
+		if [ "$before" != "$(find . -type f -exec sha256sum {} + | sort)" ]; then
+			echo "FAIL: $name: go generate changed the generated project" >&2
+			exit 1
+		fi
 		if ! go test ./... >"$WORK/$name.test.log" 2>&1; then
 			cat "$WORK/$name.test.log" >&2
 			exit 1

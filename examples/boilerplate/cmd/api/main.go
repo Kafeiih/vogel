@@ -53,7 +53,6 @@ import (
 	"github.com/kafeiih/vogel/examples/boilerplate/internal/infrastructure/tracing"
 
 	// vogel:component tracing end
-	"github.com/kafeiih/vogel/examples/boilerplate/docs"
 	"github.com/kafeiih/vogel/examples/boilerplate/internal/infrastructure/config"
 	appmigrate "github.com/kafeiih/vogel/examples/boilerplate/internal/infrastructure/database/migrate"
 	"github.com/kafeiih/vogel/examples/boilerplate/internal/infrastructure/database/migrations"
@@ -61,24 +60,6 @@ import (
 	"github.com/kafeiih/vogel/examples/boilerplate/internal/interfaces/http/handler"
 )
 
-//	@title			Go Bluprint API
-//	@version		1.0
-//	@description	Boilerplate para microservicios institucionales/gubernamentales.
-//	@termsOfService	http://swagger.io/terms/
-
-//	@contact.name	API Support
-//	@contact.url	http://www.swagger.io/support
-//	@contact.email	support@swagger.io
-
-//	@license.name	Apache 2.0
-//	@license.url	http://www.apache.org/licenses/LICENSE-2.0.html
-
-// @BasePath					/
-//
-// @securityDefinitions.apikey	ApiKeyAuth
-// @in							header
-// @name						Authorization
-// @description				Type "Bearer" followed by a space and JWT token.
 func main() {
 	args := os.Args[1:]
 	var subcmd string
@@ -412,10 +393,6 @@ func runServer(migrateFirst bool) error {
 	// vogel:component tracing end
 
 	router := httpiface.NewRouter(deps)
-
-	docs.SwaggerInfo.Version = cfg.App.Version
-	docs.SwaggerInfo.Host = cfg.App.Url
-	docs.SwaggerInfo.BasePath = "/"
 
 	server := httpiface.NewServer(cfg.App.Port, router, appLogger.Logger)
 

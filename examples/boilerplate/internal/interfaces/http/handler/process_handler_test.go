@@ -86,13 +86,9 @@ func (s *stubProcessService) Submit(_ context.Context, actor string, id uuid.UUI
 func newProcessRouterWithLogger(svc ProcessService, logger *slog.Logger) http.Handler {
 	h := NewProcessHandler(svc, logger)
 	r := chi.NewRouter()
-	r.Post("/processes", h.Publish)
-	r.Get("/processes/{name}", h.Latest)
-	r.Post("/processes/{name}/cases", h.Start)
-	r.Get("/inbox", h.Inbox)
-	r.Get("/cases/{id}", h.View)
-	r.Post("/cases/{id}/claim", h.Claim)
-	r.Post("/cases/{id}/submit", h.Submit)
+	h.Mount(r, func(string, string) func(http.Handler) http.Handler {
+		return func(next http.Handler) http.Handler { return next }
+	})
 	return r
 }
 

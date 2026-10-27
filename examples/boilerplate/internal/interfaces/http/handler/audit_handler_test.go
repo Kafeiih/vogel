@@ -15,7 +15,10 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/kafeiih/vogel/audit"
+	"github.com/kafeiih/vogel/httpx/openapi"
 	"github.com/kafeiih/vogel/pgxtx"
+
+	"github.com/kafeiih/vogel/examples/boilerplate/internal/interfaces/http/apigen"
 )
 
 type stubRepo struct {
@@ -55,6 +58,25 @@ func newTestHandler(repo *stubRepo) *AuditHandler {
 	return NewAuditHandler(repo, slog.Default())
 }
 
+func strictOps(h *AuditHandler) apigen.ServerInterface {
+	return apigen.NewStrictHandlerWithOptions(API{AuditHandler: h}, nil, apigen.StrictHTTPServerOptions{
+		RequestErrorHandlerFunc:  openapi.RequestErrorHandler,
+		ResponseErrorHandlerFunc: openapi.ResponseErrorHandler(slog.Default()),
+	})
+}
+
+func list(h *AuditHandler, w http.ResponseWriter, r *http.Request) {
+	openapi.RequestInContext(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		strictOps(h).ListAuditEntries(w, r, apigen.ListAuditEntriesParams{})
+	})).ServeHTTP(w, r)
+}
+
+func getByID(h *AuditHandler, w http.ResponseWriter, r *http.Request) {
+	openapi.RequestInContext(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		strictOps(h).GetAuditEntry(w, r, chi.URLParam(r, "id"))
+	})).ServeHTTP(w, r)
+}
+
 func sampleEntry() audit.Entry {
 	return audit.Entry{
 		ID:                uuid.MustParse("11111111-1111-1111-1111-111111111111"),
@@ -85,7 +107,7 @@ func TestGetByID_ValidUUID_ReturnsEntry(t *testing.T) {
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 	rec := httptest.NewRecorder()
-	h.GetByID(rec, req)
+	getByID(h, rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
@@ -109,7 +131,7 @@ func TestGetByID_InvalidUUID_Returns400(t *testing.T) {
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 	rec := httptest.NewRecorder()
-	h.GetByID(rec, req)
+	getByID(h, rec, req)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
@@ -127,7 +149,7 @@ func TestGetByID_NotFound_Returns404(t *testing.T) {
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 	rec := httptest.NewRecorder()
-	h.GetByID(rec, req)
+	getByID(h, rec, req)
 
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusNotFound)
@@ -151,7 +173,7 @@ func TestGetByID_RepoError_Returns500(t *testing.T) {
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 	rec := httptest.NewRecorder()
-	h.GetByID(rec, req)
+	getByID(h, rec, req)
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
@@ -168,7 +190,7 @@ func TestGetByID_MissingParam_Returns400(t *testing.T) {
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 	rec := httptest.NewRecorder()
-	h.GetByID(rec, req)
+	getByID(h, rec, req)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
@@ -183,7 +205,7 @@ func TestList_DefaultParams_Returns200(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/audit", nil)
 	rec := httptest.NewRecorder()
 
-	h.List(rec, req)
+	list(h, rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
@@ -214,7 +236,7 @@ func TestList_InvalidLimit_Returns400(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/audit?limit=abc", nil)
 	rec := httptest.NewRecorder()
 
-	h.List(rec, req)
+	list(h, rec, req)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
@@ -228,7 +250,7 @@ func TestList_NegativeOffset_Returns400(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/audit?offset=-1", nil)
 	rec := httptest.NewRecorder()
 
-	h.List(rec, req)
+	list(h, rec, req)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
@@ -242,7 +264,7 @@ func TestList_OffsetAboveMax_Returns400(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/audit?offset="+strconv.Itoa(audit.MaxListOffset+1), nil)
 	rec := httptest.NewRecorder()
 
-	h.List(rec, req)
+	list(h, rec, req)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
@@ -261,7 +283,7 @@ func TestList_OffsetAboveMax_LogsSecurityEvent(t *testing.T) {
 	h := NewAuditHandler(&stubRepo{}, l)
 
 	req := httptest.NewRequest(http.MethodGet, "/audit?offset="+strconv.Itoa(audit.MaxListOffset+1), nil)
-	h.List(httptest.NewRecorder(), req)
+	list(h, httptest.NewRecorder(), req)
 
 	recs := records()
 	if len(recs) != 1 {
@@ -286,7 +308,7 @@ func TestList_OffsetAtMax_Returns200(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/audit?offset="+strconv.Itoa(audit.MaxListOffset), nil)
 	rec := httptest.NewRecorder()
 
-	h.List(rec, req)
+	list(h, rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
@@ -300,7 +322,7 @@ func TestList_InvalidOperationCategory_Returns400(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/audit?operation_category=INVALID", nil)
 	rec := httptest.NewRecorder()
 
-	h.List(rec, req)
+	list(h, rec, req)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
@@ -314,7 +336,7 @@ func TestList_InvalidDate_Returns400(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/audit?from=not-a-date", nil)
 	rec := httptest.NewRecorder()
 
-	h.List(rec, req)
+	list(h, rec, req)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
@@ -328,7 +350,7 @@ func TestList_ValidOperationCategory_Returns200(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/audit?operation_category=create", nil)
 	rec := httptest.NewRecorder()
 
-	h.List(rec, req)
+	list(h, rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
@@ -342,7 +364,7 @@ func TestList_LimitClamped_To100(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/audit?limit=500", nil)
 	rec := httptest.NewRecorder()
 
-	h.List(rec, req)
+	list(h, rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
@@ -363,7 +385,7 @@ func TestList_InvalidStatus_Returns400(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/audit?status=INVALID", nil)
 	rec := httptest.NewRecorder()
 
-	h.List(rec, req)
+	list(h, rec, req)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
@@ -377,7 +399,7 @@ func TestList_ValidStatus_Returns200(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/audit?status=success", nil)
 	rec := httptest.NewRecorder()
 
-	h.List(rec, req)
+	list(h, rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
@@ -391,7 +413,7 @@ func TestList_InternalError_Returns500(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/audit", nil)
 	rec := httptest.NewRecorder()
 
-	h.List(rec, req)
+	list(h, rec, req)
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusInternalServerError)

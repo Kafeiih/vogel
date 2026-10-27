@@ -21,8 +21,8 @@ tmp/
 coverage*.out
 
 # Not part of the binaries: deploy files, the Cerbos bundle (its own build
-# context), Markdown and the Dockerfile itself. docs/ stays: cmd/api imports
-# its generated Swagger package.
+# context), Markdown and the Dockerfile itself. api/ stays: the binary embeds
+# api/openapi.yaml.
 deploy/
 # vogel:component cerbos begin
 cerbos/

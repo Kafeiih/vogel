@@ -9,7 +9,6 @@ Manual paso a paso para agregar un nuevo modulo de negocio usando este boilerpla
 ```bash
 # Herramientas requeridas
 go install github.com/pressly/goose/v3/cmd/goose@latest
-go install github.com/swaggo/swag/cmd/swag@latest
 
 # Infra de desarrollo
 make dev-infra    # Levanta Postgres + Cerbos
@@ -348,23 +347,83 @@ func (c *Commands) Create(ctx context.Context, req CreateRequest) (*Response, er
 
 ---
 
-### Paso 5 — Handler HTTP
+### Paso 5 — Contrato y handler HTTP
+
+`api/openapi.yaml` es la fuente de verdad: primero se describe la operación
+ahí y después se implementa. Agregar los paths con un `operationId` y un tag,
+y reutilizar los parámetros y respuestas de `components` (los envelopes de
+error de vogel ya están descritos):
+
+```yaml
+paths:
+  /proveedor:
+    get:
+      operationId: listProveedores
+      tags: [proveedor]
+      summary: List proveedores
+      parameters:
+        - name: nombre
+          in: query
+          schema: {type: string, x-go-type: string}
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: A page of proveedores.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ProveedorListResponse"}
+        "400":
+          $ref: "#/components/responses/ValidationError"
+    post:
+      operationId: createProveedor
+      tags: [proveedor]
+      summary: Create proveedor
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/CreateProveedorRequest"}
+      responses:
+        "201":
+          description: The created proveedor.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ProveedorResponse"}
+        "400":
+          $ref: "#/components/responses/ValidationError"
+```
+
+Los parámetros llevan `x-go-type: string`: el código generado no los parsea,
+el handler los valida con `request.Validator` y así los mensajes de error
+siguen siendo los de vogel. Después:
+
+```bash
+make generate   # regenera internal/interfaces/http/apigen
+make lint-api   # valida el contrato
+```
+
+El handler implementa los métodos que `apigen.StrictServerInterface` exige
+(agregarlo a `handler.API`; si falta una operación, no compila). Los éxitos
+devuelven el tipo generado; los errores, un error de `vogel/httpx/openapi` que
+lleva su respuesta de vogel:
 
 ```go
 // internal/interfaces/http/handler/proveedor_handler.go
 package handler
 
 import (
-    "errors"
+    "context"
     "log/slog"
     "net/http"
 
-    "github.com/jackc/pgx/v5"
+    "github.com/kafeiih/vogel/httpx/openapi"
+    "github.com/kafeiih/vogel/httpx/response"
+    "github.com/kafeiih/vogel/request"
 
     app "github.com/kafeiih/vogel/examples/boilerplate/internal/application/proveedor"
     domain "github.com/kafeiih/vogel/examples/boilerplate/internal/domain/proveedor"
-    "github.com/kafeiih/vogel/request"
-    "github.com/kafeiih/vogel/httpx/response"
+    "github.com/kafeiih/vogel/examples/boilerplate/internal/interfaces/http/apigen"
 )
 
 type ProveedorHandler struct {
@@ -377,114 +436,44 @@ func NewProveedorHandler(q *app.Queries, c *app.Commands, l *slog.Logger) *Prove
     return &ProveedorHandler{queries: q, commands: c, logger: l}
 }
 
-// List godoc
-//
-//  @Summary      List proveedores
-//  @Tags         proveedor
-//  @Produce      json
-//  @Param        nombre  query   string  false  "Filtro por nombre"
-//  @Param        limit   query   int     false  "Page size (max 100)"  default(20)
-//  @Param        offset  query   int     false  "Offset"               default(0)
-//  @Success      200  {object}  response.ListResponse
-//  @Failure      400  {object}  response.ValidationErrorResponse
-//  @Security     ApiKeyAuth
-//  @Router       /proveedor [get]
-func (h *ProveedorHandler) List(w http.ResponseWriter, r *http.Request) {
+func (h *ProveedorHandler) ListProveedores(ctx context.Context, _ apigen.ListProveedoresRequestObject) (apigen.ListProveedoresResponseObject, error) {
+    r := openapi.Request(ctx)
     v := request.NewValidator()
-
     limit := v.MaxInt("limit", v.IntQuery(r, "limit", 20), 100)
     offset := v.IntQuery(r, "offset", 0)
-
     if v.HasErrors() {
-        v.WriteErrors(w, r)
-        return
+        return nil, openapi.Invalid(v)
     }
 
-    filters := domain.Filters{
-        Nombre: r.URL.Query().Get("nombre"),
-        Limit:  limit,
-        Offset: offset,
-    }
-
-    entries, total, err := h.queries.List(r.Context(), filters)
+    filters := domain.Filters{Nombre: r.URL.Query().Get("nombre"), Limit: limit, Offset: offset}
+    entries, total, err := h.queries.List(ctx, filters)
     if err != nil {
         h.logger.Error("listing proveedores", "error", err)
-        response.Error(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to list proveedores")
-        return
+        return nil, openapi.Respond(http.StatusInternalServerError, response.CodeInternalError, "Failed to list proveedores")
     }
 
-    response.JSONList(w, http.StatusOK, entries, total, limit, offset)
+    return apigen.ListProveedores200JSONResponse{
+        Success: true, Message: "OK", Data: entries,
+        Meta: apigen.ListMeta{Total: total, Limit: limit, Offset: offset},
+    }, nil
 }
 
-// Create godoc
-//
-//  @Summary      Create proveedor
-//  @Tags         proveedor
-//  @Accept       json
-//  @Produce      json
-//  @Param        body  body    app.CreateRequest  true  "Proveedor data"
-//  @Success      201  {object}  response.SuccessResponse
-//  @Failure      400  {object}  response.ValidationErrorResponse
-//  @Security     ApiKeyAuth
-//  @Router       /proveedor [post]
-func (h *ProveedorHandler) Create(w http.ResponseWriter, r *http.Request) {
-    var req app.CreateRequest
-    if err := request.JSON(w, r, &req); err != nil {
-        return // request.JSON ya escribio la respuesta de error
-    }
-
-    if err := request.Validate.Struct(req); err != nil {
-        response.Error(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "Invalid request body")
-        return
-    }
-
-    result, err := h.commands.Create(r.Context(), req)
+func (h *ProveedorHandler) CreateProveedor(ctx context.Context, req apigen.CreateProveedorRequestObject) (apigen.CreateProveedorResponseObject, error) {
+    // req.Body ya pasó por request.JSON (openapi.DecodeJSON en la ruta).
+    result, err := h.commands.Create(ctx, app.CreateRequest{Nombre: req.Body.Nombre})
     if err != nil {
         h.logger.Error("creating proveedor", "error", err)
-        response.Error(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to create proveedor")
-        return
+        return nil, openapi.Respond(http.StatusInternalServerError, response.CodeInternalError, "Failed to create proveedor")
     }
-
-    response.JSON(w, http.StatusCreated, result)
-}
-
-// GetByID godoc
-//
-//  @Summary      Get proveedor
-//  @Tags         proveedor
-//  @Produce      json
-//  @Param        id  path  string  true  "Proveedor UUID"
-//  @Success      200  {object}  response.SuccessResponse
-//  @Failure      404  {object}  response.ErrorResponse
-//  @Security     ApiKeyAuth
-//  @Router       /proveedor/{id} [get]
-func (h *ProveedorHandler) GetByID(w http.ResponseWriter, r *http.Request) {
-    v := request.NewValidator()
-    id := v.UUIDParam(r, "id")
-
-    if v.HasErrors() {
-        v.WriteErrors(w, r)
-        return
-    }
-
-    result, err := h.queries.GetByID(r.Context(), id)
-    if err != nil {
-        if errors.Is(err, pgx.ErrNoRows) {
-            response.Error(w, r, http.StatusNotFound, "NOT_FOUND", "Proveedor not found")
-            return
-        }
-        h.logger.Error("getting proveedor", "error", err, "id", id)
-        response.Error(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to get proveedor")
-        return
-    }
-
-    response.JSON(w, http.StatusOK, result)
+    return apigen.CreateProveedor201JSONResponse{Success: true, Message: "OK", Data: result}, nil
 }
 ```
 
 **Notas:**
-- `request.JSON(w, r, &req)` parsea Y escribe errores automaticamente — si falla, solo `return`
-- Swagger annotations son OBLIGATORIAS (ver ADR-010)
+- `openapi.Request(ctx)` devuelve el request: los validadores de vogel leen la
+  query y los parámetros de chi desde ahí.
+- `openapi.Invalid(v)`, `openapi.Respond(...)` y `openapi.Fail(err, write)`
+  responden con los envelopes de vogel; cualquier otro error termina en 500.
 - Errores de repo se loguean con `slog` pero al cliente solo va un mensaje generico
 
 ---
@@ -511,18 +500,26 @@ proveedorHandler := handler.NewProveedorHandler(proveedorQueries, proveedorComma
 
 ### Paso 7 — Rutas en router.go
 
+Las rutas se registran a mano, cada una con sus guards, y llaman al servidor
+generado (`ops`). `openapi.RequestInContext` va último; las operaciones con
+body JSON llevan `openapi.DecodeJSON` para que los 400/413/415 sean los de
+vogel:
+
 ```go
 // En internal/interfaces/http/router.go, dentro del grupo autenticado:
 
 r.Route("/proveedor", func(r chi.Router) {
-    r.With(customMiddleware.RequirePermission(deps.AuthzChecker, "proveedor", "list", deps.Logger)).
-        Get("/", deps.ProveedorHandler.List)
-    r.With(customMiddleware.RequirePermission(deps.AuthzChecker, "proveedor", "create", deps.Logger)).
-        Post("/", deps.ProveedorHandler.Create)
-    r.With(customMiddleware.RequirePermission(deps.AuthzChecker, "proveedor", "view", deps.Logger)).
-        Get("/{id}", deps.ProveedorHandler.GetByID)
+    r.With(can("proveedor", "list"), openapi.RequestInContext).
+        Get("/", func(w http.ResponseWriter, r *http.Request) {
+            ops.ListProveedores(w, r, apigen.ListProveedoresParams{})
+        })
+    r.With(can("proveedor", "create"), openapi.DecodeJSON[apigen.CreateProveedorRequest](nil), openapi.RequestInContext).
+        Post("/", ops.CreateProveedor)
 })
 ```
+
+`TestSpecAndRouterMatch` falla si una ruta queda fuera del contrato o una
+operación del contrato no está en el router.
 
 ---
 
@@ -538,15 +535,6 @@ Crear tests para cada capa:
 
 ---
 
-### Paso 9 — Swagger
-
-```bash
-make gen-docs
-# Verificar en http://localhost:8080/swagger/
-```
-
----
-
 ## Checklist para nuevo modulo
 
 - [ ] Entidad + interfaz de repositorio en `domain/`
@@ -555,12 +543,13 @@ make gen-docs
 - [ ] DTOs con mappers en `application/entity/dto.go`
 - [ ] Queries (lectura) en `application/entity/queries.go`
 - [ ] Commands (escritura + audit) en `application/entity/commands.go`
-- [ ] Handler con Swagger annotations en `interfaces/http/handler/`
+- [ ] Operaciones en `api/openapi.yaml` y `make generate` ejecutado
+- [ ] Handler que implementa las operaciones en `interfaces/http/handler/`, agregado a `handler.API`
 - [ ] Wiring en `main.go`
 - [ ] Rutas con middleware de authz en `router.go`
 - [ ] Tests de handler (unit)
 - [ ] Tests de repository (integration, `//go:build integration`)
-- [ ] `make gen-docs` ejecutado
+- [ ] `make lint-api` sin errores
 
 ---
 
@@ -620,7 +609,7 @@ Todos los mensajes al cliente van en **español**. Esto incluye:
 - Mensajes de validacion (`"rut es requerido"`)
 - Errores de negocio (`"no se puede eliminar: tiene prorateos con devengo asociado"`)
 
-Swagger annotations, comentarios de codigo, y nombres de variables van en **ingles**.
+Descripciones del contrato OpenAPI, comentarios de codigo, y nombres de variables van en **ingles**.
 
 ### 2. Import aliases
 
