@@ -5,7 +5,7 @@ Un boilerplate de servicio HTTP + worker, listo para copiar como punto de partid
 de un servicio nuevo. A diferencia de `examples/api` (que muestra cómo cablear
 `vogel` en el mínimo espacio posible), este directorio es una aplicación con
 forma real: capas `domain`/`application`/`infrastructure`/`interfaces`,
-Swagger, un `Dockerfile` multi-stage, `docker-compose` para desarrollo y
+un contrato OpenAPI, un `Dockerfile` multi-stage, `docker-compose` para desarrollo y
 despliegue, un `Makefile`, y un job de ejemplo para el worker en background.
 
 Viene de migrar [`go-bluprint`](https://github.com/kafeiih/go-bluprint) para que
@@ -40,12 +40,13 @@ replace github.com/kafeiih/vogel => ../..
 ```
 
 El boilerplate trae dependencias que `vogel` deliberadamente no tiene:
-`swaggo/swag` y `swaggo/http-swagger` (generación y servido de documentación
-Swagger), `go-playground/validator/v10` (validación declarativa por tags, si
-la necesita al agregar un módulo nuevo) y `joho/godotenv` (carga de `.env` en
-desarrollo). Meter esas dependencias en el `go.mod` raíz de `vogel` le
-impondría un toolchain de generación de código a **todo** consumidor de la
-librería, aunque nunca sirva un endpoint de Swagger. El `replace` apunta al
+`oapi-codegen` (generador del servidor a partir de `api/openapi.yaml`, fijado
+como `tool` en `go.mod`) y su runtime, `go-playground/validator/v10`
+(validación declarativa por tags, si la necesita al agregar un módulo nuevo)
+y `joho/godotenv` (carga de `.env` en desarrollo). Meter esas dependencias en
+el `go.mod` raíz de `vogel` le impondría un toolchain de generación de código
+a **todo** consumidor de la librería; `vogel/httpx/openapi` solo trae el
+pegamento, sin depender de `oapi-codegen`. El `replace` apunta al
 código de `vogel` en este mismo commit, así que este módulo compila contra la
 versión de la librería que vive en este repositorio — lo que lo convierte,
 de paso, en un test de regresión de la API pública de `vogel` (ver el job
@@ -117,8 +118,8 @@ mayor que 0 y hasta 1; default `0.1`). Ninguna otra variable `OTEL_*` tiene
 efecto: `vogel/otel` no lee el entorno.
 <!-- vogel:component tracing end -->
 
-`SWAGGER_ENABLED` (opcional, `false` por defecto) sirve la UI y la spec de
-Swagger en `/swagger/`. Es un opt-in explícito, independiente de
+`SWAGGER_ENABLED` (opcional, `false` por defecto) sirve el contrato
+(`api/openapi.yaml`) en `/openapi.yaml`. Es un opt-in explícito, independiente de
 `APP_ENV`: el compose de despliegue corre con `APP_ENV=development` y no
 debe publicar la descripción de la API. Con `APP_ENV=production` y
 `SWAGGER_ENABLED=true` el arranque falla, y un valor que no sea `true` o
@@ -302,7 +303,7 @@ migrate-up`, `make lint`, `make docker-build`, ...).
 |---|---|---|
 | Autenticación | `vogel/auth` + `vogel/auth/zitadel` | — |
 | Autorización | `vogel/authz` + `vogel/authz/cerbos` | — |
-| Auditoría | `vogel/audit` + `vogel/audit/postgres` + `vogel/audit/migrations` | `internal/interfaces/http/handler/audit_handler.go` — un handler propio y delgado que reutiliza `vogel/audit/httpx.FiltersFromRequest`/`ToResponse`/`ToResponseList`, para poder conservar sus propias anotaciones Swagger (que sólo se leen de los comentarios sobre la función handler concreta de la app, nunca de un tipo importado) |
+| Auditoría | `vogel/audit` + `vogel/audit/postgres` + `vogel/audit/migrations` | `internal/interfaces/http/handler/audit_handler.go` — un handler propio y delgado que reutiliza `vogel/audit/httpx.FiltersFromRequest`/`ToResponse`/`ToResponseList`, e implementa las operaciones `listAuditEntries`/`getAuditEntry` del contrato `api/openapi.yaml` con `vogel/httpx/openapi` |
 | Postgres, métricas de pool | `vogel/postgres` | — |
 | Migraciones de esquema | `vogel/migrate` | `internal/infrastructure/database/migrations/` (las tablas propias de este servicio) + `internal/infrastructure/database/migrate/create.go` (scaffolder de CLI para nuevas migraciones — ver nota abajo) |
 | Middleware HTTP (recovery, rate limit, headers de seguridad, logging estructurado, contexto de request, métricas) | `vogel/httpx/middleware` | — |
@@ -534,7 +535,7 @@ hace todos estos pasos. A mano:
 (`proveedor`): dominio, repositorio Postgres sobre `vogel/pgxtx`, comandos de
 aplicación que auditan con `vogel/audit` (recordando pasar `audit.SourceHTTP`
 o `audit.SourceWorker` según si el call site es un handler o un job), y un
-handler HTTP con sus propias anotaciones Swagger.
+handler HTTP que implementa su operación del contrato `api/openapi.yaml`.
 <!-- vogel:component worker begin -->
 `internal/application/jobs/` tiene jobs de referencia (`example.go`) para el
 mismo patrón del lado del worker.
@@ -553,7 +554,13 @@ mismo patrón del lado del worker.
   con las políticas de `cerbos/policies`.
 <!-- vogel:component cerbos end -->
 - `deploy/RUNBOOK.md` — operación en producción.
-- `docs/swagger.json` / `docs/swagger.yaml` — spec generada por `swag init`;
-  regenerar con `make gen-docs` después de anotar un handler nuevo. La UI y
-  la spec se sirven en `/swagger/` solo con `SWAGGER_ENABLED=true` (nunca
-  en producción); sin esa variable la ruta no existe (404).
+- `api/openapi.yaml` — el contrato HTTP, fuente de verdad. `make generate`
+  regenera desde él el servidor (`internal/interfaces/http/apigen`), `make
+  lint-api` lo valida con Redocly y `make mock-api` levanta un mock con
+  Prism. El CI falla si el código generado no coincide con el contrato, y
+  `TestSpecAndRouterMatch` si una ruta del router no está en el contrato o
+  al revés. Se sirve en `/openapi.yaml` solo con `SWAGGER_ENABLED=true`
+  (nunca en producción); sin esa variable la ruta no existe (404). Para
+  explorarlo con Swagger UI: `docker run --rm -p 8081:8080 -e
+  URL=http://localhost:8080/openapi.yaml swaggerapi/swagger-ui:v5.29.0` y
+  agregar `http://localhost:8081` a `CORS_ALLOWED_ORIGINS`.

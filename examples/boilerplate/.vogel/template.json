@@ -127,7 +127,7 @@
     {
       "path": "README.md",
       "from": "# Boilerplate\n",
-      "to": "# {{.Name}}\n\nServicio HTTP generado con `create-vogel-app` a partir del boilerplate de\n[`vogel`](https://github.com/kafeiih/vogel): capas\n`domain`/`application`/`infrastructure`/`interfaces`, Swagger, un\n`Dockerfile` multi-stage, `docker-compose` para desarrollo y despliegue y un\n`Makefile`.\n"
+      "to": "# {{.Name}}\n\nServicio HTTP generado con `create-vogel-app` a partir del boilerplate de\n[`vogel`](https://github.com/kafeiih/vogel): capas\n`domain`/`application`/`infrastructure`/`interfaces`, un contrato OpenAPI, un\n`Dockerfile` multi-stage, `docker-compose` para desarrollo y despliegue y un\n`Makefile`.\n"
     },
     {
       "path": "env.example",
@@ -175,27 +175,12 @@
       "to": "   Si llega por `vogel`, subir `vogel` a una version que ya lo corrija."
     },
     {
-      "path": "cmd/api/main.go",
-      "from": "Go Bluprint",
-      "to": "{{.Name}}"
-    },
-    {
       "path": "cmd/worker/heartbeat.go",
       "from": "vogel-worker.heartbeat",
       "to": "{{.Name}}-worker.heartbeat"
     },
     {
-      "path": "docs/docs.go",
-      "from": "Go Bluprint",
-      "to": "{{.Name}}"
-    },
-    {
-      "path": "docs/swagger.json",
-      "from": "Go Bluprint",
-      "to": "{{.Name}}"
-    },
-    {
-      "path": "docs/swagger.yaml",
+      "path": "api/openapi.yaml",
       "from": "Go Bluprint",
       "to": "{{.Name}}"
     }

@@ -1,0 +1,310 @@
+openapi: 3.1.0
+info:
+  title: Go Bluprint API
+  version: 1.0.0
+  description: |
+    Contract of the service API. This file is the source of truth: the Go
+    server code in internal/interfaces/http/apigen is generated from it with
+    `make generate`, and a test fails when the router and this file drift.
+
+    Health probes (`/healthz`, `/readyz`, `/livez`) are operational endpoints
+    and are not part of this contract.
+  license:
+    name: Apache 2.0
+    identifier: Apache-2.0
+servers:
+  - url: /
+security:
+  - bearerAuth: []
+tags:
+  - name: audit
+    description: Read-only access to the audit log.
+paths:
+  /audit:
+    get:
+      operationId: listAuditEntries
+      tags: [audit]
+      summary: List audit entries
+      description: Returns a filtered, paginated list of audit log entries.
+      parameters:
+        - $ref: "#/components/parameters/ActorID"
+        - $ref: "#/components/parameters/ResourceType"
+        - $ref: "#/components/parameters/ResourceID"
+        - $ref: "#/components/parameters/OperationCategory"
+        - $ref: "#/components/parameters/OperationName"
+        - $ref: "#/components/parameters/Status"
+        - $ref: "#/components/parameters/AggregateType"
+        - $ref: "#/components/parameters/AggregateID"
+        - $ref: "#/components/parameters/From"
+        - $ref: "#/components/parameters/To"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: A page of audit entries.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditEntryListResponse"
+        "400":
+          description: |
+            Invalid filters (one message per parameter in `fields`), or an
+            offset past the maximum (a single `field`).
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - $ref: "#/components/schemas/ValidationErrorResponse"
+                  - $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /audit/{id}:
+    get:
+      operationId: getAuditEntry
+      tags: [audit]
+      summary: Get audit entry
+      description: Returns a single audit log entry by ID.
+      parameters:
+        - $ref: "#/components/parameters/ID"
+      responses:
+        "200":
+          description: The audit entry.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditEntryResponse"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  # Parameters are documented with their real types and limits, but generated
+  # as plain strings (x-go-type: string) and not bound by the generated code:
+  # the handlers validate them with vogel's request.Validator, which owns the
+  # error messages clients see.
+  parameters:
+    ID:
+      name: id
+      in: path
+      required: true
+      description: Resource ID.
+      schema: {type: string, format: uuid, x-go-type: string}
+    ActorID:
+      name: actor_id
+      in: query
+      description: Filter by actor ID.
+      schema: {type: string, maxLength: 256, x-go-type: string}
+    ResourceType:
+      name: resource_type
+      in: query
+      description: Filter by resource type.
+      schema: {type: string, maxLength: 256, x-go-type: string}
+    ResourceID:
+      name: resource_id
+      in: query
+      description: Filter by resource ID.
+      schema: {type: string, format: uuid, x-go-type: string}
+    OperationCategory:
+      name: operation_category
+      in: query
+      description: Filter by operation category.
+      schema: {type: string, enum: [create, update, delete, execute], x-go-type: string}
+    OperationName:
+      name: operation_name
+      in: query
+      description: Filter by operation name.
+      schema: {type: string, maxLength: 256, x-go-type: string}
+    Status:
+      name: status
+      in: query
+      description: Filter by outcome.
+      schema: {type: string, enum: [success, failed, partial, noop], x-go-type: string}
+    AggregateType:
+      name: aggregate_type
+      in: query
+      description: Filter by aggregate type.
+      schema: {type: string, maxLength: 256, x-go-type: string}
+    AggregateID:
+      name: aggregate_id
+      in: query
+      description: Filter by aggregate ID.
+      schema: {type: string, maxLength: 256, x-go-type: string}
+    From:
+      name: from
+      in: query
+      description: Only entries created at or after this time (RFC 3339).
+      schema: {type: string, format: date-time, x-go-type: string}
+    To:
+      name: to
+      in: query
+      description: Only entries created at or before this time (RFC 3339).
+      schema: {type: string, format: date-time, x-go-type: string}
+    Limit:
+      name: limit
+      in: query
+      description: Page size. Values above 100 are treated as 100.
+      schema: {type: integer, minimum: 0, default: 20, x-go-type: string}
+    Offset:
+      name: offset
+      in: query
+      description: Number of entries to skip. Narrow the filters instead of paging past the maximum.
+      schema: {type: integer, minimum: 0, maximum: 100000, default: 0, x-go-type: string}
+
+  responses:
+    ValidationError:
+      description: One or more inputs are invalid.
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/ValidationErrorResponse"}
+    Unauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/ErrorResponse"}
+    Forbidden:
+      description: The caller lacks permission for this action.
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/ErrorResponse"}
+    NotFound:
+      description: The resource does not exist.
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/ErrorResponse"}
+    RateLimited:
+      description: Too many requests.
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/ErrorResponse"}
+    InternalError:
+      description: Unexpected server error.
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/ErrorResponse"}
+
+  schemas:
+    # vogel/httpx/response envelopes; a test checks them against vogel's types.
+    # x-order keeps the generated fields in vogel's JSON order.
+    ErrorResponse:
+      type: object
+      required: [success, message, code]
+      properties:
+        success: {type: boolean, const: false}
+        message: {type: string}
+        code: {type: string, description: "Stable error class, e.g. NOT_FOUND."}
+        error: {type: string, description: "Stable per-domain error identifier, when set."}
+        field: {type: string, description: "Offending input field, when the error belongs to one."}
+        request_id: {type: string, description: Identifies the request in the server logs.}
+    ValidationErrorResponse:
+      type: object
+      required: [success, message, code, fields]
+      properties:
+        success: {type: boolean, const: false}
+        message: {type: string}
+        code: {type: string, const: VALIDATION_ERROR}
+        fields:
+          type: object
+          additionalProperties: {type: string}
+          description: One message per invalid input, keyed by its name.
+        request_id: {type: string, description: Identifies the request in the server logs.}
+    ListMeta:
+      type: object
+      required: [total, limit, offset]
+      properties:
+        total: {type: integer, x-order: 1}
+        limit: {type: integer, x-order: 2}
+        offset: {type: integer, x-order: 3}
+
+    AuditEntryResponse:
+      type: object
+      required: [success, message, data]
+      properties:
+        success: {type: boolean, x-order: 1}
+        message: {type: string, x-order: 2}
+        data: {$ref: "#/components/schemas/AuditEntry", x-order: 3}
+    AuditEntryListResponse:
+      type: object
+      required: [success, message, data, meta]
+      properties:
+        success: {type: boolean, x-order: 1}
+        message: {type: string, x-order: 2}
+        data:
+          type: array
+          items: {$ref: "#/components/schemas/AuditEntry"}
+          x-order: 3
+        meta: {$ref: "#/components/schemas/ListMeta", x-order: 4}
+
+    # Generated as vogel's own DTO (x-go-type), so the server cannot drift
+    # from what vogel serializes; a test checks these properties against the
+    # DTO's JSON tags.
+    AuditEntry:
+      type: object
+      x-go-type: httpx.Response
+      x-go-type-import:
+        path: github.com/kafeiih/vogel/audit/httpx
+      required:
+        - id
+        - resource_type
+        - resource_id
+        - operation_category
+        - operation_name
+        - status
+        - actor_id
+        - username
+        - source
+        - ip
+        - user_agent
+        - created_at
+      properties:
+        id: {type: string, format: uuid}
+        resource_type: {type: string}
+        resource_id: {type: string}
+        aggregate_type: {type: string}
+        aggregate_id: {type: string}
+        operation_category: {type: string, enum: [create, update, delete, execute]}
+        operation_name: {type: string}
+        status: {type: string, enum: [success, failed, partial, noop]}
+        actor_id: {type: string}
+        username: {type: string}
+        source: {type: string}
+        request_id: {type: string}
+        ip: {type: string}
+        user_agent: {type: string}
+        object_repr: {type: string}
+        input_payload: {type: object, additionalProperties: true}
+        before_snapshot: {type: object, additionalProperties: true}
+        after_snapshot: {type: object, additionalProperties: true}
+        changed_fields: {type: object, additionalProperties: true}
+        affected_resources:
+          type: array
+          items: {$ref: "#/components/schemas/AffectedResource"}
+        error_code: {type: string}
+        error_message: {type: string}
+        created_at: {type: string, format: date-time}
+    AffectedResource:
+      type: object
+      required: [type, id]
+      properties:
+        type: {type: string}
+        id: {type: string}

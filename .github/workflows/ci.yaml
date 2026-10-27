@@ -191,6 +191,16 @@ jobs:
       - name: Build
         run: cd examples/boilerplate && go build ./...
 
+      # api/openapi.yaml is the source of truth: the committed server code
+      # must be exactly what go generate produces from it, and the spec lints.
+      - name: OpenAPI contract
+        run: |
+          cd examples/boilerplate
+          go generate ./...
+          git diff --exit-code
+          test -z "$(git status --porcelain)"
+          npx --yes @redocly/cli@2.59.0 lint api/openapi.yaml
+
       - name: Test
         run: cd examples/boilerplate && go test ./... -race -cover
 
