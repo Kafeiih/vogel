@@ -57,7 +57,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
 
 # vogel:component worker end
 # Runtime stage — API (default)
-FROM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6 AS api
+FROM alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a AS api
 
 RUN apk add --no-cache ca-certificates tzdata \
     && addgroup -g 1001 appgroup \
@@ -78,7 +78,7 @@ ENTRYPOINT ["./api"]
 # vogel:component worker begin
 
 # Runtime stage — Worker
-FROM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6 AS worker
+FROM alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a AS worker
 
 RUN apk add --no-cache ca-certificates tzdata \
     && addgroup -g 1001 appgroup \
