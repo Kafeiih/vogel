@@ -6,6 +6,8 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ## [Unreleased]
 
+## [0.17.0] — 2026-10-27
+
 ### Agregado
 
 - **`httpx/openapi`: el pegamento de un servidor *contract-first*.** Para un
