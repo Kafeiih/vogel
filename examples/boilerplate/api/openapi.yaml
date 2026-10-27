@@ -19,6 +19,10 @@ security:
 tags:
   - name: audit
     description: Read-only access to the audit log.
+  # vogel:component bpms begin
+  - name: bpms
+    description: Process definitions and the cases that run them.
+  # vogel:component bpms end
 paths:
   /audit:
     get:
@@ -92,6 +96,200 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  # vogel:component bpms begin
+  /processes:
+    post:
+      operationId: publishProcess
+      tags: [bpms]
+      summary: Publish a process definition
+      description: Compiles the definition and publishes it as the next version of its name.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/ProcessSpec"}
+      responses:
+        "201":
+          description: The published version.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/PublishedProcessResponse"}
+        "400":
+          $ref: "#/components/responses/BpmsBadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /processes/{name}:
+    get:
+      operationId: getLatestProcess
+      tags: [bpms]
+      summary: Get the latest process version
+      description: Returns the latest published version of a process and its definition.
+      parameters:
+        - $ref: "#/components/parameters/ProcessName"
+      responses:
+        "200":
+          description: The latest version.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ProcessVersionResponse"}
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /processes/{name}/cases:
+    post:
+      operationId: startCase
+      tags: [bpms]
+      summary: Start a case
+      description: Opens a case of the latest version of a process and submits its first action.
+      parameters:
+        - $ref: "#/components/parameters/ProcessName"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/Submission"}
+      responses:
+        "201":
+          description: The new case.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/CaseResponse"}
+        "400":
+          $ref: "#/components/responses/BpmsBadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /inbox:
+    get:
+      operationId: listInbox
+      tags: [bpms]
+      summary: List the inbox
+      description: Returns the open cases the caller can act on.
+      responses:
+        "200":
+          description: The cases of the caller.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/CaseListResponse"}
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /cases/{id}:
+    get:
+      operationId: getCase
+      tags: [bpms]
+      summary: Get a case
+      description: Returns a case with its current values and history.
+      parameters:
+        - $ref: "#/components/parameters/ID"
+      responses:
+        "200":
+          description: The case.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/CaseViewResponse"}
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /cases/{id}/claim:
+    post:
+      operationId: claimCase
+      tags: [bpms]
+      summary: Claim a case
+      description: Assigns the case to the caller.
+      parameters:
+        - $ref: "#/components/parameters/ID"
+      responses:
+        "200":
+          description: The claimed case.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/CaseResponse"}
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /cases/{id}/submit:
+    post:
+      operationId: submitCase
+      tags: [bpms]
+      summary: Submit an action
+      description: Submits an action with its form values on a case the caller holds.
+      parameters:
+        - $ref: "#/components/parameters/ID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/Submission"}
+      responses:
+        "200":
+          description: The case after the action.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/CaseResponse"}
+        "400":
+          $ref: "#/components/responses/BpmsBadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  # vogel:component bpms end
+
 components:
   securitySchemes:
     bearerAuth:
@@ -110,6 +308,14 @@ components:
       required: true
       description: Resource ID.
       schema: {type: string, format: uuid, x-go-type: string}
+  # vogel:component bpms begin
+    ProcessName:
+      name: name
+      in: path
+      required: true
+      description: Process name.
+      schema: {type: string, x-go-type: string}
+  # vogel:component bpms end
     ActorID:
       name: actor_id
       in: query
@@ -203,6 +409,25 @@ components:
         application/json:
           schema: {$ref: "#/components/schemas/ErrorResponse"}
 
+  # vogel:component bpms begin
+    BpmsBadRequest:
+      description: |
+        Invalid JSON body (INVALID_JSON), or form values that fail their
+        rules (VALIDATION_ERROR with one message per field).
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/BadRequestResponse"}
+    Conflict:
+      description: The request conflicts with the current state.
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/ErrorResponse"}
+    UnprocessableEntity:
+      description: The definition does not compile.
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/ErrorResponse"}
+  # vogel:component bpms end
   schemas:
     # vogel/httpx/response envelopes; a test checks them against vogel's types.
     # x-order keeps the generated fields in vogel's JSON order.
@@ -308,3 +533,117 @@ components:
       properties:
         type: {type: string}
         id: {type: string}
+  # vogel:component bpms begin
+
+    BadRequestResponse:
+      anyOf:
+        - $ref: "#/components/schemas/ErrorResponse"
+        - $ref: "#/components/schemas/ValidationErrorResponse"
+    # The definition is passed to the domain parser untouched (json.RawMessage),
+    # which owns its validation and error messages.
+    ProcessSpec:
+      type: object
+      x-go-type: json.RawMessage
+      required: [name, nodes, transitions]
+      properties:
+        name: {type: string}
+        nodes: {type: array, items: {type: object}}
+        transitions: {type: array, items: {type: object}}
+    PublishedProcess:
+      type: object
+      required: [name, version]
+      properties:
+        name: {type: string, x-order: 1}
+        version: {type: integer, x-order: 2}
+    ProcessVersion:
+      type: object
+      required: [spec, version]
+      properties:
+        spec:
+          type: object
+          description: The published definition.
+          x-go-type: json.RawMessage
+          x-order: 1
+        version: {type: integer, x-order: 2}
+    Submission:
+      type: object
+      properties:
+        action: {type: string}
+        values: {type: object, additionalProperties: true}
+    Case:
+      type: object
+      required: [id, process, version, state, status, openedAt]
+      properties:
+        id: {type: string, format: uuid, x-order: 1}
+        process: {type: string, x-order: 2}
+        version: {type: integer, x-order: 3}
+        state: {type: string, x-order: 4}
+        status: {type: string, x-order: 5}
+        assignedTo: {type: string, x-order: 6}
+        openedAt: {type: string, format: date-time, x-order: 7}
+        closedAt: {type: string, format: date-time, x-order: 8}
+    CaseView:
+      type: object
+      required: [id, process, version, state, status, openedAt, values, history]
+      properties:
+        id: {type: string, format: uuid, x-order: 1}
+        process: {type: string, x-order: 2}
+        version: {type: integer, x-order: 3}
+        state: {type: string, x-order: 4}
+        status: {type: string, x-order: 5}
+        assignedTo: {type: string, x-order: 6}
+        openedAt: {type: string, format: date-time, x-order: 7}
+        closedAt: {type: string, format: date-time, x-order: 8}
+        values: {type: object, additionalProperties: true, x-order: 9}
+        history:
+          type: array
+          items: {$ref: "#/components/schemas/CaseValue"}
+          x-order: 10
+    CaseValue:
+      type: object
+      required: [field, value, nodeId, actorId, recordedAt]
+      properties:
+        field: {type: string, x-order: 1}
+        value: {description: The submitted value., x-order: 2}
+        nodeId: {type: string, x-order: 3}
+        actorId: {type: string, x-order: 4}
+        recordedAt: {type: string, format: date-time, x-order: 5}
+    PublishedProcessResponse:
+      type: object
+      required: [success, message, data]
+      properties:
+        success: {type: boolean, x-order: 1}
+        message: {type: string, x-order: 2}
+        data: {$ref: "#/components/schemas/PublishedProcess", x-order: 3}
+    ProcessVersionResponse:
+      type: object
+      required: [success, message, data]
+      properties:
+        success: {type: boolean, x-order: 1}
+        message: {type: string, x-order: 2}
+        data: {$ref: "#/components/schemas/ProcessVersion", x-order: 3}
+    CaseResponse:
+      type: object
+      required: [success, message, data]
+      properties:
+        success: {type: boolean, x-order: 1}
+        message: {type: string, x-order: 2}
+        data: {$ref: "#/components/schemas/Case", x-order: 3}
+    CaseListResponse:
+      type: object
+      required: [success, message, data]
+      properties:
+        success: {type: boolean, x-order: 1}
+        message: {type: string, x-order: 2}
+        data:
+          type: array
+          items: {$ref: "#/components/schemas/Case"}
+          x-order: 3
+    CaseViewResponse:
+      type: object
+      required: [success, message, data]
+      properties:
+        success: {type: boolean, x-order: 1}
+        message: {type: string, x-order: 2}
+        data: {$ref: "#/components/schemas/CaseView", x-order: 3}
+  # vogel:component bpms end

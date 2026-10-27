@@ -7,18 +7,19 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
 	"github.com/kafeiih/vogel/auth"
+	"github.com/kafeiih/vogel/httpx/openapi"
 	"github.com/kafeiih/vogel/httpx/response"
 	"github.com/kafeiih/vogel/request"
 	"github.com/kafeiih/vogel/workflow"
 
 	"github.com/kafeiih/vogel/examples/boilerplate/internal/application/process"
 	domain "github.com/kafeiih/vogel/examples/boilerplate/internal/domain/process"
+	"github.com/kafeiih/vogel/examples/boilerplate/internal/interfaces/http/bpmsgen"
 )
 
 const maxProcessBodyBytes = 1 << 20
@@ -47,140 +48,224 @@ type submission struct {
 	Values map[string]any `json:"values"`
 }
 
-type caseResponse struct {
-	ID         uuid.UUID  `json:"id"`
-	Process    string     `json:"process"`
-	Version    int        `json:"version"`
-	State      string     `json:"state"`
-	Status     string     `json:"status"`
-	AssignedTo string     `json:"assignedTo,omitempty"`
-	OpenedAt   time.Time  `json:"openedAt"`
-	ClosedAt   *time.Time `json:"closedAt,omitempty"`
-}
-
-func toCaseResponse(c *workflow.Case) caseResponse {
-	return caseResponse{
-		ID: c.ID, Process: c.Definition, Version: c.Version, State: c.State,
-		Status: string(c.Status), AssignedTo: c.AssignedTo, OpenedAt: c.OpenedAt, ClosedAt: c.ClosedAt,
+// Mount registers the bpms operations of api/openapi.yaml on r, each behind
+// guard(kind, action). The body checks run before the generated decoder, in
+// the order the responses depend on: caller, case, then body.
+func (h *ProcessHandler) Mount(r chi.Router, guard func(kind, action string) func(http.Handler) http.Handler) {
+	ops := bpmsgen.NewStrictHandlerWithOptions(h, nil, bpmsgen.StrictHTTPServerOptions{
+		RequestErrorHandlerFunc:  openapi.RequestErrorHandler,
+		ResponseErrorHandlerFunc: openapi.ResponseErrorHandler(h.logger),
+	})
+	byName := func(op func(http.ResponseWriter, *http.Request, string)) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) { op(w, r, chi.URLParam(r, "name")) }
 	}
+	byID := func(op func(http.ResponseWriter, *http.Request, string)) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) { op(w, r, chi.URLParam(r, "id")) }
+	}
+
+	r.With(guard("bpms:process", "publish"), openapi.Decode(h.checkSpec), openapi.RequestInContext).
+		Post("/processes", ops.PublishProcess)
+	r.With(guard("bpms:process", "read"), openapi.RequestInContext).
+		Get("/processes/{name}", byName(ops.GetLatestProcess))
+	r.With(guard("bpms:process", "start"), openapi.Decode(h.checkStart), openapi.RequestInContext).
+		Post("/processes/{name}/cases", byName(ops.StartCase))
+	r.With(guard("bpms:case", "inbox"), openapi.RequestInContext).
+		Get("/inbox", ops.ListInbox)
+	r.With(guard("bpms:case", "view"), openapi.RequestInContext).
+		Get("/cases/{id}", byID(ops.GetCase))
+	r.With(guard("bpms:case", "claim"), openapi.RequestInContext).
+		Post("/cases/{id}/claim", byID(ops.ClaimCase))
+	r.With(guard("bpms:case", "submit"), openapi.Decode(h.checkSubmit), openapi.RequestInContext).
+		Post("/cases/{id}/submit", byID(ops.SubmitCase))
 }
 
-type caseViewResponse struct {
-	caseResponse
-	Values  map[string]any     `json:"values"`
-	History []domain.CaseValue `json:"history"`
-}
-
-func (h *ProcessHandler) Publish(w http.ResponseWriter, r *http.Request) {
+func (h *ProcessHandler) checkSpec(w http.ResponseWriter, r *http.Request) bool {
 	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxProcessBodyBytes))
 	if err != nil {
 		request.LogRejection(h.logger, r, http.StatusBadRequest, response.CodeInvalidJSON)
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidJSON, "No se pudo leer el cuerpo")
-		return
+		return false
 	}
-	spec, err := domain.ParseProcessSpec(raw)
-	if err != nil {
+	if _, err := domain.ParseProcessSpec(raw); err != nil {
 		request.LogRejection(h.logger, r, http.StatusBadRequest, response.CodeInvalidJSON)
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidJSON, err.Error())
-		return
+		return false
 	}
-	p, err := h.svc.Publish(r.Context(), spec)
+	return true
+}
+
+func (h *ProcessHandler) checkStart(w http.ResponseWriter, r *http.Request) bool {
+	if _, ok := actorOf(w, r); !ok {
+		return false
+	}
+	var in submission
+	return h.decodeStrict(w, r, &in)
+}
+
+func (h *ProcessHandler) checkSubmit(w http.ResponseWriter, r *http.Request) bool {
+	if _, _, ok := actorAndCase(w, r); !ok {
+		return false
+	}
+	var in submission
+	return h.decodeStrict(w, r, &in)
+}
+
+func (h *ProcessHandler) PublishProcess(ctx context.Context, req bpmsgen.PublishProcessRequestObject) (bpmsgen.PublishProcessResponseObject, error) {
+	spec, err := domain.ParseProcessSpec(*req.Body)
+	if err != nil {
+		return nil, openapi.Respond(http.StatusBadRequest, response.CodeInvalidJSON, err.Error())
+	}
+	p, err := h.svc.Publish(ctx, spec)
 	if err != nil {
 		var compileErr *domain.CompileError
 		if errors.As(err, &compileErr) {
-			response.Error(w, r, http.StatusUnprocessableEntity, response.CodeUnprocessableEntity, err.Error())
-			return
+			return nil, openapi.Respond(http.StatusUnprocessableEntity, response.CodeUnprocessableEntity, err.Error())
 		}
-		h.fail(w, r, err)
-		return
+		return nil, h.failure(err)
 	}
-	response.JSON(w, http.StatusCreated, map[string]any{"name": p.Definition.Name, "version": p.Definition.Version})
+	return bpmsgen.PublishProcess201JSONResponse{
+		Success: true, Message: "OK",
+		Data: bpmsgen.PublishedProcess{Name: p.Definition.Name, Version: p.Definition.Version},
+	}, nil
 }
 
-func (h *ProcessHandler) Latest(w http.ResponseWriter, r *http.Request) {
-	p, ok := h.svc.Latest(chi.URLParam(r, "name"))
+func (h *ProcessHandler) GetLatestProcess(_ context.Context, req bpmsgen.GetLatestProcessRequestObject) (bpmsgen.GetLatestProcessResponseObject, error) {
+	p, ok := h.svc.Latest(req.Name)
 	if !ok {
-		response.Error(w, r, http.StatusNotFound, response.CodeNotFound, domain.ErrProcessNotFound.Error())
-		return
+		return nil, openapi.Respond(http.StatusNotFound, response.CodeNotFound, domain.ErrProcessNotFound.Error())
 	}
-	response.JSON(w, http.StatusOK, map[string]any{"version": p.Definition.Version, "spec": p.Spec})
-}
-
-func (h *ProcessHandler) Start(w http.ResponseWriter, r *http.Request) {
-	actor, ok := actorOf(w, r)
-	if !ok {
-		return
-	}
-	var in submission
-	if !h.decodeStrict(w, r, &in) {
-		return
-	}
-	c, err := h.svc.Start(r.Context(), actor, chi.URLParam(r, "name"), in.Action, in.Values)
+	spec, err := json.Marshal(p.Spec)
 	if err != nil {
-		h.fail(w, r, err)
-		return
+		return nil, h.failure(err)
 	}
-	response.JSON(w, http.StatusCreated, toCaseResponse(c))
+	return bpmsgen.GetLatestProcess200JSONResponse{
+		Success: true, Message: "OK",
+		Data: bpmsgen.ProcessVersion{Spec: spec, Version: p.Definition.Version},
+	}, nil
 }
 
-func (h *ProcessHandler) Inbox(w http.ResponseWriter, r *http.Request) {
-	actor, ok := actorOf(w, r)
-	if !ok {
-		return
-	}
-	cases, err := h.svc.Inbox(r.Context(), actor)
+func (h *ProcessHandler) StartCase(ctx context.Context, req bpmsgen.StartCaseRequestObject) (bpmsgen.StartCaseResponseObject, error) {
+	actor, err := actorFrom(ctx)
 	if err != nil {
-		h.fail(w, r, err)
-		return
+		return nil, err
 	}
-	out := make([]caseResponse, 0, len(cases))
+	action, values := fromSubmission(req.Body)
+	c, err := h.svc.Start(ctx, actor, req.Name, action, values)
+	if err != nil {
+		return nil, h.failure(err)
+	}
+	return bpmsgen.StartCase201JSONResponse{Success: true, Message: "OK", Data: toCase(c)}, nil
+}
+
+func (h *ProcessHandler) ListInbox(ctx context.Context, _ bpmsgen.ListInboxRequestObject) (bpmsgen.ListInboxResponseObject, error) {
+	actor, err := actorFrom(ctx)
+	if err != nil {
+		return nil, err
+	}
+	cases, err := h.svc.Inbox(ctx, actor)
+	if err != nil {
+		return nil, h.failure(err)
+	}
+	out := make([]bpmsgen.Case, 0, len(cases))
 	for i := range cases {
-		out = append(out, toCaseResponse(&cases[i]))
+		out = append(out, toCase(&cases[i]))
 	}
-	response.JSON(w, http.StatusOK, out)
+	return bpmsgen.ListInbox200JSONResponse{Success: true, Message: "OK", Data: out}, nil
 }
 
-func (h *ProcessHandler) View(w http.ResponseWriter, r *http.Request) {
-	actor, id, ok := actorAndCase(w, r)
-	if !ok {
-		return
-	}
-	v, err := h.svc.View(r.Context(), actor, id)
+func (h *ProcessHandler) GetCase(ctx context.Context, req bpmsgen.GetCaseRequestObject) (bpmsgen.GetCaseResponseObject, error) {
+	actor, id, err := actorAndCaseFrom(ctx, req.Id)
 	if err != nil {
-		h.fail(w, r, err)
-		return
+		return nil, err
 	}
-	response.JSON(w, http.StatusOK, caseViewResponse{caseResponse: toCaseResponse(v.Case), Values: v.Values, History: v.History})
+	v, err := h.svc.View(ctx, actor, id)
+	if err != nil {
+		return nil, h.failure(err)
+	}
+	return bpmsgen.GetCase200JSONResponse{Success: true, Message: "OK", Data: toCaseView(v)}, nil
 }
 
-func (h *ProcessHandler) Claim(w http.ResponseWriter, r *http.Request) {
-	actor, id, ok := actorAndCase(w, r)
-	if !ok {
-		return
-	}
-	c, err := h.svc.Claim(r.Context(), actor, id)
+func (h *ProcessHandler) ClaimCase(ctx context.Context, req bpmsgen.ClaimCaseRequestObject) (bpmsgen.ClaimCaseResponseObject, error) {
+	actor, id, err := actorAndCaseFrom(ctx, req.Id)
 	if err != nil {
-		h.fail(w, r, err)
-		return
+		return nil, err
 	}
-	response.JSON(w, http.StatusOK, toCaseResponse(c))
+	c, err := h.svc.Claim(ctx, actor, id)
+	if err != nil {
+		return nil, h.failure(err)
+	}
+	return bpmsgen.ClaimCase200JSONResponse{Success: true, Message: "OK", Data: toCase(c)}, nil
 }
 
-func (h *ProcessHandler) Submit(w http.ResponseWriter, r *http.Request) {
-	actor, id, ok := actorAndCase(w, r)
-	if !ok {
-		return
-	}
-	var in submission
-	if !h.decodeStrict(w, r, &in) {
-		return
-	}
-	c, err := h.svc.Submit(r.Context(), actor, id, in.Action, in.Values)
+func (h *ProcessHandler) SubmitCase(ctx context.Context, req bpmsgen.SubmitCaseRequestObject) (bpmsgen.SubmitCaseResponseObject, error) {
+	actor, id, err := actorAndCaseFrom(ctx, req.Id)
 	if err != nil {
-		h.fail(w, r, err)
-		return
+		return nil, err
 	}
-	response.JSON(w, http.StatusOK, toCaseResponse(c))
+	action, values := fromSubmission(req.Body)
+	c, err := h.svc.Submit(ctx, actor, id, action, values)
+	if err != nil {
+		return nil, h.failure(err)
+	}
+	return bpmsgen.SubmitCase200JSONResponse{Success: true, Message: "OK", Data: toCase(c)}, nil
+}
+
+func fromSubmission(in *bpmsgen.Submission) (string, map[string]any) {
+	var action string
+	var values map[string]any
+	if in.Action != nil {
+		action = *in.Action
+	}
+	if in.Values != nil {
+		values = *in.Values
+	}
+	return action, values
+}
+
+func toCase(c *workflow.Case) bpmsgen.Case {
+	out := bpmsgen.Case{
+		Id: c.ID, Process: c.Definition, Version: c.Version, State: c.State,
+		Status: string(c.Status), OpenedAt: c.OpenedAt, ClosedAt: c.ClosedAt,
+	}
+	if c.AssignedTo != "" {
+		out.AssignedTo = &c.AssignedTo
+	}
+	return out
+}
+
+func toCaseView(v *process.CaseView) bpmsgen.CaseView {
+	c := toCase(v.Case)
+	out := bpmsgen.CaseView{
+		Id: c.Id, Process: c.Process, Version: c.Version, State: c.State, Status: c.Status,
+		AssignedTo: c.AssignedTo, OpenedAt: c.OpenedAt, ClosedAt: c.ClosedAt, Values: v.Values,
+	}
+	if v.History != nil {
+		out.History = make([]bpmsgen.CaseValue, len(v.History))
+		for i, hv := range v.History {
+			out.History[i] = bpmsgen.CaseValue{Field: hv.Field, Value: hv.Value, NodeId: hv.NodeID, ActorId: hv.ActorID, RecordedAt: hv.RecordedAt}
+		}
+	}
+	return out
+}
+
+func actorFrom(ctx context.Context) (string, error) {
+	p := auth.FromContext(ctx)
+	if p == nil || p.UserID == "" {
+		return "", openapi.Respond(http.StatusUnauthorized, response.CodeUnauthorized, "Autenticación requerida")
+	}
+	return p.UserID, nil
+}
+
+func actorAndCaseFrom(ctx context.Context, rawID string) (string, uuid.UUID, error) {
+	actor, err := actorFrom(ctx)
+	if err != nil {
+		return "", uuid.Nil, err
+	}
+	id, err := uuid.Parse(rawID)
+	if err != nil {
+		return "", uuid.Nil, openapi.Respond(http.StatusNotFound, response.CodeNotFound, workflow.ErrCaseNotFound.Error())
+	}
+	return actor, id, nil
 }
 
 func actorOf(w http.ResponseWriter, r *http.Request) (string, bool) {
@@ -214,6 +299,10 @@ func (h *ProcessHandler) decodeStrict(w http.ResponseWriter, r *http.Request, ds
 		return false
 	}
 	return true
+}
+
+func (h *ProcessHandler) failure(err error) error {
+	return openapi.Fail(err, func(w http.ResponseWriter, r *http.Request) { h.fail(w, r, err) })
 }
 
 func (h *ProcessHandler) fail(w http.ResponseWriter, r *http.Request, err error) {

@@ -30,11 +30,12 @@ procesos, `internal/infrastructure/bpms/migrations` (`bpms_db_version`).
 | Dominio | `internal/domain/process` | `ProcessSpec` (el JSON que escribe un autor), `CompileProcess` (valida el grafo, cada campo y cada regla), tipos de campo (`FieldType`, `FieldRegistry`), formularios con reglas `visibleWhen` en CEL, el puerto `ProfileResolver` y los errores del dominio. No conoce la base de datos ni HTTP. |
 | Aplicación | `internal/application/process` | `Catalog` (publica y carga versiones, las registra en el motor) y `Service` (iniciar, bandeja, tomar, enviar, ver). Define sus puertos: `VersionRepository`, `ValueRepository`, `CaseReader`. |
 | Infraestructura | `internal/infrastructure/bpms` | Repositorios Postgres (`process_version`, `case_value`), migraciones, `MemoryDirectory` (implementa `ProfileResolver`), los procesos semilla en `processes/*.json` y `NewDomain`, que arma todo. |
-| Interfaces | `internal/interfaces/http/handler/process_handler.go` | Las rutas HTTP. El actor es el usuario autenticado (`auth.FromContext`). |
+| Interfaces | `internal/interfaces/http/handler/process_handler.go` | Implementa las operaciones con tag `bpms` de `api/openapi.yaml` (servidor generado en `internal/interfaces/http/bpmsgen`) y monta sus rutas (`Mount`). El actor es el usuario autenticado (`auth.FromContext`). |
 
 ### Rutas
 
-Todas exigen autenticación y pasan por Cerbos (`cerbos/policies/resource_bpms_*.yaml`):
+Están descritas en `api/openapi.yaml` (tag `bpms`). Todas exigen autenticación
+y pasan por Cerbos (`cerbos/policies/resource_bpms_*.yaml`):
 
 | Ruta | Recurso / acción | Roles |
 |---|---|---|

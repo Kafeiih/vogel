@@ -132,6 +132,7 @@ func NewRouter(deps Dependencies) *chi.Mux {
 					httprate.WithLimitHandler(vmw.RateLimitJSON()),
 				))
 
+				// The generated params are left empty: handlers read and validate the request with vogel.
 				r.With(vmw.RequirePermission(deps.AuthzChecker, "audit:entry", "list", deps.Logger, authMessages), openapi.RequestInContext).
 					Get("/", func(w http.ResponseWriter, r *http.Request) {
 						ops.ListAuditEntries(w, r, apigen.ListAuditEntriesParams{})
@@ -155,18 +156,9 @@ func NewRouter(deps Dependencies) *chi.Mux {
 
 // vogel:component bpms begin
 func mountProcessRoutes(r chi.Router, deps Dependencies) {
-	can := func(kind, action string) func(http.Handler) http.Handler {
+	deps.ProcessHandler.Mount(r, func(kind, action string) func(http.Handler) http.Handler {
 		return vmw.RequirePermission(deps.AuthzChecker, kind, action, deps.Logger, authMessages)
-	}
-	h := deps.ProcessHandler
-
-	r.With(can("bpms:process", "publish")).Post("/processes", h.Publish)
-	r.With(can("bpms:process", "read")).Get("/processes/{name}", h.Latest)
-	r.With(can("bpms:process", "start")).Post("/processes/{name}/cases", h.Start)
-	r.With(can("bpms:case", "inbox")).Get("/inbox", h.Inbox)
-	r.With(can("bpms:case", "view")).Get("/cases/{id}", h.View)
-	r.With(can("bpms:case", "claim")).Post("/cases/{id}/claim", h.Claim)
-	r.With(can("bpms:case", "submit")).Post("/cases/{id}/submit", h.Submit)
+	})
 }
 
 // vogel:component bpms end
