@@ -19,10 +19,10 @@ Branch: feat/openapi-contract (from master 79593b7). Delivery: exception-ok (sin
 
 | ID | Specs | Route | Status | Evidence |
 |---|---|---|---|---|
-| T1 | S1 S2 | inline (no writer reason: sequential, dependent units) | done | RED (package missing) → GREEN, go test ./httpx/openapi/... |
-| T2 | S3 S4 S6 | inline | done | 18 audit handler tests unchanged through the strict server; differential 19 requests vs master: 0 differences; check-generated 9/9 OK; redocly valid; generate deterministic |
-| T3 | S5 | inline | pending | |
-| T4 | S7 | inline | pending | |
+| T1 | S1 S2 | inline (no writer reason: sequential, dependent units) | done | de8a96a, 056a23b (review advisories); RED (package missing / stale ignore / embedded) → GREEN |
+| T2 | S3 S4 S6 | inline | done | eddaf34; 18 audit handler tests unchanged through the strict server; differential 19 requests vs master: 0 differences; check-generated 9/9 OK; redocly valid; generate deterministic |
+| T3 | S5 | inline | done | 4f1402b; bpms differential 217 requests (7 error setups × 31 requests) vs master: 0 differences; check-generated 9/9 with regeneration check |
+| T4 | S7 | inline | done | 0eb1583 |
 
 ## Log
 
@@ -32,4 +32,7 @@ Branch: feat/openapi-contract (from master 79593b7). Delivery: exception-ok (sin
 - L4 T1: `httpx/openapi` (Fail, Respond, Invalid, WriteError, ResponseErrorHandler, RequestErrorHandler, RequestInContext/Request, ServeSpec, Decode, DecodeJSON[T]) and `openapitest` (RoutesMatchSpec with Prefix/Ignore, SchemaMatchesType[T]). Decode tees the body while vogel's check reads it and replays it, so it needs no copy of request's size limit. go.yaml.in/yaml/v3 became a direct dependency (no new module).
 - L5 T2: boilerplate contract at api/openapi.yaml (generated package apigen, exclude-tags bpms), x-order keeps vogel's JSON field order in generated envelopes. Mutation check: renamed path and renamed envelope field both fail the contract tests. bpms routes are temporarily ignored in TestSpecAndRouterMatch until T3.
 - L6 (2026-10-27) Delivery answered: "Un PR, commits por tarea (Recommended)".
-- Next: T3.
+- L7 Native review review-fae4a6d6ebd5acb2 (risk, readability, reliability) over 79593b7..eddaf34 approved and acknowledged; advisories applied: embedded structs and stale ignores in openapitest (056a23b), success envelopes and CaseValue pinned, comment on empty generated params (4f1402b).
+- L8 T3: bpms has its own generated package bpmsgen (api/oapi-codegen.bpms.yaml with include-tags, go:generate in api/spec_bpms.go), all three in the bpms component paths. create-vogel-app rewrites the module path only in .go/.md/go.mod, so the spec never points x-go-type-import at boilerplate packages: bpms types are generated (x-order keeps JSON order) and process definitions are json.RawMessage. An inline anyOf in a response component does not compile; it is a named schema (BadRequestResponse). ProcessHandler.Mount registers the routes with openapi.Decode checks (caller, case, then body) so the 401/404/400 order is unchanged.
+- L9 Full suites: go vet + go test -race ./... green in the library and the boilerplate (vet with -tags=integration too). Local golangci-lint is not run (local binary predates the Go toolchain); CI runs it.
+- Next: assess and review eddaf34..0eb1583, then the PR.
