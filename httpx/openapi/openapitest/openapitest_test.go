@@ -165,3 +165,40 @@ func TestSchemaMatchesType_FailsOnAMissingSchema(t *testing.T) {
 	assert.True(t, rec.fatal)
 	assert.Equal(t, []string{"schema Entry missing from the OpenAPI spec"}, rec.errors)
 }
+
+func TestRoutesMatchSpec_ReportsStaleIgnoredRoutes(t *testing.T) {
+	rec := &recorder{TB: t}
+
+	openapitest.RoutesMatchSpec(rec, []byte(spec), router(nil), openapitest.Prefix("/v1"),
+		openapitest.Ignore("GET /healthz", "GET /swagger/*"))
+
+	assert.Equal(t, []string{"GET /swagger/* is ignored but not served by the router"}, rec.errors)
+}
+
+type base struct {
+	ID    string `json:"id"`
+	State string `json:"state"`
+}
+
+type view struct {
+	base
+	Values map[string]any `json:"values"`
+}
+
+func TestSchemaMatchesType_FlattensEmbeddedStructs(t *testing.T) {
+	rec := &recorder{TB: t}
+	doc := `
+components:
+  schemas:
+    View:
+      required: [id, state, values]
+      properties:
+        id: {type: string}
+        state: {type: string}
+        values: {type: object}
+`
+
+	openapitest.SchemaMatchesType[view](rec, []byte(doc), "View")
+
+	assert.Empty(t, rec.errors)
+}

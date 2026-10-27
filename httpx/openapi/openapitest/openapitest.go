@@ -50,7 +50,9 @@ func Prefix(prefix string) Option {
 }
 
 // Ignore lists routes the router serves outside the contract, as
-// "METHOD /path" with the full router path (for example "GET /healthz").
+// "METHOD /path" with the full router path (for example "GET /healthz"). An
+// ignored route the router does not serve is reported, so the list cannot
+// go stale.
 func Ignore(routes ...string) Option {
 	return func(o *options) { o.ignore = append(o.ignore, routes...) }
 }
@@ -100,12 +102,15 @@ func RoutesMatchSpec(t testing.TB, spec []byte, routes chi.Routes, opts ...Optio
 	ignored := map[string]bool{}
 	for _, route := range o.ignore {
 		method, path, _ := strings.Cut(route, " ")
-		ignored[routeKey(method, path)] = true
+		ignored[routeKey(method, path)] = false
 	}
 
 	served := map[string]bool{}
 	err := chi.Walk(routes, func(method, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
-		if key := routeKey(method, route); !ignored[key] {
+		key := routeKey(method, route)
+		if _, ok := ignored[key]; ok {
+			ignored[key] = true
+		} else {
 			served[key] = true
 		}
 		return nil
@@ -123,6 +128,11 @@ func RoutesMatchSpec(t testing.TB, spec []byte, routes chi.Routes, opts ...Optio
 	for _, key := range sortedKeys(served) {
 		if !inSpec[key] {
 			t.Errorf("%s is served but not described in the OpenAPI spec", key)
+		}
+	}
+	for _, key := range sortedKeys(ignored) {
+		if !ignored[key] {
+			t.Errorf("%s is ignored but not served by the router", key)
 		}
 	}
 }
@@ -144,23 +154,7 @@ func SchemaMatchesType[T any](t testing.TB, spec []byte, name string) {
 		return
 	}
 
-	var wantProps, wantRequired []string
-	typ := reflect.TypeFor[T]()
-	for i := range typ.NumField() {
-		field := typ.Field(i)
-		tag := field.Tag.Get("json")
-		if !field.IsExported() || tag == "-" {
-			continue
-		}
-		prop, opts, _ := strings.Cut(tag, ",")
-		if prop == "" {
-			prop = field.Name
-		}
-		wantProps = append(wantProps, prop)
-		if !slices.Contains(strings.Split(opts, ","), "omitempty") {
-			wantRequired = append(wantRequired, prop)
-		}
-	}
+	wantProps, wantRequired := jsonFields(reflect.TypeFor[T]())
 	gotProps := make([]string, 0, len(schema.Properties))
 	for prop := range schema.Properties {
 		gotProps = append(gotProps, prop)
@@ -176,6 +170,42 @@ func SchemaMatchesType[T any](t testing.TB, spec []byte, name string) {
 	if !slices.Equal(gotRequired, wantRequired) {
 		t.Errorf("schema %s required = %v, want the Go type's %v", name, gotRequired, wantRequired)
 	}
+}
+
+// jsonFields returns the JSON property names of struct type typ and those
+// that are required (no omitempty). An embedded struct without a JSON name
+// contributes its own fields, as encoding/json flattens it.
+func jsonFields(typ reflect.Type) (props, required []string) {
+	for i := range typ.NumField() {
+		field := typ.Field(i)
+		tag := field.Tag.Get("json")
+		if tag == "-" {
+			continue
+		}
+		prop, opts, _ := strings.Cut(tag, ",")
+		if field.Anonymous && prop == "" {
+			embedded := field.Type
+			if embedded.Kind() == reflect.Pointer {
+				embedded = embedded.Elem()
+			}
+			if embedded.Kind() == reflect.Struct {
+				p, r := jsonFields(embedded)
+				props, required = append(props, p...), append(required, r...)
+				continue
+			}
+		}
+		if !field.IsExported() {
+			continue
+		}
+		if prop == "" {
+			prop = field.Name
+		}
+		props = append(props, prop)
+		if !slices.Contains(strings.Split(opts, ","), "omitempty") {
+			required = append(required, prop)
+		}
+	}
+	return props, required
 }
 
 func sortedKeys(m map[string]bool) []string {
