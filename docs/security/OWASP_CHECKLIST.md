@@ -18,8 +18,8 @@ cargo del servicio consumidor.
 
 | Estado | Ítems |
 |---|---|
-| PASS | 85 |
-| PARTIAL | 2 |
+| PASS | 86 |
+| PARTIAL | 1 |
 | FAIL | 0 |
 | CONSUMER | 26 |
 | N/A | 80 |
@@ -168,7 +168,7 @@ rechazado en producción.
 | ID | Sev. | Ítem | Estado | Evidencia |
 |---|---|---|---|---|
 | 8.1 | H | Autenticación en todo endpoint no público | PASS | `Authenticate` (`httpx/middleware/auth.go:88`) en el grupo autenticado (`examples/api/router.go:98`); solo `/healthz` y el bucket falso firmado son públicos |
-| 8.2 | H | Rate limit, límite de payload, paginación acotada | PARTIAL | Cuerpo de 1 MiB por defecto (`request/json_test.go`, `TestJSON_DefaultLimitIsExactly1MiB`); `limit` y `offset` acotados (`audit/audit.go:185`, `workflow/workflow.go:738`). El limitador de `examples/api` (`examples/api/ratelimit.go:64`) es por proceso y, sin `RealIP`, detrás de un proxy cuenta la IP del proxy (documentado). Limitador compartido: CONSUMER (§6) |
+| 8.2 | H | Rate limit, límite de payload, paginación acotada | PASS | Cuerpo de 1 MiB por defecto (`request/json_test.go`, `TestJSON_DefaultLimitIsExactly1MiB`); `limit` y `offset` acotados (`audit/audit.go:185`, `workflow/workflow.go:738`); respuesta 429 uniforme con `RateLimitJSON`. El limitador de `examples/api` (`examples/api/ratelimit.go:64`) es una muestra por proceso y, sin `RealIP`, detrás de un proxy cuenta la IP del proxy (documentado). Limitador compartido entre réplicas, en el borde o con Redis: CONSUMER ([`docs/THREAT_MODEL.md` §6](../THREAT_MODEL.md#6-responsabilidades-del-consumidor)) |
 | 8.3 | H | Validar `Content-Type` | PASS | `request.JSON` responde 415 a un tipo distinto de JSON (`request/json_test.go`, `TestJSON_ContentType`) |
 | 8.4 | H | Errores sin stack traces, SQL ni hosts | PASS | `Recovery` registra el stack y responde 500 genérico (`httpx/middleware/recovery.go:12`, `httpx/middleware/recovery_test.go`); errores de base solo en el log |
 | 8.5 | M | GraphQL | N/A | Sin GraphQL |
