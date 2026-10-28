@@ -486,3 +486,21 @@ func TestMove_NilTraceIDsPortLeavesEmpty(t *testing.T) {
 		assert.Empty(t, ev.RequestID, "seq %d", ev.Seq)
 	}
 }
+
+// TestOpen_ActorIDAliasKeepsExplicitKind pins that the ActorID alias only
+// supplies the ID: an explicitly set Kind is kept, and ActorHuman applies
+// only when Kind is empty.
+func TestOpen_ActorIDAliasKeepsExplicitKind(t *testing.T) {
+	repo := newFakeRepository()
+	e := New(repo, Config{}, testLogger(), WithDefinitions(testDefinition()))
+
+	c, err := e.Open(context.Background(), nil, OpenInput{
+		Definition: "purchase", Domain: "compras", ExternalID: "1", Unit: "finance",
+		ActorID: "bob", Actor: Actor{Kind: ActorOperator},
+	})
+	require.NoError(t, err)
+
+	events := storedEvents(t, repo, c.ID)
+	require.Len(t, events, 1)
+	assert.Equal(t, Actor{Kind: ActorOperator, ID: "bob"}, events[0].Actor)
+}

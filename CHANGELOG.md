@@ -43,15 +43,19 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   anteriores se leen como 1) y `Event.Detail`, un objeto JSON (`{}` para los
   tipos sin detalle). `History` completa los valores por defecto de las
   versiones viejas sin reescribir filas y falla con
-  `ErrUnsupportedEventSchema` ante una versión más nueva que el binario.
+  `ErrUnsupportedEventSchema` ante una versión más nueva que el binario. Esa
+  verificación vive en el motor: `workflow/postgres.Repository.ListEvents`
+  devuelve las filas tal como están guardadas, así que quien lo llame
+  directamente no recibe ni la verificación ni los valores por defecto.
   `Claim` y `Release` guardan un `AssignmentDetail{From, To, Reason}`: quién
   tenía el caso, quién lo toma y, al liberarlo, por qué.
 - **`workflow`: actor estructurado.** `Actor{Kind, ID, ActingAs, OnBehalfOf,
   Via}` con `ActorKind` (`ActorHuman`, `ActorOperator`, `ActorSystem`,
   `ActorAPIClient`, `ActorAnonymous` y `ActorUnspecified`, este último sólo
   para eventos anteriores). `OpenInput.Actor` y `MoveInput.Actor`;
-  `ActorID` queda como alias obsoleto: con `Actor.ID` vacío equivale a
-  `Actor{Kind: ActorHuman, ID: ActorID}`. Un `Actor.ID` distinto del
+  `ActorID` queda como alias obsoleto: con `Actor.ID` vacío aporta el ID, y
+  con `Actor.Kind` también vacío equivale a `Actor{Kind: ActorHuman, ID:
+  ActorID}`; un `Kind` explícito se conserva. Un `Actor.ID` distinto del
   `ActorID`, un tipo desconocido o `ActorUnspecified`, o un `ActorSystem` sin
   ID fallan con `ErrInvalidActor` sin escribir nada. `Event.Actor` se lee en
   el historial (los eventos anteriores, como `ActorUnspecified` con el
