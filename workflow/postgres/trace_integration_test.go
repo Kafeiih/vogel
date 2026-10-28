@@ -359,3 +359,67 @@ func TestEvent_PersistsCorrelationIDs(t *testing.T) {
 		assert.Equal(t, "00f067aa0ba902b7", ev.SpanID, "seq %d", ev.Seq)
 	}
 }
+
+func TestMigration004_DownRestoresPreviousSchema(t *testing.T) {
+	ctx := context.Background()
+	connStr := startTestPostgres(t)
+	opts := silentOptions()
+	require.NoError(t, migrate.Up(ctx, connStr, migrations.FS(), opts))
+
+	pool, err := pgxpool.New(ctx, connStr)
+	require.NoError(t, err)
+	t.Cleanup(pool.Close)
+
+	e := tenantTestEngine(t, postgres.NewRepository())
+	c, err := e.Open(ctx, pool, workflow.OpenInput{Definition: "purchase", Domain: "compras", ExternalID: "down-1", Unit: "finance", Actor: workflow.Actor{Kind: workflow.ActorHuman, ID: "u1"}})
+	require.NoError(t, err)
+
+	require.NoError(t, migrate.Down(ctx, connStr, migrations.FS(), opts), "a clean rollback of 004 must succeed")
+
+	var added int
+	require.NoError(t, pool.QueryRow(ctx, `
+        SELECT count(*) FROM information_schema.columns
+        WHERE (table_name = 'workflow_case' AND column_name IN ('tenant', 'last_seq'))
+           OR (table_name = 'workflow_event' AND column_name IN ('schema_version', 'detail', 'tenant', 'actor_kind',
+               'acting_as', 'on_behalf_of', 'via_client', 'request_id', 'trace_id', 'span_id'))`).Scan(&added))
+	assert.Zero(t, added, "Down must drop every column 004 added")
+
+	var constraints int
+	require.NoError(t, pool.QueryRow(ctx, `
+        SELECT count(*) FROM pg_constraint
+        WHERE conrelid = 'workflow_case'::regclass AND conname = 'workflow_case_domain_external_id_key'`).Scan(&constraints))
+	assert.Equal(t, 1, constraints, "Down must restore UNIQUE (domain, external_id)")
+
+	var events int
+	require.NoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM workflow_event WHERE case_id = $1`, c.ID).Scan(&events))
+	assert.Equal(t, 1, events, "rows survive the rollback")
+}
+
+func TestMigration004_DownFailsWhileTwoTenantsShareAnExternalID(t *testing.T) {
+	ctx := context.Background()
+	connStr := startTestPostgres(t)
+	opts := silentOptions()
+	require.NoError(t, migrate.Up(ctx, connStr, migrations.FS(), opts))
+
+	pool, err := pgxpool.New(ctx, connStr)
+	require.NoError(t, err)
+	t.Cleanup(pool.Close)
+
+	e := tenantTestEngine(t, postgres.NewRepository())
+	for _, tenant := range []string{"tenant-a", "tenant-b"} {
+		_, err := e.Open(ctx, pool, workflow.OpenInput{
+			Definition: "purchase", Tenant: tenant, Domain: "compras", ExternalID: "shared-1", Unit: "finance",
+			Actor: workflow.Actor{Kind: workflow.ActorHuman, ID: "u1"},
+		})
+		require.NoError(t, err)
+	}
+
+	require.Error(t, migrate.Down(ctx, connStr, migrations.FS(), opts),
+		"restoring UNIQUE (domain, external_id) must fail while two tenants share one")
+
+	var tenantColumn int
+	require.NoError(t, pool.QueryRow(ctx, `
+        SELECT count(*) FROM information_schema.columns
+        WHERE table_name = 'workflow_case' AND column_name = 'tenant'`).Scan(&tenantColumn))
+	assert.Equal(t, 1, tenantColumn, "the failed Down must roll back as a whole, leaving 004 applied")
+}

@@ -568,3 +568,21 @@ func TestMove_NonHumanActorRecordedOnEveryHop(t *testing.T) {
 		assert.Equal(t, "client-7", ev.ActorID, "event %d kind=%s", i, ev.Kind)
 	}
 }
+
+func TestReleaseWith_SystemActorNeedsID(t *testing.T) {
+	repo := newFakeRepository()
+	e := New(repo, Config{}, testLogger(), WithDefinitions(testDefinition()))
+	c := openTestCase(t, e)
+	claimed, err := e.Claim(context.Background(), nil, c.ID, "buyer-1")
+	require.NoError(t, err)
+	before := storedEvents(t, repo, c.ID)
+
+	_, err = e.ReleaseWith(context.Background(), nil, ReleaseInput{CaseID: c.ID, Actor: Actor{Kind: ActorSystem}})
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrInvalidActor), "got %v", err)
+
+	stored, err := repo.GetByID(context.Background(), nil, c.ID)
+	require.NoError(t, err)
+	assert.Equal(t, *claimed, *stored, "a rejected release must not touch the case")
+	assert.Equal(t, before, storedEvents(t, repo, c.ID), "a rejected release must append nothing")
+}
