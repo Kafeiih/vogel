@@ -167,7 +167,7 @@ func (r *Repository) AppendEvent(ctx context.Context, db pgxtx.DBTX, e *workflow
 	}
 	actorID := e.Actor.ID
 	if actorID == "" {
-		actorID = e.ActorID
+		actorID = e.ActorID //nolint:staticcheck // a caller that only sets the deprecated field still gets it stored
 	}
 	actorKind := e.Actor.Kind
 	if actorKind == "" {
@@ -283,7 +283,7 @@ func scanEvent(row rowScanner) (*workflow.Event, error) {
 	var e workflow.Event
 	var kind, actorKind string
 	if err := row.Scan(
-		&e.ID, &e.CaseID, &e.Seq, &kind, &e.FromState, &e.ToState, &e.Action, &e.ActorID, &e.OccurredAt, &e.Comment,
+		&e.ID, &e.CaseID, &e.Seq, &kind, &e.FromState, &e.ToState, &e.Action, &e.Actor.ID, &e.OccurredAt, &e.Comment,
 		&e.SchemaVersion, &e.Detail, &e.Tenant, &actorKind, &e.Actor.ActingAs, &e.Actor.OnBehalfOf, &e.Actor.Via,
 		&e.RequestID, &e.TraceID, &e.SpanID,
 	); err != nil {
@@ -291,7 +291,7 @@ func scanEvent(row rowScanner) (*workflow.Event, error) {
 	}
 	e.Kind = workflow.EventKind(kind)
 	e.Actor.Kind = workflow.ActorKind(actorKind)
-	e.Actor.ID = e.ActorID
+	e.ActorID = e.Actor.ID //nolint:staticcheck // keep the deprecated mirror populated for callers that still read it
 	return &e, nil
 }
 

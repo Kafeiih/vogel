@@ -48,7 +48,7 @@ func TestListEvents_LegacyRowReadsAsSchemaVersion1(t *testing.T) {
 	assert.Equal(t, 1, events[0].SchemaVersion)
 	assert.JSONEq(t, `{}`, string(events[0].Detail))
 	assert.Equal(t, workflow.Actor{Kind: workflow.ActorUnspecified, ID: "u1"}, events[0].Actor)
-	assert.Equal(t, "u1", events[0].ActorID)
+	assert.Equal(t, "u1", events[0].ActorID) //nolint:staticcheck // the deprecated mirror must still read back
 }
 
 func TestRepository_AppendEvent_RoundTripsSchemaVersionAndDetail(t *testing.T) {
@@ -61,7 +61,7 @@ func TestRepository_AppendEvent_RoundTripsSchemaVersionAndDetail(t *testing.T) {
 
 	withDetail := &workflow.Event{
 		ID: uuid.New(), CaseID: c.ID, Seq: 1, Kind: workflow.EventAssigned,
-		ActorID: "u1", OccurredAt: time.Now().UTC(),
+		Actor: workflow.Actor{Kind: workflow.ActorHuman, ID: "u1"}, OccurredAt: time.Now().UTC(),
 		SchemaVersion: workflow.CurrentEventSchema,
 		Detail:        []byte(`{"from":"","to":"u1"}`),
 	}
@@ -134,7 +134,7 @@ func TestEngine_HistoryReadsLegacyAndNewEvents(t *testing.T) {
 		Transitions: []workflow.Transition{{From: "draft", To: "done", Action: "submit"}},
 	}))
 
-	opened, err := e.OpenDetailed(ctx, pool, workflow.OpenInput{Definition: "purchase", Domain: "compras", ExternalID: "e2e-1", Unit: "finance", ActorID: "u1"})
+	opened, err := e.OpenDetailed(ctx, pool, workflow.OpenInput{Definition: "purchase", Domain: "compras", ExternalID: "e2e-1", Unit: "finance", Actor: workflow.Actor{Kind: workflow.ActorHuman, ID: "u1"}})
 	require.NoError(t, err)
 	caseID := opened.Case.ID
 
@@ -145,7 +145,7 @@ func TestEngine_HistoryReadsLegacyAndNewEvents(t *testing.T) {
 
 	_, err = e.Claim(ctx, pool, caseID, "u1")
 	require.NoError(t, err)
-	moved, err := e.MoveDetailed(ctx, pool, workflow.MoveInput{CaseID: caseID, Action: "submit", ActorID: "u1"})
+	moved, err := e.MoveDetailed(ctx, pool, workflow.MoveInput{CaseID: caseID, Action: "submit", Actor: workflow.Actor{Kind: workflow.ActorHuman, ID: "u1"}})
 	require.NoError(t, err)
 	assert.Equal(t, int64(5), moved.Case.LastSeq)
 
@@ -266,7 +266,7 @@ func TestEvent_PersistsActingAsAndOnBehalfOf(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, history, 3)
 	assert.Equal(t, opener, history[0].Actor)
-	assert.Equal(t, "op-1", history[0].ActorID)
+	assert.Equal(t, "op-1", history[0].ActorID) //nolint:staticcheck // the deprecated mirror must still read back
 	assert.Equal(t, workflow.Actor{Kind: workflow.ActorHuman, ID: "u2"}, history[1].Actor)
 	assert.Equal(t, workflow.Actor{Kind: workflow.ActorSystem, ID: "deadline-sweeper"}, history[2].Actor)
 	for _, ev := range history {
@@ -286,7 +286,7 @@ func TestOpen_SameExternalIDInTwoTenantsIsAllowed(t *testing.T) {
 
 	open := func(tenant string) (*workflow.Case, error) {
 		return e.Open(ctx, pool, workflow.OpenInput{
-			Definition: "purchase", Tenant: tenant, Domain: "compras", ExternalID: "solicitud-1", Unit: "finance", ActorID: "u1",
+			Definition: "purchase", Tenant: tenant, Domain: "compras", ExternalID: "solicitud-1", Unit: "finance", Actor: workflow.Actor{Kind: workflow.ActorHuman, ID: "u1"},
 		})
 	}
 	a, err := open("tenant-a")
@@ -345,9 +345,9 @@ func TestEvent_PersistsCorrelationIDs(t *testing.T) {
 		Transitions: []workflow.Transition{{From: "draft", To: "done", Action: "submit"}},
 	}))
 
-	c, err := e.Open(ctx, pool, workflow.OpenInput{Definition: "purchase", Domain: "compras", ExternalID: "corr-1", Unit: "finance", ActorID: "u1"})
+	c, err := e.Open(ctx, pool, workflow.OpenInput{Definition: "purchase", Domain: "compras", ExternalID: "corr-1", Unit: "finance", Actor: workflow.Actor{Kind: workflow.ActorHuman, ID: "u1"}})
 	require.NoError(t, err)
-	_, err = e.Move(ctx, pool, workflow.MoveInput{CaseID: c.ID, Action: "submit", ActorID: "u1"})
+	_, err = e.Move(ctx, pool, workflow.MoveInput{CaseID: c.ID, Action: "submit", Actor: workflow.Actor{Kind: workflow.ActorHuman, ID: "u1"}})
 	require.NoError(t, err)
 
 	history, err := e.History(ctx, pool, c.ID)

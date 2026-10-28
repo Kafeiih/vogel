@@ -125,7 +125,7 @@ func openCase(t *testing.T, pool *pgxpool.Pool, e *workflow.Engine) *workflow.Ca
 	require.NoError(t, pgxtx.NewPgxTxManager(pool).WithTx(context.Background(), func(txCtx context.Context) error {
 		var err error
 		c, err = e.Open(txCtx, pgxtx.TxFromContext(txCtx), workflow.OpenInput{
-			Definition: "purchase", Domain: "compras", ExternalID: "solicitud-1", Unit: "finanzas", ActorID: "u1",
+			Definition: "purchase", Domain: "compras", ExternalID: "solicitud-1", Unit: "finanzas", Actor: workflow.Actor{Kind: workflow.ActorHuman, ID: "u1"},
 		})
 		return err
 	}))
@@ -140,7 +140,7 @@ func TestIntegration_PoolAsDB_RejectedBeforeAnyWrite(t *testing.T) {
 	c := openCase(t, pool, e)
 	jobsBefore := listJobs(t, pool)
 
-	_, err := e.Move(context.Background(), pool, workflow.MoveInput{CaseID: c.ID, Action: "submit", ActorID: "u2"})
+	_, err := e.Move(context.Background(), pool, workflow.MoveInput{CaseID: c.ID, Action: "submit", Actor: workflow.Actor{Kind: workflow.ActorHuman, ID: "u2"}})
 	require.ErrorIs(t, err, pgxtx.ErrNoTx)
 
 	stored, err := postgres.NewRepository().GetByID(context.Background(), pool, c.ID)
@@ -162,7 +162,7 @@ func TestIntegration_MoveRolledBack_EnqueuesNothing(t *testing.T) {
 	c := openCase(t, pool, e)
 
 	err := pgxtx.NewPgxTxManager(pool).WithTx(context.Background(), func(txCtx context.Context) error {
-		_, err := e.Move(txCtx, pgxtx.TxFromContext(txCtx), workflow.MoveInput{CaseID: c.ID, Action: "submit", ActorID: "u2"})
+		_, err := e.Move(txCtx, pgxtx.TxFromContext(txCtx), workflow.MoveInput{CaseID: c.ID, Action: "submit", Actor: workflow.Actor{Kind: workflow.ActorHuman, ID: "u2"}})
 		require.NoError(t, err)
 		return errRollback
 	})
@@ -194,7 +194,7 @@ func TestIntegration_MoveCommitted_EnqueuesExactlyOnceAndWorkerRuns(t *testing.T
 	var moved *workflow.Case
 	require.NoError(t, tm.WithTx(ctx, func(txCtx context.Context) error {
 		var err error
-		moved, err = e.Move(txCtx, pgxtx.TxFromContext(txCtx), workflow.MoveInput{CaseID: c.ID, Action: "submit", ActorID: "u2"})
+		moved, err = e.Move(txCtx, pgxtx.TxFromContext(txCtx), workflow.MoveInput{CaseID: c.ID, Action: "submit", Actor: workflow.Actor{Kind: workflow.ActorHuman, ID: "u2"}})
 		return err
 	}))
 	evs, err := postgres.NewRepository().ListEvents(ctx, pool, c.ID)

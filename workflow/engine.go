@@ -353,7 +353,7 @@ func (e *Engine) OpenDetailed(ctx context.Context, db pgxtx.DBTX, in OpenInput) 
 		return nil, fmt.Errorf("workflow: open case: %w", err)
 	}
 
-	evt, err := e.appendEvent(ctx, db, c, Event{
+	evt, err := e.appendEvent(ctx, db, c, &Event{
 		Seq:        c.LastSeq,
 		Kind:       EventOpened,
 		ToState:    start.ID,
@@ -698,7 +698,7 @@ func (e *Engine) MoveDetailed(ctx context.Context, db pgxtx.DBTX, in MoveInput) 
 	appended := make([]Event, 0, len(hops)+1)
 	for _, h := range hops {
 		seq++
-		evt, err := e.appendEvent(ctx, db, c, Event{
+		evt, err := e.appendEvent(ctx, db, c, &Event{
 			Seq: seq, Kind: EventMoved,
 			FromState: h.fromState, ToState: h.toState, Action: h.action,
 			Actor: actor, Comment: h.comment, OccurredAt: now,
@@ -716,7 +716,7 @@ func (e *Engine) MoveDetailed(ctx context.Context, db pgxtx.DBTX, in MoveInput) 
 		// above, so Comment is passed as "" here rather than reused.
 		lastAction := hops[len(hops)-1].action
 		seq++
-		evt, err := e.appendEvent(ctx, db, c, Event{
+		evt, err := e.appendEvent(ctx, db, c, &Event{
 			Seq: seq, Kind: EventClosed,
 			FromState: restNode.ID, ToState: restNode.ID, Action: lastAction,
 			Actor: actor, OccurredAt: now,
@@ -881,7 +881,7 @@ func (e *Engine) ClaimWith(ctx context.Context, db pgxtx.DBTX, in ClaimInput) (*
 		return nil, fmt.Errorf("workflow: claim case %s: %w", c.ID, err)
 	}
 
-	if _, err := e.appendEvent(ctx, db, c, Event{
+	if _, err := e.appendEvent(ctx, db, c, &Event{
 		Seq: c.LastSeq, Kind: EventAssigned,
 		FromState: c.State, ToState: c.State, Actor: actor,
 		OccurredAt: e.now(), Detail: detail,
@@ -920,7 +920,7 @@ func (e *Engine) ReleaseWith(ctx context.Context, db pgxtx.DBTX, in ReleaseInput
 		return nil, fmt.Errorf("workflow: release case %s: %w", c.ID, err)
 	}
 
-	if _, err := e.appendEvent(ctx, db, c, Event{
+	if _, err := e.appendEvent(ctx, db, c, &Event{
 		Seq: c.LastSeq, Kind: EventUnassigned,
 		FromState: c.State, ToState: c.State, Actor: actor,
 		OccurredAt: e.now(), Detail: detail,
@@ -984,10 +984,9 @@ func (e *Engine) EligibilityFor(ctx context.Context, db pgxtx.DBTX, caseID uuid.
 // appendEvent appends evt, whose Seq, Actor and payload the caller set, to c:
 // it stamps c's ID and Tenant, a new ID, CurrentEventSchema, ActorID mirrored
 // from Actor.ID, the request ID and trace/span IDs of ctx, and an empty
-// Detail object when it has none. It returns the
-// event as persisted (Open and Move collect them for the EffectSink and
-// MoveResult).
-func (e *Engine) appendEvent(ctx context.Context, db pgxtx.DBTX, c *Case, evt Event) (Event, error) {
+// Detail object when it has none. It returns the event as persisted (Open
+// and Move collect them for the EffectSink and MoveResult).
+func (e *Engine) appendEvent(ctx context.Context, db pgxtx.DBTX, c *Case, evt *Event) (Event, error) {
 	evt.ID = uuid.New()
 	evt.CaseID = c.ID
 	evt.Tenant = c.Tenant
@@ -1000,10 +999,10 @@ func (e *Engine) appendEvent(ctx context.Context, db pgxtx.DBTX, c *Case, evt Ev
 	if len(evt.Detail) == 0 {
 		evt.Detail = emptyDetail()
 	}
-	if err := e.repo.AppendEvent(ctx, db, &evt); err != nil {
+	if err := e.repo.AppendEvent(ctx, db, evt); err != nil {
 		return Event{}, err
 	}
-	return evt, nil
+	return *evt, nil
 }
 
 // listEvents reads caseID's history through the repository and upcasts every
@@ -1020,7 +1019,7 @@ func (e *Engine) listEvents(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID
 			return nil, fmt.Errorf("case %s event seq %d: schema version %d (this binary knows up to %d): %w",
 				caseID, events[i].Seq, events[i].SchemaVersion, CurrentEventSchema, ErrUnsupportedEventSchema)
 		}
-		events[i] = upcastEvent(events[i])
+		upcastEvent(&events[i])
 	}
 	return events, nil
 }
@@ -1030,8 +1029,8 @@ func (e *Engine) listEvents(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID
 // comes from a repository that does not store the version and reads as 1.
 // An event without an actor kind (a version-1 row read from a repository that
 // does not store the kind) reads as ActorUnspecified, and Actor.ID and the
-// deprecated ActorID fill each other.
-func upcastEvent(evt Event) Event {
+// deprecated ActorID fill each other. It updates evt in place.
+func upcastEvent(evt *Event) {
 	if evt.SchemaVersion < 1 {
 		evt.SchemaVersion = 1
 	}
@@ -1045,7 +1044,6 @@ func upcastEvent(evt Event) Event {
 	if len(evt.Detail) == 0 {
 		evt.Detail = emptyDetail()
 	}
-	return evt
 }
 
 // resolveActor returns the Actor an input records, applying the deprecated

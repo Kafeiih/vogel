@@ -223,7 +223,7 @@ func (r *Registry) plan(d workflow.Definition, c workflow.Case, events []workflo
 	var jobs []Args
 	for i := range events {
 		evt := &events[i]
-		for _, name := range effectsFor(d, *evt) {
+		for _, name := range effectsFor(d, evt) {
 			if !r.HasEffect(name) {
 				return nil, fmt.Errorf("action: dispatch case %s: %w: %s", c.ID, workflow.ErrUnknownEffect, name)
 			}
@@ -236,7 +236,7 @@ func (r *Registry) plan(d workflow.Definition, c workflow.Case, events []workflo
 				Domain:     c.Domain,
 				ExternalID: c.ExternalID,
 				Unit:       c.Unit,
-				ActorID:    evt.ActorID,
+				ActorID:    evt.Actor.ID,
 			})
 		}
 	}
@@ -244,7 +244,7 @@ func (r *Registry) plan(d workflow.Definition, c workflow.Case, events []workflo
 }
 
 // effectsFor returns the effect names one event triggers.
-func effectsFor(d workflow.Definition, evt workflow.Event) []string {
+func effectsFor(d workflow.Definition, evt *workflow.Event) []string {
 	var names []string
 	switch evt.Kind {
 	case workflow.EventOpened, workflow.EventMoved:

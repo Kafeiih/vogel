@@ -188,7 +188,7 @@ func (h *DocumentHandler) Create(w http.ResponseWriter, r *http.Request) {
 			Definition: ApprovalDefinitionName,
 			Domain:     DocumentDomain,
 			ExternalID: doc.ID.String(),
-			ActorID:    actorID(txCtx),
+			Actor:      workflow.Actor{Kind: workflow.ActorHuman, ID: actorID(txCtx)},
 		})
 		if err != nil {
 			return err
@@ -404,9 +404,9 @@ func (h *DocumentHandler) Transition(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if _, err := h.engine.Move(txCtx, db, workflow.MoveInput{
-			CaseID:  wfCase.ID,
-			Action:  body.Action,
-			ActorID: actorID(txCtx),
+			CaseID: wfCase.ID,
+			Action: body.Action,
+			Actor:  workflow.Actor{Kind: workflow.ActorHuman, ID: actorID(txCtx)},
 		}); err != nil {
 			return err
 		}
