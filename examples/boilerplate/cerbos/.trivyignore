@@ -2,36 +2,17 @@
 # with --ignorefile when it scans boilerplate:cerbos, so the api and worker
 # images are still held to every finding).
 #
-# Cerbos 0.56.0, the latest release (2026-09-30), ships a cerbos binary built
-# with Go 1.27.1 and golang.org/x/net 0.59.0. Both have fixed DoS issues
-# (Go 1.27.2, x/net 0.60.0) that no released Cerbos image includes yet. The
-# deploy compose keeps the PDP on an internal network with no published
-# ports, so only the api and worker can reach it.
-#
-# Renewed 2026-10-15: no Cerbos release after 0.56.0 yet. Cerbos main already
-# requires golang.org/x/net 0.61.0, which covers the x/net part of
-# CVE-2026-78669. The stdlib parts (CVE-2026-78667, CVE-2026-97031 and the
-# net/http side of CVE-2026-78669) clear only if the next release is built
-# with Go 1.27.2 or later: check its Go version before dropping any entry.
-#
-# Added 2026-10-21: CVE-2026-111943 (crypto/x509) is fixed in Go 1.27.3; the
-# next Cerbos release clears it only if built with Go 1.27.3 or later.
-#
-# Added 2026-10-28: CVE-2026-116587 (github.com/go-jose/go-jose/v4, fixed in
-# 4.1.6). Cerbos 0.56.0 and 0.57.0 (the latest, 2026-10-23) both depend on
-# go-jose 4.1.5; drop the entry once a release requires 4.1.6 or later.
+# Cerbos 0.57.0, the latest release (2026-10-23), ships a cerbos binary built
+# with Go 1.27.3 and golang.org/x/net 0.61.0, which clears every stdlib and
+# x/net entry this file held for 0.56.0. It still depends on
+# github.com/go-jose/go-jose/v4 4.1.5. The deploy compose keeps the PDP on an
+# internal network with no published ports, so only the api and worker can
+# reach it.
 #
 # Each entry expires: when it does, CI fails again. Bump the Cerbos version in
 # cerbos/Dockerfile and deploy/docker-compose.developer.yaml if a fixed
-# release is out, or renew the date with a reason.
+# release is out (check its go-jose version with `go version -m` on the
+# binary), or renew the date with a reason.
 
-# net/http: excessive Range headers (stdlib)
-CVE-2026-78667 exp:2026-12-15
-# net/http2, golang.org/x/net/http2: excessive HTTP/2 SETTINGS frames
-CVE-2026-78669 exp:2026-12-15
-# crypto/tls: multiple ECH outer extension references (stdlib)
-CVE-2026-97031 exp:2026-12-15
-# crypto/x509 (stdlib)
-CVE-2026-111943 exp:2026-12-15
-# github.com/go-jose/go-jose/v4: DoS parsing JWKs with RSA keys
+# github.com/go-jose/go-jose/v4: DoS parsing JWKs with RSA keys (fixed in 4.1.6)
 CVE-2026-116587 exp:2026-12-15
