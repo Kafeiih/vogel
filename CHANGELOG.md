@@ -20,6 +20,10 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   de Cerbos sigue con 4.1.5 (ni 0.57.0 la actualiza): queda aceptada en
   `examples/boilerplate/cerbos/.trivyignore` hasta el 2026-12-15, con el PDP
   en la red interna sin puertos publicados.
+- **El boilerplate pasa a Cerbos 0.57.0**, compilado con Go 1.27.3 y
+  `golang.org/x/net` 0.61.0: salen del `.trivyignore` de Cerbos las cuatro
+  excepciones de la biblioteca estándar y de `x/net` (CVE-2026-78667,
+  CVE-2026-78669, CVE-2026-97031 y CVE-2026-111943). Queda solo la de go-jose.
 
 ## [0.17.0] — 2026-10-27
 

@@ -9,7 +9,7 @@
 # Dependabot can bump it). deploy/docker-compose.developer.yaml pins the same
 # image for local development: keep the two equal. The upstream image is
 # FROM scratch: no shell, so RUN must use the exec form.
-FROM ghcr.io/cerbos/cerbos:0.56.0@sha256:540643bc67ba628011a150ad1d3370f285daa38995be5cd7a4be181da902bec1 AS base
+FROM ghcr.io/cerbos/cerbos:0.57.0@sha256:e5e3b150b3cb0090975605254f255164567d67e233634199fb20972e3eaff300 AS base
 
 FROM base AS validate
 COPY policies /repo/policies
