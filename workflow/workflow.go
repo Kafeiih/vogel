@@ -646,6 +646,57 @@ func detectDecisionCycle(nodes []string, adj map[string][]string) []string {
 	return nil
 }
 
+// ActorKind classifies who performed the action an Event records.
+type ActorKind string
+
+const (
+	// ActorHuman is a person acting through the consumer's UI. It is the
+	// kind of the deprecated ActorID alias.
+	ActorHuman ActorKind = "human"
+	// ActorOperator is a person acting with an administrative or support
+	// authority over the case rather than as its assignee.
+	ActorOperator ActorKind = "operator"
+	// ActorSystem is the consumer's own automation (a scheduler, a worker).
+	// It must carry an ID naming the component.
+	ActorSystem ActorKind = "system"
+	// ActorAPIClient is an external system calling the consumer's API.
+	ActorAPIClient ActorKind = "api_client"
+	// ActorAnonymous is an unauthenticated caller.
+	ActorAnonymous ActorKind = "anonymous"
+	// ActorUnspecified is the kind of an event written before actors had a
+	// kind. The engine only reads it; an input carrying it is invalid.
+	ActorUnspecified ActorKind = "unspecified"
+)
+
+// Valid reports whether k is one of the known ActorKind values,
+// ActorUnspecified included.
+func (k ActorKind) Valid() bool {
+	switch k {
+	case ActorHuman, ActorOperator, ActorSystem, ActorAPIClient, ActorAnonymous, ActorUnspecified:
+		return true
+	default:
+		return false
+	}
+}
+
+// Actor is who performed the action an Event records, resolved by the caller
+// at event time.
+type Actor struct {
+	Kind ActorKind
+	// ID identifies the actor in the caller's identity source: a person id,
+	// a client id, or the name of a system component.
+	ID string
+	// ActingAs is the authority the actor used, e.g. "position@unit" and
+	// whether they act as holder, subrogante or delegate. The caller resolves
+	// it when the event happens: an org-context service answers for the
+	// present and cannot prove past authority.
+	ActingAs string
+	// OnBehalfOf is the person the actor acted for, when not themselves.
+	OnBehalfOf string
+	// Via is the client or channel the action came through.
+	Via string
+}
+
 // Case is a single running (or completed) instance of a Definition. It
 // carries only a reference to the domain object it concerns — Domain and
 // ExternalID — never the object's own data.
@@ -653,6 +704,9 @@ type Case struct {
 	ID         uuid.UUID
 	Definition string // definition name
 	Version    int
+	// Tenant scopes the case; empty for a single-tenant consumer. A case is
+	// unique per (Tenant, Domain, ExternalID).
+	Tenant     string
 	Domain     string // e.g. "compras"
 	ExternalID string // e.g. "solicitud-123"
 	Unit       string // organizational unit the case belongs to
@@ -717,7 +771,16 @@ type Event struct {
 	FromState string
 	ToState   string
 	Action    string
-	ActorID   string
+	// Actor is who performed the action. Events written before actors had
+	// a kind read as Actor{Kind: ActorUnspecified, ID: ActorID}.
+	Actor Actor
+	// ActorID mirrors Actor.ID.
+	//
+	// Deprecated: use Actor.ID.
+	ActorID string
+	// Tenant is the case's Tenant, copied on every append so an export or a
+	// row-level security policy never needs a join.
+	Tenant string
 	// Comment is the (already trimmed) comment or observation recorded
 	// alongside this event, when the taken transition's CommentPolicy
 	// allowed one. It is always empty on the automatic EventClosed event
@@ -769,6 +832,10 @@ var (
 	// than CurrentEventSchema: it was written by a newer binary, and reading
 	// it here would silently drop the fields this one does not know.
 	ErrUnsupportedEventSchema = errors.New("workflow: event schema version not supported by this binary")
+	// ErrInvalidActor reports an input Actor the engine cannot record: an
+	// unknown (or unspecified) kind, ActorSystem without an ID, or an Actor.ID
+	// that differs from the deprecated ActorID set alongside it.
+	ErrInvalidActor = errors.New("workflow: invalid actor")
 )
 
 // GuardFunc evaluates whether a transition may be taken for the given case.
@@ -817,7 +884,7 @@ type GuardFunc func(ctx context.Context, db pgxtx.DBTX, c Case) (bool, error)
 type Repository interface {
 	Create(ctx context.Context, db pgxtx.DBTX, c *Case) error
 	GetByID(ctx context.Context, db pgxtx.DBTX, id uuid.UUID) (*Case, error)
-	GetByExternalID(ctx context.Context, db pgxtx.DBTX, domain, externalID string) (*Case, error)
+	GetByExternalID(ctx context.Context, db pgxtx.DBTX, tenant, domain, externalID string) (*Case, error)
 	Update(ctx context.Context, db pgxtx.DBTX, c *Case) error
 	AppendEvent(ctx context.Context, db pgxtx.DBTX, e *Event) error
 	ListEvents(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID) ([]Event, error)
@@ -829,6 +896,7 @@ type Repository interface {
 // of eligible node IDs is resolved by the caller (see Engine.EligibilityFor
 // and the package doc comment), not by this filter.
 type InboxFilter struct {
+	Tenant     string // empty = any
 	Domain     string
 	States     []string
 	AssignedTo string // empty = any

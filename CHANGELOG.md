@@ -25,6 +25,15 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   La 004 rellena `last_seq` dentro de la misma transacción que agrega la
   columna, con `workflow_case` bloqueada mientras dura: en una tabla grande,
   aplicarla en una ventana de mantenimiento.
+- **`workflow.Repository.GetByExternalID` recibe `tenant`:**
+  `GetByExternalID(ctx, db, tenant, domain, externalID)`. Un consumidor de un
+  solo tenant pasa `""`. Un repositorio propio o un fake de test debe agregar
+  el parámetro, guardar `Case.Tenant` y filtrar por `InboxFilter.Tenant`.
+- **La unicidad de un caso pasa a ser `(tenant, domain, external_id)`.** La
+  004 reemplaza `UNIQUE (domain, external_id)` por el índice único
+  `uq_workflow_case_tenant_domain_external_id`; los casos existentes quedan
+  con `tenant = ''`. Revertir la 004 falla mientras dos tenants compartan un
+  mismo `(domain, external_id)`.
 
 ### Agregado
 
@@ -34,8 +43,28 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   tipos sin detalle). `History` completa los valores por defecto de las
   versiones viejas sin reescribir filas y falla con
   `ErrUnsupportedEventSchema` ante una versión más nueva que el binario.
-  `Claim` y `Release` guardan un `AssignmentDetail{From, To}`: quién tenía el
-  caso y quién lo toma.
+  `Claim` y `Release` guardan un `AssignmentDetail{From, To, Reason}`: quién
+  tenía el caso, quién lo toma y, al liberarlo, por qué.
+- **`workflow`: actor estructurado.** `Actor{Kind, ID, ActingAs, OnBehalfOf,
+  Via}` con `ActorKind` (`ActorHuman`, `ActorOperator`, `ActorSystem`,
+  `ActorAPIClient`, `ActorAnonymous` y `ActorUnspecified`, este último sólo
+  para eventos anteriores). `OpenInput.Actor` y `MoveInput.Actor`;
+  `ActorID` queda como alias obsoleto: con `Actor.ID` vacío equivale a
+  `Actor{Kind: ActorHuman, ID: ActorID}`. Un `Actor.ID` distinto del
+  `ActorID`, un tipo desconocido o `ActorUnspecified`, o un `ActorSystem` sin
+  ID fallan con `ErrInvalidActor` sin escribir nada. `Event.Actor` se lee en
+  el historial (los eventos anteriores, como `ActorUnspecified` con el
+  `actor_id` guardado) y `Event.ActorID` queda como espejo obsoleto de
+  `Actor.ID`. `ActingAs` es la autoridad con la que se actuó (por ejemplo
+  `cargo@unidad` y si es titular, subrogante o delegado), que el llamador
+  resuelve en el momento del evento.
+- **`workflow`: `Engine.ClaimWith(ClaimInput{CaseID, Actor})` y
+  `Engine.ReleaseWith(ReleaseInput{CaseID, Actor, Reason})`.** `Claim` y
+  `Release` siguen iguales y ahora las envuelven con un actor humano.
+- **`workflow`: tenant.** `Case.Tenant` y `OpenInput.Tenant`; cada evento
+  copia el tenant del caso en `Event.Tenant`, para que una exportación o una
+  política de seguridad por fila no necesiten un join. `InboxFilter.Tenant`
+  filtra la bandeja; vacío no filtra, como hasta ahora.
 - **`workflow`: secuencia expuesta.** `Case.LastSeq` es el `Seq` del último
   evento; el motor asigna los siguientes desde ahí, a través del mismo
   compare-and-swap de `revision`, así que agregar un evento ya no lee el
@@ -45,8 +74,11 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   `Move` siguen iguales.
 - **`workflow/migrations`: `004_workflow_event_metadata.sql`** agrega
   `workflow_case.last_seq` (rellenada con el `MAX(seq)` de cada caso),
-  `workflow_event.schema_version SMALLINT NOT NULL DEFAULT 1` y
-  `workflow_event.detail JSONB NOT NULL DEFAULT '{}'`.
+  `workflow_case.tenant`, `workflow_event.schema_version SMALLINT NOT NULL
+  DEFAULT 1`, `workflow_event.detail JSONB NOT NULL DEFAULT '{}'`,
+  `workflow_event.tenant` y las columnas del actor:
+  `actor_kind TEXT NOT NULL DEFAULT 'unspecified'`, `acting_as`,
+  `on_behalf_of` y `via_client`.
 
 ## [0.17.1] — 2026-10-28
 

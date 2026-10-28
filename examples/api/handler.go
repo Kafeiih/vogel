@@ -377,7 +377,7 @@ var transitionActions = []string{"submit", "approve", "reject", "return"}
 // duplicate a link the workflow tables already own, and would have to be
 // kept in sync by hand.
 func (h *DocumentHandler) caseFor(ctx context.Context, db pgxtx.DBTX, documentID uuid.UUID) (*workflow.Case, error) {
-	return h.wfRepo.GetByExternalID(ctx, db, DocumentDomain, documentID.String())
+	return h.wfRepo.GetByExternalID(ctx, db, "", DocumentDomain, documentID.String())
 }
 
 // Transition applies a workflow action to a document's case.

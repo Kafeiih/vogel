@@ -273,7 +273,16 @@ type OpenInput struct {
 	Domain     string
 	ExternalID string
 	Unit       string
-	ActorID    string
+	// Tenant scopes the case (see Case.Tenant).
+	Tenant string
+	// Actor is who opens the case.
+	Actor Actor
+	// ActorID is the deprecated alias of Actor: with Actor.ID empty it means
+	// Actor{Kind: ActorHuman, ID: ActorID}; set to a different ID than
+	// Actor.ID it fails the call with ErrInvalidActor.
+	//
+	// Deprecated: use Actor.
+	ActorID string
 }
 
 // Open creates a case at the definition's start node and appends an
@@ -292,6 +301,10 @@ func (e *Engine) Open(ctx context.Context, db pgxtx.DBTX, in OpenInput) (*Case, 
 // OpenDetailed is Open, also returning the EventOpened it appended (see
 // MoveResult).
 func (e *Engine) OpenDetailed(ctx context.Context, db pgxtx.DBTX, in OpenInput) (*MoveResult, error) {
+	actor, err := resolveActor(in.Actor, in.ActorID)
+	if err != nil {
+		return nil, fmt.Errorf("workflow: open case: %w", err)
+	}
 	d, err := e.resolveDefinition(in.Definition, in.Version)
 	if err != nil {
 		return nil, err
@@ -310,6 +323,7 @@ func (e *Engine) OpenDetailed(ctx context.Context, db pgxtx.DBTX, in OpenInput) 
 		ID:         uuid.New(),
 		Definition: d.Name,
 		Version:    d.Version,
+		Tenant:     in.Tenant,
 		Domain:     in.Domain,
 		ExternalID: in.ExternalID,
 		Unit:       in.Unit,
@@ -329,12 +343,11 @@ func (e *Engine) OpenDetailed(ctx context.Context, db pgxtx.DBTX, in OpenInput) 
 		return nil, fmt.Errorf("workflow: open case: %w", err)
 	}
 
-	evt, err := e.appendEvent(ctx, db, Event{
-		CaseID:     c.ID,
+	evt, err := e.appendEvent(ctx, db, c, Event{
 		Seq:        c.LastSeq,
 		Kind:       EventOpened,
 		ToState:    start.ID,
-		ActorID:    in.ActorID,
+		Actor:      actor,
 		OccurredAt: now,
 	})
 	if err != nil {
@@ -478,8 +491,14 @@ type decisionHop struct {
 
 // MoveInput describes a transition to apply to a case.
 type MoveInput struct {
-	CaseID  uuid.UUID
-	Action  string
+	CaseID uuid.UUID
+	Action string
+	// Actor is who performs the move. Every event the move appends records
+	// it.
+	Actor Actor
+	// ActorID is the deprecated alias of Actor (see OpenInput.ActorID).
+	//
+	// Deprecated: use Actor.
 	ActorID string
 	// Comment is the step comment (on approval) or observation (on
 	// rejection) attached to this move. It is trimmed with strings.
@@ -517,7 +536,7 @@ type MoveInput struct {
 // Each hop along the way — the initial human-driven move and every
 // automatic decision-node hop after it — appends its own EventMoved, with
 // Action set to that hop's transition (or route) label and ActorID set to
-// the original MoveInput.ActorID throughout. Only the first hop ever
+// the original MoveInput actor (see resolveActor) throughout. Only the first hop ever
 // carries in.Comment; every automatic hop records an empty Comment, since
 // the comment belongs to the human action that started the move, not to
 // the domain-data routing that followed it. Deadline and eligibility only
@@ -568,6 +587,10 @@ func (e *Engine) Move(ctx context.Context, db pgxtx.DBTX, in MoveInput) (*Case, 
 // Seq order (the same slice the EffectSink receives): a consumer can stamp
 // the Seq of the event that triggered its own write on that row.
 func (e *Engine) MoveDetailed(ctx context.Context, db pgxtx.DBTX, in MoveInput) (*MoveResult, error) {
+	actor, err := resolveActor(in.Actor, in.ActorID)
+	if err != nil {
+		return nil, fmt.Errorf("workflow: move case %s: %w", in.CaseID, err)
+	}
 	c, err := e.repo.GetByID(ctx, db, in.CaseID)
 	if err != nil {
 		return nil, fmt.Errorf("workflow: move case: %w", err)
@@ -665,10 +688,10 @@ func (e *Engine) MoveDetailed(ctx context.Context, db pgxtx.DBTX, in MoveInput) 
 	appended := make([]Event, 0, len(hops)+1)
 	for _, h := range hops {
 		seq++
-		evt, err := e.appendEvent(ctx, db, Event{
-			CaseID: c.ID, Seq: seq, Kind: EventMoved,
+		evt, err := e.appendEvent(ctx, db, c, Event{
+			Seq: seq, Kind: EventMoved,
 			FromState: h.fromState, ToState: h.toState, Action: h.action,
-			ActorID: in.ActorID, Comment: h.comment, OccurredAt: now,
+			Actor: actor, Comment: h.comment, OccurredAt: now,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("workflow: move case %s: append event: %w", c.ID, err)
@@ -678,15 +701,15 @@ func (e *Engine) MoveDetailed(ctx context.Context, db pgxtx.DBTX, in MoveInput) 
 
 	if terminated {
 		// The automatic close event shares the last hop's Action and the
-		// original ActorID but never repeats any comment: the comment
+		// original Actor but never repeats any comment: the comment
 		// belongs to the human-driven hop's own EventMoved record, appended
 		// above, so Comment is passed as "" here rather than reused.
 		lastAction := hops[len(hops)-1].action
 		seq++
-		evt, err := e.appendEvent(ctx, db, Event{
-			CaseID: c.ID, Seq: seq, Kind: EventClosed,
+		evt, err := e.appendEvent(ctx, db, c, Event{
+			Seq: seq, Kind: EventClosed,
 			FromState: restNode.ID, ToState: restNode.ID, Action: lastAction,
-			ActorID: in.ActorID, OccurredAt: now,
+			Actor: actor, OccurredAt: now,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("workflow: move case %s: append close event: %w", c.ID, err)
@@ -783,14 +806,48 @@ func findTransition(candidates []Transition, action string) (Transition, bool) {
 	return Transition{}, false
 }
 
-// Claim assigns the case to actorID. Re-claiming by the same actor is a
-// no-op success; claiming a case already assigned to someone else fails.
-// Claim never calls the EffectSink: no effect can be declared on a claim.
+// Claim assigns the case to actorID, a person: it is ClaimWith with
+// Actor{Kind: ActorHuman, ID: actorID}.
+func (e *Engine) Claim(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID, actorID string) (*Case, error) {
+	return e.ClaimWith(ctx, db, ClaimInput{CaseID: caseID, Actor: Actor{Kind: ActorHuman, ID: actorID}})
+}
+
+// Release clears the case's assignment on behalf of actorID, a person: it is
+// ReleaseWith with Actor{Kind: ActorHuman, ID: actorID} and no Reason.
+func (e *Engine) Release(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID, actorID string) (*Case, error) {
+	return e.ReleaseWith(ctx, db, ReleaseInput{CaseID: caseID, Actor: Actor{Kind: ActorHuman, ID: actorID}})
+}
+
+// ClaimInput describes a claim: Actor becomes the case's assignee (its ID is
+// stored as Case.AssignedTo). An empty Actor.Kind means ActorHuman.
+type ClaimInput struct {
+	CaseID uuid.UUID
+	Actor  Actor
+}
+
+// ReleaseInput describes a release: Actor clears the assignment, for Reason.
+// An empty Actor.Kind means ActorHuman.
+type ReleaseInput struct {
+	CaseID uuid.UUID
+	Actor  Actor
+	// Reason is the caller's free-text reason, recorded in the event's
+	// AssignmentDetail.
+	Reason string
+}
+
+// ClaimWith assigns the case to in.Actor.ID. Re-claiming by the same actor ID
+// is a no-op success; claiming a case already assigned to someone else fails.
+// An invalid Actor fails with ErrInvalidActor before anything is read.
+// ClaimWith never calls the EffectSink: no effect can be declared on a claim.
 // Like Move, the case update is a revision compare-and-swap performed before
 // the event is appended: a concurrent change fails with ErrConflict and
 // persists nothing, so two racing claimers can never both win.
-func (e *Engine) Claim(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID, actorID string) (*Case, error) {
-	c, err := e.repo.GetByID(ctx, db, caseID)
+func (e *Engine) ClaimWith(ctx context.Context, db pgxtx.DBTX, in ClaimInput) (*Case, error) {
+	actor, err := resolveActor(in.Actor, "")
+	if err != nil {
+		return nil, fmt.Errorf("workflow: claim case %s: %w", in.CaseID, err)
+	}
+	c, err := e.repo.GetByID(ctx, db, in.CaseID)
 	if err != nil {
 		return nil, fmt.Errorf("workflow: claim case: %w", err)
 	}
@@ -798,25 +855,25 @@ func (e *Engine) Claim(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID, act
 		return nil, fmt.Errorf("workflow: claim case %s: %w", c.ID, ErrCaseClosed)
 	}
 	if c.AssignedTo != "" {
-		if c.AssignedTo == actorID {
+		if c.AssignedTo == actor.ID {
 			return c, nil
 		}
 		return nil, fmt.Errorf("workflow: claim case %s: %w", c.ID, ErrAlreadyAssigned)
 	}
 
-	detail, err := marshalDetail(AssignmentDetail{To: actorID})
+	detail, err := marshalDetail(AssignmentDetail{To: actor.ID})
 	if err != nil {
 		return nil, fmt.Errorf("workflow: claim case %s: %w", c.ID, err)
 	}
-	c.AssignedTo = actorID
+	c.AssignedTo = actor.ID
 	c.LastSeq++
 	if err := e.repo.Update(ctx, db, c); err != nil {
 		return nil, fmt.Errorf("workflow: claim case %s: %w", c.ID, err)
 	}
 
-	if _, err := e.appendEvent(ctx, db, Event{
-		CaseID: c.ID, Seq: c.LastSeq, Kind: EventAssigned,
-		FromState: c.State, ToState: c.State, ActorID: actorID,
+	if _, err := e.appendEvent(ctx, db, c, Event{
+		Seq: c.LastSeq, Kind: EventAssigned,
+		FromState: c.State, ToState: c.State, Actor: actor,
 		OccurredAt: e.now(), Detail: detail,
 	}); err != nil {
 		return nil, fmt.Errorf("workflow: claim case %s: append event: %w", c.ID, err)
@@ -825,11 +882,17 @@ func (e *Engine) Claim(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID, act
 	return c, nil
 }
 
-// Release clears the case's assignment. A concurrent change to the case
-// fails with ErrConflict and persists nothing (see Claim). Like Claim, it
-// never calls the EffectSink.
-func (e *Engine) Release(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID, actorID string) (*Case, error) {
-	c, err := e.repo.GetByID(ctx, db, caseID)
+// ReleaseWith clears the case's assignment, recording the previous assignee
+// and in.Reason in the event's AssignmentDetail. An invalid Actor fails with
+// ErrInvalidActor before anything is read. A concurrent change to the case
+// fails with ErrConflict and persists nothing (see ClaimWith). Like
+// ClaimWith, it never calls the EffectSink.
+func (e *Engine) ReleaseWith(ctx context.Context, db pgxtx.DBTX, in ReleaseInput) (*Case, error) {
+	actor, err := resolveActor(in.Actor, "")
+	if err != nil {
+		return nil, fmt.Errorf("workflow: release case %s: %w", in.CaseID, err)
+	}
+	c, err := e.repo.GetByID(ctx, db, in.CaseID)
 	if err != nil {
 		return nil, fmt.Errorf("workflow: release case: %w", err)
 	}
@@ -837,7 +900,7 @@ func (e *Engine) Release(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID, a
 		return nil, fmt.Errorf("workflow: release case %s: %w", c.ID, ErrNotAssigned)
 	}
 
-	detail, err := marshalDetail(AssignmentDetail{From: c.AssignedTo})
+	detail, err := marshalDetail(AssignmentDetail{From: c.AssignedTo, Reason: in.Reason})
 	if err != nil {
 		return nil, fmt.Errorf("workflow: release case %s: %w", c.ID, err)
 	}
@@ -847,9 +910,9 @@ func (e *Engine) Release(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID, a
 		return nil, fmt.Errorf("workflow: release case %s: %w", c.ID, err)
 	}
 
-	if _, err := e.appendEvent(ctx, db, Event{
-		CaseID: c.ID, Seq: c.LastSeq, Kind: EventUnassigned,
-		FromState: c.State, ToState: c.State, ActorID: actorID,
+	if _, err := e.appendEvent(ctx, db, c, Event{
+		Seq: c.LastSeq, Kind: EventUnassigned,
+		FromState: c.State, ToState: c.State, Actor: actor,
 		OccurredAt: e.now(), Detail: detail,
 	}); err != nil {
 		return nil, fmt.Errorf("workflow: release case %s: append event: %w", c.ID, err)
@@ -908,12 +971,16 @@ func (e *Engine) EligibilityFor(ctx context.Context, db pgxtx.DBTX, caseID uuid.
 	}, nil
 }
 
-// appendEvent appends evt, whose CaseID, Seq and payload the caller set,
-// stamping a new ID, CurrentEventSchema and an empty Detail object when it
-// has none. It returns the event as persisted (Open and Move collect them for
-// the EffectSink and MoveResult).
-func (e *Engine) appendEvent(ctx context.Context, db pgxtx.DBTX, evt Event) (Event, error) {
+// appendEvent appends evt, whose Seq, Actor and payload the caller set, to c:
+// it stamps c's ID and Tenant, a new ID, CurrentEventSchema, ActorID mirrored
+// from Actor.ID and an empty Detail object when it has none. It returns the
+// event as persisted (Open and Move collect them for the EffectSink and
+// MoveResult).
+func (e *Engine) appendEvent(ctx context.Context, db pgxtx.DBTX, c *Case, evt Event) (Event, error) {
 	evt.ID = uuid.New()
+	evt.CaseID = c.ID
+	evt.Tenant = c.Tenant
+	evt.ActorID = evt.Actor.ID
 	evt.SchemaVersion = CurrentEventSchema
 	if len(evt.Detail) == 0 {
 		evt.Detail = emptyDetail()
@@ -946,14 +1013,48 @@ func (e *Engine) listEvents(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID
 // upcastEvent fills the defaults an event written with an older schema lacks.
 // Stored rows are never rewritten; this runs on every read. A version of 0
 // comes from a repository that does not store the version and reads as 1.
+// An event without an actor kind (a version-1 row read from a repository that
+// does not store the kind) reads as ActorUnspecified, and Actor.ID and the
+// deprecated ActorID fill each other.
 func upcastEvent(evt Event) Event {
 	if evt.SchemaVersion < 1 {
 		evt.SchemaVersion = 1
 	}
+	if evt.Actor.Kind == "" {
+		evt.Actor.Kind = ActorUnspecified
+	}
+	if evt.Actor.ID == "" {
+		evt.Actor.ID = evt.ActorID
+	}
+	evt.ActorID = evt.Actor.ID
 	if len(evt.Detail) == 0 {
 		evt.Detail = emptyDetail()
 	}
 	return evt
+}
+
+// resolveActor returns the Actor an input records, applying the deprecated
+// actorID alias: an empty actor.ID takes actorID, and an empty Kind means
+// ActorHuman. It fails with ErrInvalidActor when actor.ID and actorID are
+// both set and differ, when the kind is unknown or ActorUnspecified (a
+// read-only kind), and when an ActorSystem has no ID.
+func resolveActor(actor Actor, actorID string) (Actor, error) {
+	switch {
+	case actor.ID == "":
+		actor.ID = actorID
+	case actorID != "" && actorID != actor.ID:
+		return Actor{}, fmt.Errorf("%w: Actor.ID %q differs from ActorID %q", ErrInvalidActor, actor.ID, actorID)
+	}
+	if actor.Kind == "" {
+		actor.Kind = ActorHuman
+	}
+	if !actor.Kind.Valid() || actor.Kind == ActorUnspecified {
+		return Actor{}, fmt.Errorf("%w: kind %q", ErrInvalidActor, actor.Kind)
+	}
+	if actor.Kind == ActorSystem && actor.ID == "" {
+		return Actor{}, fmt.Errorf("%w: a system actor needs an ID", ErrInvalidActor)
+	}
+	return actor, nil
 }
 
 // emptyDetail returns a fresh `{}`, the Detail of a kind that carries none.

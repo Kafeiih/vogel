@@ -46,6 +46,8 @@ func TestListEvents_LegacyRowReadsAsSchemaVersion1(t *testing.T) {
 	require.Len(t, events, 1)
 	assert.Equal(t, 1, events[0].SchemaVersion)
 	assert.JSONEq(t, `{}`, string(events[0].Detail))
+	assert.Equal(t, workflow.Actor{Kind: workflow.ActorUnspecified, ID: "u1"}, events[0].Actor)
+	assert.Equal(t, "u1", events[0].ActorID)
 }
 
 func TestRepository_AppendEvent_RoundTripsSchemaVersionAndDetail(t *testing.T) {
@@ -225,4 +227,103 @@ func TestMigration004_BackfillsLastSeq(t *testing.T) {
 	for _, ev := range events {
 		assert.Equal(t, 1, ev.SchemaVersion)
 	}
+}
+
+// tenantTestEngine is an engine over the postgres repository with a one-step
+// definition, for the tenant and actor tests.
+func tenantTestEngine(t *testing.T, repo *postgres.Repository) *workflow.Engine {
+	t.Helper()
+	return workflow.New(repo, workflow.Config{}, nil, workflow.WithDefinitions(workflow.Definition{
+		Name: "purchase", Version: 1,
+		Nodes: []workflow.Node{
+			{ID: "draft", Start: true, Eligible: workflow.ByPosition("buyer")},
+			{ID: "done", Terminal: true},
+		},
+		Transitions: []workflow.Transition{{From: "draft", To: "done", Action: "submit"}},
+	}))
+}
+
+func TestEvent_PersistsActingAsAndOnBehalfOf(t *testing.T) {
+	pool := startTestPool(t)
+	repo := postgres.NewRepository()
+	ctx := context.Background()
+	e := tenantTestEngine(t, repo)
+
+	opener := workflow.Actor{Kind: workflow.ActorOperator, ID: "op-1", ActingAs: "jefe@finanzas:subrogante", OnBehalfOf: "u9", Via: "portal"}
+	opened, err := e.Open(ctx, pool, workflow.OpenInput{
+		Definition: "purchase", Tenant: "tenant-a", Domain: "compras", ExternalID: "actor-1", Unit: "finance", Actor: opener,
+	})
+	require.NoError(t, err)
+	_, err = e.ClaimWith(ctx, pool, workflow.ClaimInput{CaseID: opened.ID, Actor: workflow.Actor{Kind: workflow.ActorHuman, ID: "u2"}})
+	require.NoError(t, err)
+	_, err = e.ReleaseWith(ctx, pool, workflow.ReleaseInput{
+		CaseID: opened.ID, Actor: workflow.Actor{Kind: workflow.ActorSystem, ID: "deadline-sweeper"}, Reason: "expired",
+	})
+	require.NoError(t, err)
+
+	history, err := e.History(ctx, pool, opened.ID)
+	require.NoError(t, err)
+	require.Len(t, history, 3)
+	assert.Equal(t, opener, history[0].Actor)
+	assert.Equal(t, "op-1", history[0].ActorID)
+	assert.Equal(t, workflow.Actor{Kind: workflow.ActorHuman, ID: "u2"}, history[1].Actor)
+	assert.Equal(t, workflow.Actor{Kind: workflow.ActorSystem, ID: "deadline-sweeper"}, history[2].Actor)
+	for _, ev := range history {
+		assert.Equal(t, "tenant-a", ev.Tenant, "seq %d", ev.Seq)
+	}
+
+	var d workflow.AssignmentDetail
+	require.NoError(t, json.Unmarshal(history[2].Detail, &d))
+	assert.Equal(t, workflow.AssignmentDetail{From: "u2", Reason: "expired"}, d)
+}
+
+func TestOpen_SameExternalIDInTwoTenantsIsAllowed(t *testing.T) {
+	pool := startTestPool(t)
+	repo := postgres.NewRepository()
+	ctx := context.Background()
+	e := tenantTestEngine(t, repo)
+
+	open := func(tenant string) (*workflow.Case, error) {
+		return e.Open(ctx, pool, workflow.OpenInput{
+			Definition: "purchase", Tenant: tenant, Domain: "compras", ExternalID: "solicitud-1", Unit: "finance", ActorID: "u1",
+		})
+	}
+	a, err := open("tenant-a")
+	require.NoError(t, err)
+	b, err := open("tenant-b")
+	require.NoError(t, err)
+	_, err = open("tenant-a")
+	assert.True(t, errors.Is(err, workflow.ErrCaseExists), "same tenant must still be unique, got %v", err)
+
+	got, err := repo.GetByExternalID(ctx, pool, "tenant-b", "compras", "solicitud-1")
+	require.NoError(t, err)
+	assert.Equal(t, b.ID, got.ID)
+	assert.Equal(t, "tenant-b", got.Tenant)
+	got, err = repo.GetByExternalID(ctx, pool, "tenant-a", "compras", "solicitud-1")
+	require.NoError(t, err)
+	assert.Equal(t, a.ID, got.ID)
+	_, err = repo.GetByExternalID(ctx, pool, "", "compras", "solicitud-1")
+	assert.True(t, errors.Is(err, workflow.ErrCaseNotFound), "got %v", err)
+}
+
+func TestRepository_ListByEligibility_FiltersByTenant(t *testing.T) {
+	pool := startTestPool(t)
+	repo := postgres.NewRepository()
+	ctx := context.Background()
+
+	a := newCase("compras", "tenant-list-1")
+	a.Tenant = "tenant-a"
+	b := newCase("compras", "tenant-list-1")
+	b.Tenant = "tenant-b"
+	require.NoError(t, repo.Create(ctx, pool, a))
+	require.NoError(t, repo.Create(ctx, pool, b))
+
+	got, err := repo.ListByEligibility(ctx, pool, workflow.InboxFilter{Tenant: "tenant-a"})
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, a.ID, got[0].ID)
+
+	got, err = repo.ListByEligibility(ctx, pool, workflow.InboxFilter{Domain: "compras"})
+	require.NoError(t, err)
+	assert.Len(t, got, 2, "an empty tenant matches every tenant")
 }

@@ -99,24 +99,25 @@ func TestClaim_RecordsAssignmentFromTo(t *testing.T) {
 	assert.Equal(t, AssignmentDetail{From: "", To: "buyer-1"}, decodeAssignment(t, last))
 }
 
-// TestRelease_RecordsPreviousAssignee covers the From/To half of S5. The
-// Reason half needs ReleaseInput (S2) and lands with T2 as
-// TestRelease_RecordsPreviousAssigneeAndReason.
-func TestRelease_RecordsPreviousAssignee(t *testing.T) {
+func TestRelease_RecordsPreviousAssigneeAndReason(t *testing.T) {
 	repo := newFakeRepository()
 	e := New(repo, Config{}, testLogger(), WithDefinitions(testDefinition()))
 
 	c := openTestCase(t, e)
 	_, err := e.Claim(context.Background(), nil, c.ID, "buyer-1")
 	require.NoError(t, err)
-	_, err = e.Release(context.Background(), nil, c.ID, "supervisor-1")
+	released, err := e.ReleaseWith(context.Background(), nil, ReleaseInput{
+		CaseID: c.ID, Actor: Actor{Kind: ActorOperator, ID: "supervisor-1"}, Reason: "on leave",
+	})
 	require.NoError(t, err)
+	assert.Empty(t, released.AssignedTo)
 
 	events := storedEvents(t, repo, c.ID)
 	last := events[len(events)-1]
 	require.Equal(t, EventUnassigned, last.Kind)
 	assert.Equal(t, "supervisor-1", last.ActorID)
-	assert.Equal(t, AssignmentDetail{From: "buyer-1", To: ""}, decodeAssignment(t, last))
+	assert.Equal(t, Actor{Kind: ActorOperator, ID: "supervisor-1"}, last.Actor)
+	assert.Equal(t, AssignmentDetail{From: "buyer-1", To: "", Reason: "on leave"}, decodeAssignment(t, last))
 }
 
 func TestEventsWithoutDetail_CarryEmptyObject(t *testing.T) {
@@ -221,4 +222,202 @@ func TestNextSeq_DoesNotListEvents(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, 0, repo.listEventsCalls, "assigning seq must use Case.LastSeq, never read the history")
+}
+
+func TestOpen_ActorIDAliasBecomesHumanActor(t *testing.T) {
+	repo := newFakeRepository()
+	e := New(repo, Config{}, testLogger(), WithDefinitions(testDefinition()))
+
+	c := openTestCase(t, e) // OpenInput.ActorID "u1", no Actor
+	_, err := e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "submit", ActorID: "u1"})
+	require.NoError(t, err)
+
+	history, err := e.History(context.Background(), nil, c.ID)
+	require.NoError(t, err)
+	require.Len(t, history, 2)
+	for _, ev := range history {
+		assert.Equal(t, Actor{Kind: ActorHuman, ID: "u1"}, ev.Actor, "kind=%s", ev.Kind)
+		assert.Equal(t, "u1", ev.ActorID, "ActorID mirrors Actor.ID")
+	}
+}
+
+func TestOpen_ActorAndEqualActorIDIsAccepted(t *testing.T) {
+	repo := newFakeRepository()
+	e := New(repo, Config{}, testLogger(), WithDefinitions(testDefinition()))
+
+	res, err := e.OpenDetailed(context.Background(), nil, OpenInput{
+		Definition: "purchase", Domain: "compras", ExternalID: "solicitud-1", Unit: "finance",
+		ActorID: "u1", Actor: Actor{Kind: ActorAPIClient, ID: "u1", Via: "erp"},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, Actor{Kind: ActorAPIClient, ID: "u1", Via: "erp"}, res.Events[0].Actor)
+}
+
+func TestMove_ConflictingActorAndActorIDIsInvalid(t *testing.T) {
+	repo := newFakeRepository()
+	e := New(repo, Config{}, testLogger(), WithDefinitions(testDefinition()))
+
+	c := openTestCase(t, e)
+	_, err := e.Move(context.Background(), nil, MoveInput{
+		CaseID: c.ID, Action: "submit", ActorID: "u1", Actor: Actor{Kind: ActorHuman, ID: "u2"},
+	})
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrInvalidActor), "got %v", err)
+
+	stored, err := repo.GetByID(context.Background(), nil, c.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "draft", stored.State, "a rejected actor must not move the case")
+	assert.Len(t, storedEvents(t, repo, c.ID), 1)
+}
+
+func TestMove_SystemActorNeedsID(t *testing.T) {
+	repo := newFakeRepository()
+	e := New(repo, Config{}, testLogger(), WithDefinitions(testDefinition()))
+
+	c := openTestCase(t, e)
+	_, err := e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "submit", Actor: Actor{Kind: ActorSystem}})
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrInvalidActor), "got %v", err)
+	assert.Len(t, storedEvents(t, repo, c.ID), 1)
+
+	res, err := e.MoveDetailed(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "submit", Actor: Actor{Kind: ActorSystem, ID: "deadline-sweeper"}})
+	require.NoError(t, err)
+	assert.Equal(t, Actor{Kind: ActorSystem, ID: "deadline-sweeper"}, res.Events[0].Actor)
+	assert.Equal(t, "deadline-sweeper", res.Events[0].ActorID)
+}
+
+func TestMove_InvalidActorKindIsInvalid(t *testing.T) {
+	for _, kind := range []ActorKind{"robot", ActorUnspecified} {
+		t.Run(string(kind), func(t *testing.T) {
+			repo := newFakeRepository()
+			e := New(repo, Config{}, testLogger(), WithDefinitions(testDefinition()))
+
+			c := openTestCase(t, e)
+			_, err := e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "submit", Actor: Actor{Kind: kind, ID: "u1"}})
+			require.Error(t, err)
+			assert.True(t, errors.Is(err, ErrInvalidActor), "got %v", err)
+			assert.Len(t, storedEvents(t, repo, c.ID), 1)
+		})
+	}
+}
+
+func TestListEvents_LegacyEventReadsUnspecifiedActor(t *testing.T) {
+	repo := newFakeRepository()
+	e := New(repo, Config{}, testLogger())
+
+	caseID := uuid.New()
+	require.NoError(t, repo.Create(context.Background(), nil, &Case{ID: caseID, Domain: "d", ExternalID: "1"}))
+	require.NoError(t, repo.AppendEvent(context.Background(), nil, &Event{
+		ID: uuid.New(), CaseID: caseID, Seq: 1, Kind: EventOpened, ActorID: "u1", SchemaVersion: 1,
+	}))
+
+	events, err := e.History(context.Background(), nil, caseID)
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+	assert.Equal(t, Actor{Kind: ActorUnspecified, ID: "u1"}, events[0].Actor)
+	assert.Equal(t, "u1", events[0].ActorID)
+}
+
+func TestClaim_WrapperRecordsHumanActor(t *testing.T) {
+	repo := newFakeRepository()
+	e := New(repo, Config{}, testLogger(), WithDefinitions(testDefinition()))
+
+	c := openTestCase(t, e)
+	claimed, err := e.Claim(context.Background(), nil, c.ID, "buyer-1")
+	require.NoError(t, err)
+	assert.Equal(t, "buyer-1", claimed.AssignedTo)
+	_, err = e.Release(context.Background(), nil, c.ID, "buyer-1")
+	require.NoError(t, err)
+
+	events := storedEvents(t, repo, c.ID)
+	require.Len(t, events, 3)
+	for _, ev := range events[1:] {
+		assert.Equal(t, Actor{Kind: ActorHuman, ID: "buyer-1"}, ev.Actor, "kind=%s", ev.Kind)
+	}
+	assert.Equal(t, AssignmentDetail{From: "buyer-1"}, decodeAssignment(t, events[2]), "Release records no reason")
+}
+
+func TestClaimWith_SameActorIsNoOp(t *testing.T) {
+	repo := newFakeRepository()
+	e := New(repo, Config{}, testLogger(), WithDefinitions(testDefinition()))
+
+	c := openTestCase(t, e)
+	actor := Actor{Kind: ActorOperator, ID: "op-1", ActingAs: "jefe@finanzas"}
+	_, err := e.ClaimWith(context.Background(), nil, ClaimInput{CaseID: c.ID, Actor: actor})
+	require.NoError(t, err)
+	again, err := e.ClaimWith(context.Background(), nil, ClaimInput{CaseID: c.ID, Actor: actor})
+	require.NoError(t, err)
+	assert.Equal(t, "op-1", again.AssignedTo)
+	assert.Len(t, storedEvents(t, repo, c.ID), 2, "re-claim by the same actor appends nothing")
+
+	_, err = e.ClaimWith(context.Background(), nil, ClaimInput{CaseID: c.ID, Actor: Actor{Kind: ActorSystem}})
+	assert.True(t, errors.Is(err, ErrInvalidActor), "got %v", err)
+}
+
+func openInTenant(t *testing.T, e *Engine, tenant, externalID string) *Case {
+	t.Helper()
+	c, err := e.Open(context.Background(), nil, OpenInput{
+		Definition: "purchase", Tenant: tenant, Domain: "compras", ExternalID: externalID, Unit: "finance", ActorID: "u1",
+	})
+	require.NoError(t, err)
+	return c
+}
+
+func caseIDs(cases []Case) []uuid.UUID {
+	ids := make([]uuid.UUID, 0, len(cases))
+	for _, c := range cases {
+		ids = append(ids, c.ID)
+	}
+	return ids
+}
+
+func TestInbox_FiltersByTenant(t *testing.T) {
+	repo := newFakeRepository()
+	e := New(repo, Config{}, testLogger(), WithDefinitions(testDefinition()))
+
+	a := openInTenant(t, e, "tenant-a", "solicitud-1")
+	b := openInTenant(t, e, "tenant-b", "solicitud-1")
+	assert.Equal(t, "tenant-a", a.Tenant)
+
+	got, err := e.Inbox(context.Background(), nil, InboxFilter{Tenant: "tenant-a", Domain: "compras"})
+	require.NoError(t, err)
+	assert.Equal(t, []uuid.UUID{a.ID}, caseIDs(got))
+
+	got, err = e.Inbox(context.Background(), nil, InboxFilter{Tenant: "tenant-b"})
+	require.NoError(t, err)
+	assert.Equal(t, []uuid.UUID{b.ID}, caseIDs(got))
+}
+
+func TestInbox_EmptyTenantMatchesAnyTenant(t *testing.T) {
+	repo := newFakeRepository()
+	e := New(repo, Config{}, testLogger(), WithDefinitions(testDefinition()))
+
+	a := openInTenant(t, e, "tenant-a", "solicitud-1")
+	none := openInTenant(t, e, "", "solicitud-2")
+
+	got, err := e.Inbox(context.Background(), nil, InboxFilter{Domain: "compras"})
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []uuid.UUID{a.ID, none.ID}, caseIDs(got))
+}
+
+func TestEvent_CopiesCaseTenant(t *testing.T) {
+	repo := newFakeRepository()
+	e := New(repo, Config{}, testLogger(), WithDefinitions(testDefinition()))
+	require.NoError(t, e.RegisterGuard("under-budget", alwaysTrueGuard))
+
+	c := openInTenant(t, e, "tenant-a", "solicitud-1")
+	_, err := e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "submit", ActorID: "u1"})
+	require.NoError(t, err)
+	_, err = e.Claim(context.Background(), nil, c.ID, "approver-1")
+	require.NoError(t, err)
+	_, err = e.Release(context.Background(), nil, c.ID, "approver-1")
+	require.NoError(t, err)
+	_, err = e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "approve", ActorID: "approver-1"})
+	require.NoError(t, err)
+
+	events := storedEvents(t, repo, c.ID)
+	require.Len(t, events, 6)
+	for _, ev := range events {
+		assert.Equal(t, "tenant-a", ev.Tenant, "seq=%d kind=%s", ev.Seq, ev.Kind)
+	}
 }

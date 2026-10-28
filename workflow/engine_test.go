@@ -35,15 +35,15 @@ func newFakeRepository() *fakeRepository {
 	}
 }
 
-func extKey(domain, externalID string) string {
-	return domain + "\x00" + externalID
+func extKey(tenant, domain, externalID string) string {
+	return tenant + "\x00" + domain + "\x00" + externalID
 }
 
 func (f *fakeRepository) Create(_ context.Context, _ pgxtx.DBTX, c *Case) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	key := extKey(c.Domain, c.ExternalID)
+	key := extKey(c.Tenant, c.Domain, c.ExternalID)
 	if _, exists := f.byExtID[key]; exists {
 		return ErrCaseExists
 	}
@@ -65,11 +65,11 @@ func (f *fakeRepository) GetByID(_ context.Context, _ pgxtx.DBTX, id uuid.UUID) 
 	return &cp, nil
 }
 
-func (f *fakeRepository) GetByExternalID(_ context.Context, _ pgxtx.DBTX, domain, externalID string) (*Case, error) {
+func (f *fakeRepository) GetByExternalID(_ context.Context, _ pgxtx.DBTX, tenant, domain, externalID string) (*Case, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	id, ok := f.byExtID[extKey(domain, externalID)]
+	id, ok := f.byExtID[extKey(tenant, domain, externalID)]
 	if !ok {
 		return nil, ErrCaseNotFound
 	}
@@ -118,6 +118,9 @@ func (f *fakeRepository) ListByEligibility(_ context.Context, _ pgxtx.DBTX, filt
 
 	var out []Case
 	for _, c := range f.cases {
+		if filter.Tenant != "" && c.Tenant != filter.Tenant {
+			continue
+		}
 		if filter.Domain != "" && c.Domain != filter.Domain {
 			continue
 		}

@@ -100,7 +100,7 @@ func TestRepository_Create_GetByID_GetByExternalID(t *testing.T) {
 	assert.Equal(t, c.ExternalID, byID.ExternalID)
 	assert.Equal(t, workflow.StatusOpen, byID.Status)
 
-	byExt, err := repo.GetByExternalID(ctx, pool, "compras", "solicitud-1")
+	byExt, err := repo.GetByExternalID(ctx, pool, "", "compras", "solicitud-1")
 	require.NoError(t, err)
 	assert.Equal(t, c.ID, byExt.ID)
 }
