@@ -18,7 +18,13 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   desplegar, y todos los binarios se reemplazan juntos.** Un binario anterior
   agrega eventos sin avanzar `workflow_case.last_seq`; el siguiente binario
   nuevo calcula un `seq` que choca con `UNIQUE (case_id, seq)` y falla en
-  forma visible en vez de corromper el historial.
+  forma visible en vez de corromper el historial. Ese caso queda trabado
+  hasta reparar `last_seq`; una vez que no queda ningún binario viejo, se
+  repara volviendo a correr el relleno de la 004:
+  `UPDATE workflow_case c SET last_seq = COALESCE((SELECT MAX(e.seq) FROM workflow_event e WHERE e.case_id = c.id), 0);`.
+  La 004 rellena `last_seq` dentro de la misma transacción que agrega la
+  columna, con `workflow_case` bloqueada mientras dura: en una tabla grande,
+  aplicarla en una ventana de mantenimiento.
 
 ### Agregado
 

@@ -114,12 +114,15 @@ func TestRepository_CreateAndUpdate_PersistLastSeq(t *testing.T) {
 	assert.Equal(t, int64(4), got.LastSeq)
 }
 
-func TestEngine_HistoryAcrossLegacyAndNewEvents(t *testing.T) {
+func TestEngine_HistoryReadsLegacyAndNewEvents(t *testing.T) {
 	pool := startTestPool(t)
 	repo := postgres.NewRepository()
 	ctx := context.Background()
 
-	e := workflow.New(repo, workflow.Config{}, nil, workflow.WithDefinitions(workflow.Definition{
+	// Postgres keeps microseconds in UTC-normalized form; a truncated UTC clock
+	// lets the appended events compare equal to the ones read back.
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	e := workflow.New(repo, workflow.Config{Now: func() time.Time { return now }}, nil, workflow.WithDefinitions(workflow.Definition{
 		Name: "purchase", Version: 1,
 		Nodes: []workflow.Node{
 			{ID: "draft", Start: true, Eligible: workflow.ByPosition("buyer")},
@@ -130,19 +133,60 @@ func TestEngine_HistoryAcrossLegacyAndNewEvents(t *testing.T) {
 
 	opened, err := e.OpenDetailed(ctx, pool, workflow.OpenInput{Definition: "purchase", Domain: "compras", ExternalID: "e2e-1", Unit: "finance", ActorID: "u1"})
 	require.NoError(t, err)
-	_, err = e.Claim(ctx, pool, opened.Case.ID, "u1")
-	require.NoError(t, err)
-	moved, err := e.MoveDetailed(ctx, pool, workflow.MoveInput{CaseID: opened.Case.ID, Action: "submit", ActorID: "u1"})
-	require.NoError(t, err)
-	assert.Equal(t, int64(4), moved.Case.LastSeq)
+	caseID := opened.Case.ID
 
-	history, err := e.History(ctx, pool, opened.Case.ID)
+	// A pre-004 binary appended seq 2; the operator's backfill caught last_seq up.
+	insertLegacyEvent(t, pool, caseID, 2, workflow.EventAssigned)
+	_, err = pool.Exec(ctx, `UPDATE workflow_case SET last_seq = 2 WHERE id = $1`, caseID)
 	require.NoError(t, err)
-	require.Len(t, history, 4)
-	assert.Equal(t, moved.Events, history[2:])
+
+	_, err = e.Claim(ctx, pool, caseID, "u1")
+	require.NoError(t, err)
+	moved, err := e.MoveDetailed(ctx, pool, workflow.MoveInput{CaseID: caseID, Action: "submit", ActorID: "u1"})
+	require.NoError(t, err)
+	assert.Equal(t, int64(5), moved.Case.LastSeq)
+
+	history, err := e.History(ctx, pool, caseID)
+	require.NoError(t, err)
+	require.Len(t, history, 5)
+	for i, ev := range history {
+		assert.Equal(t, int64(i+1), ev.Seq)
+		want := workflow.CurrentEventSchema
+		if i == 1 {
+			want = 1
+		}
+		assert.Equal(t, want, ev.SchemaVersion, "seq %d", ev.Seq)
+	}
+	assert.JSONEq(t, `{}`, string(history[1].Detail), "legacy row reads with an empty detail")
+
 	var d workflow.AssignmentDetail
-	require.NoError(t, json.Unmarshal(history[1].Detail, &d))
+	require.NoError(t, json.Unmarshal(history[2].Detail, &d))
 	assert.Equal(t, workflow.AssignmentDetail{To: "u1"}, d)
+
+	require.Len(t, moved.Events, 2)
+	for i, ev := range moved.Events {
+		got := history[3+i]
+		assert.Equal(t, ev.ID, got.ID)
+		assert.Equal(t, ev.Seq, got.Seq)
+		assert.Equal(t, ev.Kind, got.Kind)
+		assert.True(t, ev.OccurredAt.Equal(got.OccurredAt), "seq %d: %v vs %v", ev.Seq, ev.OccurredAt, got.OccurredAt)
+	}
+}
+
+func TestRepository_AppendEvent_ZeroSchemaVersionStoredAs1(t *testing.T) {
+	pool := startTestPool(t)
+	repo := postgres.NewRepository()
+	ctx := context.Background()
+
+	c := newCase("compras", "schema-zero")
+	require.NoError(t, repo.Create(ctx, pool, c))
+	require.NoError(t, repo.AppendEvent(ctx, pool, &workflow.Event{
+		ID: uuid.New(), CaseID: c.ID, Seq: 1, Kind: workflow.EventOpened, OccurredAt: time.Now().UTC(),
+	}))
+
+	var stored int
+	require.NoError(t, pool.QueryRow(ctx, `SELECT schema_version FROM workflow_event WHERE case_id = $1`, c.ID).Scan(&stored))
+	assert.Equal(t, 1, stored)
 }
 
 func TestMigration004_BackfillsLastSeq(t *testing.T) {

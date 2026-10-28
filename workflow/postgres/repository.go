@@ -149,11 +149,13 @@ func (r *Repository) Update(ctx context.Context, db pgxtx.DBTX, c *workflow.Case
 // here: a Seq that is already taken fails on UNIQUE (case_id, seq) instead
 // of being silently moved, which is how a writer that does not advance
 // workflow_case.last_seq (a binary from before migration 004) is detected.
-// An empty e.Detail is stored as `{}`.
+// An empty e.Detail is stored as `{}`, and a SchemaVersion below 1 (a caller
+// that does not set it) as 1, the version of an event without detail.
 func (r *Repository) AppendEvent(ctx context.Context, db pgxtx.DBTX, e *workflow.Event) error {
 	if e.Seq < 1 {
 		return fmt.Errorf("workflow: append event: seq %d: must be at least 1", e.Seq)
 	}
+	schemaVersion := max(e.SchemaVersion, 1)
 	detail := e.Detail
 	if len(detail) == 0 {
 		detail = json.RawMessage(`{}`)
@@ -162,7 +164,7 @@ func (r *Repository) AppendEvent(ctx context.Context, db pgxtx.DBTX, e *workflow
         INSERT INTO workflow_event (`+eventColumns+`)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
 		e.ID, e.CaseID, e.Seq, string(e.Kind), e.FromState, e.ToState, e.Action, e.ActorID, e.OccurredAt, e.Comment,
-		e.SchemaVersion, detail,
+		schemaVersion, detail,
 	)
 	if err != nil {
 		return fmt.Errorf("workflow: append event: %w", err)
