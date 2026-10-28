@@ -60,10 +60,10 @@ módulos del repositorio, generado por `.github/workflows/release.yaml` con
 | `vogel-boilerplate.cdx.json` | `examples/boilerplate`, módulo aparte con sus propias dependencias |
 | `SHA256SUMS` | Hash SHA-256 de los dos archivos anteriores |
 
-Para descargarlos y comprobarlos (reemplazar `v0.17.0` por la versión):
+Para descargarlos y comprobarlos (reemplazar `v0.17.1` por la versión):
 
 ```bash
-gh release download v0.17.0 -R Kafeiih/vogel -p '*.cdx.json' -p SHA256SUMS
+gh release download v0.17.1 -R Kafeiih/vogel -p '*.cdx.json' -p SHA256SUMS
 sha256sum -c SHA256SUMS
 ```
 
