@@ -29,6 +29,10 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   `GetByExternalID(ctx, db, tenant, domain, externalID)`. Un consumidor de un
   solo tenant pasa `""`. Un repositorio propio o un fake de test debe agregar
   el parámetro, guardar `Case.Tenant` y filtrar por `InboxFilter.Tenant`.
+- **`Claim` y `ClaimWith` rechazan un actor sin ID** con `ErrInvalidActor`,
+  sin escribir nada. Antes `Claim(ctx, db, id, "")` respondía con éxito,
+  dejaba el caso sin asignar y agregaba un `EventAssigned` a nadie, que
+  además avanzaba `revision`. `Release` sigue aceptando un actor sin ID.
 - **La unicidad de un caso pasa a ser `(tenant, domain, external_id)`.** La
   004 reemplaza `UNIQUE (domain, external_id)` por el índice único
   `uq_workflow_case_tenant_domain_external_id`; los casos existentes quedan

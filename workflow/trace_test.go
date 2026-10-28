@@ -504,3 +504,67 @@ func TestOpen_ActorIDAliasKeepsExplicitKind(t *testing.T) {
 	require.Len(t, events, 1)
 	assert.Equal(t, Actor{Kind: ActorOperator, ID: "bob"}, events[0].Actor)
 }
+
+func TestClaimWith_EmptyActorIDIsInvalid(t *testing.T) {
+	for _, kind := range []ActorKind{"", ActorHuman, ActorOperator, ActorAPIClient, ActorAnonymous} {
+		t.Run(string(kind), func(t *testing.T) {
+			repo := newFakeRepository()
+			e := New(repo, Config{}, testLogger(), WithDefinitions(testDefinition()))
+			c := openTestCase(t, e)
+			before := storedEvents(t, repo, c.ID)
+
+			_, err := e.ClaimWith(context.Background(), nil, ClaimInput{CaseID: c.ID, Actor: Actor{Kind: kind}})
+			require.Error(t, err)
+			assert.True(t, errors.Is(err, ErrInvalidActor), "got %v", err)
+
+			stored, err := repo.GetByID(context.Background(), nil, c.ID)
+			require.NoError(t, err)
+			assert.Equal(t, *c, *stored, "a rejected claim must not touch the case")
+			assert.Equal(t, before, storedEvents(t, repo, c.ID), "a rejected claim must append nothing")
+		})
+	}
+}
+
+func TestClaim_EmptyActorIDIsInvalid(t *testing.T) {
+	repo := newFakeRepository()
+	e := New(repo, Config{}, testLogger(), WithDefinitions(testDefinition()))
+	c := openTestCase(t, e)
+
+	_, err := e.Claim(context.Background(), nil, c.ID, "")
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrInvalidActor), "got %v", err)
+	assert.Len(t, storedEvents(t, repo, c.ID), 1, "only the opened event")
+}
+
+func TestReleaseWith_EmptyActorIDIsStillAllowed(t *testing.T) {
+	repo := newFakeRepository()
+	e := New(repo, Config{}, testLogger(), WithDefinitions(testDefinition()))
+	c := openTestCase(t, e)
+	_, err := e.Claim(context.Background(), nil, c.ID, "buyer-1")
+	require.NoError(t, err)
+
+	released, err := e.ReleaseWith(context.Background(), nil, ReleaseInput{CaseID: c.ID, Actor: Actor{Kind: ActorAnonymous}})
+	require.NoError(t, err)
+	assert.Empty(t, released.AssignedTo)
+}
+
+func TestMove_NonHumanActorRecordedOnEveryHop(t *testing.T) {
+	repo := newFakeRepository()
+	e := New(repo, Config{}, testLogger(), WithDefinitions(decisionToTerminalDefinition()))
+	require.NoError(t, e.RegisterGuard("has-subsidy-sep", alwaysFalseGuard))
+
+	c := openTestCase(t, e)
+	_, err := e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "submit", ActorID: "u1"})
+	require.NoError(t, err)
+
+	actor := Actor{Kind: ActorAPIClient, ID: "client-7", ActingAs: "approver@finance:delegate", OnBehalfOf: "u9", Via: "erp"}
+	res, err := e.MoveDetailed(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "approve", Actor: actor})
+	require.NoError(t, err)
+
+	require.Len(t, res.Events, 3, "human hop, route hop, close")
+	stored := storedEvents(t, repo, c.ID)
+	for i, ev := range stored[2:] {
+		assert.Equal(t, actor, ev.Actor, "event %d kind=%s", i, ev.Kind)
+		assert.Equal(t, "client-7", ev.ActorID, "event %d kind=%s", i, ev.Kind)
+	}
+}

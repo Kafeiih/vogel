@@ -817,7 +817,8 @@ func findTransition(candidates []Transition, action string) (Transition, bool) {
 }
 
 // Claim assigns the case to actorID, a person: it is ClaimWith with
-// Actor{Kind: ActorHuman, ID: actorID}.
+// Actor{Kind: ActorHuman, ID: actorID}, so an empty actorID fails with
+// ErrInvalidActor.
 func (e *Engine) Claim(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID, actorID string) (*Case, error) {
 	return e.ClaimWith(ctx, db, ClaimInput{CaseID: caseID, Actor: Actor{Kind: ActorHuman, ID: actorID}})
 }
@@ -829,7 +830,8 @@ func (e *Engine) Release(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID, a
 }
 
 // ClaimInput describes a claim: Actor becomes the case's assignee (its ID is
-// stored as Case.AssignedTo). An empty Actor.Kind means ActorHuman.
+// stored as Case.AssignedTo), so Actor.ID is required whatever the kind. An
+// empty Actor.Kind means ActorHuman.
 type ClaimInput struct {
 	CaseID uuid.UUID
 	Actor  Actor
@@ -847,8 +849,8 @@ type ReleaseInput struct {
 
 // ClaimWith assigns the case to in.Actor.ID. Re-claiming by the same actor ID
 // is a no-op success; claiming a case already assigned to someone else fails.
-// An invalid Actor fails with ErrInvalidActor before anything is read.
-// ClaimWith never calls the EffectSink: no effect can be declared on a claim.
+// An invalid Actor, or one without an ID (a claim must name its assignee),
+// fails with ErrInvalidActor before anything is read. ClaimWith never calls the EffectSink: no effect can be declared on a claim.
 // Like Move, the case update is a revision compare-and-swap performed before
 // the event is appended: a concurrent change fails with ErrConflict and
 // persists nothing, so two racing claimers can never both win.
@@ -856,6 +858,9 @@ func (e *Engine) ClaimWith(ctx context.Context, db pgxtx.DBTX, in ClaimInput) (*
 	actor, err := resolveActor(in.Actor, "")
 	if err != nil {
 		return nil, fmt.Errorf("workflow: claim case %s: %w", in.CaseID, err)
+	}
+	if actor.ID == "" {
+		return nil, fmt.Errorf("workflow: claim case %s: %w: the assignee needs an ID", in.CaseID, ErrInvalidActor)
 	}
 	c, err := e.repo.GetByID(ctx, db, in.CaseID)
 	if err != nil {
