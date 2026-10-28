@@ -202,3 +202,25 @@ components:
 
 	assert.Empty(t, rec.errors)
 }
+
+type note struct {
+	ID   string   `json:"id"`
+	Tags []string `json:"tags,omitzero"`
+}
+
+func TestSchemaMatchesType_TreatsOmitzeroAsOptional(t *testing.T) {
+	rec := &recorder{TB: t}
+	doc := `
+components:
+  schemas:
+    Note:
+      required: [id]
+      properties:
+        id: {type: string}
+        tags: {type: array, items: {type: string}}
+`
+
+	openapitest.SchemaMatchesType[note](rec, []byte(doc), "Note")
+
+	assert.Empty(t, rec.errors)
+}
