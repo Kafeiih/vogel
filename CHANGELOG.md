@@ -6,6 +6,13 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ## [Unreleased]
 
+### Corregido
+
+- **`httpx/openapi/openapitest`: `SchemaMatchesType` trata `omitzero` como
+  opcional.** Antes solo `omitempty` sacaba un campo de `required`, así que un
+  campo con `omitzero` (Go 1.24+) hacía fallar el test contra un schema
+  correcto.
+
 ### Seguridad
 
 - **`github.com/go-jose/go-jose/v4` sube a 4.1.6** (CVE-2026-116587: DoS al

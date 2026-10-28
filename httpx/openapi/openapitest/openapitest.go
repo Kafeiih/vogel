@@ -139,9 +139,9 @@ func RoutesMatchSpec(t testing.TB, spec []byte, routes chi.Routes, opts ...Optio
 
 // SchemaMatchesType fails t unless the schema named name in spec describes
 // the JSON encoding of T: the same properties as T's JSON fields, and
-// required exactly where the field's tag has no omitempty. Use it for schemas
-// whose Go type is not generated, such as vogel's error envelopes or a DTO
-// mapped with x-go-type.
+// required exactly where the field's tag has neither omitempty nor omitzero.
+// Use it for schemas whose Go type is not generated, such as vogel's error
+// envelopes or a DTO mapped with x-go-type.
 func SchemaMatchesType[T any](t testing.TB, spec []byte, name string) {
 	t.Helper()
 	doc, ok := parse(t, spec)
@@ -173,7 +173,7 @@ func SchemaMatchesType[T any](t testing.TB, spec []byte, name string) {
 }
 
 // jsonFields returns the JSON property names of struct type typ and those
-// that are required (no omitempty). An embedded struct without a JSON name
+// that are required (neither omitempty nor omitzero). An embedded struct without a JSON name
 // contributes its own fields, as encoding/json flattens it.
 func jsonFields(typ reflect.Type) (props, required []string) {
 	for i := range typ.NumField() {
@@ -201,7 +201,8 @@ func jsonFields(typ reflect.Type) (props, required []string) {
 			prop = field.Name
 		}
 		props = append(props, prop)
-		if !slices.Contains(strings.Split(opts, ","), "omitempty") {
+		flags := strings.Split(opts, ",")
+		if !slices.Contains(flags, "omitempty") && !slices.Contains(flags, "omitzero") {
 			required = append(required, prop)
 		}
 	}
