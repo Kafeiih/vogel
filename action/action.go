@@ -236,11 +236,20 @@ func (r *Registry) plan(d workflow.Definition, c workflow.Case, events []workflo
 				Domain:     c.Domain,
 				ExternalID: c.ExternalID,
 				Unit:       c.Unit,
-				ActorID:    evt.Actor.ID,
+				ActorID:    eventActorID(evt),
 			})
 		}
 	}
 	return jobs, nil
+}
+
+// eventActorID returns the event's actor ID: Actor.ID, or the deprecated
+// ActorID for an event built without Actor (the engine sets both).
+func eventActorID(evt *workflow.Event) string {
+	if evt.Actor.ID != "" {
+		return evt.Actor.ID
+	}
+	return evt.ActorID //nolint:staticcheck // events built by callers that still set only the deprecated field
 }
 
 // effectsFor returns the effect names one event triggers.
