@@ -17,6 +17,10 @@
 # Added 2026-10-21: CVE-2026-111943 (crypto/x509) is fixed in Go 1.27.3; the
 # next Cerbos release clears it only if built with Go 1.27.3 or later.
 #
+# Added 2026-10-28: CVE-2026-116587 (github.com/go-jose/go-jose/v4, fixed in
+# 4.1.6). Cerbos 0.56.0 and 0.57.0 (the latest, 2026-10-23) both depend on
+# go-jose 4.1.5; drop the entry once a release requires 4.1.6 or later.
+#
 # Each entry expires: when it does, CI fails again. Bump the Cerbos version in
 # cerbos/Dockerfile and deploy/docker-compose.developer.yaml if a fixed
 # release is out, or renew the date with a reason.
@@ -29,3 +33,5 @@ CVE-2026-78669 exp:2026-12-15
 CVE-2026-97031 exp:2026-12-15
 # crypto/x509 (stdlib)
 CVE-2026-111943 exp:2026-12-15
+# github.com/go-jose/go-jose/v4: DoS parsing JWKs with RSA keys
+CVE-2026-116587 exp:2026-12-15

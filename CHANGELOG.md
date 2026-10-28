@@ -6,6 +6,14 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ## [Unreleased]
 
+### Seguridad
+
+- **`github.com/go-jose/go-jose/v4` sube a 4.1.6** (CVE-2026-116587: DoS al
+  parsear JWKs con claves RSA), en la librería y en el boilerplate. La imagen
+  de Cerbos sigue con 4.1.5 (ni 0.57.0 la actualiza): queda aceptada en
+  `examples/boilerplate/cerbos/.trivyignore` hasta el 2026-12-15, con el PDP
+  en la red interna sin puertos publicados.
+
 ## [0.17.0] — 2026-10-27
 
 ### Agregado
