@@ -6,6 +6,8 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ## [Unreleased]
 
+## [0.17.1] — 2026-10-28
+
 ### Corregido
 
 - **`httpx/openapi/openapitest`: `SchemaMatchesType` trata `omitzero` como
