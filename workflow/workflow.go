@@ -22,6 +22,7 @@ package workflow
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -668,6 +669,34 @@ type Case struct {
 	// a stale read fails with ErrConflict instead of silently overwriting a
 	// concurrent change (a lost update).
 	Revision int64
+	// LastSeq is the Seq of the newest event appended to the case, 0 before
+	// any. The engine assigns the next events' Seq from it and persists the
+	// advanced value through the same Repository.Update compare-and-swap
+	// (Create for Open), so assigning a Seq never reads the history. A
+	// consumer can stamp it on its own rows to record which point of the
+	// case history they saw.
+	LastSeq int64
+}
+
+// CurrentEventSchema is the Event.SchemaVersion the engine writes. Version 1
+// is every event stored before schema_version existed: no Detail. Version 2
+// adds Detail and LastSeq-assigned Seq.
+const CurrentEventSchema = 2
+
+// AssignmentDetail is the Event.Detail of EventAssigned (written by Claim,
+// From empty) and EventUnassigned (written by Release, To empty). From and To
+// are person ids; Reason is the caller's free-text reason for a release.
+type AssignmentDetail struct {
+	From   string `json:"from"`
+	To     string `json:"to"`
+	Reason string `json:"reason,omitempty"`
+}
+
+// MoveResult is what OpenDetailed and MoveDetailed return: the case as
+// persisted and exactly the events the call appended, in Seq order.
+type MoveResult struct {
+	Case   *Case
+	Events []Event
 }
 
 // Event is a single append-only history record for a Case.
@@ -680,7 +709,7 @@ type Event struct {
 	// automatic decision-node hop after it, and any automatic EventClosed)
 	// shares the exact same OccurredAt timestamp (see Engine.appendEvent),
 	// so a caller must never sort by OccurredAt to recover hop order within
-	// one Move; Seq, assigned in append order (see Engine.nextSeq), is what
+	// one Move; Seq, assigned in append order from Case.LastSeq, is what
 	// makes that order recoverable. workflow/postgres.ListEvents orders its
 	// query by `seq ASC` for exactly this reason (see repository.go).
 	Seq       int64
@@ -697,6 +726,17 @@ type Event struct {
 	// side effect, so it is never duplicated there.
 	Comment    string
 	OccurredAt time.Time
+	// SchemaVersion is the shape the event was written with. The engine
+	// writes CurrentEventSchema; rows stored before the column existed read
+	// as 1 (a repository that does not store it returns 0, read as 1 too).
+	// Engine reads fill the defaults of older versions and fail with
+	// ErrUnsupportedEventSchema for a version newer than this binary knows.
+	SchemaVersion int
+	// Detail is the kind-specific detail as a JSON object, `{}` for kinds
+	// that carry none. Each kind that uses it has its own Go type
+	// (AssignmentDetail). Like the rest of the event it holds references and
+	// digests only, never domain data.
+	Detail json.RawMessage
 }
 
 // Sentinel errors callers can branch on via errors.Is.
@@ -725,6 +765,10 @@ var (
 	// (no case update, no event); the caller should roll back its
 	// transaction and may retry the whole operation from a fresh read.
 	ErrConflict = errors.New("workflow: case was modified concurrently")
+	// ErrUnsupportedEventSchema reports an event whose SchemaVersion is newer
+	// than CurrentEventSchema: it was written by a newer binary, and reading
+	// it here would silently drop the fields this one does not know.
+	ErrUnsupportedEventSchema = errors.New("workflow: event schema version not supported by this binary")
 )
 
 // GuardFunc evaluates whether a transition may be taken for the given case.
@@ -763,7 +807,13 @@ type GuardFunc func(ctx context.Context, db pgxtx.DBTX, c Case) (bool, error)
 // equals c.Revision, and on success advances both the stored row and
 // c.Revision by one. It returns ErrCaseNotFound when no case has c.ID, and
 // ErrConflict when the case exists but its revision moved on (a concurrent
-// write won); in both cases nothing is written.
+// write won); in both cases nothing is written. Create and Update persist
+// c.LastSeq as given.
+//
+// AppendEvent stores e exactly as given, Seq included: the engine assigns
+// Seq from Case.LastSeq, and a Seq already taken for the case must fail
+// rather than be moved. An empty Detail is stored and read back as `{}`.
+// ListEvents returns SchemaVersion as stored; the engine upcasts it.
 type Repository interface {
 	Create(ctx context.Context, db pgxtx.DBTX, c *Case) error
 	GetByID(ctx context.Context, db pgxtx.DBTX, id uuid.UUID) (*Case, error)

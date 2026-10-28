@@ -769,12 +769,6 @@ func TestSeqMonotonicity_AcrossMultiStepRun(t *testing.T) {
 	}
 }
 
-func TestNextSeqFromEvents(t *testing.T) {
-	assert.Equal(t, int64(1), nextSeqFromEvents(nil))
-	assert.Equal(t, int64(1), nextSeqFromEvents([]Event{}))
-	assert.Equal(t, int64(4), nextSeqFromEvents([]Event{{Seq: 1}, {Seq: 3}, {Seq: 2}}))
-}
-
 func TestRegister_InvalidDefinition_ReturnsErrInvalidDefinition(t *testing.T) {
 	repo := newFakeRepository()
 	e := New(repo, Config{}, testLogger())
@@ -1468,7 +1462,7 @@ func TestMove_NonReturnTransition_HistoryReadCount(t *testing.T) {
 	repo.listEventsCalls = 0
 	_, err := e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "submit", ActorID: "u1"})
 	require.NoError(t, err)
-	assert.Equal(t, 1, repo.listEventsCalls, "a non-return move only reads history once, for appendEvent's own nextSeq computation")
+	assert.Equal(t, 0, repo.listEventsCalls, "a non-return move never reads history: Seq comes from Case.LastSeq")
 }
 
 func TestMove_ReturnTransition_HistoryReadCount(t *testing.T) {
@@ -1483,7 +1477,7 @@ func TestMove_ReturnTransition_HistoryReadCount(t *testing.T) {
 	repo.listEventsCalls = 0
 	_, err := e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "return-to-budget", ActorID: "director-1", Comment: "wrong amount"})
 	require.NoError(t, err)
-	assert.Equal(t, 2, repo.listEventsCalls, "a return move reads history exactly one extra time (the return-visited check) on top of appendEvent's own nextSeq read")
+	assert.Equal(t, 1, repo.listEventsCalls, "a return move reads history exactly once, for the return-visited check")
 }
 
 // TestMove_DecisionHopIntoTerminal_EventClosedActionIsLastRouteHop pins the

@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -281,6 +282,16 @@ type OpenInput struct {
 // calls its Dispatch once with that event; a Dispatch error fails Open and
 // the caller must roll back its transaction, discarding the new case.
 func (e *Engine) Open(ctx context.Context, db pgxtx.DBTX, in OpenInput) (*Case, error) {
+	res, err := e.OpenDetailed(ctx, db, in)
+	if err != nil {
+		return nil, err
+	}
+	return res.Case, nil
+}
+
+// OpenDetailed is Open, also returning the EventOpened it appended (see
+// MoveResult).
+func (e *Engine) OpenDetailed(ctx context.Context, db pgxtx.DBTX, in OpenInput) (*MoveResult, error) {
 	d, err := e.resolveDefinition(in.Definition, in.Version)
 	if err != nil {
 		return nil, err
@@ -305,6 +316,9 @@ func (e *Engine) Open(ctx context.Context, db pgxtx.DBTX, in OpenInput) (*Case, 
 		State:      start.ID,
 		Status:     StatusOpen,
 		OpenedAt:   now,
+		// Open appends exactly one event, so Create persists the case
+		// already pointing at it.
+		LastSeq: 1,
 	}
 	if start.Deadline > 0 {
 		deadline := now.Add(start.Deadline)
@@ -315,24 +329,24 @@ func (e *Engine) Open(ctx context.Context, db pgxtx.DBTX, in OpenInput) (*Case, 
 		return nil, fmt.Errorf("workflow: open case: %w", err)
 	}
 
-	evt := &Event{
-		ID:         uuid.New(),
+	evt, err := e.appendEvent(ctx, db, Event{
 		CaseID:     c.ID,
-		Seq:        1,
+		Seq:        c.LastSeq,
 		Kind:       EventOpened,
 		ToState:    start.ID,
 		ActorID:    in.ActorID,
 		OccurredAt: now,
-	}
-	if err := e.repo.AppendEvent(ctx, db, evt); err != nil {
+	})
+	if err != nil {
 		return nil, fmt.Errorf("workflow: open case: append event: %w", err)
 	}
 
-	if err := e.dispatch(ctx, db, d, *c, []Event{*evt}); err != nil {
+	events := []Event{evt}
+	if err := e.dispatch(ctx, db, d, *c, events); err != nil {
 		return nil, fmt.Errorf("workflow: open case %s: dispatch effects: %w", c.ID, err)
 	}
 
-	return c, nil
+	return &MoveResult{Case: c, Events: events}, nil
 }
 
 // Available returns the transitions leaving the case's current state whose
@@ -413,15 +427,15 @@ func hasReturnTransition(candidates []Transition) bool {
 // return into one possible: Definition.Validate rejects any return
 // transition whose To is a decision node, regardless of occupancy.
 func (e *Engine) occupiedStates(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID) (map[string]bool, error) {
-	events, err := e.repo.ListEvents(ctx, db, caseID)
+	events, err := e.listEvents(ctx, db, caseID)
 	if err != nil {
 		return nil, fmt.Errorf("workflow: resolve occupied states: %w", err)
 	}
 
 	occupied := make(map[string]bool, len(events))
-	// Indexed rather than ranged by value, like nextSeqFromEvents: Event is
-	// 144 bytes and only Kind/FromState/ToState are read here, over a case
-	// history that grows without bound.
+	// Indexed rather than ranged by value: Event is large and only
+	// Kind/FromState/ToState are read here, over a case history that grows
+	// without bound.
 	for i := range events {
 		switch events[i].Kind {
 		case EventOpened:
@@ -543,6 +557,17 @@ type MoveInput struct {
 // be lost undetected until every such process is replaced (see
 // workflow/postgres Repository.Update for the deploy order).
 func (e *Engine) Move(ctx context.Context, db pgxtx.DBTX, in MoveInput) (*Case, error) {
+	res, err := e.MoveDetailed(ctx, db, in)
+	if err != nil {
+		return nil, err
+	}
+	return res.Case, nil
+}
+
+// MoveDetailed is Move, also returning exactly the events it appended, in
+// Seq order (the same slice the EffectSink receives): a consumer can stamp
+// the Seq of the event that triggered its own write on that row.
+func (e *Engine) MoveDetailed(ctx context.Context, db pgxtx.DBTX, in MoveInput) (*MoveResult, error) {
 	c, err := e.repo.GetByID(ctx, db, in.CaseID)
 	if err != nil {
 		return nil, fmt.Errorf("workflow: move case: %w", err)
@@ -624,13 +649,27 @@ func (e *Engine) Move(ctx context.Context, db pgxtx.DBTX, in MoveInput) (*Case, 
 		c.DeadlineAt = nil
 	}
 
+	// Every event this call appends gets its Seq from the case's LastSeq,
+	// advanced here and persisted by the Update compare-and-swap below, so
+	// two racing Moves can never both claim the same Seq block.
+	seq := c.LastSeq
+	c.LastSeq += int64(len(hops))
+	if terminated {
+		c.LastSeq++
+	}
+
 	if err := e.repo.Update(ctx, db, c); err != nil {
 		return nil, fmt.Errorf("workflow: move case %s: %w", c.ID, err)
 	}
 
 	appended := make([]Event, 0, len(hops)+1)
 	for _, h := range hops {
-		evt, err := e.appendEvent(ctx, db, c.ID, EventMoved, h.fromState, h.toState, h.action, in.ActorID, h.comment, now)
+		seq++
+		evt, err := e.appendEvent(ctx, db, Event{
+			CaseID: c.ID, Seq: seq, Kind: EventMoved,
+			FromState: h.fromState, ToState: h.toState, Action: h.action,
+			ActorID: in.ActorID, Comment: h.comment, OccurredAt: now,
+		})
 		if err != nil {
 			return nil, fmt.Errorf("workflow: move case %s: append event: %w", c.ID, err)
 		}
@@ -643,7 +682,12 @@ func (e *Engine) Move(ctx context.Context, db pgxtx.DBTX, in MoveInput) (*Case, 
 		// belongs to the human-driven hop's own EventMoved record, appended
 		// above, so Comment is passed as "" here rather than reused.
 		lastAction := hops[len(hops)-1].action
-		evt, err := e.appendEvent(ctx, db, c.ID, EventClosed, restNode.ID, restNode.ID, lastAction, in.ActorID, "", now)
+		seq++
+		evt, err := e.appendEvent(ctx, db, Event{
+			CaseID: c.ID, Seq: seq, Kind: EventClosed,
+			FromState: restNode.ID, ToState: restNode.ID, Action: lastAction,
+			ActorID: in.ActorID, OccurredAt: now,
+		})
 		if err != nil {
 			return nil, fmt.Errorf("workflow: move case %s: append close event: %w", c.ID, err)
 		}
@@ -654,7 +698,7 @@ func (e *Engine) Move(ctx context.Context, db pgxtx.DBTX, in MoveInput) (*Case, 
 		return nil, fmt.Errorf("workflow: move case %s: dispatch effects: %w", c.ID, err)
 	}
 
-	return c, nil
+	return &MoveResult{Case: c, Events: appended}, nil
 }
 
 // planMove computes the full chain of hops one Move produces, without
@@ -760,12 +804,21 @@ func (e *Engine) Claim(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID, act
 		return nil, fmt.Errorf("workflow: claim case %s: %w", c.ID, ErrAlreadyAssigned)
 	}
 
+	detail, err := marshalDetail(AssignmentDetail{To: actorID})
+	if err != nil {
+		return nil, fmt.Errorf("workflow: claim case %s: %w", c.ID, err)
+	}
 	c.AssignedTo = actorID
+	c.LastSeq++
 	if err := e.repo.Update(ctx, db, c); err != nil {
 		return nil, fmt.Errorf("workflow: claim case %s: %w", c.ID, err)
 	}
 
-	if _, err := e.appendEvent(ctx, db, c.ID, EventAssigned, c.State, c.State, "", actorID, "", e.now()); err != nil {
+	if _, err := e.appendEvent(ctx, db, Event{
+		CaseID: c.ID, Seq: c.LastSeq, Kind: EventAssigned,
+		FromState: c.State, ToState: c.State, ActorID: actorID,
+		OccurredAt: e.now(), Detail: detail,
+	}); err != nil {
 		return nil, fmt.Errorf("workflow: claim case %s: append event: %w", c.ID, err)
 	}
 
@@ -784,12 +837,21 @@ func (e *Engine) Release(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID, a
 		return nil, fmt.Errorf("workflow: release case %s: %w", c.ID, ErrNotAssigned)
 	}
 
+	detail, err := marshalDetail(AssignmentDetail{From: c.AssignedTo})
+	if err != nil {
+		return nil, fmt.Errorf("workflow: release case %s: %w", c.ID, err)
+	}
 	c.AssignedTo = ""
+	c.LastSeq++
 	if err := e.repo.Update(ctx, db, c); err != nil {
 		return nil, fmt.Errorf("workflow: release case %s: %w", c.ID, err)
 	}
 
-	if _, err := e.appendEvent(ctx, db, c.ID, EventUnassigned, c.State, c.State, "", actorID, "", e.now()); err != nil {
+	if _, err := e.appendEvent(ctx, db, Event{
+		CaseID: c.ID, Seq: c.LastSeq, Kind: EventUnassigned,
+		FromState: c.State, ToState: c.State, ActorID: actorID,
+		OccurredAt: e.now(), Detail: detail,
+	}); err != nil {
 		return nil, fmt.Errorf("workflow: release case %s: append event: %w", c.ID, err)
 	}
 
@@ -799,7 +861,7 @@ func (e *Engine) Release(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID, a
 // History returns every event recorded for caseID, ordered by Seq ascending
 // — see Event.Seq for why Seq, rather than OccurredAt, is the ordering key.
 func (e *Engine) History(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID) ([]Event, error) {
-	events, err := e.repo.ListEvents(ctx, db, caseID)
+	events, err := e.listEvents(ctx, db, caseID)
 	if err != nil {
 		return nil, fmt.Errorf("workflow: history: %w", err)
 	}
@@ -846,52 +908,64 @@ func (e *Engine) EligibilityFor(ctx context.Context, db pgxtx.DBTX, caseID uuid.
 	}, nil
 }
 
-// appendEvent computes the next Seq for caseID, appends an event, and
-// returns the event as persisted (Move collects them for the EffectSink).
-func (e *Engine) appendEvent(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID, kind EventKind, fromState, toState, action, actorID, comment string, occurredAt time.Time) (Event, error) {
-	seq, err := e.nextSeq(ctx, db, caseID)
-	if err != nil {
+// appendEvent appends evt, whose CaseID, Seq and payload the caller set,
+// stamping a new ID, CurrentEventSchema and an empty Detail object when it
+// has none. It returns the event as persisted (Open and Move collect them for
+// the EffectSink and MoveResult).
+func (e *Engine) appendEvent(ctx context.Context, db pgxtx.DBTX, evt Event) (Event, error) {
+	evt.ID = uuid.New()
+	evt.SchemaVersion = CurrentEventSchema
+	if len(evt.Detail) == 0 {
+		evt.Detail = emptyDetail()
+	}
+	if err := e.repo.AppendEvent(ctx, db, &evt); err != nil {
 		return Event{}, err
 	}
-
-	evt := &Event{
-		ID:         uuid.New(),
-		CaseID:     caseID,
-		Seq:        seq,
-		Kind:       kind,
-		FromState:  fromState,
-		ToState:    toState,
-		Action:     action,
-		ActorID:    actorID,
-		Comment:    comment,
-		OccurredAt: occurredAt,
-	}
-	if err := e.repo.AppendEvent(ctx, db, evt); err != nil {
-		return Event{}, err
-	}
-	return *evt, nil
+	return evt, nil
 }
 
-// nextSeq returns the next per-case Seq value for caseID, computed from its
-// existing event history.
-func (e *Engine) nextSeq(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID) (int64, error) {
+// listEvents reads caseID's history through the repository and upcasts every
+// event to the current schema. An event newer than CurrentEventSchema fails
+// the read with ErrUnsupportedEventSchema rather than being returned with
+// fields this binary would drop.
+func (e *Engine) listEvents(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID) ([]Event, error) {
 	events, err := e.repo.ListEvents(ctx, db, caseID)
 	if err != nil {
-		return 0, fmt.Errorf("workflow: compute next seq: %w", err)
+		return nil, err
 	}
-	return nextSeqFromEvents(events), nil
+	for i := range events {
+		if events[i].SchemaVersion > CurrentEventSchema {
+			return nil, fmt.Errorf("case %s event seq %d: schema version %d (this binary knows up to %d): %w",
+				caseID, events[i].Seq, events[i].SchemaVersion, CurrentEventSchema, ErrUnsupportedEventSchema)
+		}
+		events[i] = upcastEvent(events[i])
+	}
+	return events, nil
 }
 
-// nextSeqFromEvents returns one past the highest Seq found in events, or 1
-// when events is empty. Kept as a small, independently unit-testable helper.
-func nextSeqFromEvents(events []Event) int64 {
-	var max int64
-	// Indexed rather than ranged by value: Event is 144 bytes and only Seq is
-	// read here, over a case history that grows without bound.
-	for i := range events {
-		if events[i].Seq > max {
-			max = events[i].Seq
-		}
+// upcastEvent fills the defaults an event written with an older schema lacks.
+// Stored rows are never rewritten; this runs on every read. A version of 0
+// comes from a repository that does not store the version and reads as 1.
+func upcastEvent(evt Event) Event {
+	if evt.SchemaVersion < 1 {
+		evt.SchemaVersion = 1
 	}
-	return max + 1
+	if len(evt.Detail) == 0 {
+		evt.Detail = emptyDetail()
+	}
+	return evt
+}
+
+// emptyDetail returns a fresh `{}`, the Detail of a kind that carries none.
+func emptyDetail() json.RawMessage {
+	return json.RawMessage(`{}`)
+}
+
+// marshalDetail encodes a kind's detail type as Event.Detail.
+func marshalDetail(v any) (json.RawMessage, error) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil, fmt.Errorf("encode event detail: %w", err)
+	}
+	return b, nil
 }

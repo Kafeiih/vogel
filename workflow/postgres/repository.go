@@ -4,6 +4,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -16,9 +17,10 @@ import (
 )
 
 const caseColumns = `id, definition, version, domain, external_id, unit, state, status,
-    assigned_to, opened_at, closed_at, deadline_at, revision`
+    assigned_to, opened_at, closed_at, deadline_at, revision, last_seq`
 
-const eventColumns = `id, case_id, seq, kind, from_state, to_state, action, actor_id, occurred_at, comment`
+const eventColumns = `id, case_id, seq, kind, from_state, to_state, action, actor_id, occurred_at, comment,
+    schema_version, detail`
 
 // uniqueViolationCode is the PostgreSQL error code for a unique constraint
 // violation (23505).
@@ -42,15 +44,15 @@ type rowScanner interface {
 	Scan(dest ...any) error
 }
 
-// Create inserts a new case at revision 0 (whatever c.Revision held) and
-// sets c.Revision to 0. A unique-violation on (domain, external_id) is
+// Create inserts a new case at revision 0 (whatever c.Revision held), with
+// c.LastSeq as given, and sets c.Revision to 0. A unique-violation on (domain, external_id) is
 // mapped to workflow.ErrCaseExists.
 func (r *Repository) Create(ctx context.Context, db pgxtx.DBTX, c *workflow.Case) error {
 	_, err := db.Exec(ctx, `
         INSERT INTO workflow_case (`+caseColumns+`)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 0)`,
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 0, $13)`,
 		c.ID, c.Definition, c.Version, c.Domain, c.ExternalID, c.Unit, c.State, string(c.Status),
-		c.AssignedTo, c.OpenedAt, c.ClosedAt, c.DeadlineAt,
+		c.AssignedTo, c.OpenedAt, c.ClosedAt, c.DeadlineAt, c.LastSeq,
 	)
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -89,9 +91,9 @@ func (r *Repository) GetByExternalID(ctx context.Context, db pgxtx.DBTX, domain,
 	return c, nil
 }
 
-// Update persists every mutable field of c as a compare-and-swap on
-// c.Revision: the row is written only while its stored revision still equals
-// c.Revision, and the write advances it by one. On success c.Revision is
+// Update persists every mutable field of c, LastSeq included, as a
+// compare-and-swap on c.Revision: the row is written only while its stored
+// revision still equals c.Revision, and the write advances it by one. On success c.Revision is
 // advanced to match, so a caller holding c can keep using it. When no row
 // matches, a follow-up existence check tells the two failures apart:
 // workflow.ErrCaseNotFound when the case does not exist, workflow.ErrConflict
@@ -119,11 +121,11 @@ func (r *Repository) Update(ctx context.Context, db pgxtx.DBTX, c *workflow.Case
         UPDATE workflow_case SET
             definition = $2, version = $3, domain = $4, external_id = $5, unit = $6,
             state = $7, status = $8, assigned_to = $9, opened_at = $10, closed_at = $11, deadline_at = $12,
-            revision = revision + 1
+            last_seq = $14, revision = revision + 1
         WHERE id = $1 AND revision = $13`,
 		c.ID, c.Definition, c.Version, c.Domain, c.ExternalID, c.Unit,
 		c.State, string(c.Status), c.AssignedTo, c.OpenedAt, c.ClosedAt, c.DeadlineAt,
-		c.Revision,
+		c.Revision, c.LastSeq,
 	)
 	if err != nil {
 		return fmt.Errorf("workflow: update case: %w", err)
@@ -142,29 +144,36 @@ func (r *Repository) Update(ctx context.Context, db pgxtx.DBTX, c *workflow.Case
 	return nil
 }
 
-// AppendEvent inserts e, computing its Seq in SQL as
-// COALESCE(MAX(seq), 0) + 1 for the case so concurrent appends cannot
-// silently collide — the UNIQUE(case_id, seq) constraint is the backstop.
-// e.Seq is overwritten with the value actually persisted.
+// AppendEvent inserts e with the Seq the caller assigned (the engine takes
+// it from Case.LastSeq). A Seq below 1 is rejected. Seq is not recomputed
+// here: a Seq that is already taken fails on UNIQUE (case_id, seq) instead
+// of being silently moved, which is how a writer that does not advance
+// workflow_case.last_seq (a binary from before migration 004) is detected.
+// An empty e.Detail is stored as `{}`.
 func (r *Repository) AppendEvent(ctx context.Context, db pgxtx.DBTX, e *workflow.Event) error {
-	row := db.QueryRow(ctx, `
-        INSERT INTO workflow_event (id, case_id, seq, kind, from_state, to_state, action, actor_id, occurred_at, comment)
-        VALUES ($1, $2,
-            COALESCE((SELECT MAX(seq) FROM workflow_event WHERE case_id = $2), 0) + 1,
-            $3, $4, $5, $6, $7, $8, $9)
-        RETURNING seq`,
-		e.ID, e.CaseID, string(e.Kind), e.FromState, e.ToState, e.Action, e.ActorID, e.OccurredAt, e.Comment,
+	if e.Seq < 1 {
+		return fmt.Errorf("workflow: append event: seq %d: must be at least 1", e.Seq)
+	}
+	detail := e.Detail
+	if len(detail) == 0 {
+		detail = json.RawMessage(`{}`)
+	}
+	_, err := db.Exec(ctx, `
+        INSERT INTO workflow_event (`+eventColumns+`)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+		e.ID, e.CaseID, e.Seq, string(e.Kind), e.FromState, e.ToState, e.Action, e.ActorID, e.OccurredAt, e.Comment,
+		e.SchemaVersion, detail,
 	)
-
-	var seq int64
-	if err := row.Scan(&seq); err != nil {
+	if err != nil {
 		return fmt.Errorf("workflow: append event: %w", err)
 	}
-	e.Seq = seq
 	return nil
 }
 
-// ListEvents returns every event for caseID, ordered by seq ascending.
+// ListEvents returns every event for caseID, ordered by seq ascending, as
+// stored: SchemaVersion is the row's schema_version (1 for rows written
+// before migration 004). Upcasting older versions and rejecting newer ones is
+// the engine's job (see workflow.Engine.History).
 func (r *Repository) ListEvents(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID) ([]workflow.Event, error) {
 	rows, err := db.Query(ctx, `SELECT `+eventColumns+` FROM workflow_event WHERE case_id = $1 ORDER BY seq ASC`, caseID)
 	if err != nil {
@@ -241,7 +250,7 @@ func scanCase(row rowScanner) (*workflow.Case, error) {
 	var status string
 	if err := row.Scan(
 		&c.ID, &c.Definition, &c.Version, &c.Domain, &c.ExternalID, &c.Unit, &c.State, &status,
-		&c.AssignedTo, &c.OpenedAt, &c.ClosedAt, &c.DeadlineAt, &c.Revision,
+		&c.AssignedTo, &c.OpenedAt, &c.ClosedAt, &c.DeadlineAt, &c.Revision, &c.LastSeq,
 	); err != nil {
 		return nil, err
 	}
@@ -254,6 +263,7 @@ func scanEvent(row rowScanner) (*workflow.Event, error) {
 	var kind string
 	if err := row.Scan(
 		&e.ID, &e.CaseID, &e.Seq, &kind, &e.FromState, &e.ToState, &e.Action, &e.ActorID, &e.OccurredAt, &e.Comment,
+		&e.SchemaVersion, &e.Detail,
 	); err != nil {
 		return nil, err
 	}

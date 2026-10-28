@@ -158,15 +158,15 @@ func TestRepository_AppendEvent_And_ListEvents_Ordering(t *testing.T) {
 	require.NoError(t, repo.Create(ctx, pool, c))
 
 	kinds := []workflow.EventKind{workflow.EventOpened, workflow.EventMoved, workflow.EventAssigned}
-	for _, kind := range kinds {
+	for i, kind := range kinds {
 		evt := &workflow.Event{
 			ID:         uuid.New(),
 			CaseID:     c.ID,
+			Seq:        int64(i + 1),
 			Kind:       kind,
 			OccurredAt: time.Now().UTC(),
 		}
 		require.NoError(t, repo.AppendEvent(ctx, pool, evt))
-		assert.NotZero(t, evt.Seq, "AppendEvent must populate Seq from the persisted value")
 	}
 
 	events, err := repo.ListEvents(ctx, pool, c.ID)
@@ -191,6 +191,7 @@ func TestRepository_AppendEvent_And_ListEvents_PersistsComment(t *testing.T) {
 	withComment := &workflow.Event{
 		ID:         uuid.New(),
 		CaseID:     c.ID,
+		Seq:        1,
 		Kind:       workflow.EventMoved,
 		Action:     "approve",
 		Comment:    "budget looks fine",
@@ -201,6 +202,7 @@ func TestRepository_AppendEvent_And_ListEvents_PersistsComment(t *testing.T) {
 	withoutComment := &workflow.Event{
 		ID:         uuid.New(),
 		CaseID:     c.ID,
+		Seq:        2,
 		Kind:       workflow.EventClosed,
 		Action:     "approve",
 		OccurredAt: time.Now().UTC(),

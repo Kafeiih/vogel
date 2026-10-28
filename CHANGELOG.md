@@ -6,6 +6,42 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ## [Unreleased]
 
+### Cambios que rompen
+
+- **`workflow.Repository.AppendEvent` guarda el `Seq` que recibe.** Antes lo
+  calculaba en SQL (`MAX(seq) + 1`) y lo sobrescribía; ahora el motor lo
+  asigna desde `Case.LastSeq` y un `Seq` ya ocupado falla por
+  `UNIQUE (case_id, seq)` en vez de correrse. `Create` y `Update` persisten
+  `Case.LastSeq`. Un repositorio propio o un fake de test debe guardar
+  `Seq`, `SchemaVersion`, `Detail` y `LastSeq` tal como llegan.
+- **Migración `004_workflow_event_metadata.sql` obligatoria antes de
+  desplegar, y todos los binarios se reemplazan juntos.** Un binario anterior
+  agrega eventos sin avanzar `workflow_case.last_seq`; el siguiente binario
+  nuevo calcula un `seq` que choca con `UNIQUE (case_id, seq)` y falla en
+  forma visible en vez de corromper el historial.
+
+### Agregado
+
+- **`workflow`: versión de esquema y detalle por tipo en cada evento.**
+  `Event.SchemaVersion` (el motor escribe `CurrentEventSchema`, 2; las filas
+  anteriores se leen como 1) y `Event.Detail`, un objeto JSON (`{}` para los
+  tipos sin detalle). `History` completa los valores por defecto de las
+  versiones viejas sin reescribir filas y falla con
+  `ErrUnsupportedEventSchema` ante una versión más nueva que el binario.
+  `Claim` y `Release` guardan un `AssignmentDetail{From, To}`: quién tenía el
+  caso y quién lo toma.
+- **`workflow`: secuencia expuesta.** `Case.LastSeq` es el `Seq` del último
+  evento; el motor asigna los siguientes desde ahí, a través del mismo
+  compare-and-swap de `revision`, así que agregar un evento ya no lee el
+  historial completo. `Engine.OpenDetailed` y `Engine.MoveDetailed` devuelven
+  `MoveResult{Case, Events}` con exactamente los eventos agregados, para que
+  el consumidor estampe el `seq` que disparó su propia escritura. `Open` y
+  `Move` siguen iguales.
+- **`workflow/migrations`: `004_workflow_event_metadata.sql`** agrega
+  `workflow_case.last_seq` (rellenada con el `MAX(seq)` de cada caso),
+  `workflow_event.schema_version SMALLINT NOT NULL DEFAULT 1` y
+  `workflow_event.detail JSONB NOT NULL DEFAULT '{}'`.
+
 ## [0.17.1] — 2026-10-28
 
 ### Corregido
