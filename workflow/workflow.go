@@ -800,6 +800,14 @@ type Event struct {
 	// (AssignmentDetail). Like the rest of the event it holds references and
 	// digests only, never domain data.
 	Detail json.RawMessage
+	// RequestID is the request/correlation ID of the call that appended the
+	// event (reqctx.RequestIDFromContext), empty when there was none.
+	RequestID string
+	// TraceID and SpanID identify the span active when the event was
+	// appended, as returned by Config.TraceIDs; empty without that port or
+	// without a span.
+	TraceID string
+	SpanID  string
 }
 
 // Sentinel errors callers can branch on via errors.Is.

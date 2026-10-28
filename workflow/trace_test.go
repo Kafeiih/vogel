@@ -9,6 +9,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/kafeiih/vogel/reqctx"
 )
 
 // storedEvents returns every event the fake repository holds for caseID, in
@@ -419,5 +421,68 @@ func TestEvent_CopiesCaseTenant(t *testing.T) {
 	require.Len(t, events, 6)
 	for _, ev := range events {
 		assert.Equal(t, "tenant-a", ev.Tenant, "seq=%d kind=%s", ev.Seq, ev.Kind)
+	}
+}
+
+func TestMove_StampsRequestIDFromContext(t *testing.T) {
+	repo := newFakeRepository()
+	e := New(repo, Config{}, testLogger(), WithDefinitions(testDefinition()))
+
+	ctx := reqctx.WithRequestID(context.Background(), "req-42")
+	c, err := e.Open(ctx, nil, OpenInput{Definition: "purchase", Domain: "compras", ExternalID: "1", Unit: "finance", ActorID: "u1"})
+	require.NoError(t, err)
+	_, err = e.Move(ctx, nil, MoveInput{CaseID: c.ID, Action: "submit", ActorID: "u1"})
+	require.NoError(t, err)
+	_, err = e.Claim(reqctx.WithRequestID(context.Background(), "req-43"), nil, c.ID, "approver-1")
+	require.NoError(t, err)
+
+	events := storedEvents(t, repo, c.ID)
+	require.Len(t, events, 3)
+	assert.Equal(t, "req-42", events[0].RequestID, "opened")
+	assert.Equal(t, "req-42", events[1].RequestID, "moved")
+	assert.Equal(t, "req-43", events[2].RequestID, "assigned")
+}
+
+func TestMove_StampsTraceIDsFromPort(t *testing.T) {
+	repo := newFakeRepository()
+	type spanKey struct{}
+	traceIDs := func(ctx context.Context) (string, string) {
+		if span, ok := ctx.Value(spanKey{}).(string); ok {
+			return "trace-1", span
+		}
+		return "", ""
+	}
+	e := New(repo, Config{TraceIDs: traceIDs}, testLogger(), WithDefinitions(decisionToTerminalDefinition()))
+	require.NoError(t, e.RegisterGuard("has-subsidy-sep", alwaysFalseGuard))
+
+	c := openTestCase(t, e)
+	_, err := e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "submit", ActorID: "u1"})
+	require.NoError(t, err)
+	res, err := e.MoveDetailed(context.WithValue(context.Background(), spanKey{}, "span-7"), nil,
+		MoveInput{CaseID: c.ID, Action: "approve", ActorID: "u2"})
+	require.NoError(t, err)
+
+	require.Len(t, res.Events, 3, "human hop, route hop, close")
+	for _, ev := range res.Events {
+		assert.Equal(t, "trace-1", ev.TraceID, "seq %d", ev.Seq)
+		assert.Equal(t, "span-7", ev.SpanID, "seq %d", ev.Seq)
+	}
+	events := storedEvents(t, repo, c.ID)
+	assert.Equal(t, res.Events, events[2:], "the port's ids must be persisted, not only returned")
+	assert.Empty(t, events[0].TraceID, "a context without a span yields empty ids")
+}
+
+func TestMove_NilTraceIDsPortLeavesEmpty(t *testing.T) {
+	repo := newFakeRepository()
+	e := New(repo, Config{}, testLogger(), WithDefinitions(testDefinition()))
+
+	c := openTestCase(t, e)
+	_, err := e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "submit", ActorID: "u1"})
+	require.NoError(t, err)
+
+	for _, ev := range storedEvents(t, repo, c.ID) {
+		assert.Empty(t, ev.TraceID, "seq %d", ev.Seq)
+		assert.Empty(t, ev.SpanID, "seq %d", ev.Seq)
+		assert.Empty(t, ev.RequestID, "seq %d", ev.Seq)
 	}
 }

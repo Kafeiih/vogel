@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kafeiih/vogel/migrate"
+	"github.com/kafeiih/vogel/reqctx"
 	"github.com/kafeiih/vogel/workflow"
 	"github.com/kafeiih/vogel/workflow/migrations"
 	"github.com/kafeiih/vogel/workflow/postgres"
@@ -326,4 +327,35 @@ func TestRepository_ListByEligibility_FiltersByTenant(t *testing.T) {
 	got, err = repo.ListByEligibility(ctx, pool, workflow.InboxFilter{Domain: "compras"})
 	require.NoError(t, err)
 	assert.Len(t, got, 2, "an empty tenant matches every tenant")
+}
+
+func TestEvent_PersistsCorrelationIDs(t *testing.T) {
+	pool := startTestPool(t)
+	repo := postgres.NewRepository()
+	ctx := reqctx.WithRequestID(context.Background(), "req-9")
+
+	e := workflow.New(repo, workflow.Config{
+		TraceIDs: func(context.Context) (string, string) { return "4bf92f3577b34da6a3ce929d0e0e4736", "00f067aa0ba902b7" },
+	}, nil, workflow.WithDefinitions(workflow.Definition{
+		Name: "purchase", Version: 1,
+		Nodes: []workflow.Node{
+			{ID: "draft", Start: true, Eligible: workflow.ByPosition("buyer")},
+			{ID: "done", Terminal: true},
+		},
+		Transitions: []workflow.Transition{{From: "draft", To: "done", Action: "submit"}},
+	}))
+
+	c, err := e.Open(ctx, pool, workflow.OpenInput{Definition: "purchase", Domain: "compras", ExternalID: "corr-1", Unit: "finance", ActorID: "u1"})
+	require.NoError(t, err)
+	_, err = e.Move(ctx, pool, workflow.MoveInput{CaseID: c.ID, Action: "submit", ActorID: "u1"})
+	require.NoError(t, err)
+
+	history, err := e.History(ctx, pool, c.ID)
+	require.NoError(t, err)
+	require.Len(t, history, 3)
+	for _, ev := range history {
+		assert.Equal(t, "req-9", ev.RequestID, "seq %d", ev.Seq)
+		assert.Equal(t, "4bf92f3577b34da6a3ce929d0e0e4736", ev.TraceID, "seq %d", ev.Seq)
+		assert.Equal(t, "00f067aa0ba902b7", ev.SpanID, "seq %d", ev.Seq)
+	}
 }

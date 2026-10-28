@@ -33,7 +33,8 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   004 reemplaza `UNIQUE (domain, external_id)` por el índice único
   `uq_workflow_case_tenant_domain_external_id`; los casos existentes quedan
   con `tenant = ''`. Revertir la 004 falla mientras dos tenants compartan un
-  mismo `(domain, external_id)`.
+  mismo `(domain, external_id)`, y borra el tenant, el actor estructurado y
+  los ids de correlación ya guardados.
 
 ### Agregado
 
@@ -64,7 +65,16 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 - **`workflow`: tenant.** `Case.Tenant` y `OpenInput.Tenant`; cada evento
   copia el tenant del caso en `Event.Tenant`, para que una exportación o una
   política de seguridad por fila no necesiten un join. `InboxFilter.Tenant`
-  filtra la bandeja; vacío no filtra, como hasta ahora.
+  filtra la bandeja; vacío no filtra, como hasta ahora. El tenant etiqueta y
+  filtra, pero no aísla: `Move`, `Claim`, `Release`, `History` y
+  `EligibilityFor` leen el caso por ID sin mirar el tenant, así que un
+  consumidor con varios tenants debe comprobarlo antes de llamarlos (o usar
+  seguridad por fila) y siempre pasar `InboxFilter.Tenant`.
+- **`workflow`: ids de correlación en cada evento.** `Event.RequestID` sale
+  de `reqctx.RequestIDFromContext(ctx)`; `Event.TraceID` y `Event.SpanID`, de
+  `Config.TraceIDs`, el mismo puerto que `postgres.Config.TraceIDs`
+  (`otel.SampledTraceIDs` calza). Sin puerto quedan vacíos; `workflow` no
+  depende de OpenTelemetry.
 - **`workflow`: secuencia expuesta.** `Case.LastSeq` es el `Seq` del último
   evento; el motor asigna los siguientes desde ahí, a través del mismo
   compare-and-swap de `revision`, así que agregar un evento ya no lee el
@@ -78,7 +88,7 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   DEFAULT 1`, `workflow_event.detail JSONB NOT NULL DEFAULT '{}'`,
   `workflow_event.tenant` y las columnas del actor:
   `actor_kind TEXT NOT NULL DEFAULT 'unspecified'`, `acting_as`,
-  `on_behalf_of` y `via_client`.
+  `on_behalf_of` y `via_client`, más `request_id`, `trace_id` y `span_id`.
 
 ## [0.17.1] — 2026-10-28
 

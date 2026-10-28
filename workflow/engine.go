@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/kafeiih/vogel/pgxtx"
+	"github.com/kafeiih/vogel/reqctx"
 )
 
 // Config configures optional Engine behaviour.
@@ -21,6 +22,12 @@ type Config struct {
 	// Now returns the current time. Nil uses time.Now — inject a fixed clock
 	// in tests.
 	Now func() time.Time
+	// TraceIDs, if set, returns the trace and span IDs of the span carried by
+	// a context, or empty strings when there is none; every appended event
+	// records them as Event.TraceID and Event.SpanID. Nil leaves both empty.
+	// It has the shape of postgres.Config.TraceIDs, so otel.SampledTraceIDs
+	// fits it without this package depending on any tracing library.
+	TraceIDs func(ctx context.Context) (traceID, spanID string)
 }
 
 // Engine runs a set of registered Definitions against a Repository: it
@@ -30,6 +37,8 @@ type Engine struct {
 	repo   Repository
 	logger *slog.Logger
 	now    func() time.Time
+	// traceIDs is Config.TraceIDs; nil leaves Event.TraceID/SpanID empty.
+	traceIDs func(ctx context.Context) (traceID, spanID string)
 
 	mu          sync.RWMutex
 	definitions map[string]Definition // by Key(): "Name@Version"
@@ -102,6 +111,7 @@ func New(repo Repository, cfg Config, logger *slog.Logger, opts ...Option) *Engi
 		repo:        repo,
 		logger:      logger,
 		now:         now,
+		traceIDs:    cfg.TraceIDs,
 		definitions: make(map[string]Definition),
 		latest:      make(map[string]Definition),
 		guards:      make(map[string]GuardFunc),
@@ -973,7 +983,8 @@ func (e *Engine) EligibilityFor(ctx context.Context, db pgxtx.DBTX, caseID uuid.
 
 // appendEvent appends evt, whose Seq, Actor and payload the caller set, to c:
 // it stamps c's ID and Tenant, a new ID, CurrentEventSchema, ActorID mirrored
-// from Actor.ID and an empty Detail object when it has none. It returns the
+// from Actor.ID, the request ID and trace/span IDs of ctx, and an empty
+// Detail object when it has none. It returns the
 // event as persisted (Open and Move collect them for the EffectSink and
 // MoveResult).
 func (e *Engine) appendEvent(ctx context.Context, db pgxtx.DBTX, c *Case, evt Event) (Event, error) {
@@ -981,6 +992,10 @@ func (e *Engine) appendEvent(ctx context.Context, db pgxtx.DBTX, c *Case, evt Ev
 	evt.CaseID = c.ID
 	evt.Tenant = c.Tenant
 	evt.ActorID = evt.Actor.ID
+	evt.RequestID = reqctx.RequestIDFromContext(ctx)
+	if e.traceIDs != nil {
+		evt.TraceID, evt.SpanID = e.traceIDs(ctx)
+	}
 	evt.SchemaVersion = CurrentEventSchema
 	if len(evt.Detail) == 0 {
 		evt.Detail = emptyDetail()

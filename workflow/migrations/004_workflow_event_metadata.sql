@@ -21,6 +21,7 @@ CREATE UNIQUE INDEX uq_workflow_case_tenant_domain_external_id
 -- tenant: copied from the case on every append. actor_kind: rows written
 -- before this migration read as 'unspecified'; acting_as, on_behalf_of and
 -- via_client complete the structured actor whose id stays in actor_id.
+-- request_id, trace_id, span_id: the correlation ids of the appending call.
 ALTER TABLE workflow_event
     ADD COLUMN schema_version SMALLINT NOT NULL DEFAULT 1,
     ADD COLUMN detail         JSONB    NOT NULL DEFAULT '{}',
@@ -28,12 +29,16 @@ ALTER TABLE workflow_event
     ADD COLUMN actor_kind     TEXT     NOT NULL DEFAULT 'unspecified',
     ADD COLUMN acting_as      TEXT     NOT NULL DEFAULT '',
     ADD COLUMN on_behalf_of   TEXT     NOT NULL DEFAULT '',
-    ADD COLUMN via_client     TEXT     NOT NULL DEFAULT '';
+    ADD COLUMN via_client     TEXT     NOT NULL DEFAULT '',
+    ADD COLUMN request_id     TEXT     NOT NULL DEFAULT '',
+    ADD COLUMN trace_id       TEXT     NOT NULL DEFAULT '',
+    ADD COLUMN span_id        TEXT     NOT NULL DEFAULT '';
 
 -- +goose Down
 -- Restoring UNIQUE (domain, external_id) fails while two tenants share a
 -- (domain, external_id); resolve those cases before rolling back.
 ALTER TABLE workflow_event
+    DROP COLUMN span_id, DROP COLUMN trace_id, DROP COLUMN request_id,
     DROP COLUMN via_client, DROP COLUMN on_behalf_of, DROP COLUMN acting_as,
     DROP COLUMN actor_kind, DROP COLUMN tenant, DROP COLUMN detail, DROP COLUMN schema_version;
 DROP INDEX IF EXISTS uq_workflow_case_tenant_domain_external_id;

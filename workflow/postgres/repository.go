@@ -20,7 +20,8 @@ const caseColumns = `id, definition, version, domain, external_id, unit, state, 
     assigned_to, opened_at, closed_at, deadline_at, revision, last_seq, tenant`
 
 const eventColumns = `id, case_id, seq, kind, from_state, to_state, action, actor_id, occurred_at, comment,
-    schema_version, detail, tenant, actor_kind, acting_as, on_behalf_of, via_client`
+    schema_version, detail, tenant, actor_kind, acting_as, on_behalf_of, via_client,
+    request_id, trace_id, span_id`
 
 // uniqueViolationCode is the PostgreSQL error code for a unique constraint
 // violation (23505).
@@ -174,9 +175,10 @@ func (r *Repository) AppendEvent(ctx context.Context, db pgxtx.DBTX, e *workflow
 	}
 	_, err := db.Exec(ctx, `
         INSERT INTO workflow_event (`+eventColumns+`)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)`,
 		e.ID, e.CaseID, e.Seq, string(e.Kind), e.FromState, e.ToState, e.Action, actorID, e.OccurredAt, e.Comment,
 		schemaVersion, detail, e.Tenant, string(actorKind), e.Actor.ActingAs, e.Actor.OnBehalfOf, e.Actor.Via,
+		e.RequestID, e.TraceID, e.SpanID,
 	)
 	if err != nil {
 		return fmt.Errorf("workflow: append event: %w", err)
@@ -283,6 +285,7 @@ func scanEvent(row rowScanner) (*workflow.Event, error) {
 	if err := row.Scan(
 		&e.ID, &e.CaseID, &e.Seq, &kind, &e.FromState, &e.ToState, &e.Action, &e.ActorID, &e.OccurredAt, &e.Comment,
 		&e.SchemaVersion, &e.Detail, &e.Tenant, &actorKind, &e.Actor.ActingAs, &e.Actor.OnBehalfOf, &e.Actor.Via,
+		&e.RequestID, &e.TraceID, &e.SpanID,
 	); err != nil {
 		return nil, err
 	}
