@@ -866,7 +866,44 @@ type Event struct {
 	// without a span.
 	TraceID string
 	SpanID  string
+	// PrevDigest and Digest are the event's link in its case's hash chain,
+	// set by the repository on append: Digest is SHA-256 over PrevDigest
+	// and every stored field of the event, and PrevDigest is the Digest of
+	// the event at Seq-1. PrevDigest is nil for the first chained event of
+	// a case; both are nil for events stored before the repository chained
+	// them (migration 007 in workflow/postgres). See Engine.VerifyChain.
+	PrevDigest []byte
+	Digest     []byte
 }
+
+// EventDigest is one link of a case's hash chain as the repository holds it:
+// the stored PrevDigest and Digest of the event at Seq, and Recomputed, the
+// digest the repository computes again from the row's current content and
+// its stored PrevDigest (nil when Digest is nil). Engine.VerifyChain walks
+// them.
+type EventDigest struct {
+	Seq        int64
+	PrevDigest []byte
+	Digest     []byte
+	Recomputed []byte
+}
+
+// ChainBrokenError reports the first event of a case whose hash chain link
+// does not hold. It matches ErrChainBroken with errors.Is.
+type ChainBrokenError struct {
+	CaseID uuid.UUID
+	// Seq is the first event that fails verification.
+	Seq int64
+	// Reason says which check failed.
+	Reason string
+}
+
+func (e *ChainBrokenError) Error() string {
+	return fmt.Sprintf("%v: case %s seq %d: %s", ErrChainBroken, e.CaseID, e.Seq, e.Reason)
+}
+
+// Is reports whether target is ErrChainBroken.
+func (e *ChainBrokenError) Is(target error) bool { return target == ErrChainBroken }
 
 // Sentinel errors callers can branch on via errors.Is.
 var (
@@ -905,6 +942,10 @@ var (
 	// ErrInvalidFailure reports a FailureInput the engine cannot record: an
 	// unknown FailureKind, or a Detail that is not a JSON object.
 	ErrInvalidFailure = errors.New("workflow: invalid failure record")
+	// ErrChainBroken reports a case whose stored events no longer match
+	// their hash chain (see Engine.VerifyChain); the error is a
+	// *ChainBrokenError carrying the first bad Seq.
+	ErrChainBroken = errors.New("workflow: event hash chain broken")
 )
 
 // GuardFunc evaluates whether a transition may be taken for the given case.
@@ -959,6 +1000,13 @@ type GuardFunc func(ctx context.Context, db pgxtx.DBTX, c Case) (bool, error)
 // every other field as they are, and returns the updated case; it must lock
 // the case row (serialize with Update) and fail with ErrCaseNotFound for a
 // missing case. RecordFailure takes its Seq with it.
+//
+// AppendEvent also chains the event: it sets e.PrevDigest to the Digest of
+// the case's event at e.Seq-1 (nil when there is none, or when that event is
+// unchained) and e.Digest to the digest of e over PrevDigest, so the caller
+// gets the event as stored. ListEvents returns both as stored.
+// ListEventDigests returns the case's chain links in Seq order, each with
+// the digest recomputed from the row as it is now.
 type Repository interface {
 	Create(ctx context.Context, db pgxtx.DBTX, c *Case) error
 	GetByID(ctx context.Context, db pgxtx.DBTX, id uuid.UUID) (*Case, error)
@@ -969,6 +1017,7 @@ type Repository interface {
 	ListByEligibility(ctx context.Context, db pgxtx.DBTX, f InboxFilter) ([]Case, error)
 	AdvanceLastSeq(ctx context.Context, db pgxtx.DBTX, id uuid.UUID) (*Case, error)
 	ListParticipated(ctx context.Context, db pgxtx.DBTX, f ParticipationFilter) ([]Case, error)
+	ListEventDigests(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID) ([]EventDigest, error)
 }
 
 // InboxFilter selects open cases. States is the set of node IDs a caller

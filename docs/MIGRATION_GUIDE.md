@@ -1202,10 +1202,68 @@ BPM/workflow genérico disponible para adoptar cuando la app lo necesite,
 independiente de esta migración: `Definition` (nodos, transiciones,
 guardas), `Case`, `Event`, y el puerto `Repository`
 (`workflow/postgres.Repository`: `Create`, `GetByID`, `GetByExternalID`,
-`Update`, `AppendEvent`, `ListEvents`, `ListByEligibility`). Su migración de
-esquema propia (`001_create_workflow.sql`, tabla de versión
+`Update`, `AppendEvent`, `ListEvents`, `ListByEligibility`,
+`AdvanceLastSeq`, `ListParticipated`, `ListEventDigests`). Su migración de
+esquema propia (`001_create_workflow.sql` a `007_workflow_event_digest.sql`, tabla de versión
 `workflow_db_version`) se aplica solo si la app decide usarlo — no es parte
 de la migración del código duplicado existente.
+
+#### Actualizar un consumidor de `workflow` a la versión con trazabilidad
+
+Para una app que ya usa `workflow`, esta versión cambia el esquema y el
+puerto `Repository`. El detalle de cada cambio está en el CHANGELOG
+(`[Unreleased]`); esta es la lista de pasos.
+
+1. **Migraciones antes que binarios.** Aplicar `004` a `007` de
+   `workflow/migrations` y recién después arrancar los binarios nuevos, todos
+   juntos: un binario anterior a la `004` no avanza `workflow_case.last_seq`,
+   y uno nuevo contra una base sin la `007` falla en cada evento. La `006` crea
+   su índice con `CREATE INDEX CONCURRENTLY`, fuera de transacción; si queda
+   un índice inválido, la receta está en su cabecera.
+2. **Reparar casos que escribió un binario viejo.** Si un binario anterior
+   agregó eventos después de la `004`, el siguiente evento de ese caso falla
+   con `workflow.ErrConflict`. Volver a correr el relleno de la `004`:
+
+   ```sql
+   UPDATE workflow_case c SET last_seq = COALESCE((SELECT MAX(e.seq) FROM workflow_event e WHERE e.case_id = c.id), 0);
+   ```
+
+3. **Tests sobre una base nueva.** Desde la `005`, `workflow_event` es sólo
+   de agregado: un test que limpiaba con `DELETE` o `TRUNCATE` debe usar una
+   base nueva por test o hacer rollback de una transacción.
+4. **Repositorio propio o fake.** `Repository` cambia: `Update` recibe
+   `expectedLastSeq`, `GetByExternalID` recibe `tenant`, y se suman
+   `AdvanceLastSeq`, `ListParticipated` y `ListEventDigests`; `AppendEvent`
+   guarda el `Seq` que recibe y devuelve `PrevDigest`/`Digest`. Quien usa
+   `workflow/postgres.Repository` no tiene que hacer nada.
+5. **Actor estructurado.** Reemplazar `ActorID: id` por
+   `Actor: workflow.Actor{Kind: workflow.ActorHuman, ID: id}` en `OpenInput`
+   y `MoveInput`, y `Claim`/`Release` por `ClaimWith`/`ReleaseWith` cuando
+   el actor no es una persona. Leer `Event.Actor.ID` en vez de
+   `Event.ActorID`.
+6. **Registrar los movimientos rechazados.** Cuando `Move` falla con un
+   error que `workflow.FailureKindOf` reconoce, hacer rollback y registrar el
+   rechazo en una transacción nueva con `Engine.RecordFailure`, como
+   `examples/boilerplate` en `process.Service.Submit`:
+
+   ```go
+   if kind, ok := workflow.FailureKindOf(err); ok {
+       rerr := pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
+           _, err := engine.RecordFailure(ctx, tx, workflow.FailureInput{
+               CaseID: caseID, Actor: actor, Action: action, Kind: kind,
+           })
+           return err
+       })
+       if rerr != nil {
+           return errors.Join(err, rerr)
+       }
+   }
+   ```
+
+7. **Verificar la cadena.** `Engine.VerifyChain(ctx, db, caseID)` detecta un
+   evento alterado o quitado. Para detectar también una reescritura completa,
+   guardar fuera de la base el `Digest` del último evento de cada caso (una
+   exportación, un log firmado) y compararlo.
 
 ## Verificación posterior
 

@@ -2,6 +2,8 @@ package workflow
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -107,8 +109,65 @@ func (f *fakeRepository) AppendEvent(_ context.Context, _ pgxtx.DBTX, e *Event) 
 			return ErrConflict
 		}
 	}
+	// Same chaining as migration 007's trigger, with fakeDigest standing in
+	// for its canonical encoding.
+	e.PrevDigest, e.Digest = nil, nil
+	for i := range f.events[e.CaseID] {
+		if f.events[e.CaseID][i].Seq == e.Seq-1 {
+			e.PrevDigest = f.events[e.CaseID][i].Digest
+		}
+	}
+	e.Digest = fakeDigest(e.PrevDigest, e)
 	f.events[e.CaseID] = append(f.events[e.CaseID], *e)
 	return nil
+}
+
+// fakeDigest hashes prev and ev's content (digests excluded). It is not the
+// canonical encoding of migration 007: only the integration tests prove
+// that one; this lets the engine's chain walk be tested in memory.
+func fakeDigest(prev []byte, ev *Event) []byte {
+	content := *ev
+	content.PrevDigest, content.Digest = nil, nil
+	b, err := json.Marshal(content)
+	if err != nil {
+		panic(err)
+	}
+	sum := sha256.Sum256(append(append([]byte{}, prev...), b...))
+	return sum[:]
+}
+
+func (f *fakeRepository) ListEventDigests(_ context.Context, _ pgxtx.DBTX, caseID uuid.UUID) ([]EventDigest, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	out := make([]EventDigest, 0, len(f.events[caseID]))
+	for i := range f.events[caseID] {
+		ev := f.events[caseID][i]
+		l := EventDigest{Seq: ev.Seq, PrevDigest: ev.PrevDigest, Digest: ev.Digest}
+		if ev.Digest != nil {
+			l.Recomputed = fakeDigest(ev.PrevDigest, &ev)
+		}
+		out = append(out, l)
+	}
+	return out, nil
+}
+
+// mutateEvent rewrites the stored event caseID/seq in place, as an operator
+// with the append-only triggers disabled could.
+func (f *fakeRepository) mutateEvent(caseID uuid.UUID, seq int64, fn func(*Event)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := range f.events[caseID] {
+		if f.events[caseID][i].Seq == seq {
+			fn(&f.events[caseID][i])
+		}
+	}
+}
+
+// rechain recomputes the digest of caseID/seq from its stored prev_digest
+// and content.
+func (f *fakeRepository) rechain(caseID uuid.UUID, seq int64) {
+	f.mutateEvent(caseID, seq, func(ev *Event) { ev.Digest = fakeDigest(ev.PrevDigest, ev) })
 }
 
 func (f *fakeRepository) ListEvents(_ context.Context, _ pgxtx.DBTX, caseID uuid.UUID) ([]Event, error) {

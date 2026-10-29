@@ -30,6 +30,19 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 - **`workflow.Repository` suma `ListParticipated(ctx, db, f)`**, que usa
   `Engine.Participated`. Un repositorio propio o un fake de test debe
   implementarla.
+- **`workflow/postgres` exige la migración 007**: `AppendEvent` y
+  `ListEvents` escriben y leen `prev_digest` y `digest`, así que contra una
+  base sin la 007 fallan todos los agregados (`Open`, `Move`, `Claim`,
+  `Release`, `RecordFailure`) y todas las lecturas del historial. Aplicar la
+  007 antes de arrancar cualquier binario de esta versión; para revertirla,
+  volver primero los binarios a la versión anterior y después correr su
+  Down.
+- **`workflow.Repository` suma `ListEventDigests(ctx, db, caseID)`**, que usa
+  `Engine.VerifyChain`, y `AppendEvent` debe completar `e.PrevDigest` y
+  `e.Digest` con los valores guardados. Un repositorio propio o un fake de
+  test debe implementarlos: encadenar cada evento con el `Digest` del
+  `seq - 1` y devolver, por evento, el digest recalculado desde la fila
+  actual.
 - **`workflow.Repository.Update` recibe `expectedLastSeq`**:
   `Update(ctx, db, c, expectedLastSeq)` es ahora un compare-and-swap sobre
   `revision` y sobre el `last_seq` con el que se leyó el caso. Así un
@@ -50,43 +63,6 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   concurrente le llega como un error 23505 sin clasificar al agregar el
   evento, con el caso ya actualizado si no corría en una transacción. No
   usar `RecordFailure` hasta reemplazar todos los binarios.
-
-### Agregado
-
-- **`workflow`: casos en los que participó una persona.**
-  `Engine.Participated(ctx, db, ParticipationFilter{Tenant, ActorID, Limit,
-  Offset})` devuelve los casos distintos en los que `ActorID` aparece como
-  actor de algún evento (abiertos o cerrados, asignados a esa persona o no),
-  ordenados por su actividad más reciente en cada caso, y pagina con las
-  mismas reglas que `Inbox` (`ParticipationFilter.Page`). Un `ActorID` vacío
-  falla con `ErrInvalidActor`. La migración
-  `006_workflow_event_actor_index.sql` crea el índice
-  `idx_workflow_event_actor (actor_id, case_id) INCLUDE (occurred_at) WHERE
-  actor_id <> ''` con `CREATE INDEX CONCURRENTLY`, sin bloquear los agregados
-  mientras se construye; si falla a mitad de camino deja un índice inválido
-  y el reintento falla a propósito: borrarlo (`DROP INDEX CONCURRENTLY
-  idx_workflow_event_actor`) y volver a correrla. Como en `Inbox`, un
-  `Tenant` vacío abarca todos los tenants: un consumidor con varios tenants
-  siempre debe pasarlo.
-- **`workflow`: envío de paso.** `MoveInput.Step` (`*StepRecord{StepID,
-  FormVersion, PayloadDigest}`): cuando viene, `Move` agrega un
-  `EventStepSubmitted` (`step_submitted`) justo antes del `EventMoved`
-  humano, en la misma transacción y el mismo bloque de `seq`, con el registro
-  como `StepDetail`. El motor nunca ve el formulario, sólo su resumen.
-- **`workflow`: registro de movimientos rechazados.**
-  `Engine.RecordFailure(ctx, db, FailureInput{CaseID, Actor, Action, Kind,
-  Detail})` agrega un `EventNoRoute` (`no_route`) o un `EventFailed`
-  (`failed`) con un `FailureDetail{Kind, Detail}`, sin cambiar el estado, la
-  asignación ni `revision`. `FailureKind` es `no_route`, `guard_rejected`,
-  `conflict`, `validation_failed`, `comment_rejected`, `return_not_visited` o
-  `transition_not_found`; `FailureKindOf(err)` lo obtiene de los errores del
-  motor (`ErrInvalidActor` es `validation_failed`). El llamador hace
-  rollback de la transacción que falló y lo llama en una nueva. Un tipo
-  desconocido o un `Detail` que no es un objeto JSON fallan con
-  `ErrInvalidFailure` sin escribir nada.
-
-### Cambios que rompen
-
 - **`workflow.Repository.AppendEvent` guarda el `Seq` que recibe.** Antes lo
   calculaba en SQL (`MAX(seq) + 1`) y lo sobrescribía; ahora el motor lo
   asigna desde `Case.LastSeq` y un `Seq` ya ocupado falla por
@@ -121,6 +97,60 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ### Agregado
 
+- **`examples/boilerplate`: rechazos registrados.** `process.Service.Submit`
+  registra con `Engine.RecordFailure`, en una transacción propia, el `Move`
+  rechazado (por ejemplo, una acción que no existe en el estado actual), y
+  pasa sus actores como `Actor{Kind: ActorHuman, ID: ...}`. Un formulario
+  inválido no es un movimiento rechazado y no se registra.
+- **`workflow`: cadena de hashes por caso.** Cada evento agregado después de
+  la migración `007_workflow_event_digest.sql` guarda `prev_digest` (el
+  `digest` del evento anterior del caso) y `digest`, SHA-256 sobre
+  `prev_digest` y todas las columnas guardadas del evento, `schema_version`
+  incluida. Los calcula un trigger `BEFORE INSERT` en Postgres, no el motor:
+  `detail` es `JSONB` y Postgres lo guarda normalizado, así que sólo un hash
+  sobre lo guardado se puede recalcular después. `Event.PrevDigest` y
+  `Event.Digest` los exponen. `Engine.VerifyChain(ctx, db, caseID)`
+  recalcula la cadena y devuelve un `*ChainBrokenError` (que calza con
+  `ErrChainBroken`) con el primer `Seq` alterado, quitado o fuera de lugar.
+  Los eventos anteriores a la 007 quedan sin encadenar y el primer evento
+  posterior empieza la cadena; no hay relleno, porque la tabla es de sólo
+  agregado. La cadena no detecta a quien reescribe filas y recalcula todos
+  los digests siguientes, ni el borrado de los últimos eventos, ni a quien
+  borra `prev_digest` y `digest` de todos los eventos de un caso (`VerifyChain`
+  no lo distingue de un caso anterior a la 007): para eso hay que comparar
+  con un `Digest` guardado fuera de la base. La 007 cuesta una
+  búsqueda por índice y un SHA-256 por evento agregado.
+- **`workflow`: casos en los que participó una persona.**
+  `Engine.Participated(ctx, db, ParticipationFilter{Tenant, ActorID, Limit,
+  Offset})` devuelve los casos distintos en los que `ActorID` aparece como
+  actor de algún evento (abiertos o cerrados, asignados a esa persona o no),
+  ordenados por su actividad más reciente en cada caso, y pagina con las
+  mismas reglas que `Inbox` (`ParticipationFilter.Page`). Un `ActorID` vacío
+  falla con `ErrInvalidActor`. La migración
+  `006_workflow_event_actor_index.sql` crea el índice
+  `idx_workflow_event_actor (actor_id, case_id) INCLUDE (occurred_at) WHERE
+  actor_id <> ''` con `CREATE INDEX CONCURRENTLY`, sin bloquear los agregados
+  mientras se construye; si falla a mitad de camino deja un índice inválido
+  y el reintento falla a propósito: borrarlo (`DROP INDEX CONCURRENTLY
+  idx_workflow_event_actor`) y volver a correrla. Como en `Inbox`, un
+  `Tenant` vacío abarca todos los tenants: un consumidor con varios tenants
+  siempre debe pasarlo.
+- **`workflow`: envío de paso.** `MoveInput.Step` (`*StepRecord{StepID,
+  FormVersion, PayloadDigest}`): cuando viene, `Move` agrega un
+  `EventStepSubmitted` (`step_submitted`) justo antes del `EventMoved`
+  humano, en la misma transacción y el mismo bloque de `seq`, con el registro
+  como `StepDetail`. El motor nunca ve el formulario, sólo su resumen.
+- **`workflow`: registro de movimientos rechazados.**
+  `Engine.RecordFailure(ctx, db, FailureInput{CaseID, Actor, Action, Kind,
+  Detail})` agrega un `EventNoRoute` (`no_route`) o un `EventFailed`
+  (`failed`) con un `FailureDetail{Kind, Detail}`, sin cambiar el estado, la
+  asignación ni `revision`. `FailureKind` es `no_route`, `guard_rejected`,
+  `conflict`, `validation_failed`, `comment_rejected`, `return_not_visited` o
+  `transition_not_found`; `FailureKindOf(err)` lo obtiene de los errores del
+  motor (`ErrInvalidActor` es `validation_failed`). El llamador hace
+  rollback de la transacción que falló y lo llama en una nueva. Un tipo
+  desconocido o un `Detail` que no es un objeto JSON fallan con
+  `ErrInvalidFailure` sin escribir nada.
 - **`workflow`: versión de esquema y detalle por tipo en cada evento.**
   `Event.SchemaVersion` (el motor escribe `CurrentEventSchema`, 2; las filas
   anteriores se leen como 1) y `Event.Detail`, un objeto JSON (`{}` para los

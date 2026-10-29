@@ -34,6 +34,22 @@ func insertLegacyEvent(t *testing.T, pool *pgxpool.Pool, caseID uuid.UUID, seq i
 	require.NoError(t, err)
 }
 
+// seedCaseBefore007 stores a case and its events with seqs 1..events the way
+// a binary of a schema older than 007 would: the repository of this version
+// needs migration 007 to append or read events, so tests that stop at an
+// older version cannot seed through the engine.
+func seedCaseBefore007(t *testing.T, pool *pgxpool.Pool, tenant, externalID string, events int) *workflow.Case {
+	t.Helper()
+	c := newCase("compras", externalID)
+	c.Tenant = tenant
+	c.LastSeq = int64(events)
+	require.NoError(t, postgres.NewRepository().Create(context.Background(), pool, c))
+	for seq := 1; seq <= events; seq++ {
+		insertLegacyEvent(t, pool, c.ID, int64(seq), workflow.EventOpened)
+	}
+	return c
+}
+
 func TestListEvents_LegacyRowReadsAsSchemaVersion1(t *testing.T) {
 	pool := startTestPool(t)
 	repo := postgres.NewRepository()
@@ -372,9 +388,7 @@ func TestMigration004_DownRestoresPreviousSchema(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(pool.Close)
 
-	e := tenantTestEngine(t, postgres.NewRepository())
-	c, err := e.Open(ctx, pool, workflow.OpenInput{Definition: "purchase", Domain: "compras", ExternalID: "down-1", Unit: "finance", Actor: workflow.Actor{Kind: workflow.ActorHuman, ID: "u1"}})
-	require.NoError(t, err)
+	c := seedCaseBefore007(t, pool, "", "down-1", 1)
 
 	require.NoError(t, migrate.Down(ctx, connStr, migrations.FS(), opts), "a clean rollback of 004 must succeed")
 
@@ -407,13 +421,8 @@ func TestMigration004_DownFailsWhileTwoTenantsShareAnExternalID(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(pool.Close)
 
-	e := tenantTestEngine(t, postgres.NewRepository())
 	for _, tenant := range []string{"tenant-a", "tenant-b"} {
-		_, err := e.Open(ctx, pool, workflow.OpenInput{
-			Definition: "purchase", Tenant: tenant, Domain: "compras", ExternalID: "shared-1", Unit: "finance",
-			Actor: workflow.Actor{Kind: workflow.ActorHuman, ID: "u1"},
-		})
-		require.NoError(t, err)
+		seedCaseBefore007(t, pool, tenant, "shared-1", 1)
 	}
 
 	require.Error(t, migrate.Down(ctx, connStr, migrations.FS(), opts),

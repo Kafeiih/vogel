@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -1239,4 +1240,55 @@ func (e *Engine) Participated(ctx context.Context, db pgxtx.DBTX, f Participatio
 		return nil, fmt.Errorf("workflow: participated: %w", err)
 	}
 	return cases, nil
+}
+
+// VerifyChain checks caseID's hash chain: every chained event's digest must
+// match its current content, and its PrevDigest must be the Digest of the
+// event before it (nil after an unchained event, or for the first event).
+// Unchained events before the first chained one, those stored before the
+// repository chained events, are accepted as they are; an unchained event
+// after it is not. It returns nil for an intact chain, a *ChainBrokenError
+// (matching ErrChainBroken) for the first event that fails, and
+// ErrCaseNotFound for an unknown case.
+//
+// The chain detects a stored event that was changed, removed or reordered
+// without recomputing every digest after it. It cannot detect a rewrite that
+// recomputes them, events removed from the end of the case, nor a rewrite
+// that clears prev_digest and digest on every event of the case: VerifyChain
+// cannot tell that from a case whose events all predate the chain, and
+// accepts it. Comparing a Digest kept outside the database (an export, a
+// signed log) is what detects them.
+func (e *Engine) VerifyChain(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID) error {
+	if _, err := e.repo.GetByID(ctx, db, caseID); err != nil {
+		return fmt.Errorf("workflow: verify chain: %w", err)
+	}
+	links, err := e.repo.ListEventDigests(ctx, db, caseID)
+	if err != nil {
+		return fmt.Errorf("workflow: verify chain: %w", err)
+	}
+	var prev []byte
+	chained := false
+	for _, l := range links {
+		broken := func(reason string) error {
+			return &ChainBrokenError{CaseID: caseID, Seq: l.Seq, Reason: reason}
+		}
+		if l.Digest == nil {
+			if chained {
+				return broken("event has no digest after the chain started")
+			}
+			if l.PrevDigest != nil {
+				return broken("event has a prev_digest but no digest")
+			}
+			continue
+		}
+		chained = true
+		if !bytes.Equal(l.PrevDigest, prev) {
+			return broken("prev_digest does not match the previous event")
+		}
+		if !bytes.Equal(l.Recomputed, l.Digest) {
+			return broken("digest does not match the event's content")
+		}
+		prev = l.Digest
+	}
+	return nil
 }

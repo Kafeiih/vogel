@@ -131,7 +131,7 @@ func TestMigration005_UpDownUpRoundTrip(t *testing.T) {
 	pool, err := pgxpool.New(ctx, connStr)
 	require.NoError(t, err)
 	t.Cleanup(pool.Close)
-	c := openCaseWithEvents(t, pool, "ao-roundtrip")
+	c := seedCaseBefore007(t, pool, "", "ao-roundtrip", 2)
 
 	// Down reverts only 005: the guard goes away and CASCADE is back.
 	require.NoError(t, migrate.Down(ctx, connStr, migrations.FS(), opts))
