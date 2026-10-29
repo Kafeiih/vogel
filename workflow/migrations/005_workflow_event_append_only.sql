@@ -22,9 +22,24 @@
 -- Adding a column later with ALTER TABLE ... ADD COLUMN (with a default, or
 -- nullable) is not an UPDATE and keeps working; a backfill UPDATE does not.
 --
+-- Locking: the new foreign key is added NOT VALID. Every existing row already
+-- satisfied the CASCADE key it replaces (same columns, same target), so a
+-- validating scan would re-prove nothing while holding the ACCESS EXCLUSIVE
+-- lock DROP CONSTRAINT takes, blocking every append for the whole scan on a
+-- large table. NOT VALID still enforces the key on new rows and the RESTRICT
+-- on case deletes. An operator who wants pg_constraint.convalidated = true
+-- can run, outside this migration and without blocking appends (it takes
+-- SHARE UPDATE EXCLUSIVE):
+--
+--   ALTER TABLE workflow_event VALIDATE CONSTRAINT workflow_event_case_id_fkey;
+--
 -- Retention: purging old cases is an explicit, owner-run procedure that must
 -- disable the triggers, delete the events and then their cases, and re-enable
--- the triggers inside ONE transaction, so the table is never left unguarded:
+-- the triggers inside ONE transaction, so the table is never left unguarded.
+-- DISABLE TRIGGER takes a SHARE ROW EXCLUSIVE lock that blocks every append
+-- (every Open, Move, Claim, Release and RecordFailure) until COMMIT, so run it
+-- in a maintenance window and keep each transaction small (purge in batches,
+-- one transaction per batch):
 --
 --   BEGIN;
 --   ALTER TABLE workflow_event DISABLE TRIGGER vogel_workflow_event_no_update_delete;
@@ -35,8 +50,9 @@
 --   ALTER TABLE workflow_event ENABLE TRIGGER vogel_workflow_event_no_truncate;
 --   COMMIT;
 --
--- Down drops the triggers, then the function, restores ON DELETE CASCADE, and
--- leaves the table and its rows untouched.
+-- Down restores ON DELETE CASCADE (also NOT VALID, for the same reason), then
+-- drops the triggers and the function, and leaves the table and its rows
+-- untouched.
 
 -- +goose Up
 -- +goose StatementBegin
@@ -61,12 +77,12 @@ CREATE TRIGGER vogel_workflow_event_no_truncate
 -- The constraint name is Postgres' default for the unnamed REFERENCES in 001.
 ALTER TABLE workflow_event DROP CONSTRAINT workflow_event_case_id_fkey;
 ALTER TABLE workflow_event ADD CONSTRAINT workflow_event_case_id_fkey
-    FOREIGN KEY (case_id) REFERENCES workflow_case(id) ON DELETE RESTRICT;
+    FOREIGN KEY (case_id) REFERENCES workflow_case(id) ON DELETE RESTRICT NOT VALID;
 
 -- +goose Down
 ALTER TABLE workflow_event DROP CONSTRAINT workflow_event_case_id_fkey;
 ALTER TABLE workflow_event ADD CONSTRAINT workflow_event_case_id_fkey
-    FOREIGN KEY (case_id) REFERENCES workflow_case(id) ON DELETE CASCADE;
+    FOREIGN KEY (case_id) REFERENCES workflow_case(id) ON DELETE CASCADE NOT VALID;
 DROP TRIGGER IF EXISTS vogel_workflow_event_no_truncate ON workflow_event;
 DROP TRIGGER IF EXISTS vogel_workflow_event_no_update_delete ON workflow_event;
 DROP FUNCTION IF EXISTS vogel_workflow_event_reject_mutation();

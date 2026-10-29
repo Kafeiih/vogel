@@ -5,6 +5,7 @@ package postgres_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -28,8 +29,9 @@ const (
 	fkViolationSQLState = "23503"
 )
 
-// openCaseWithEvents opens a case through the engine and moves it once, so it
-// has two events, and returns its id.
+// openCaseWithEvents opens a case through the engine and records one failure
+// on it, so it has two events (opened, failed) and still rests on its start
+// node, and returns it.
 func openCaseWithEvents(t *testing.T, pool *pgxpool.Pool, externalID string) *workflow.Case {
 	t.Helper()
 	ctx := context.Background()
@@ -48,7 +50,7 @@ func requireAppendOnlyRejection(t *testing.T, err error, op string) {
 	var pgErr *pgconn.PgError
 	require.True(t, errors.As(err, &pgErr), "expected a *pgconn.PgError, got %T: %v", err, err)
 	assert.Equal(t, appendOnlySQLState, pgErr.Code)
-	assert.Contains(t, pgErr.Message, appendOnlyMsgPrefix)
+	assert.True(t, strings.HasPrefix(pgErr.Message, appendOnlyMsgPrefix), "message %q must start with %q", pgErr.Message, appendOnlyMsgPrefix)
 	assert.Contains(t, pgErr.Message, op, "message must name the rejected operation")
 }
 
@@ -152,4 +154,9 @@ func TestMigration005_UpDownUpRoundTrip(t *testing.T) {
 	require.NoError(t, pool.QueryRow(ctx, `
         SELECT confdeltype::text FROM pg_constraint WHERE conname = 'workflow_event_case_id_fkey'`).Scan(&deleteRule))
 	assert.Equal(t, "r", deleteRule, "Up must set ON DELETE RESTRICT")
+
+	// The key is added NOT VALID (no blocking scan) yet still enforced, and an
+	// operator can validate it afterwards.
+	_, err = pool.Exec(ctx, `ALTER TABLE workflow_event VALIDATE CONSTRAINT workflow_event_case_id_fkey`)
+	require.NoError(t, err, "existing rows already satisfy the key")
 }

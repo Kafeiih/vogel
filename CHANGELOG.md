@@ -19,8 +19,14 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   `TRUNCATE` debe usar una base nueva por test o hacer rollback de una
   transacción. Una purga por retención es un procedimiento explícito del
   dueño de la tabla, con los triggers deshabilitados dentro de una sola
-  transacción (la receta está en la cabecera de la 005). La 005 es
-  obligatoria antes de desplegar, como la 004.
+  transacción (la receta está en la cabecera de la 005); esa transacción
+  bloquea todo agregado de eventos mientras dura, así que va en una ventana
+  de mantenimiento y por lotes. La 005 es obligatoria antes de desplegar,
+  como la 004; agrega la nueva clave foránea `NOT VALID`, sin recorrer la
+  tabla, así que no bloquea los agregados mientras se aplica (las filas ya
+  cumplían la clave anterior). Quien quiera marcarla como validada puede
+  correr después `ALTER TABLE workflow_event VALIDATE CONSTRAINT
+  workflow_event_case_id_fkey`, que no bloquea los agregados.
 - **`workflow.Repository.Update` recibe `expectedLastSeq`**:
   `Update(ctx, db, c, expectedLastSeq)` es ahora un compare-and-swap sobre
   `revision` y sobre el `last_seq` con el que se leyó el caso. Así un
