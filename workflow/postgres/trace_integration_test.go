@@ -376,6 +376,7 @@ func TestMigration004_DownRestoresPreviousSchema(t *testing.T) {
 	c, err := e.Open(ctx, pool, workflow.OpenInput{Definition: "purchase", Domain: "compras", ExternalID: "down-1", Unit: "finance", Actor: workflow.Actor{Kind: workflow.ActorHuman, ID: "u1"}})
 	require.NoError(t, err)
 
+	require.NoError(t, migrate.Down(ctx, connStr, migrations.FS(), opts), "roll back 005 first")
 	require.NoError(t, migrate.Down(ctx, connStr, migrations.FS(), opts), "a clean rollback of 004 must succeed")
 
 	var added int
@@ -416,6 +417,7 @@ func TestMigration004_DownFailsWhileTwoTenantsShareAnExternalID(t *testing.T) {
 		require.NoError(t, err)
 	}
 
+	require.NoError(t, migrate.Down(ctx, connStr, migrations.FS(), opts), "roll back 005 first")
 	require.Error(t, migrate.Down(ctx, connStr, migrations.FS(), opts),
 		"restoring UNIQUE (domain, external_id) must fail while two tenants share one")
 

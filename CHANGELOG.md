@@ -8,6 +8,19 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ### Cambios que rompen
 
+- **`workflow_event` pasa a ser sólo de agregado.** La migración
+  `005_workflow_event_append_only.sql` instala triggers que rechazan
+  `UPDATE`, `DELETE` y `TRUNCATE` sobre `workflow_event` con SQLSTATE 23001
+  (`restrict_violation`) y un mensaje que empieza con `workflow_event is
+  append-only`, igual que `audit_log`. La clave foránea `case_id` pasa de
+  `ON DELETE CASCADE` a `ON DELETE RESTRICT`: borrar un caso con eventos
+  falla (23503) en vez de borrar su historial; un caso sin eventos se sigue
+  pudiendo borrar. Un test que limpiaba estas tablas con `DELETE` o
+  `TRUNCATE` debe usar una base nueva por test o hacer rollback de una
+  transacción. Una purga por retención es un procedimiento explícito del
+  dueño de la tabla, con los triggers deshabilitados dentro de una sola
+  transacción (la receta está en la cabecera de la 005). La 005 es
+  obligatoria antes de desplegar, como la 004.
 - **`workflow.Repository.Update` recibe `expectedLastSeq`**:
   `Update(ctx, db, c, expectedLastSeq)` es ahora un compare-and-swap sobre
   `revision` y sobre el `last_seq` con el que se leyó el caso. Así un
