@@ -27,6 +27,11 @@ const eventColumns = `id, case_id, seq, kind, from_state, to_state, action, acto
 // violation (23505).
 const uniqueViolationCode = "23505"
 
+// eventSeqConstraint is the name Postgres gave UNIQUE (case_id, seq) on
+// workflow_event in migration 001. A violation of it means another writer
+// appended that Seq first.
+const eventSeqConstraint = "workflow_event_case_id_seq_key"
+
 // Repository implements workflow.Repository using pgx. It is stateless:
 // every method receives the pgxtx.DBTX to run against, so the caller decides
 // whether to use a plain pool connection or an existing transaction.
@@ -95,9 +100,12 @@ func (r *Repository) GetByExternalID(ctx context.Context, db pgxtx.DBTX, tenant,
 }
 
 // Update persists every mutable field of c, LastSeq included, as a
-// compare-and-swap on c.Revision: the row is written only while its stored
-// revision still equals c.Revision, and the write advances it by one. On success c.Revision is
-// advanced to match, so a caller holding c can keep using it. When no row
+// compare-and-swap on c.Revision and on the LastSeq the case was read with
+// (expectedLastSeq): the row is written only while its stored revision still
+// equals c.Revision and its stored last_seq equals expectedLastSeq, and the
+// write advances revision by one. The last_seq check catches a
+// workflow.Engine.RecordFailure that took a Seq after the read without
+// advancing revision. On success c.Revision is advanced to match, so a caller holding c can keep using it. When no row
 // matches, a follow-up existence check tells the two failures apart:
 // workflow.ErrCaseNotFound when the case does not exist, workflow.ErrConflict
 // when a concurrent writer committed first (nothing is written either way).
@@ -119,16 +127,16 @@ func (r *Repository) GetByExternalID(ctx context.Context, db pgxtx.DBTX, tenant,
 // migration 003 first, then replace ALL old binaries (or stop them from
 // writing) before relying on ErrConflict; until then concurrent updates
 // can still be lost silently, exactly as before this check existed.
-func (r *Repository) Update(ctx context.Context, db pgxtx.DBTX, c *workflow.Case) error {
+func (r *Repository) Update(ctx context.Context, db pgxtx.DBTX, c *workflow.Case, expectedLastSeq int64) error {
 	tag, err := db.Exec(ctx, `
         UPDATE workflow_case SET
             definition = $2, version = $3, domain = $4, external_id = $5, unit = $6,
             state = $7, status = $8, assigned_to = $9, opened_at = $10, closed_at = $11, deadline_at = $12,
             last_seq = $14, tenant = $15, revision = revision + 1
-        WHERE id = $1 AND revision = $13`,
+        WHERE id = $1 AND revision = $13 AND last_seq = $16`,
 		c.ID, c.Definition, c.Version, c.Domain, c.ExternalID, c.Unit,
 		c.State, string(c.Status), c.AssignedTo, c.OpenedAt, c.ClosedAt, c.DeadlineAt,
-		c.Revision, c.LastSeq, c.Tenant,
+		c.Revision, c.LastSeq, c.Tenant, expectedLastSeq,
 	)
 	if err != nil {
 		return fmt.Errorf("workflow: update case: %w", err)
@@ -141,7 +149,7 @@ func (r *Repository) Update(ctx context.Context, db pgxtx.DBTX, c *workflow.Case
 		if !exists {
 			return fmt.Errorf("workflow: update case: %w", workflow.ErrCaseNotFound)
 		}
-		return fmt.Errorf("workflow: update case %s at revision %d: %w", c.ID, c.Revision, workflow.ErrConflict)
+		return fmt.Errorf("workflow: update case %s at revision %d, last seq %d: %w", c.ID, c.Revision, expectedLastSeq, workflow.ErrConflict)
 	}
 	c.Revision++
 	return nil
@@ -150,8 +158,10 @@ func (r *Repository) Update(ctx context.Context, db pgxtx.DBTX, c *workflow.Case
 // AppendEvent inserts e with the Seq the caller assigned (the engine takes
 // it from Case.LastSeq). A Seq below 1 is rejected. Seq is not recomputed
 // here: a Seq that is already taken fails on UNIQUE (case_id, seq) instead
-// of being silently moved, which is how a writer that does not advance
-// workflow_case.last_seq (a binary from before migration 004) is detected.
+// of being silently moved, and is returned as workflow.ErrConflict (wrapping
+// the Postgres error): a concurrent RecordFailure took it, or a writer that
+// does not advance workflow_case.last_seq (a binary from before migration
+// 004) did.
 // An empty e.Detail is stored as `{}`, and a SchemaVersion below 1 (a caller
 // that does not set it) as 1, the version of an event without detail.
 // actor_id stores e.Actor.ID, or the deprecated e.ActorID when Actor.ID is
@@ -181,9 +191,33 @@ func (r *Repository) AppendEvent(ctx context.Context, db pgxtx.DBTX, e *workflow
 		e.RequestID, e.TraceID, e.SpanID,
 	)
 	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == uniqueViolationCode && pgErr.ConstraintName == eventSeqConstraint {
+			return fmt.Errorf("workflow: append event %s seq %d: %w: %w", e.CaseID, e.Seq, workflow.ErrConflict, err)
+		}
 		return fmt.Errorf("workflow: append event: %w", err)
 	}
 	return nil
+}
+
+// AdvanceLastSeq takes the next Seq of case id without changing anything
+// else: it increments workflow_case.last_seq in one statement, which locks
+// the row until the caller's transaction ends, and returns the case as
+// updated (LastSeq is the Seq just taken). Revision is not advanced. A
+// missing case fails with workflow.ErrCaseNotFound.
+func (r *Repository) AdvanceLastSeq(ctx context.Context, db pgxtx.DBTX, id uuid.UUID) (*workflow.Case, error) {
+	row := db.QueryRow(ctx, `
+        UPDATE workflow_case SET last_seq = last_seq + 1
+        WHERE id = $1
+        RETURNING `+caseColumns, id)
+	c, err := scanCase(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("workflow: advance last seq: %w", workflow.ErrCaseNotFound)
+		}
+		return nil, fmt.Errorf("workflow: advance last seq: %w", err)
+	}
+	return c, nil
 }
 
 // ListEvents returns every event for caseID, ordered by seq ascending, as
@@ -262,6 +296,53 @@ func (r *Repository) ListByEligibility(ctx context.Context, db pgxtx.DBTX, f wor
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("workflow: list by eligibility: %w", err)
+	}
+	return cases, nil
+}
+
+// ListParticipated returns the distinct cases in which f.ActorID is the
+// actor of any event, ordered by that actor's newest event in each case
+// (newest first, case id as the tie-break), restricted to f.Tenant when set
+// and paged by f.Page. It reads the actor's events through
+// idx_workflow_event_actor (migration 006), filtering the tenant on the
+// events themselves (each event copies its case's tenant) before grouping.
+// The cost grows with how many events the actor wrote in the tenant, not
+// with the page size.
+func (r *Repository) ListParticipated(ctx context.Context, db pgxtx.DBTX, f workflow.ParticipationFilter) ([]workflow.Case, error) {
+	limit, offset, err := f.Page()
+	if err != nil {
+		return nil, fmt.Errorf("workflow: list participated: %w", err)
+	}
+
+	const q = `
+        SELECT ` + caseColumns + `
+        FROM (
+            SELECT case_id, MAX(occurred_at) AS last_at
+            FROM workflow_event
+            WHERE actor_id = $1 AND actor_id <> ''
+              AND ($2::TEXT IS NULL OR tenant = $2)
+            GROUP BY case_id
+        ) p
+        JOIN workflow_case ON workflow_case.id = p.case_id
+        ORDER BY p.last_at DESC, workflow_case.id
+        LIMIT $3 OFFSET $4`
+
+	rows, err := db.Query(ctx, q, f.ActorID, nullString(f.Tenant), limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("workflow: list participated: %w", err)
+	}
+	defer rows.Close()
+
+	var cases []workflow.Case
+	for rows.Next() {
+		c, err := scanCase(rows)
+		if err != nil {
+			return nil, fmt.Errorf("workflow: list participated: %w", err)
+		}
+		cases = append(cases, *c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("workflow: list participated: %w", err)
 	}
 	return cases, nil
 }

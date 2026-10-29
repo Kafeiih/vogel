@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -77,7 +78,7 @@ func (f *fakeRepository) GetByExternalID(_ context.Context, _ pgxtx.DBTX, tenant
 	return &c, nil
 }
 
-func (f *fakeRepository) Update(_ context.Context, _ pgxtx.DBTX, c *Case) error {
+func (f *fakeRepository) Update(_ context.Context, _ pgxtx.DBTX, c *Case, expectedLastSeq int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -87,7 +88,7 @@ func (f *fakeRepository) Update(_ context.Context, _ pgxtx.DBTX, c *Case) error 
 	if !ok {
 		return ErrCaseNotFound
 	}
-	if stored.Revision != c.Revision {
+	if stored.Revision != c.Revision || stored.LastSeq != expectedLastSeq {
 		return ErrConflict
 	}
 	c.Revision++
@@ -99,6 +100,13 @@ func (f *fakeRepository) AppendEvent(_ context.Context, _ pgxtx.DBTX, e *Event) 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
+	// Same UNIQUE (case_id, seq) backstop as workflow_event: a taken seq is
+	// a concurrent append, reported like workflow/postgres does.
+	for i := range f.events[e.CaseID] {
+		if f.events[e.CaseID][i].Seq == e.Seq {
+			return ErrConflict
+		}
+	}
 	f.events[e.CaseID] = append(f.events[e.CaseID], *e)
 	return nil
 }
@@ -110,6 +118,60 @@ func (f *fakeRepository) ListEvents(_ context.Context, _ pgxtx.DBTX, caseID uuid
 	out := make([]Event, len(f.events[caseID]))
 	copy(out, f.events[caseID])
 	return out, nil
+}
+
+func (f *fakeRepository) ListParticipated(_ context.Context, _ pgxtx.DBTX, filter ParticipationFilter) ([]Case, error) {
+	limit, offset, err := filter.Page()
+	if err != nil {
+		return nil, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	// Same rule as workflow/postgres: the actor's newest event per case,
+	// newest first, case id as the tie-break.
+	latest := make(map[uuid.UUID]time.Time)
+	for caseID, events := range f.events {
+		for i := range events {
+			if events[i].Actor.ID != filter.ActorID {
+				continue
+			}
+			if at, ok := latest[caseID]; !ok || events[i].OccurredAt.After(at) {
+				latest[caseID] = events[i].OccurredAt
+			}
+		}
+	}
+	var out []Case
+	for caseID := range latest {
+		c := f.cases[caseID]
+		if filter.Tenant != "" && c.Tenant != filter.Tenant {
+			continue
+		}
+		out = append(out, c)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if !latest[out[i].ID].Equal(latest[out[j].ID]) {
+			return latest[out[i].ID].After(latest[out[j].ID])
+		}
+		return out[i].ID.String() < out[j].ID.String()
+	})
+	if offset >= len(out) {
+		return nil, nil
+	}
+	return out[offset:min(offset+limit, len(out))], nil
+}
+
+func (f *fakeRepository) AdvanceLastSeq(_ context.Context, _ pgxtx.DBTX, id uuid.UUID) (*Case, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	c, ok := f.cases[id]
+	if !ok {
+		return nil, ErrCaseNotFound
+	}
+	c.LastSeq++
+	f.cases[id] = c
+	return &c, nil
 }
 
 func (f *fakeRepository) ListByEligibility(_ context.Context, _ pgxtx.DBTX, filter InboxFilter) ([]Case, error) {
@@ -948,9 +1010,9 @@ type stateRecordingRepository struct {
 	updatedStates []string
 }
 
-func (r *stateRecordingRepository) Update(ctx context.Context, db pgxtx.DBTX, c *Case) error {
+func (r *stateRecordingRepository) Update(ctx context.Context, db pgxtx.DBTX, c *Case, expectedLastSeq int64) error {
 	r.updatedStates = append(r.updatedStates, c.State)
-	return r.fakeRepository.Update(ctx, db, c)
+	return r.fakeRepository.Update(ctx, db, c, expectedLastSeq)
 }
 
 func TestMove_DecisionNode_RoutesOnFirstTrueGuard(t *testing.T) {
@@ -1566,13 +1628,13 @@ type racingRepository struct {
 	beforeUpdate func()
 }
 
-func (r *racingRepository) Update(ctx context.Context, db pgxtx.DBTX, c *Case) error {
+func (r *racingRepository) Update(ctx context.Context, db pgxtx.DBTX, c *Case, expectedLastSeq int64) error {
 	r.once.Do(func() {
 		if r.beforeUpdate != nil {
 			r.beforeUpdate()
 		}
 	})
-	return r.fakeRepository.Update(ctx, db, c)
+	return r.fakeRepository.Update(ctx, db, c, expectedLastSeq)
 }
 
 // concurrentReassign is the competing writer used by the race tests: it
@@ -1582,7 +1644,7 @@ func concurrentReassign(t *testing.T, repo *fakeRepository, caseID uuid.UUID) fu
 		fresh, err := repo.GetByID(context.Background(), nil, caseID)
 		require.NoError(t, err)
 		fresh.AssignedTo = "intruder"
-		require.NoError(t, repo.Update(context.Background(), nil, fresh))
+		require.NoError(t, repo.Update(context.Background(), nil, fresh, fresh.LastSeq))
 	}
 }
 

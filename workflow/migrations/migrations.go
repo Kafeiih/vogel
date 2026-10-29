@@ -1,6 +1,18 @@
 // Package migrations embeds the SQL migration(s) that create the
 // workflow_case and workflow_event tables this library owns.
 //
+// 005_workflow_event_append_only.sql makes workflow_event append-only:
+// triggers reject UPDATE, DELETE and TRUNCATE on it with SQLSTATE 23001
+// (restrict_violation) and a message starting with "workflow_event is
+// append-only", and the case_id foreign key is ON DELETE RESTRICT, so
+// deleting a case with events fails (23503). The guarantee has limits: the
+// table owner or a superuser can disable the triggers. Any retention or
+// purge must be an explicit owner-run procedure that disables the triggers,
+// deletes and re-enables them inside one transaction; the recipe is in the
+// header of 005_workflow_event_append_only.sql. Integration tests that clean
+// these tables between cases must not TRUNCATE or DELETE them: use a fresh
+// database per test or roll back a transaction instead.
+//
 // Consumers pass FS() to vogel/migrate.Up (or UpTo/UpByOne/Status) alongside
 // their own application migrations' fs.FS. Because this library's version
 // numbering starts at 001 independently of each application's own migration

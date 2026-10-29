@@ -72,7 +72,8 @@ type EffectSink interface {
 	// Dispatch is called by Open and Move exactly once, after all their
 	// persistence succeeded, with the definition the case runs on, the final
 	// case, and exactly the events that call appended, in Seq order (Open:
-	// the EventOpened; Move: the human-driven EventMoved, every automatic
+	// the EventOpened; Move: the EventStepSubmitted when MoveInput.Step is
+	// set, the human-driven EventMoved, every automatic
 	// decision-node EventMoved, then the automatic EventClosed if the case
 	// closed). db is the exact value the caller passed to Open or Move, so
 	// whatever Dispatch writes commits or rolls back with the caller's
@@ -519,6 +520,10 @@ type MoveInput struct {
 	// ErrCommentNotAllowed. It is stored as-is (trimmed) on the resulting
 	// EventMoved record.
 	Comment string
+	// Step, when set, is the form submission this move carries: Move appends
+	// an EventStepSubmitted with it as detail immediately before the human
+	// EventMoved, in the same seq block. Nil appends no step event.
+	Step *StepRecord
 }
 
 // Move applies the transition matching (current state, Action) to the case,
@@ -585,6 +590,9 @@ type MoveInput struct {
 // revision column overwrites cases without advancing it, so its writes can
 // be lost undetected until every such process is replaced (see
 // workflow/postgres Repository.Update for the deploy order).
+// The compare-and-swap also checks the LastSeq Move read, so a RecordFailure
+// committed in between (it advances LastSeq, not Revision) fails Move with
+// ErrConflict the same way, before anything is written.
 func (e *Engine) Move(ctx context.Context, db pgxtx.DBTX, in MoveInput) (*Case, error) {
 	res, err := e.MoveDetailed(ctx, db, in)
 	if err != nil {
@@ -685,17 +693,40 @@ func (e *Engine) MoveDetailed(ctx context.Context, db pgxtx.DBTX, in MoveInput) 
 	// Every event this call appends gets its Seq from the case's LastSeq,
 	// advanced here and persisted by the Update compare-and-swap below, so
 	// two racing Moves can never both claim the same Seq block.
+	var stepDetail json.RawMessage
+	if in.Step != nil {
+		if stepDetail, err = marshalDetail(*in.Step); err != nil {
+			return nil, fmt.Errorf("workflow: move case %s: %w", c.ID, err)
+		}
+	}
 	seq := c.LastSeq
 	c.LastSeq += int64(len(hops))
 	if terminated {
 		c.LastSeq++
 	}
+	if in.Step != nil {
+		c.LastSeq++
+	}
 
-	if err := e.repo.Update(ctx, db, c); err != nil {
+	if err := e.repo.Update(ctx, db, c, seq); err != nil {
 		return nil, fmt.Errorf("workflow: move case %s: %w", c.ID, err)
 	}
 
-	appended := make([]Event, 0, len(hops)+1)
+	appended := make([]Event, 0, len(hops)+2)
+	if in.Step != nil {
+		// The submission is recorded at the state it was made in, before the
+		// human hop that leaves it.
+		seq++
+		evt, err := e.appendEvent(ctx, db, c, &Event{
+			Seq: seq, Kind: EventStepSubmitted,
+			FromState: hops[0].fromState, ToState: hops[0].fromState, Action: in.Action,
+			Actor: actor, OccurredAt: now, Detail: stepDetail,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("workflow: move case %s: append step event: %w", c.ID, err)
+		}
+		appended = append(appended, evt)
+	}
 	for _, h := range hops {
 		seq++
 		evt, err := e.appendEvent(ctx, db, c, &Event{
@@ -882,7 +913,7 @@ func (e *Engine) ClaimWith(ctx context.Context, db pgxtx.DBTX, in ClaimInput) (*
 	}
 	c.AssignedTo = actor.ID
 	c.LastSeq++
-	if err := e.repo.Update(ctx, db, c); err != nil {
+	if err := e.repo.Update(ctx, db, c, c.LastSeq-1); err != nil {
 		return nil, fmt.Errorf("workflow: claim case %s: %w", c.ID, err)
 	}
 
@@ -921,7 +952,7 @@ func (e *Engine) ReleaseWith(ctx context.Context, db pgxtx.DBTX, in ReleaseInput
 	}
 	c.AssignedTo = ""
 	c.LastSeq++
-	if err := e.repo.Update(ctx, db, c); err != nil {
+	if err := e.repo.Update(ctx, db, c, c.LastSeq-1); err != nil {
 		return nil, fmt.Errorf("workflow: release case %s: %w", c.ID, err)
 	}
 
@@ -1087,4 +1118,125 @@ func marshalDetail(v any) (json.RawMessage, error) {
 		return nil, fmt.Errorf("encode event detail: %w", err)
 	}
 	return b, nil
+}
+
+// FailureInput describes a rejected move to record (see RecordFailure).
+type FailureInput struct {
+	CaseID uuid.UUID
+	Actor  Actor
+	Action string
+	Kind   FailureKind
+	Detail json.RawMessage
+}
+
+// RecordFailure appends a record of a rejected move to the case: an
+// EventNoRoute for FailureNoRoute, an EventFailed for every other kind, with
+// a FailureDetail carrying in.Kind and in.Detail. It never changes the case's
+// state, assignment or Revision; it only takes the next Seq, through
+// Repository.AdvanceLastSeq, which locks the case row, so it serializes with
+// every other writer of the case.
+//
+// The move that failed ran in a transaction the caller must roll back first:
+// RecordFailure runs in the caller's next transaction (db), so the record
+// survives the rollback. FailureKindOf maps the engine's sentinel errors to
+// a FailureKind. An unknown kind, a Detail that is not a JSON object or an
+// invalid Actor fails with ErrInvalidFailure or ErrInvalidActor before
+// anything is written.
+//
+// A failure recorded while another call holds a stale read of the same case
+// advances LastSeq but not Revision; that call's Repository.Update compares
+// the LastSeq it read too, so it fails with ErrConflict before writing
+// anything, and it retries from a fresh read like any other concurrent
+// change.
+func (e *Engine) RecordFailure(ctx context.Context, db pgxtx.DBTX, in FailureInput) (Event, error) {
+	if !in.Kind.Valid() {
+		return Event{}, fmt.Errorf("workflow: record failure on case %s: %w: kind %q", in.CaseID, ErrInvalidFailure, in.Kind)
+	}
+	if len(in.Detail) > 0 && !isJSONObject(in.Detail) {
+		return Event{}, fmt.Errorf("workflow: record failure on case %s: %w: detail must be a JSON object", in.CaseID, ErrInvalidFailure)
+	}
+	actor, err := resolveActor(in.Actor, "")
+	if err != nil {
+		return Event{}, fmt.Errorf("workflow: record failure on case %s: %w", in.CaseID, err)
+	}
+	detail, err := marshalDetail(FailureDetail{Kind: in.Kind, Detail: in.Detail})
+	if err != nil {
+		return Event{}, fmt.Errorf("workflow: record failure on case %s: %w", in.CaseID, err)
+	}
+
+	c, err := e.repo.AdvanceLastSeq(ctx, db, in.CaseID)
+	if err != nil {
+		return Event{}, fmt.Errorf("workflow: record failure on case %s: %w", in.CaseID, err)
+	}
+
+	kind := EventFailed
+	if in.Kind == FailureNoRoute {
+		kind = EventNoRoute
+	}
+	evt, err := e.appendEvent(ctx, db, c, &Event{
+		Seq: c.LastSeq, Kind: kind,
+		FromState: c.State, ToState: c.State, Action: in.Action,
+		Actor: actor, OccurredAt: e.now(), Detail: detail,
+	})
+	if err != nil {
+		return Event{}, fmt.Errorf("workflow: record failure on case %s: append event: %w", c.ID, err)
+	}
+	return evt, nil
+}
+
+// failureKinds maps each sentinel a rejected Move, Claim or Release can
+// return to the FailureKind RecordFailure records it as.
+var failureKinds = []struct {
+	err  error
+	kind FailureKind
+}{
+	{ErrNoRoute, FailureNoRoute},
+	{ErrGuardRejected, FailureGuardRejected},
+	{ErrConflict, FailureConflict},
+	{ErrInvalidActor, FailureValidationFailed},
+	{ErrCommentRequired, FailureCommentRejected},
+	{ErrCommentNotAllowed, FailureCommentRejected},
+	{ErrReturnNotVisited, FailureReturnNotVisited},
+	{ErrInvalidTransition, FailureTransitionNotFound},
+}
+
+// FailureKindOf reports the FailureKind for err when it wraps one of the
+// engine's rejected-move sentinels (ErrNoRoute, ErrGuardRejected,
+// ErrConflict, ErrInvalidActor, ErrCommentRequired, ErrCommentNotAllowed,
+// ErrReturnNotVisited, ErrInvalidTransition), and false for any other error,
+// such as ErrCaseClosed or a database failure, which RecordFailure is not
+// meant to record.
+func FailureKindOf(err error) (FailureKind, bool) {
+	for _, fk := range failureKinds {
+		if errors.Is(err, fk.err) {
+			return fk.kind, true
+		}
+	}
+	return "", false
+}
+
+// isJSONObject reports whether raw is a valid JSON object.
+func isJSONObject(raw json.RawMessage) bool {
+	var obj map[string]json.RawMessage
+	return json.Unmarshal(raw, &obj) == nil && obj != nil
+}
+
+// Participated returns the distinct cases in which f.ActorID appears as the
+// actor of any event (opened, moved, claimed, released, a step submission or
+// a recorded failure), open or closed, assigned to them or not, ordered by
+// the actor's newest event in each case, newest first. It pages like Inbox
+// (see ParticipationFilter.Page) and fails with ErrInvalidActor for an empty
+// ActorID.
+func (e *Engine) Participated(ctx context.Context, db pgxtx.DBTX, f ParticipationFilter) ([]Case, error) {
+	if f.ActorID == "" {
+		return nil, fmt.Errorf("workflow: participated: %w: ActorID is required", ErrInvalidActor)
+	}
+	if _, _, err := f.Page(); err != nil {
+		return nil, fmt.Errorf("workflow: participated: %w", err)
+	}
+	cases, err := e.repo.ListParticipated(ctx, db, f)
+	if err != nil {
+		return nil, fmt.Errorf("workflow: participated: %w", err)
+	}
+	return cases, nil
 }

@@ -139,7 +139,7 @@ func TestRepository_Update_PersistsMutableFields(t *testing.T) {
 	c.AssignedTo = "u1"
 	deadline := time.Now().Add(48 * time.Hour).UTC().Truncate(time.Microsecond)
 	c.DeadlineAt = &deadline
-	require.NoError(t, repo.Update(ctx, pool, c))
+	require.NoError(t, repo.Update(ctx, pool, c, c.LastSeq))
 
 	got, err := repo.GetByID(ctx, pool, c.ID)
 	require.NoError(t, err)
@@ -286,12 +286,12 @@ func TestRepository_Update_StaleRevision_ReturnsErrConflict(t *testing.T) {
 	require.NoError(t, err)
 
 	first.AssignedTo = "u1"
-	require.NoError(t, repo.Update(ctx, pool, first))
+	require.NoError(t, repo.Update(ctx, pool, first, first.LastSeq))
 	assert.Equal(t, int64(1), first.Revision, "a successful update advances the in-memory revision")
 
 	second.AssignedTo = "u2"
 	second.State = "review"
-	err = repo.Update(ctx, pool, second)
+	err = repo.Update(ctx, pool, second, second.LastSeq)
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, workflow.ErrConflict), "want ErrConflict, got %v", err)
 	assert.False(t, errors.Is(err, workflow.ErrCaseNotFound))
@@ -305,7 +305,7 @@ func TestRepository_Update_StaleRevision_ReturnsErrConflict(t *testing.T) {
 
 	// The first caller, holding the advanced revision, can keep writing.
 	first.State = "review"
-	require.NoError(t, repo.Update(ctx, pool, first))
+	require.NoError(t, repo.Update(ctx, pool, first, first.LastSeq))
 	assert.Equal(t, int64(2), first.Revision)
 }
 
@@ -314,7 +314,7 @@ func TestRepository_Update_MissingCase_ReturnsErrCaseNotFound(t *testing.T) {
 	repo := postgres.NewRepository()
 	ctx := context.Background()
 
-	err := repo.Update(ctx, pool, newCase("compras", "solicitud-missing"))
+	err := repo.Update(ctx, pool, newCase("compras", "solicitud-missing"), 0)
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, workflow.ErrCaseNotFound), "want ErrCaseNotFound, got %v", err)
 	assert.False(t, errors.Is(err, workflow.ErrConflict))

@@ -8,6 +8,85 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ### Cambios que rompen
 
+- **`workflow_event` pasa a ser sólo de agregado.** La migración
+  `005_workflow_event_append_only.sql` instala triggers que rechazan
+  `UPDATE`, `DELETE` y `TRUNCATE` sobre `workflow_event` con SQLSTATE 23001
+  (`restrict_violation`) y un mensaje que empieza con `workflow_event is
+  append-only`, igual que `audit_log`. La clave foránea `case_id` pasa de
+  `ON DELETE CASCADE` a `ON DELETE RESTRICT`: borrar un caso con eventos
+  falla (23503) en vez de borrar su historial; un caso sin eventos se sigue
+  pudiendo borrar. Un test que limpiaba estas tablas con `DELETE` o
+  `TRUNCATE` debe usar una base nueva por test o hacer rollback de una
+  transacción. Una purga por retención es un procedimiento explícito del
+  dueño de la tabla, con los triggers deshabilitados dentro de una sola
+  transacción (la receta está en la cabecera de la 005); esa transacción
+  bloquea todo agregado de eventos mientras dura, así que va en una ventana
+  de mantenimiento y por lotes. La 005 es obligatoria antes de desplegar,
+  como la 004; agrega la nueva clave foránea `NOT VALID`, sin recorrer la
+  tabla, así que no bloquea los agregados mientras se aplica (las filas ya
+  cumplían la clave anterior). Quien quiera marcarla como validada puede
+  correr después `ALTER TABLE workflow_event VALIDATE CONSTRAINT
+  workflow_event_case_id_fkey`, que no bloquea los agregados.
+- **`workflow.Repository` suma `ListParticipated(ctx, db, f)`**, que usa
+  `Engine.Participated`. Un repositorio propio o un fake de test debe
+  implementarla.
+- **`workflow.Repository.Update` recibe `expectedLastSeq`**:
+  `Update(ctx, db, c, expectedLastSeq)` es ahora un compare-and-swap sobre
+  `revision` y sobre el `last_seq` con el que se leyó el caso. Así un
+  `RecordFailure` que tomó un `seq` entre la lectura y la escritura (avanza
+  `last_seq` pero no `revision`) hace fallar la escritura con `ErrConflict`
+  antes de tocar nada, haya o no transacción. Un repositorio propio o un
+  fake de test debe agregar el parámetro y comparar ambos valores.
+- **`workflow.Repository` suma `AdvanceLastSeq(ctx, db, id)`**, con la que
+  `RecordFailure` toma el siguiente `seq` sin tocar `revision`. Un
+  repositorio propio o un fake de test debe implementarla: incrementar sólo
+  `last_seq`, bloqueando la fila del caso, y devolver el caso actualizado o
+  `ErrCaseNotFound`.
+- **Un `seq` ya ocupado en `AppendEvent` es ahora `workflow.ErrConflict`**
+  (`workflow/postgres` lo envuelve junto al error de Postgres). Con el
+  compare-and-swap de `Update` ya no lo provoca este binario; queda como
+  respaldo ante un escritor que no avanza `last_seq`. Un binario anterior a
+  esta versión no compara `last_seq` en `Update`: un `RecordFailure`
+  concurrente le llega como un error 23505 sin clasificar al agregar el
+  evento, con el caso ya actualizado si no corría en una transacción. No
+  usar `RecordFailure` hasta reemplazar todos los binarios.
+
+### Agregado
+
+- **`workflow`: casos en los que participó una persona.**
+  `Engine.Participated(ctx, db, ParticipationFilter{Tenant, ActorID, Limit,
+  Offset})` devuelve los casos distintos en los que `ActorID` aparece como
+  actor de algún evento (abiertos o cerrados, asignados a esa persona o no),
+  ordenados por su actividad más reciente en cada caso, y pagina con las
+  mismas reglas que `Inbox` (`ParticipationFilter.Page`). Un `ActorID` vacío
+  falla con `ErrInvalidActor`. La migración
+  `006_workflow_event_actor_index.sql` crea el índice
+  `idx_workflow_event_actor (actor_id, case_id) INCLUDE (occurred_at) WHERE
+  actor_id <> ''` con `CREATE INDEX CONCURRENTLY`, sin bloquear los agregados
+  mientras se construye; si falla a mitad de camino deja un índice inválido
+  y el reintento falla a propósito: borrarlo (`DROP INDEX CONCURRENTLY
+  idx_workflow_event_actor`) y volver a correrla. Como en `Inbox`, un
+  `Tenant` vacío abarca todos los tenants: un consumidor con varios tenants
+  siempre debe pasarlo.
+- **`workflow`: envío de paso.** `MoveInput.Step` (`*StepRecord{StepID,
+  FormVersion, PayloadDigest}`): cuando viene, `Move` agrega un
+  `EventStepSubmitted` (`step_submitted`) justo antes del `EventMoved`
+  humano, en la misma transacción y el mismo bloque de `seq`, con el registro
+  como `StepDetail`. El motor nunca ve el formulario, sólo su resumen.
+- **`workflow`: registro de movimientos rechazados.**
+  `Engine.RecordFailure(ctx, db, FailureInput{CaseID, Actor, Action, Kind,
+  Detail})` agrega un `EventNoRoute` (`no_route`) o un `EventFailed`
+  (`failed`) con un `FailureDetail{Kind, Detail}`, sin cambiar el estado, la
+  asignación ni `revision`. `FailureKind` es `no_route`, `guard_rejected`,
+  `conflict`, `validation_failed`, `comment_rejected`, `return_not_visited` o
+  `transition_not_found`; `FailureKindOf(err)` lo obtiene de los errores del
+  motor (`ErrInvalidActor` es `validation_failed`). El llamador hace
+  rollback de la transacción que falló y lo llama en una nueva. Un tipo
+  desconocido o un `Detail` que no es un objeto JSON fallan con
+  `ErrInvalidFailure` sin escribir nada.
+
+### Cambios que rompen
+
 - **`workflow.Repository.AppendEvent` guarda el `Seq` que recibe.** Antes lo
   calculaba en SQL (`MAX(seq) + 1`) y lo sobrescribía; ahora el motor lo
   asigna desde `Case.LastSeq` y un `Seq` ya ocupado falla por
