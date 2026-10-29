@@ -17,7 +17,14 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   (`workflow/postgres` lo envuelve junto al error de Postgres). Pasa cuando
   un `RecordFailure` concurrente tomó ese `seq` entre la lectura y la
   escritura de un `Move`, `Claim` o `Release`: se reintenta desde una lectura
-  nueva, como cualquier otro conflicto.
+  nueva, como cualquier otro conflicto. Como `RecordFailure` no avanza
+  `revision`, ese conflicto aparece al agregar el evento, después de que el
+  caso ya se actualizó: dentro de una transacción el rollback lo deshace,
+  pero con un `db` sin transacción el caso queda movido y sin eventos.
+  Llamar a `Move`, `Claim` y `Release` dentro de una transacción cuando
+  `RecordFailure` puede correr en paralelo sobre el mismo caso. Un binario
+  anterior a esta versión recibe ese mismo choque como un error 23505 sin
+  clasificar: no usar `RecordFailure` hasta reemplazar todos los binarios.
 
 ### Agregado
 

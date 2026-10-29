@@ -590,6 +590,15 @@ type MoveInput struct {
 // revision column overwrites cases without advancing it, so its writes can
 // be lost undetected until every such process is replaced (see
 // workflow/postgres Repository.Update for the deploy order).
+//
+// RecordFailure takes a Seq without advancing Revision, so one recorded
+// between Move's read and its write is not caught by the compare-and-swap:
+// Move's first append then collides on that Seq and fails with ErrConflict,
+// after the case update was already written. Inside a transaction the
+// rollback discards it and the retry works. On a plain pool connection that
+// update has already committed, leaving the case moved with no events, so
+// run Move (and Claim and Release) in a transaction whenever RecordFailure
+// can run concurrently on the same case.
 func (e *Engine) Move(ctx context.Context, db pgxtx.DBTX, in MoveInput) (*Case, error) {
 	res, err := e.MoveDetailed(ctx, db, in)
 	if err != nil {
