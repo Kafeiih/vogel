@@ -2,6 +2,7 @@ package process
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/google/uuid"
@@ -167,6 +168,19 @@ func (s *Service) Submit(ctx context.Context, actor string, caseID uuid.UUID, ac
 		c, err = s.engine.Move(ctx, tx, workflow.MoveInput{CaseID: caseID, Action: action, Actor: workflow.Actor{Kind: workflow.ActorHuman, ID: actor}})
 		return err
 	})
+	// The rejected move was rolled back with its form values; its record goes
+	// in a transaction of its own so it survives.
+	if kind, ok := workflow.FailureKindOf(err); ok {
+		rerr := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+			_, err := s.engine.RecordFailure(ctx, tx, workflow.FailureInput{
+				CaseID: caseID, Actor: workflow.Actor{Kind: workflow.ActorHuman, ID: actor}, Action: action, Kind: kind,
+			})
+			return err
+		})
+		if rerr != nil {
+			return nil, errors.Join(err, rerr)
+		}
+	}
 	return c, err
 }
 

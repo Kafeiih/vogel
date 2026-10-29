@@ -63,9 +63,45 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   concurrente le llega como un error 23505 sin clasificar al agregar el
   evento, con el caso ya actualizado si no corría en una transacción. No
   usar `RecordFailure` hasta reemplazar todos los binarios.
+- **`workflow.Repository.AppendEvent` guarda el `Seq` que recibe.** Antes lo
+  calculaba en SQL (`MAX(seq) + 1`) y lo sobrescribía; ahora el motor lo
+  asigna desde `Case.LastSeq` y un `Seq` ya ocupado falla por
+  `UNIQUE (case_id, seq)` en vez de correrse. `Create` y `Update` persisten
+  `Case.LastSeq`. Un repositorio propio o un fake de test debe guardar
+  `Seq`, `SchemaVersion`, `Detail` y `LastSeq` tal como llegan.
+- **Migración `004_workflow_event_metadata.sql` obligatoria antes de
+  desplegar, y todos los binarios se reemplazan juntos.** Un binario anterior
+  agrega eventos sin avanzar `workflow_case.last_seq`; el siguiente binario
+  nuevo calcula un `seq` que choca con `UNIQUE (case_id, seq)` y falla en
+  forma visible en vez de corromper el historial. Ese caso queda trabado
+  hasta reparar `last_seq`; una vez que no queda ningún binario viejo, se
+  repara volviendo a correr el relleno de la 004:
+  `UPDATE workflow_case c SET last_seq = COALESCE((SELECT MAX(e.seq) FROM workflow_event e WHERE e.case_id = c.id), 0);`.
+  La 004 rellena `last_seq` dentro de la misma transacción que agrega la
+  columna, con `workflow_case` bloqueada mientras dura: en una tabla grande,
+  aplicarla en una ventana de mantenimiento.
+- **`workflow.Repository.GetByExternalID` recibe `tenant`:**
+  `GetByExternalID(ctx, db, tenant, domain, externalID)`. Un consumidor de un
+  solo tenant pasa `""`. Un repositorio propio o un fake de test debe agregar
+  el parámetro, guardar `Case.Tenant` y filtrar por `InboxFilter.Tenant`.
+- **`Claim` y `ClaimWith` rechazan un actor sin ID** con `ErrInvalidActor`,
+  sin escribir nada. Antes `Claim(ctx, db, id, "")` respondía con éxito,
+  dejaba el caso sin asignar y agregaba un `EventAssigned` a nadie, que
+  además avanzaba `revision`. `Release` sigue aceptando un actor sin ID.
+- **La unicidad de un caso pasa a ser `(tenant, domain, external_id)`.** La
+  004 reemplaza `UNIQUE (domain, external_id)` por el índice único
+  `uq_workflow_case_tenant_domain_external_id`; los casos existentes quedan
+  con `tenant = ''`. Revertir la 004 falla mientras dos tenants compartan un
+  mismo `(domain, external_id)`, y borra el tenant, el actor estructurado y
+  los ids de correlación ya guardados.
 
 ### Agregado
 
+- **`examples/boilerplate`: rechazos registrados.** `process.Service.Submit`
+  registra con `Engine.RecordFailure`, en una transacción propia, el `Move`
+  rechazado (por ejemplo, una acción que no existe en el estado actual), y
+  pasa sus actores como `Actor{Kind: ActorHuman, ID: ...}`. Un formulario
+  inválido no es un movimiento rechazado y no se registra.
 - **`workflow`: cadena de hashes por caso.** Cada evento agregado después de
   la migración `007_workflow_event_digest.sql` guarda `prev_digest` (el
   `digest` del evento anterior del caso) y `digest`, SHA-256 sobre
@@ -115,43 +151,6 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   rollback de la transacción que falló y lo llama en una nueva. Un tipo
   desconocido o un `Detail` que no es un objeto JSON fallan con
   `ErrInvalidFailure` sin escribir nada.
-
-### Cambios que rompen
-
-- **`workflow.Repository.AppendEvent` guarda el `Seq` que recibe.** Antes lo
-  calculaba en SQL (`MAX(seq) + 1`) y lo sobrescribía; ahora el motor lo
-  asigna desde `Case.LastSeq` y un `Seq` ya ocupado falla por
-  `UNIQUE (case_id, seq)` en vez de correrse. `Create` y `Update` persisten
-  `Case.LastSeq`. Un repositorio propio o un fake de test debe guardar
-  `Seq`, `SchemaVersion`, `Detail` y `LastSeq` tal como llegan.
-- **Migración `004_workflow_event_metadata.sql` obligatoria antes de
-  desplegar, y todos los binarios se reemplazan juntos.** Un binario anterior
-  agrega eventos sin avanzar `workflow_case.last_seq`; el siguiente binario
-  nuevo calcula un `seq` que choca con `UNIQUE (case_id, seq)` y falla en
-  forma visible en vez de corromper el historial. Ese caso queda trabado
-  hasta reparar `last_seq`; una vez que no queda ningún binario viejo, se
-  repara volviendo a correr el relleno de la 004:
-  `UPDATE workflow_case c SET last_seq = COALESCE((SELECT MAX(e.seq) FROM workflow_event e WHERE e.case_id = c.id), 0);`.
-  La 004 rellena `last_seq` dentro de la misma transacción que agrega la
-  columna, con `workflow_case` bloqueada mientras dura: en una tabla grande,
-  aplicarla en una ventana de mantenimiento.
-- **`workflow.Repository.GetByExternalID` recibe `tenant`:**
-  `GetByExternalID(ctx, db, tenant, domain, externalID)`. Un consumidor de un
-  solo tenant pasa `""`. Un repositorio propio o un fake de test debe agregar
-  el parámetro, guardar `Case.Tenant` y filtrar por `InboxFilter.Tenant`.
-- **`Claim` y `ClaimWith` rechazan un actor sin ID** con `ErrInvalidActor`,
-  sin escribir nada. Antes `Claim(ctx, db, id, "")` respondía con éxito,
-  dejaba el caso sin asignar y agregaba un `EventAssigned` a nadie, que
-  además avanzaba `revision`. `Release` sigue aceptando un actor sin ID.
-- **La unicidad de un caso pasa a ser `(tenant, domain, external_id)`.** La
-  004 reemplaza `UNIQUE (domain, external_id)` por el índice único
-  `uq_workflow_case_tenant_domain_external_id`; los casos existentes quedan
-  con `tenant = ''`. Revertir la 004 falla mientras dos tenants compartan un
-  mismo `(domain, external_id)`, y borra el tenant, el actor estructurado y
-  los ids de correlación ya guardados.
-
-### Agregado
-
 - **`workflow`: versión de esquema y detalle por tipo en cada evento.**
   `Event.SchemaVersion` (el motor escribe `CurrentEventSchema`, 2; las filas
   anteriores se leen como 1) y `Event.Detail`, un objeto JSON (`{}` para los
