@@ -968,6 +968,7 @@ type Repository interface {
 	ListEvents(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID) ([]Event, error)
 	ListByEligibility(ctx context.Context, db pgxtx.DBTX, f InboxFilter) ([]Case, error)
 	AdvanceLastSeq(ctx context.Context, db pgxtx.DBTX, id uuid.UUID) (*Case, error)
+	ListParticipated(ctx context.Context, db pgxtx.DBTX, f ParticipationFilter) ([]Case, error)
 }
 
 // InboxFilter selects open cases. States is the set of node IDs a caller
@@ -1011,15 +1012,36 @@ var ErrOffsetOutOfRange = errors.New("workflow: list offset out of range")
 // Page returns the LIMIT and OFFSET a repository list query must use for f:
 // see DefaultListLimit, MaxListLimit and MaxListOffset.
 func (f InboxFilter) Page() (limit, offset int, err error) {
-	if f.Offset < 0 || f.Offset > MaxListOffset {
-		return 0, 0, fmt.Errorf("%w: %d (allowed 0..%d)", ErrOffsetOutOfRange, f.Offset, MaxListOffset)
+	return page(f.Limit, f.Offset)
+}
+
+// ParticipationFilter selects the cases an actor took part in (see
+// Engine.Participated). ActorID is required; Tenant, when set, restricts the
+// result to that tenant's cases.
+type ParticipationFilter struct {
+	Tenant  string // empty = any
+	ActorID string
+	Limit   int // <= 0 means DefaultListLimit; clamped to MaxListLimit
+	Offset  int // must be within [0, MaxListOffset]
+}
+
+// Page returns the LIMIT and OFFSET for f, with the same rules as
+// InboxFilter.Page.
+func (f ParticipationFilter) Page() (limit, offset int, err error) {
+	return page(f.Limit, f.Offset)
+}
+
+// page applies DefaultListLimit, MaxListLimit and MaxListOffset to a list
+// query's Limit and Offset.
+func page(limit, offset int) (int, int, error) {
+	if offset < 0 || offset > MaxListOffset {
+		return 0, 0, fmt.Errorf("%w: %d (allowed 0..%d)", ErrOffsetOutOfRange, offset, MaxListOffset)
 	}
-	limit = f.Limit
 	switch {
 	case limit <= 0:
 		limit = DefaultListLimit
 	case limit > MaxListLimit:
 		limit = MaxListLimit
 	}
-	return limit, f.Offset, nil
+	return limit, offset, nil
 }

@@ -50,8 +50,10 @@
 --   ALTER TABLE workflow_event ENABLE TRIGGER vogel_workflow_event_no_truncate;
 --   COMMIT;
 --
--- Down restores ON DELETE CASCADE (also NOT VALID, for the same reason), then
--- drops the triggers and the function, and leaves the table and its rows
+-- Down restores ON DELETE CASCADE (also NOT VALID, for the same reason, so
+-- after a rollback pg_constraint.convalidated is false where 001 left it true;
+-- the key is enforced the same, and the VALIDATE above restores the flag),
+-- then drops the triggers and the function, and leaves the table and its rows
 -- untouched.
 
 -- +goose Up

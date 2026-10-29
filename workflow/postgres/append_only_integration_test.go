@@ -126,7 +126,7 @@ func TestMigration005_UpDownUpRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	connStr := startTestPostgres(t)
 	opts := silentOptions()
-	require.NoError(t, migrate.Up(ctx, connStr, migrations.FS(), opts))
+	require.NoError(t, migrate.UpTo(ctx, connStr, migrations.FS(), 5, opts))
 
 	pool, err := pgxpool.New(ctx, connStr)
 	require.NoError(t, err)
@@ -148,7 +148,7 @@ func TestMigration005_UpDownUpRoundTrip(t *testing.T) {
 	assert.Equal(t, "c", deleteRule, "Down must restore ON DELETE CASCADE")
 	assert.Equal(t, 2, countEvents(t, pool), "Down leaves the rows untouched")
 
-	require.NoError(t, migrate.Up(ctx, connStr, migrations.FS(), opts), "Up must apply again after Down")
+	require.NoError(t, migrate.UpTo(ctx, connStr, migrations.FS(), 5, opts), "Up must apply again after Down")
 	_, err = pool.Exec(ctx, `DELETE FROM workflow_event WHERE case_id = $1`, c.ID)
 	requireAppendOnlyRejection(t, err, "DELETE")
 	require.NoError(t, pool.QueryRow(ctx, `

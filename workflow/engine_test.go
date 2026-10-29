@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -117,6 +118,47 @@ func (f *fakeRepository) ListEvents(_ context.Context, _ pgxtx.DBTX, caseID uuid
 	out := make([]Event, len(f.events[caseID]))
 	copy(out, f.events[caseID])
 	return out, nil
+}
+
+func (f *fakeRepository) ListParticipated(_ context.Context, _ pgxtx.DBTX, filter ParticipationFilter) ([]Case, error) {
+	limit, offset, err := filter.Page()
+	if err != nil {
+		return nil, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	// Same rule as workflow/postgres: the actor's newest event per case,
+	// newest first, case id as the tie-break.
+	latest := make(map[uuid.UUID]time.Time)
+	for caseID, events := range f.events {
+		for i := range events {
+			if events[i].Actor.ID != filter.ActorID {
+				continue
+			}
+			if at, ok := latest[caseID]; !ok || events[i].OccurredAt.After(at) {
+				latest[caseID] = events[i].OccurredAt
+			}
+		}
+	}
+	var out []Case
+	for caseID := range latest {
+		c := f.cases[caseID]
+		if filter.Tenant != "" && c.Tenant != filter.Tenant {
+			continue
+		}
+		out = append(out, c)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if !latest[out[i].ID].Equal(latest[out[j].ID]) {
+			return latest[out[i].ID].After(latest[out[j].ID])
+		}
+		return out[i].ID.String() < out[j].ID.String()
+	})
+	if offset >= len(out) {
+		return nil, nil
+	}
+	return out[offset:min(offset+limit, len(out))], nil
 }
 
 func (f *fakeRepository) AdvanceLastSeq(_ context.Context, _ pgxtx.DBTX, id uuid.UUID) (*Case, error) {

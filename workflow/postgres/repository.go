@@ -300,6 +300,50 @@ func (r *Repository) ListByEligibility(ctx context.Context, db pgxtx.DBTX, f wor
 	return cases, nil
 }
 
+// ListParticipated returns the distinct cases in which f.ActorID is the
+// actor of any event, ordered by that actor's newest event in each case
+// (newest first, case id as the tie-break), restricted to f.Tenant when set
+// and paged by f.Page. It reads the actor's events through
+// idx_workflow_event_actor (migration 006).
+func (r *Repository) ListParticipated(ctx context.Context, db pgxtx.DBTX, f workflow.ParticipationFilter) ([]workflow.Case, error) {
+	limit, offset, err := f.Page()
+	if err != nil {
+		return nil, fmt.Errorf("workflow: list participated: %w", err)
+	}
+
+	const q = `
+        SELECT ` + caseColumns + `
+        FROM (
+            SELECT case_id, MAX(occurred_at) AS last_at
+            FROM workflow_event
+            WHERE actor_id = $1 AND actor_id <> ''
+            GROUP BY case_id
+        ) p
+        JOIN workflow_case ON workflow_case.id = p.case_id
+        WHERE ($2::TEXT IS NULL OR workflow_case.tenant = $2)
+        ORDER BY p.last_at DESC, workflow_case.id
+        LIMIT $3 OFFSET $4`
+
+	rows, err := db.Query(ctx, q, f.ActorID, nullString(f.Tenant), limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("workflow: list participated: %w", err)
+	}
+	defer rows.Close()
+
+	var cases []workflow.Case
+	for rows.Next() {
+		c, err := scanCase(rows)
+		if err != nil {
+			return nil, fmt.Errorf("workflow: list participated: %w", err)
+		}
+		cases = append(cases, *c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("workflow: list participated: %w", err)
+	}
+	return cases, nil
+}
+
 func scanCase(row rowScanner) (*workflow.Case, error) {
 	var c workflow.Case
 	var status string

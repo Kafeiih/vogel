@@ -1220,3 +1220,23 @@ func isJSONObject(raw json.RawMessage) bool {
 	var obj map[string]json.RawMessage
 	return json.Unmarshal(raw, &obj) == nil && obj != nil
 }
+
+// Participated returns the distinct cases in which f.ActorID appears as the
+// actor of any event (opened, moved, claimed, released, a step submission or
+// a recorded failure), open or closed, assigned to them or not, ordered by
+// the actor's newest event in each case, newest first. It pages like Inbox
+// (see ParticipationFilter.Page) and fails with ErrInvalidActor for an empty
+// ActorID.
+func (e *Engine) Participated(ctx context.Context, db pgxtx.DBTX, f ParticipationFilter) ([]Case, error) {
+	if f.ActorID == "" {
+		return nil, fmt.Errorf("workflow: participated: %w: ActorID is required", ErrInvalidActor)
+	}
+	if _, _, err := f.Page(); err != nil {
+		return nil, fmt.Errorf("workflow: participated: %w", err)
+	}
+	cases, err := e.repo.ListParticipated(ctx, db, f)
+	if err != nil {
+		return nil, fmt.Errorf("workflow: participated: %w", err)
+	}
+	return cases, nil
+}

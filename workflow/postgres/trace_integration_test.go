@@ -366,7 +366,7 @@ func TestMigration004_DownRestoresPreviousSchema(t *testing.T) {
 	ctx := context.Background()
 	connStr := startTestPostgres(t)
 	opts := silentOptions()
-	require.NoError(t, migrate.Up(ctx, connStr, migrations.FS(), opts))
+	require.NoError(t, migrate.UpTo(ctx, connStr, migrations.FS(), 4, opts))
 
 	pool, err := pgxpool.New(ctx, connStr)
 	require.NoError(t, err)
@@ -376,7 +376,6 @@ func TestMigration004_DownRestoresPreviousSchema(t *testing.T) {
 	c, err := e.Open(ctx, pool, workflow.OpenInput{Definition: "purchase", Domain: "compras", ExternalID: "down-1", Unit: "finance", Actor: workflow.Actor{Kind: workflow.ActorHuman, ID: "u1"}})
 	require.NoError(t, err)
 
-	require.NoError(t, migrate.Down(ctx, connStr, migrations.FS(), opts), "roll back 005 first")
 	require.NoError(t, migrate.Down(ctx, connStr, migrations.FS(), opts), "a clean rollback of 004 must succeed")
 
 	var added int
@@ -402,7 +401,7 @@ func TestMigration004_DownFailsWhileTwoTenantsShareAnExternalID(t *testing.T) {
 	ctx := context.Background()
 	connStr := startTestPostgres(t)
 	opts := silentOptions()
-	require.NoError(t, migrate.Up(ctx, connStr, migrations.FS(), opts))
+	require.NoError(t, migrate.UpTo(ctx, connStr, migrations.FS(), 4, opts))
 
 	pool, err := pgxpool.New(ctx, connStr)
 	require.NoError(t, err)
@@ -417,7 +416,6 @@ func TestMigration004_DownFailsWhileTwoTenantsShareAnExternalID(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	require.NoError(t, migrate.Down(ctx, connStr, migrations.FS(), opts), "roll back 005 first")
 	require.Error(t, migrate.Down(ctx, connStr, migrations.FS(), opts),
 		"restoring UNIQUE (domain, external_id) must fail while two tenants share one")
 
@@ -565,4 +563,80 @@ func TestRepository_Update_StaleLastSeq_ReturnsErrConflict(t *testing.T) {
 	assert.Equal(t, "draft", got.State, "nothing is written")
 	assert.Equal(t, int64(0), got.Revision)
 	assert.Equal(t, int64(2), got.LastSeq)
+}
+
+func TestParticipated_ListsCasesFromPostgres(t *testing.T) {
+	pool := startTestPool(t)
+	ctx := context.Background()
+	clock := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
+	e := workflow.New(postgres.NewRepository(), workflow.Config{Now: func() time.Time { clock = clock.Add(time.Minute); return clock }}, nil,
+		workflow.WithDefinitions(workflow.Definition{
+			Name: "purchase", Version: 1,
+			Nodes: []workflow.Node{
+				{ID: "draft", Start: true, Eligible: workflow.ByPosition("buyer")},
+				{ID: "done", Terminal: true},
+			},
+			Transitions: []workflow.Transition{{From: "draft", To: "done", Action: "submit"}},
+		}))
+	open := func(tenant, ext, actor string) *workflow.Case {
+		c, err := e.Open(ctx, pool, workflow.OpenInput{Definition: "purchase", Tenant: tenant, Domain: "compras", ExternalID: ext, Unit: "finance", Actor: workflow.Actor{Kind: workflow.ActorHuman, ID: actor}})
+		require.NoError(t, err)
+		return c
+	}
+
+	first := open("t1", "p-1", "u1")
+	second := open("t1", "p-2", "u9")
+	_, err := e.Claim(ctx, pool, second.ID, "u1")
+	require.NoError(t, err)
+	_, err = e.Release(ctx, pool, second.ID, "u1")
+	require.NoError(t, err)
+	_, err = e.Claim(ctx, pool, second.ID, "u9")
+	require.NoError(t, err)
+	open("t1", "p-3", "u9")
+	other := open("t2", "p-4", "u1")
+
+	got, err := e.Participated(ctx, pool, workflow.ParticipationFilter{Tenant: "t1", ActorID: "u1"})
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	assert.Equal(t, second.ID, got[0].ID, "newest activity of the actor first")
+	assert.Equal(t, first.ID, got[1].ID)
+	assert.Equal(t, "u9", got[0].AssignedTo)
+
+	all, err := e.Participated(ctx, pool, workflow.ParticipationFilter{ActorID: "u1"})
+	require.NoError(t, err)
+	require.Len(t, all, 3)
+	assert.Equal(t, other.ID, all[0].ID)
+
+	page, err := e.Participated(ctx, pool, workflow.ParticipationFilter{ActorID: "u1", Limit: 1, Offset: 1})
+	require.NoError(t, err)
+	require.Len(t, page, 1)
+	assert.Equal(t, second.ID, page[0].ID)
+
+	var valid bool
+	require.NoError(t, pool.QueryRow(ctx, `
+        SELECT i.indisvalid FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+        WHERE c.relname = 'idx_workflow_event_actor'`).Scan(&valid))
+	assert.True(t, valid, "migration 006 must leave a valid index")
+}
+
+func TestMigration006_UpDownRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	connStr := startTestPostgres(t)
+	opts := silentOptions()
+	require.NoError(t, migrate.Up(ctx, connStr, migrations.FS(), opts))
+
+	pool, err := pgxpool.New(ctx, connStr)
+	require.NoError(t, err)
+	t.Cleanup(pool.Close)
+	indexes := func() int {
+		var n int
+		require.NoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM pg_indexes WHERE indexname = 'idx_workflow_event_actor'`).Scan(&n))
+		return n
+	}
+	assert.Equal(t, 1, indexes())
+
+	require.NoError(t, migrate.Down(ctx, connStr, migrations.FS(), opts))
+	assert.Zero(t, indexes(), "Down must drop the index")
+	require.NoError(t, migrate.Up(ctx, connStr, migrations.FS(), opts))
+	assert.Equal(t, 1, indexes(), "Up must build it again")
 }

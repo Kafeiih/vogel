@@ -27,6 +27,9 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   cumplían la clave anterior). Quien quiera marcarla como validada puede
   correr después `ALTER TABLE workflow_event VALIDATE CONSTRAINT
   workflow_event_case_id_fkey`, que no bloquea los agregados.
+- **`workflow.Repository` suma `ListParticipated(ctx, db, f)`**, que usa
+  `Engine.Participated`. Un repositorio propio o un fake de test debe
+  implementarla.
 - **`workflow.Repository.Update` recibe `expectedLastSeq`**:
   `Update(ctx, db, c, expectedLastSeq)` es ahora un compare-and-swap sobre
   `revision` y sobre el `last_seq` con el que se leyó el caso. Así un
@@ -50,6 +53,18 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ### Agregado
 
+- **`workflow`: casos en los que participó una persona.**
+  `Engine.Participated(ctx, db, ParticipationFilter{Tenant, ActorID, Limit,
+  Offset})` devuelve los casos distintos en los que `ActorID` aparece como
+  actor de algún evento (abiertos o cerrados, asignados a esa persona o no),
+  ordenados por su actividad más reciente en cada caso, y pagina con las
+  mismas reglas que `Inbox` (`ParticipationFilter.Page`). Un `ActorID` vacío
+  falla con `ErrInvalidActor`. La migración
+  `006_workflow_event_actor_index.sql` crea el índice
+  `idx_workflow_event_actor (actor_id, case_id) WHERE actor_id <> ''` con
+  `CREATE INDEX CONCURRENTLY`, sin bloquear los agregados mientras se
+  construye; si falla a mitad de camino, borrar el índice inválido y volver
+  a correrla.
 - **`workflow`: envío de paso.** `MoveInput.Step` (`*StepRecord{StepID,
   FormVersion, PayloadDigest}`): cuando viene, `Move` agrega un
   `EventStepSubmitted` (`step_submitted`) justo antes del `EventMoved`

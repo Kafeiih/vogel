@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -313,5 +314,69 @@ func TestFailureKindOf_MapsEverySentinel(t *testing.T) {
 	for _, err := range []error{nil, errors.New("boom"), ErrCaseClosed, ErrCaseNotFound, ErrAlreadyAssigned} {
 		_, ok := FailureKindOf(err)
 		assert.False(t, ok, "%v is not a rejected move", err)
+	}
+}
+
+func TestParticipated_ReturnsCasesWhereActorActedAfterReassign(t *testing.T) {
+	repo := newFakeRepository()
+	clock := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
+	e := New(repo, Config{Now: func() time.Time { clock = clock.Add(time.Minute); return clock }}, testLogger(), WithDefinitions(testDefinition()))
+	ctx := context.Background()
+	open := func(tenant, ext, actor string) *Case {
+		c, err := e.Open(ctx, nil, OpenInput{Definition: "purchase", Tenant: tenant, Domain: "compras", ExternalID: ext, Unit: "finance", Actor: Actor{Kind: ActorHuman, ID: actor}})
+		require.NoError(t, err)
+		return c
+	}
+
+	first := open("t1", "1", "u1")  // u1 opened it, nothing else
+	second := open("t1", "2", "u9") // u1 claims, releases, someone else takes it
+	_, err := e.Claim(ctx, nil, second.ID, "u1")
+	require.NoError(t, err)
+	_, err = e.Release(ctx, nil, second.ID, "u1")
+	require.NoError(t, err)
+	_, err = e.Claim(ctx, nil, second.ID, "u9")
+	require.NoError(t, err)
+	open("t1", "3", "u9")                // u1 never acted
+	otherTenant := open("t2", "4", "u1") // u1 acted in another tenant
+
+	got, err := e.Participated(ctx, nil, ParticipationFilter{Tenant: "t1", ActorID: "u1"})
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	assert.Equal(t, second.ID, got[0].ID, "newest activity of the actor first")
+	assert.Equal(t, first.ID, got[1].ID)
+	assert.Equal(t, "u9", got[0].AssignedTo, "the case is listed although it is assigned to someone else now")
+
+	all, err := e.Participated(ctx, nil, ParticipationFilter{ActorID: "u1"})
+	require.NoError(t, err)
+	require.Len(t, all, 3, "an empty tenant means any tenant")
+	assert.Equal(t, otherTenant.ID, all[0].ID)
+
+	page, err := e.Participated(ctx, nil, ParticipationFilter{ActorID: "u1", Limit: 1, Offset: 1})
+	require.NoError(t, err)
+	require.Len(t, page, 1)
+	assert.Equal(t, second.ID, page[0].ID)
+}
+
+func TestParticipated_RejectsOffsetOutOfRange(t *testing.T) {
+	e := New(newFakeRepository(), Config{}, testLogger(), WithDefinitions(testDefinition()))
+	for _, offset := range []int{-1, MaxListOffset + 1} {
+		_, err := e.Participated(context.Background(), nil, ParticipationFilter{ActorID: "u1", Offset: offset})
+		require.ErrorIs(t, err, ErrOffsetOutOfRange, "offset %d", offset)
+	}
+}
+
+func TestParticipated_RequiresActorID(t *testing.T) {
+	e := New(newFakeRepository(), Config{}, testLogger(), WithDefinitions(testDefinition()))
+	_, err := e.Participated(context.Background(), nil, ParticipationFilter{Tenant: "t1"})
+	require.ErrorIs(t, err, ErrInvalidActor)
+}
+
+func TestParticipationFilter_PageFollowsInboxRules(t *testing.T) {
+	for _, tc := range []struct{ limit, offset int }{{0, 0}, {-5, 10}, {MaxListLimit + 1, 3}, {50, MaxListOffset}} {
+		wantL, wantO, wantErr := InboxFilter{Limit: tc.limit, Offset: tc.offset}.Page()
+		gotL, gotO, gotErr := ParticipationFilter{Limit: tc.limit, Offset: tc.offset}.Page()
+		assert.Equal(t, wantL, gotL, "%+v", tc)
+		assert.Equal(t, wantO, gotO, "%+v", tc)
+		assert.Equal(t, wantErr, gotErr, "%+v", tc)
 	}
 }
