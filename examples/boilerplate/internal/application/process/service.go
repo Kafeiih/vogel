@@ -63,7 +63,7 @@ func (s *Service) Start(ctx context.Context, actor, process, action string, valu
 			Version:    p.Definition.Version,
 			Domain:     CaseDomain,
 			ExternalID: uuid.NewString(),
-			ActorID:    actor,
+			Actor:      workflow.Actor{Kind: workflow.ActorHuman, ID: actor},
 		})
 		if err != nil {
 			return err
@@ -71,7 +71,7 @@ func (s *Service) Start(ctx context.Context, actor, process, action string, valu
 		if err := s.values.Save(ctx, tx, opened.ID, start.ID, actor, clean); err != nil {
 			return err
 		}
-		c, err = s.engine.Move(ctx, tx, workflow.MoveInput{CaseID: opened.ID, Action: action, ActorID: actor})
+		c, err = s.engine.Move(ctx, tx, workflow.MoveInput{CaseID: opened.ID, Action: action, Actor: workflow.Actor{Kind: workflow.ActorHuman, ID: actor}})
 		return err
 	})
 	return c, err
@@ -164,7 +164,7 @@ func (s *Service) Submit(ctx context.Context, actor string, caseID uuid.UUID, ac
 		if err := s.values.Save(ctx, tx, caseID, current.State, actor, clean); err != nil {
 			return err
 		}
-		c, err = s.engine.Move(ctx, tx, workflow.MoveInput{CaseID: caseID, Action: action, ActorID: actor})
+		c, err = s.engine.Move(ctx, tx, workflow.MoveInput{CaseID: caseID, Action: action, Actor: workflow.Actor{Kind: workflow.ActorHuman, ID: actor}})
 		return err
 	})
 	return c, err
@@ -210,7 +210,7 @@ func (s *Service) related(ctx context.Context, actor string, c *workflow.Case) (
 	}
 	// Move clears the assignment, so a past handler is only in the events.
 	for i := range events {
-		if events[i].ActorID == actor {
+		if events[i].Actor.ID == actor {
 			return true, nil
 		}
 	}

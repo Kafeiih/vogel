@@ -6,6 +6,98 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ## [Unreleased]
 
+### Cambios que rompen
+
+- **`workflow.Repository.AppendEvent` guarda el `Seq` que recibe.** Antes lo
+  calculaba en SQL (`MAX(seq) + 1`) y lo sobrescribía; ahora el motor lo
+  asigna desde `Case.LastSeq` y un `Seq` ya ocupado falla por
+  `UNIQUE (case_id, seq)` en vez de correrse. `Create` y `Update` persisten
+  `Case.LastSeq`. Un repositorio propio o un fake de test debe guardar
+  `Seq`, `SchemaVersion`, `Detail` y `LastSeq` tal como llegan.
+- **Migración `004_workflow_event_metadata.sql` obligatoria antes de
+  desplegar, y todos los binarios se reemplazan juntos.** Un binario anterior
+  agrega eventos sin avanzar `workflow_case.last_seq`; el siguiente binario
+  nuevo calcula un `seq` que choca con `UNIQUE (case_id, seq)` y falla en
+  forma visible en vez de corromper el historial. Ese caso queda trabado
+  hasta reparar `last_seq`; una vez que no queda ningún binario viejo, se
+  repara volviendo a correr el relleno de la 004:
+  `UPDATE workflow_case c SET last_seq = COALESCE((SELECT MAX(e.seq) FROM workflow_event e WHERE e.case_id = c.id), 0);`.
+  La 004 rellena `last_seq` dentro de la misma transacción que agrega la
+  columna, con `workflow_case` bloqueada mientras dura: en una tabla grande,
+  aplicarla en una ventana de mantenimiento.
+- **`workflow.Repository.GetByExternalID` recibe `tenant`:**
+  `GetByExternalID(ctx, db, tenant, domain, externalID)`. Un consumidor de un
+  solo tenant pasa `""`. Un repositorio propio o un fake de test debe agregar
+  el parámetro, guardar `Case.Tenant` y filtrar por `InboxFilter.Tenant`.
+- **`Claim` y `ClaimWith` rechazan un actor sin ID** con `ErrInvalidActor`,
+  sin escribir nada. Antes `Claim(ctx, db, id, "")` respondía con éxito,
+  dejaba el caso sin asignar y agregaba un `EventAssigned` a nadie, que
+  además avanzaba `revision`. `Release` sigue aceptando un actor sin ID.
+- **La unicidad de un caso pasa a ser `(tenant, domain, external_id)`.** La
+  004 reemplaza `UNIQUE (domain, external_id)` por el índice único
+  `uq_workflow_case_tenant_domain_external_id`; los casos existentes quedan
+  con `tenant = ''`. Revertir la 004 falla mientras dos tenants compartan un
+  mismo `(domain, external_id)`, y borra el tenant, el actor estructurado y
+  los ids de correlación ya guardados.
+
+### Agregado
+
+- **`workflow`: versión de esquema y detalle por tipo en cada evento.**
+  `Event.SchemaVersion` (el motor escribe `CurrentEventSchema`, 2; las filas
+  anteriores se leen como 1) y `Event.Detail`, un objeto JSON (`{}` para los
+  tipos sin detalle). `History` completa los valores por defecto de las
+  versiones viejas sin reescribir filas y falla con
+  `ErrUnsupportedEventSchema` ante una versión más nueva que el binario. Esa
+  verificación vive en el motor: `workflow/postgres.Repository.ListEvents`
+  devuelve las filas tal como están guardadas, así que quien lo llame
+  directamente no recibe ni la verificación ni los valores por defecto.
+  `Claim` y `Release` guardan un `AssignmentDetail{From, To, Reason}`: quién
+  tenía el caso, quién lo toma y, al liberarlo, por qué.
+- **`workflow`: actor estructurado.** `Actor{Kind, ID, ActingAs, OnBehalfOf,
+  Via}` con `ActorKind` (`ActorHuman`, `ActorOperator`, `ActorSystem`,
+  `ActorAPIClient`, `ActorAnonymous` y `ActorUnspecified`, este último sólo
+  para eventos anteriores). `OpenInput.Actor` y `MoveInput.Actor`;
+  `ActorID` queda como alias obsoleto: con `Actor.ID` vacío aporta el ID, y
+  con `Actor.Kind` también vacío equivale a `Actor{Kind: ActorHuman, ID:
+  ActorID}`; un `Kind` explícito se conserva. Un `Actor.ID` distinto del
+  `ActorID`, un tipo desconocido o `ActorUnspecified`, o un `ActorSystem` sin
+  ID fallan con `ErrInvalidActor` sin escribir nada. `Event.Actor` se lee en
+  el historial (los eventos anteriores, como `ActorUnspecified` con el
+  `actor_id` guardado) y `Event.ActorID` queda como espejo obsoleto de
+  `Actor.ID`. `ActingAs` es la autoridad con la que se actuó (por ejemplo
+  `cargo@unidad` y si es titular, subrogante o delegado), que el llamador
+  resuelve en el momento del evento.
+- **`workflow`: `Engine.ClaimWith(ClaimInput{CaseID, Actor})` y
+  `Engine.ReleaseWith(ReleaseInput{CaseID, Actor, Reason})`.** `Claim` y
+  `Release` siguen iguales y ahora las envuelven con un actor humano.
+- **`workflow`: tenant.** `Case.Tenant` y `OpenInput.Tenant`; cada evento
+  copia el tenant del caso en `Event.Tenant`, para que una exportación o una
+  política de seguridad por fila no necesiten un join. `InboxFilter.Tenant`
+  filtra la bandeja; vacío no filtra, como hasta ahora. El tenant etiqueta y
+  filtra, pero no aísla: `Move`, `Claim`, `Release`, `History` y
+  `EligibilityFor` leen el caso por ID sin mirar el tenant, así que un
+  consumidor con varios tenants debe comprobarlo antes de llamarlos (o usar
+  seguridad por fila) y siempre pasar `InboxFilter.Tenant`.
+- **`workflow`: ids de correlación en cada evento.** `Event.RequestID` sale
+  de `reqctx.RequestIDFromContext(ctx)`; `Event.TraceID` y `Event.SpanID`, de
+  `Config.TraceIDs`, el mismo puerto que `postgres.Config.TraceIDs`
+  (`otel.SampledTraceIDs` calza). Sin puerto quedan vacíos; `workflow` no
+  depende de OpenTelemetry.
+- **`workflow`: secuencia expuesta.** `Case.LastSeq` es el `Seq` del último
+  evento; el motor asigna los siguientes desde ahí, a través del mismo
+  compare-and-swap de `revision`, así que agregar un evento ya no lee el
+  historial completo. `Engine.OpenDetailed` y `Engine.MoveDetailed` devuelven
+  `MoveResult{Case, Events}` con exactamente los eventos agregados, para que
+  el consumidor estampe el `seq` que disparó su propia escritura. `Open` y
+  `Move` siguen iguales.
+- **`workflow/migrations`: `004_workflow_event_metadata.sql`** agrega
+  `workflow_case.last_seq` (rellenada con el `MAX(seq)` de cada caso),
+  `workflow_case.tenant`, `workflow_event.schema_version SMALLINT NOT NULL
+  DEFAULT 1`, `workflow_event.detail JSONB NOT NULL DEFAULT '{}'`,
+  `workflow_event.tenant` y las columnas del actor:
+  `actor_kind TEXT NOT NULL DEFAULT 'unspecified'`, `acting_as`,
+  `on_behalf_of` y `via_client`, más `request_id`, `trace_id` y `span_id`.
+
 ## [0.17.1] — 2026-10-28
 
 ### Corregido

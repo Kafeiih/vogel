@@ -4,6 +4,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -16,9 +17,11 @@ import (
 )
 
 const caseColumns = `id, definition, version, domain, external_id, unit, state, status,
-    assigned_to, opened_at, closed_at, deadline_at, revision`
+    assigned_to, opened_at, closed_at, deadline_at, revision, last_seq, tenant`
 
-const eventColumns = `id, case_id, seq, kind, from_state, to_state, action, actor_id, occurred_at, comment`
+const eventColumns = `id, case_id, seq, kind, from_state, to_state, action, actor_id, occurred_at, comment,
+    schema_version, detail, tenant, actor_kind, acting_as, on_behalf_of, via_client,
+    request_id, trace_id, span_id`
 
 // uniqueViolationCode is the PostgreSQL error code for a unique constraint
 // violation (23505).
@@ -42,15 +45,15 @@ type rowScanner interface {
 	Scan(dest ...any) error
 }
 
-// Create inserts a new case at revision 0 (whatever c.Revision held) and
-// sets c.Revision to 0. A unique-violation on (domain, external_id) is
-// mapped to workflow.ErrCaseExists.
+// Create inserts a new case at revision 0 (whatever c.Revision held), with
+// c.LastSeq as given, and sets c.Revision to 0. A unique-violation on
+// (tenant, domain, external_id) is mapped to workflow.ErrCaseExists.
 func (r *Repository) Create(ctx context.Context, db pgxtx.DBTX, c *workflow.Case) error {
 	_, err := db.Exec(ctx, `
         INSERT INTO workflow_case (`+caseColumns+`)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 0)`,
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 0, $13, $14)`,
 		c.ID, c.Definition, c.Version, c.Domain, c.ExternalID, c.Unit, c.State, string(c.Status),
-		c.AssignedTo, c.OpenedAt, c.ClosedAt, c.DeadlineAt,
+		c.AssignedTo, c.OpenedAt, c.ClosedAt, c.DeadlineAt, c.LastSeq, c.Tenant,
 	)
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -76,9 +79,11 @@ func (r *Repository) GetByID(ctx context.Context, db pgxtx.DBTX, id uuid.UUID) (
 	return c, nil
 }
 
-// GetByExternalID retrieves a single case by its (domain, external_id) pair.
-func (r *Repository) GetByExternalID(ctx context.Context, db pgxtx.DBTX, domain, externalID string) (*workflow.Case, error) {
-	row := db.QueryRow(ctx, `SELECT `+caseColumns+` FROM workflow_case WHERE domain = $1 AND external_id = $2`, domain, externalID)
+// GetByExternalID retrieves a single case by its (tenant, domain, external_id)
+// triple. A single-tenant consumer passes an empty tenant.
+func (r *Repository) GetByExternalID(ctx context.Context, db pgxtx.DBTX, tenant, domain, externalID string) (*workflow.Case, error) {
+	row := db.QueryRow(ctx, `SELECT `+caseColumns+` FROM workflow_case WHERE tenant = $1 AND domain = $2 AND external_id = $3`,
+		tenant, domain, externalID)
 	c, err := scanCase(row)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -89,9 +94,9 @@ func (r *Repository) GetByExternalID(ctx context.Context, db pgxtx.DBTX, domain,
 	return c, nil
 }
 
-// Update persists every mutable field of c as a compare-and-swap on
-// c.Revision: the row is written only while its stored revision still equals
-// c.Revision, and the write advances it by one. On success c.Revision is
+// Update persists every mutable field of c, LastSeq included, as a
+// compare-and-swap on c.Revision: the row is written only while its stored
+// revision still equals c.Revision, and the write advances it by one. On success c.Revision is
 // advanced to match, so a caller holding c can keep using it. When no row
 // matches, a follow-up existence check tells the two failures apart:
 // workflow.ErrCaseNotFound when the case does not exist, workflow.ErrConflict
@@ -119,11 +124,11 @@ func (r *Repository) Update(ctx context.Context, db pgxtx.DBTX, c *workflow.Case
         UPDATE workflow_case SET
             definition = $2, version = $3, domain = $4, external_id = $5, unit = $6,
             state = $7, status = $8, assigned_to = $9, opened_at = $10, closed_at = $11, deadline_at = $12,
-            revision = revision + 1
+            last_seq = $14, tenant = $15, revision = revision + 1
         WHERE id = $1 AND revision = $13`,
 		c.ID, c.Definition, c.Version, c.Domain, c.ExternalID, c.Unit,
 		c.State, string(c.Status), c.AssignedTo, c.OpenedAt, c.ClosedAt, c.DeadlineAt,
-		c.Revision,
+		c.Revision, c.LastSeq, c.Tenant,
 	)
 	if err != nil {
 		return fmt.Errorf("workflow: update case: %w", err)
@@ -142,29 +147,51 @@ func (r *Repository) Update(ctx context.Context, db pgxtx.DBTX, c *workflow.Case
 	return nil
 }
 
-// AppendEvent inserts e, computing its Seq in SQL as
-// COALESCE(MAX(seq), 0) + 1 for the case so concurrent appends cannot
-// silently collide — the UNIQUE(case_id, seq) constraint is the backstop.
-// e.Seq is overwritten with the value actually persisted.
+// AppendEvent inserts e with the Seq the caller assigned (the engine takes
+// it from Case.LastSeq). A Seq below 1 is rejected. Seq is not recomputed
+// here: a Seq that is already taken fails on UNIQUE (case_id, seq) instead
+// of being silently moved, which is how a writer that does not advance
+// workflow_case.last_seq (a binary from before migration 004) is detected.
+// An empty e.Detail is stored as `{}`, and a SchemaVersion below 1 (a caller
+// that does not set it) as 1, the version of an event without detail.
+// actor_id stores e.Actor.ID, or the deprecated e.ActorID when Actor.ID is
+// empty; an empty e.Actor.Kind is stored as workflow.ActorUnspecified.
 func (r *Repository) AppendEvent(ctx context.Context, db pgxtx.DBTX, e *workflow.Event) error {
-	row := db.QueryRow(ctx, `
-        INSERT INTO workflow_event (id, case_id, seq, kind, from_state, to_state, action, actor_id, occurred_at, comment)
-        VALUES ($1, $2,
-            COALESCE((SELECT MAX(seq) FROM workflow_event WHERE case_id = $2), 0) + 1,
-            $3, $4, $5, $6, $7, $8, $9)
-        RETURNING seq`,
-		e.ID, e.CaseID, string(e.Kind), e.FromState, e.ToState, e.Action, e.ActorID, e.OccurredAt, e.Comment,
+	if e.Seq < 1 {
+		return fmt.Errorf("workflow: append event: seq %d: must be at least 1", e.Seq)
+	}
+	schemaVersion := max(e.SchemaVersion, 1)
+	detail := e.Detail
+	if len(detail) == 0 {
+		detail = json.RawMessage(`{}`)
+	}
+	actorID := e.Actor.ID
+	if actorID == "" {
+		actorID = e.ActorID //nolint:staticcheck // a caller that only sets the deprecated field still gets it stored
+	}
+	actorKind := e.Actor.Kind
+	if actorKind == "" {
+		actorKind = workflow.ActorUnspecified
+	}
+	_, err := db.Exec(ctx, `
+        INSERT INTO workflow_event (`+eventColumns+`)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)`,
+		e.ID, e.CaseID, e.Seq, string(e.Kind), e.FromState, e.ToState, e.Action, actorID, e.OccurredAt, e.Comment,
+		schemaVersion, detail, e.Tenant, string(actorKind), e.Actor.ActingAs, e.Actor.OnBehalfOf, e.Actor.Via,
+		e.RequestID, e.TraceID, e.SpanID,
 	)
-
-	var seq int64
-	if err := row.Scan(&seq); err != nil {
+	if err != nil {
 		return fmt.Errorf("workflow: append event: %w", err)
 	}
-	e.Seq = seq
 	return nil
 }
 
-// ListEvents returns every event for caseID, ordered by seq ascending.
+// ListEvents returns every event for caseID, ordered by seq ascending, as
+// stored: SchemaVersion is the row's schema_version (1 for rows written
+// before migration 004, whose Actor.Kind reads as workflow.ActorUnspecified
+// from the column default). Actor.ID and ActorID both hold actor_id.
+// Upcasting older versions and rejecting newer ones is the engine's job (see
+// workflow.Engine.History).
 func (r *Repository) ListEvents(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID) ([]workflow.Event, error) {
 	rows, err := db.Query(ctx, `SELECT `+eventColumns+` FROM workflow_event WHERE case_id = $1 ORDER BY seq ASC`, caseID)
 	if err != nil {
@@ -186,7 +213,8 @@ func (r *Repository) ListEvents(ctx context.Context, db pgxtx.DBTX, caseID uuid.
 	return events, nil
 }
 
-// ListByEligibility returns open cases matching f. States, when non-empty,
+// ListByEligibility returns open cases matching f. An empty f.Tenant matches
+// every tenant. States, when non-empty,
 // restricts results to cases whose current node is one of those IDs — the
 // mapping from Position/Unit to that set of node IDs is resolved by the
 // caller (see workflow.Engine.EligibilityFor), not by this query.
@@ -205,6 +233,7 @@ func (r *Repository) ListByEligibility(ctx context.Context, db pgxtx.DBTX, f wor
           AND ($3::TEXT    IS NULL OR assigned_to = $3)
           AND (NOT $4::BOOLEAN OR assigned_to = '')
           AND (NOT $5::BOOLEAN OR (deadline_at IS NOT NULL AND deadline_at < now()))
+          AND ($8::TEXT    IS NULL OR tenant = $8)
         ORDER BY opened_at ASC
         LIMIT $6 OFFSET $7`
 
@@ -216,6 +245,7 @@ func (r *Repository) ListByEligibility(ctx context.Context, db pgxtx.DBTX, f wor
 		f.Overdue,
 		limit,
 		offset,
+		nullString(f.Tenant),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("workflow: list by eligibility: %w", err)
@@ -241,7 +271,7 @@ func scanCase(row rowScanner) (*workflow.Case, error) {
 	var status string
 	if err := row.Scan(
 		&c.ID, &c.Definition, &c.Version, &c.Domain, &c.ExternalID, &c.Unit, &c.State, &status,
-		&c.AssignedTo, &c.OpenedAt, &c.ClosedAt, &c.DeadlineAt, &c.Revision,
+		&c.AssignedTo, &c.OpenedAt, &c.ClosedAt, &c.DeadlineAt, &c.Revision, &c.LastSeq, &c.Tenant,
 	); err != nil {
 		return nil, err
 	}
@@ -251,13 +281,17 @@ func scanCase(row rowScanner) (*workflow.Case, error) {
 
 func scanEvent(row rowScanner) (*workflow.Event, error) {
 	var e workflow.Event
-	var kind string
+	var kind, actorKind string
 	if err := row.Scan(
-		&e.ID, &e.CaseID, &e.Seq, &kind, &e.FromState, &e.ToState, &e.Action, &e.ActorID, &e.OccurredAt, &e.Comment,
+		&e.ID, &e.CaseID, &e.Seq, &kind, &e.FromState, &e.ToState, &e.Action, &e.Actor.ID, &e.OccurredAt, &e.Comment,
+		&e.SchemaVersion, &e.Detail, &e.Tenant, &actorKind, &e.Actor.ActingAs, &e.Actor.OnBehalfOf, &e.Actor.Via,
+		&e.RequestID, &e.TraceID, &e.SpanID,
 	); err != nil {
 		return nil, err
 	}
 	e.Kind = workflow.EventKind(kind)
+	e.Actor.Kind = workflow.ActorKind(actorKind)
+	e.ActorID = e.Actor.ID //nolint:staticcheck // keep the deprecated mirror populated for callers that still read it
 	return &e, nil
 }
 

@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -13,6 +14,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/kafeiih/vogel/pgxtx"
+	"github.com/kafeiih/vogel/reqctx"
 )
 
 // Config configures optional Engine behaviour.
@@ -20,6 +22,12 @@ type Config struct {
 	// Now returns the current time. Nil uses time.Now — inject a fixed clock
 	// in tests.
 	Now func() time.Time
+	// TraceIDs, if set, returns the trace and span IDs of the span carried by
+	// a context, or empty strings when there is none; every appended event
+	// records them as Event.TraceID and Event.SpanID. Nil leaves both empty.
+	// It has the shape of postgres.Config.TraceIDs, so otel.SampledTraceIDs
+	// fits it without this package depending on any tracing library.
+	TraceIDs func(ctx context.Context) (traceID, spanID string)
 }
 
 // Engine runs a set of registered Definitions against a Repository: it
@@ -29,6 +37,8 @@ type Engine struct {
 	repo   Repository
 	logger *slog.Logger
 	now    func() time.Time
+	// traceIDs is Config.TraceIDs; nil leaves Event.TraceID/SpanID empty.
+	traceIDs func(ctx context.Context) (traceID, spanID string)
 
 	mu          sync.RWMutex
 	definitions map[string]Definition // by Key(): "Name@Version"
@@ -101,6 +111,7 @@ func New(repo Repository, cfg Config, logger *slog.Logger, opts ...Option) *Engi
 		repo:        repo,
 		logger:      logger,
 		now:         now,
+		traceIDs:    cfg.TraceIDs,
 		definitions: make(map[string]Definition),
 		latest:      make(map[string]Definition),
 		guards:      make(map[string]GuardFunc),
@@ -272,7 +283,16 @@ type OpenInput struct {
 	Domain     string
 	ExternalID string
 	Unit       string
-	ActorID    string
+	// Tenant scopes the case (see Case.Tenant).
+	Tenant string
+	// Actor is who opens the case.
+	Actor Actor
+	// ActorID is the deprecated alias of Actor: with Actor.ID empty it means
+	// Actor{Kind: ActorHuman, ID: ActorID}; set to a different ID than
+	// Actor.ID it fails the call with ErrInvalidActor.
+	//
+	// Deprecated: use Actor.
+	ActorID string
 }
 
 // Open creates a case at the definition's start node and appends an
@@ -281,6 +301,20 @@ type OpenInput struct {
 // calls its Dispatch once with that event; a Dispatch error fails Open and
 // the caller must roll back its transaction, discarding the new case.
 func (e *Engine) Open(ctx context.Context, db pgxtx.DBTX, in OpenInput) (*Case, error) {
+	res, err := e.OpenDetailed(ctx, db, in)
+	if err != nil {
+		return nil, err
+	}
+	return res.Case, nil
+}
+
+// OpenDetailed is Open, also returning the EventOpened it appended (see
+// MoveResult).
+func (e *Engine) OpenDetailed(ctx context.Context, db pgxtx.DBTX, in OpenInput) (*MoveResult, error) {
+	actor, err := resolveActor(in.Actor, in.ActorID)
+	if err != nil {
+		return nil, fmt.Errorf("workflow: open case: %w", err)
+	}
 	d, err := e.resolveDefinition(in.Definition, in.Version)
 	if err != nil {
 		return nil, err
@@ -299,12 +333,16 @@ func (e *Engine) Open(ctx context.Context, db pgxtx.DBTX, in OpenInput) (*Case, 
 		ID:         uuid.New(),
 		Definition: d.Name,
 		Version:    d.Version,
+		Tenant:     in.Tenant,
 		Domain:     in.Domain,
 		ExternalID: in.ExternalID,
 		Unit:       in.Unit,
 		State:      start.ID,
 		Status:     StatusOpen,
 		OpenedAt:   now,
+		// Open appends exactly one event, so Create persists the case
+		// already pointing at it.
+		LastSeq: 1,
 	}
 	if start.Deadline > 0 {
 		deadline := now.Add(start.Deadline)
@@ -315,24 +353,23 @@ func (e *Engine) Open(ctx context.Context, db pgxtx.DBTX, in OpenInput) (*Case, 
 		return nil, fmt.Errorf("workflow: open case: %w", err)
 	}
 
-	evt := &Event{
-		ID:         uuid.New(),
-		CaseID:     c.ID,
-		Seq:        1,
+	evt, err := e.appendEvent(ctx, db, c, &Event{
+		Seq:        c.LastSeq,
 		Kind:       EventOpened,
 		ToState:    start.ID,
-		ActorID:    in.ActorID,
+		Actor:      actor,
 		OccurredAt: now,
-	}
-	if err := e.repo.AppendEvent(ctx, db, evt); err != nil {
+	})
+	if err != nil {
 		return nil, fmt.Errorf("workflow: open case: append event: %w", err)
 	}
 
-	if err := e.dispatch(ctx, db, d, *c, []Event{*evt}); err != nil {
+	events := []Event{evt}
+	if err := e.dispatch(ctx, db, d, *c, events); err != nil {
 		return nil, fmt.Errorf("workflow: open case %s: dispatch effects: %w", c.ID, err)
 	}
 
-	return c, nil
+	return &MoveResult{Case: c, Events: events}, nil
 }
 
 // Available returns the transitions leaving the case's current state whose
@@ -413,15 +450,15 @@ func hasReturnTransition(candidates []Transition) bool {
 // return into one possible: Definition.Validate rejects any return
 // transition whose To is a decision node, regardless of occupancy.
 func (e *Engine) occupiedStates(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID) (map[string]bool, error) {
-	events, err := e.repo.ListEvents(ctx, db, caseID)
+	events, err := e.listEvents(ctx, db, caseID)
 	if err != nil {
 		return nil, fmt.Errorf("workflow: resolve occupied states: %w", err)
 	}
 
 	occupied := make(map[string]bool, len(events))
-	// Indexed rather than ranged by value, like nextSeqFromEvents: Event is
-	// 144 bytes and only Kind/FromState/ToState are read here, over a case
-	// history that grows without bound.
+	// Indexed rather than ranged by value: Event is large and only
+	// Kind/FromState/ToState are read here, over a case history that grows
+	// without bound.
 	for i := range events {
 		switch events[i].Kind {
 		case EventOpened:
@@ -464,8 +501,14 @@ type decisionHop struct {
 
 // MoveInput describes a transition to apply to a case.
 type MoveInput struct {
-	CaseID  uuid.UUID
-	Action  string
+	CaseID uuid.UUID
+	Action string
+	// Actor is who performs the move. Every event the move appends records
+	// it.
+	Actor Actor
+	// ActorID is the deprecated alias of Actor (see OpenInput.ActorID).
+	//
+	// Deprecated: use Actor.
 	ActorID string
 	// Comment is the step comment (on approval) or observation (on
 	// rejection) attached to this move. It is trimmed with strings.
@@ -503,7 +546,7 @@ type MoveInput struct {
 // Each hop along the way — the initial human-driven move and every
 // automatic decision-node hop after it — appends its own EventMoved, with
 // Action set to that hop's transition (or route) label and ActorID set to
-// the original MoveInput.ActorID throughout. Only the first hop ever
+// the original MoveInput actor (see resolveActor) throughout. Only the first hop ever
 // carries in.Comment; every automatic hop records an empty Comment, since
 // the comment belongs to the human action that started the move, not to
 // the domain-data routing that followed it. Deadline and eligibility only
@@ -543,6 +586,21 @@ type MoveInput struct {
 // be lost undetected until every such process is replaced (see
 // workflow/postgres Repository.Update for the deploy order).
 func (e *Engine) Move(ctx context.Context, db pgxtx.DBTX, in MoveInput) (*Case, error) {
+	res, err := e.MoveDetailed(ctx, db, in)
+	if err != nil {
+		return nil, err
+	}
+	return res.Case, nil
+}
+
+// MoveDetailed is Move, also returning exactly the events it appended, in
+// Seq order (the same slice the EffectSink receives): a consumer can stamp
+// the Seq of the event that triggered its own write on that row.
+func (e *Engine) MoveDetailed(ctx context.Context, db pgxtx.DBTX, in MoveInput) (*MoveResult, error) {
+	actor, err := resolveActor(in.Actor, in.ActorID)
+	if err != nil {
+		return nil, fmt.Errorf("workflow: move case %s: %w", in.CaseID, err)
+	}
 	c, err := e.repo.GetByID(ctx, db, in.CaseID)
 	if err != nil {
 		return nil, fmt.Errorf("workflow: move case: %w", err)
@@ -624,13 +682,27 @@ func (e *Engine) Move(ctx context.Context, db pgxtx.DBTX, in MoveInput) (*Case, 
 		c.DeadlineAt = nil
 	}
 
+	// Every event this call appends gets its Seq from the case's LastSeq,
+	// advanced here and persisted by the Update compare-and-swap below, so
+	// two racing Moves can never both claim the same Seq block.
+	seq := c.LastSeq
+	c.LastSeq += int64(len(hops))
+	if terminated {
+		c.LastSeq++
+	}
+
 	if err := e.repo.Update(ctx, db, c); err != nil {
 		return nil, fmt.Errorf("workflow: move case %s: %w", c.ID, err)
 	}
 
 	appended := make([]Event, 0, len(hops)+1)
 	for _, h := range hops {
-		evt, err := e.appendEvent(ctx, db, c.ID, EventMoved, h.fromState, h.toState, h.action, in.ActorID, h.comment, now)
+		seq++
+		evt, err := e.appendEvent(ctx, db, c, &Event{
+			Seq: seq, Kind: EventMoved,
+			FromState: h.fromState, ToState: h.toState, Action: h.action,
+			Actor: actor, Comment: h.comment, OccurredAt: now,
+		})
 		if err != nil {
 			return nil, fmt.Errorf("workflow: move case %s: append event: %w", c.ID, err)
 		}
@@ -639,11 +711,16 @@ func (e *Engine) Move(ctx context.Context, db pgxtx.DBTX, in MoveInput) (*Case, 
 
 	if terminated {
 		// The automatic close event shares the last hop's Action and the
-		// original ActorID but never repeats any comment: the comment
+		// original Actor but never repeats any comment: the comment
 		// belongs to the human-driven hop's own EventMoved record, appended
 		// above, so Comment is passed as "" here rather than reused.
 		lastAction := hops[len(hops)-1].action
-		evt, err := e.appendEvent(ctx, db, c.ID, EventClosed, restNode.ID, restNode.ID, lastAction, in.ActorID, "", now)
+		seq++
+		evt, err := e.appendEvent(ctx, db, c, &Event{
+			Seq: seq, Kind: EventClosed,
+			FromState: restNode.ID, ToState: restNode.ID, Action: lastAction,
+			Actor: actor, OccurredAt: now,
+		})
 		if err != nil {
 			return nil, fmt.Errorf("workflow: move case %s: append close event: %w", c.ID, err)
 		}
@@ -654,7 +731,7 @@ func (e *Engine) Move(ctx context.Context, db pgxtx.DBTX, in MoveInput) (*Case, 
 		return nil, fmt.Errorf("workflow: move case %s: dispatch effects: %w", c.ID, err)
 	}
 
-	return c, nil
+	return &MoveResult{Case: c, Events: appended}, nil
 }
 
 // planMove computes the full chain of hops one Move produces, without
@@ -739,14 +816,53 @@ func findTransition(candidates []Transition, action string) (Transition, bool) {
 	return Transition{}, false
 }
 
-// Claim assigns the case to actorID. Re-claiming by the same actor is a
-// no-op success; claiming a case already assigned to someone else fails.
-// Claim never calls the EffectSink: no effect can be declared on a claim.
+// Claim assigns the case to actorID, a person: it is ClaimWith with
+// Actor{Kind: ActorHuman, ID: actorID}, so an empty actorID fails with
+// ErrInvalidActor.
+func (e *Engine) Claim(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID, actorID string) (*Case, error) {
+	return e.ClaimWith(ctx, db, ClaimInput{CaseID: caseID, Actor: Actor{Kind: ActorHuman, ID: actorID}})
+}
+
+// Release clears the case's assignment on behalf of actorID, a person: it is
+// ReleaseWith with Actor{Kind: ActorHuman, ID: actorID} and no Reason.
+func (e *Engine) Release(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID, actorID string) (*Case, error) {
+	return e.ReleaseWith(ctx, db, ReleaseInput{CaseID: caseID, Actor: Actor{Kind: ActorHuman, ID: actorID}})
+}
+
+// ClaimInput describes a claim: Actor becomes the case's assignee (its ID is
+// stored as Case.AssignedTo), so Actor.ID is required whatever the kind. An
+// empty Actor.Kind means ActorHuman.
+type ClaimInput struct {
+	CaseID uuid.UUID
+	Actor  Actor
+}
+
+// ReleaseInput describes a release: Actor clears the assignment, for Reason.
+// An empty Actor.Kind means ActorHuman.
+type ReleaseInput struct {
+	CaseID uuid.UUID
+	Actor  Actor
+	// Reason is the caller's free-text reason, recorded in the event's
+	// AssignmentDetail.
+	Reason string
+}
+
+// ClaimWith assigns the case to in.Actor.ID. Re-claiming by the same actor ID
+// is a no-op success; claiming a case already assigned to someone else fails.
+// An invalid Actor, or one without an ID (a claim must name its assignee),
+// fails with ErrInvalidActor before anything is read. ClaimWith never calls the EffectSink: no effect can be declared on a claim.
 // Like Move, the case update is a revision compare-and-swap performed before
 // the event is appended: a concurrent change fails with ErrConflict and
 // persists nothing, so two racing claimers can never both win.
-func (e *Engine) Claim(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID, actorID string) (*Case, error) {
-	c, err := e.repo.GetByID(ctx, db, caseID)
+func (e *Engine) ClaimWith(ctx context.Context, db pgxtx.DBTX, in ClaimInput) (*Case, error) {
+	actor, err := resolveActor(in.Actor, "")
+	if err != nil {
+		return nil, fmt.Errorf("workflow: claim case %s: %w", in.CaseID, err)
+	}
+	if actor.ID == "" {
+		return nil, fmt.Errorf("workflow: claim case %s: %w: the assignee needs an ID", in.CaseID, ErrInvalidActor)
+	}
+	c, err := e.repo.GetByID(ctx, db, in.CaseID)
 	if err != nil {
 		return nil, fmt.Errorf("workflow: claim case: %w", err)
 	}
@@ -754,29 +870,44 @@ func (e *Engine) Claim(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID, act
 		return nil, fmt.Errorf("workflow: claim case %s: %w", c.ID, ErrCaseClosed)
 	}
 	if c.AssignedTo != "" {
-		if c.AssignedTo == actorID {
+		if c.AssignedTo == actor.ID {
 			return c, nil
 		}
 		return nil, fmt.Errorf("workflow: claim case %s: %w", c.ID, ErrAlreadyAssigned)
 	}
 
-	c.AssignedTo = actorID
+	detail, err := marshalDetail(AssignmentDetail{To: actor.ID})
+	if err != nil {
+		return nil, fmt.Errorf("workflow: claim case %s: %w", c.ID, err)
+	}
+	c.AssignedTo = actor.ID
+	c.LastSeq++
 	if err := e.repo.Update(ctx, db, c); err != nil {
 		return nil, fmt.Errorf("workflow: claim case %s: %w", c.ID, err)
 	}
 
-	if _, err := e.appendEvent(ctx, db, c.ID, EventAssigned, c.State, c.State, "", actorID, "", e.now()); err != nil {
+	if _, err := e.appendEvent(ctx, db, c, &Event{
+		Seq: c.LastSeq, Kind: EventAssigned,
+		FromState: c.State, ToState: c.State, Actor: actor,
+		OccurredAt: e.now(), Detail: detail,
+	}); err != nil {
 		return nil, fmt.Errorf("workflow: claim case %s: append event: %w", c.ID, err)
 	}
 
 	return c, nil
 }
 
-// Release clears the case's assignment. A concurrent change to the case
-// fails with ErrConflict and persists nothing (see Claim). Like Claim, it
-// never calls the EffectSink.
-func (e *Engine) Release(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID, actorID string) (*Case, error) {
-	c, err := e.repo.GetByID(ctx, db, caseID)
+// ReleaseWith clears the case's assignment, recording the previous assignee
+// and in.Reason in the event's AssignmentDetail. An invalid Actor fails with
+// ErrInvalidActor before anything is read. A concurrent change to the case
+// fails with ErrConflict and persists nothing (see ClaimWith). Like
+// ClaimWith, it never calls the EffectSink.
+func (e *Engine) ReleaseWith(ctx context.Context, db pgxtx.DBTX, in ReleaseInput) (*Case, error) {
+	actor, err := resolveActor(in.Actor, "")
+	if err != nil {
+		return nil, fmt.Errorf("workflow: release case %s: %w", in.CaseID, err)
+	}
+	c, err := e.repo.GetByID(ctx, db, in.CaseID)
 	if err != nil {
 		return nil, fmt.Errorf("workflow: release case: %w", err)
 	}
@@ -784,12 +915,21 @@ func (e *Engine) Release(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID, a
 		return nil, fmt.Errorf("workflow: release case %s: %w", c.ID, ErrNotAssigned)
 	}
 
+	detail, err := marshalDetail(AssignmentDetail{From: c.AssignedTo, Reason: in.Reason})
+	if err != nil {
+		return nil, fmt.Errorf("workflow: release case %s: %w", c.ID, err)
+	}
 	c.AssignedTo = ""
+	c.LastSeq++
 	if err := e.repo.Update(ctx, db, c); err != nil {
 		return nil, fmt.Errorf("workflow: release case %s: %w", c.ID, err)
 	}
 
-	if _, err := e.appendEvent(ctx, db, c.ID, EventUnassigned, c.State, c.State, "", actorID, "", e.now()); err != nil {
+	if _, err := e.appendEvent(ctx, db, c, &Event{
+		Seq: c.LastSeq, Kind: EventUnassigned,
+		FromState: c.State, ToState: c.State, Actor: actor,
+		OccurredAt: e.now(), Detail: detail,
+	}); err != nil {
 		return nil, fmt.Errorf("workflow: release case %s: append event: %w", c.ID, err)
 	}
 
@@ -799,7 +939,7 @@ func (e *Engine) Release(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID, a
 // History returns every event recorded for caseID, ordered by Seq ascending
 // — see Event.Seq for why Seq, rather than OccurredAt, is the ordering key.
 func (e *Engine) History(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID) ([]Event, error) {
-	events, err := e.repo.ListEvents(ctx, db, caseID)
+	events, err := e.listEvents(ctx, db, caseID)
 	if err != nil {
 		return nil, fmt.Errorf("workflow: history: %w", err)
 	}
@@ -846,25 +986,23 @@ func (e *Engine) EligibilityFor(ctx context.Context, db pgxtx.DBTX, caseID uuid.
 	}, nil
 }
 
-// appendEvent computes the next Seq for caseID, appends an event, and
-// returns the event as persisted (Move collects them for the EffectSink).
-func (e *Engine) appendEvent(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID, kind EventKind, fromState, toState, action, actorID, comment string, occurredAt time.Time) (Event, error) {
-	seq, err := e.nextSeq(ctx, db, caseID)
-	if err != nil {
-		return Event{}, err
+// appendEvent appends evt, whose Seq, Actor and payload the caller set, to c:
+// it stamps c's ID and Tenant, a new ID, CurrentEventSchema, ActorID mirrored
+// from Actor.ID, the request ID and trace/span IDs of ctx, and an empty
+// Detail object when it has none. It returns the event as persisted (Open
+// and Move collect them for the EffectSink and MoveResult).
+func (e *Engine) appendEvent(ctx context.Context, db pgxtx.DBTX, c *Case, evt *Event) (Event, error) {
+	evt.ID = uuid.New()
+	evt.CaseID = c.ID
+	evt.Tenant = c.Tenant
+	evt.ActorID = evt.Actor.ID
+	evt.RequestID = reqctx.RequestIDFromContext(ctx)
+	if e.traceIDs != nil {
+		evt.TraceID, evt.SpanID = e.traceIDs(ctx)
 	}
-
-	evt := &Event{
-		ID:         uuid.New(),
-		CaseID:     caseID,
-		Seq:        seq,
-		Kind:       kind,
-		FromState:  fromState,
-		ToState:    toState,
-		Action:     action,
-		ActorID:    actorID,
-		Comment:    comment,
-		OccurredAt: occurredAt,
+	evt.SchemaVersion = CurrentEventSchema
+	if len(evt.Detail) == 0 {
+		evt.Detail = emptyDetail()
 	}
 	if err := e.repo.AppendEvent(ctx, db, evt); err != nil {
 		return Event{}, err
@@ -872,26 +1010,81 @@ func (e *Engine) appendEvent(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUI
 	return *evt, nil
 }
 
-// nextSeq returns the next per-case Seq value for caseID, computed from its
-// existing event history.
-func (e *Engine) nextSeq(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID) (int64, error) {
+// listEvents reads caseID's history through the repository and upcasts every
+// event to the current schema. An event newer than CurrentEventSchema fails
+// the read with ErrUnsupportedEventSchema rather than being returned with
+// fields this binary would drop.
+func (e *Engine) listEvents(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID) ([]Event, error) {
 	events, err := e.repo.ListEvents(ctx, db, caseID)
 	if err != nil {
-		return 0, fmt.Errorf("workflow: compute next seq: %w", err)
+		return nil, err
 	}
-	return nextSeqFromEvents(events), nil
+	for i := range events {
+		if events[i].SchemaVersion > CurrentEventSchema {
+			return nil, fmt.Errorf("case %s event seq %d: schema version %d (this binary knows up to %d): %w",
+				caseID, events[i].Seq, events[i].SchemaVersion, CurrentEventSchema, ErrUnsupportedEventSchema)
+		}
+		upcastEvent(&events[i])
+	}
+	return events, nil
 }
 
-// nextSeqFromEvents returns one past the highest Seq found in events, or 1
-// when events is empty. Kept as a small, independently unit-testable helper.
-func nextSeqFromEvents(events []Event) int64 {
-	var max int64
-	// Indexed rather than ranged by value: Event is 144 bytes and only Seq is
-	// read here, over a case history that grows without bound.
-	for i := range events {
-		if events[i].Seq > max {
-			max = events[i].Seq
-		}
+// upcastEvent fills the defaults an event written with an older schema lacks.
+// Stored rows are never rewritten; this runs on every read. A version of 0
+// comes from a repository that does not store the version and reads as 1.
+// An event without an actor kind (a version-1 row read from a repository that
+// does not store the kind) reads as ActorUnspecified, and Actor.ID and the
+// deprecated ActorID fill each other. It updates evt in place.
+func upcastEvent(evt *Event) {
+	if evt.SchemaVersion < 1 {
+		evt.SchemaVersion = 1
 	}
-	return max + 1
+	if evt.Actor.Kind == "" {
+		evt.Actor.Kind = ActorUnspecified
+	}
+	if evt.Actor.ID == "" {
+		evt.Actor.ID = evt.ActorID
+	}
+	evt.ActorID = evt.Actor.ID
+	if len(evt.Detail) == 0 {
+		evt.Detail = emptyDetail()
+	}
+}
+
+// resolveActor returns the Actor an input records, applying the deprecated
+// actorID alias: an empty actor.ID takes actorID, and an empty Kind means
+// ActorHuman. It fails with ErrInvalidActor when actor.ID and actorID are
+// both set and differ, when the kind is unknown or ActorUnspecified (a
+// read-only kind), and when an ActorSystem has no ID.
+func resolveActor(actor Actor, actorID string) (Actor, error) {
+	switch {
+	case actor.ID == "":
+		actor.ID = actorID
+	case actorID != "" && actorID != actor.ID:
+		return Actor{}, fmt.Errorf("%w: Actor.ID %q differs from ActorID %q", ErrInvalidActor, actor.ID, actorID)
+	}
+	if actor.Kind == "" {
+		actor.Kind = ActorHuman
+	}
+	if !actor.Kind.Valid() || actor.Kind == ActorUnspecified {
+		return Actor{}, fmt.Errorf("%w: kind %q", ErrInvalidActor, actor.Kind)
+	}
+	if actor.Kind == ActorSystem && actor.ID == "" {
+		return Actor{}, fmt.Errorf("%w: a system actor needs an ID", ErrInvalidActor)
+	}
+	return actor, nil
+}
+
+// emptyDetail returns a fresh `{}`, the Detail of a kind that carries none.
+func emptyDetail() json.RawMessage {
+	return json.RawMessage(`{}`)
+}
+
+// marshalDetail encodes a kind's detail type as Event.Detail.
+func marshalDetail(v any) (json.RawMessage, error) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil, fmt.Errorf("encode event detail: %w", err)
+	}
+	return b, nil
 }
