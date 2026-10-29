@@ -1253,8 +1253,11 @@ func (e *Engine) Participated(ctx context.Context, db pgxtx.DBTX, f Participatio
 //
 // The chain detects a stored event that was changed, removed or reordered
 // without recomputing every digest after it. It cannot detect a rewrite that
-// recomputes them, nor events removed from the end of the case: comparing a
-// Digest kept outside the database (an export, a signed log) is what does.
+// recomputes them, events removed from the end of the case, nor a rewrite
+// that clears prev_digest and digest on every event of the case: VerifyChain
+// cannot tell that from a case whose events all predate the chain, and
+// accepts it. Comparing a Digest kept outside the database (an export, a
+// signed log) is what detects them.
 func (e *Engine) VerifyChain(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID) error {
 	if _, err := e.repo.GetByID(ctx, db, caseID); err != nil {
 		return fmt.Errorf("workflow: verify chain: %w", err)

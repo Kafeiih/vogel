@@ -30,6 +30,13 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 - **`workflow.Repository` suma `ListParticipated(ctx, db, f)`**, que usa
   `Engine.Participated`. Un repositorio propio o un fake de test debe
   implementarla.
+- **`workflow/postgres` exige la migración 007**: `AppendEvent` y
+  `ListEvents` escriben y leen `prev_digest` y `digest`, así que contra una
+  base sin la 007 fallan todos los agregados (`Open`, `Move`, `Claim`,
+  `Release`, `RecordFailure`) y todas las lecturas del historial. Aplicar la
+  007 antes de arrancar cualquier binario de esta versión; para revertirla,
+  volver primero los binarios a la versión anterior y después correr su
+  Down.
 - **`workflow.Repository` suma `ListEventDigests(ctx, db, caseID)`**, que usa
   `Engine.VerifyChain`, y `AppendEvent` debe completar `e.PrevDigest` y
   `e.Digest` con los valores guardados. Un repositorio propio o un fake de
@@ -72,8 +79,10 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   Los eventos anteriores a la 007 quedan sin encadenar y el primer evento
   posterior empieza la cadena; no hay relleno, porque la tabla es de sólo
   agregado. La cadena no detecta a quien reescribe filas y recalcula todos
-  los digests siguientes, ni el borrado de los últimos eventos: para eso hay
-  que comparar con un `Digest` guardado fuera de la base. La 007 cuesta una
+  los digests siguientes, ni el borrado de los últimos eventos, ni a quien
+  borra `prev_digest` y `digest` de todos los eventos de un caso (`VerifyChain`
+  no lo distingue de un caso anterior a la 007): para eso hay que comparar
+  con un `Digest` guardado fuera de la base. La 007 cuesta una
   búsqueda por índice y un SHA-256 por evento agregado.
 - **`workflow`: casos en los que participó una persona.**
   `Engine.Participated(ctx, db, ParticipationFilter{Tenant, ActorID, Limit,

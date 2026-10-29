@@ -34,6 +34,9 @@
 --     disabled) can also recompute every digest after the rewrite, or drop
 --     the last events of a case. Detecting that needs a digest kept outside
 --     the database (an export, a signed or external log) to compare with.
+--   - The same person can clear prev_digest and digest on every event of a
+--     case: VerifyChain accepts that as a case whose events all predate this
+--     migration. Only the external digest tells them apart.
 --   - Appends must run in a transaction (pgxtx) as the engine documents: on
 --     a non-transactional db two concurrent appends to one case can leave an
 --     event that cannot see its predecessor, which VerifyChain then reports
@@ -42,8 +45,14 @@
 -- Cost: one extra indexed lookup (the UNIQUE (case_id, seq) index) and one
 -- SHA-256 per append. Adding nullable columns does not rewrite the table.
 --
+-- Deploy order: the workflow/postgres repository of this version writes and
+-- reads prev_digest and digest, so it fails on every append and every
+-- history read against a database without them. Apply 007 before starting
+-- any binary of this version.
+--
 -- Down drops the trigger, the functions and both columns; the stored digests
--- are lost.
+-- are lost. Roll the binaries back to the previous version first: a binary
+-- of this version stops working once Down runs.
 
 -- +goose Up
 ALTER TABLE workflow_event
