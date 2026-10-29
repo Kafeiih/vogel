@@ -61,12 +61,23 @@ const (
 	EventAssigned   EventKind = "assigned"
 	EventUnassigned EventKind = "unassigned"
 	EventClosed     EventKind = "closed"
+	// EventStepSubmitted records the form submission a Move carried
+	// (MoveInput.Step), immediately before that Move's human EventMoved. Its
+	// Detail is a StepDetail.
+	EventStepSubmitted EventKind = "step_submitted"
+	// EventNoRoute and EventFailed record a rejected move (see
+	// Engine.RecordFailure): EventNoRoute when no decision route matched,
+	// EventFailed for every other FailureKind. Neither changes the case. The
+	// Detail is a FailureDetail.
+	EventNoRoute EventKind = "no_route"
+	EventFailed  EventKind = "failed"
 )
 
 // Valid reports whether k is one of the known EventKind values.
 func (k EventKind) Valid() bool {
 	switch k {
-	case EventOpened, EventMoved, EventAssigned, EventUnassigned, EventClosed:
+	case EventOpened, EventMoved, EventAssigned, EventUnassigned, EventClosed,
+		EventStepSubmitted, EventNoRoute, EventFailed:
 		return true
 	default:
 		return false
@@ -746,6 +757,53 @@ type AssignmentDetail struct {
 	Reason string `json:"reason,omitempty"`
 }
 
+// StepRecord references the form submission a Move carries: which step
+// (StepID) and form version the caller collected, and a digest of the
+// submitted payload. The engine never sees the payload itself, only this
+// reference, so the "zero domain data" rule holds.
+type StepRecord struct {
+	StepID        string `json:"step_id"`
+	FormVersion   int    `json:"form_version"`
+	PayloadDigest string `json:"payload_digest"`
+}
+
+// StepDetail is the Event.Detail of EventStepSubmitted: the StepRecord the
+// Move carried.
+type StepDetail = StepRecord
+
+// FailureKind classifies a rejected move recorded with Engine.RecordFailure.
+type FailureKind string
+
+const (
+	FailureNoRoute            FailureKind = "no_route"
+	FailureGuardRejected      FailureKind = "guard_rejected"
+	FailureConflict           FailureKind = "conflict"
+	FailureValidationFailed   FailureKind = "validation_failed"
+	FailureCommentRejected    FailureKind = "comment_rejected"
+	FailureReturnNotVisited   FailureKind = "return_not_visited"
+	FailureTransitionNotFound FailureKind = "transition_not_found"
+)
+
+// Valid reports whether k is one of the known FailureKind values.
+func (k FailureKind) Valid() bool {
+	switch k {
+	case FailureNoRoute, FailureGuardRejected, FailureConflict, FailureValidationFailed,
+		FailureCommentRejected, FailureReturnNotVisited, FailureTransitionNotFound:
+		return true
+	default:
+		return false
+	}
+}
+
+// FailureDetail is the Event.Detail of EventNoRoute and EventFailed: the
+// FailureKind and the caller's own detail object (FailureInput.Detail),
+// omitted when empty. Like every detail it holds references, never domain
+// data.
+type FailureDetail struct {
+	Kind   FailureKind     `json:"kind"`
+	Detail json.RawMessage `json:"detail,omitempty"`
+}
+
 // MoveResult is what OpenDetailed and MoveDetailed return: the case as
 // persisted and exactly the events the call appended, in Seq order.
 type MoveResult struct {
@@ -844,6 +902,9 @@ var (
 	// unknown (or unspecified) kind, ActorSystem without an ID, or an Actor.ID
 	// that differs from the deprecated ActorID set alongside it.
 	ErrInvalidActor = errors.New("workflow: invalid actor")
+	// ErrInvalidFailure reports a FailureInput the engine cannot record: an
+	// unknown FailureKind, or a Detail that is not a JSON object.
+	ErrInvalidFailure = errors.New("workflow: invalid failure record")
 )
 
 // GuardFunc evaluates whether a transition may be taken for the given case.
@@ -889,6 +950,12 @@ type GuardFunc func(ctx context.Context, db pgxtx.DBTX, c Case) (bool, error)
 // Seq from Case.LastSeq, and a Seq already taken for the case must fail
 // rather than be moved. An empty Detail is stored and read back as `{}`.
 // ListEvents returns SchemaVersion as stored; the engine upcasts it.
+// A taken Seq fails with ErrConflict.
+//
+// AdvanceLastSeq increments the case's LastSeq alone, leaving Revision and
+// every other field as they are, and returns the updated case; it must lock
+// the case row (serialize with Update) and fail with ErrCaseNotFound for a
+// missing case. RecordFailure takes its Seq with it.
 type Repository interface {
 	Create(ctx context.Context, db pgxtx.DBTX, c *Case) error
 	GetByID(ctx context.Context, db pgxtx.DBTX, id uuid.UUID) (*Case, error)
@@ -897,6 +964,7 @@ type Repository interface {
 	AppendEvent(ctx context.Context, db pgxtx.DBTX, e *Event) error
 	ListEvents(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID) ([]Event, error)
 	ListByEligibility(ctx context.Context, db pgxtx.DBTX, f InboxFilter) ([]Case, error)
+	AdvanceLastSeq(ctx context.Context, db pgxtx.DBTX, id uuid.UUID) (*Case, error)
 }
 
 // InboxFilter selects open cases. States is the set of node IDs a caller

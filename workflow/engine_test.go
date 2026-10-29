@@ -99,6 +99,13 @@ func (f *fakeRepository) AppendEvent(_ context.Context, _ pgxtx.DBTX, e *Event) 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
+	// Same UNIQUE (case_id, seq) backstop as workflow_event: a taken seq is
+	// a concurrent append, reported like workflow/postgres does.
+	for i := range f.events[e.CaseID] {
+		if f.events[e.CaseID][i].Seq == e.Seq {
+			return ErrConflict
+		}
+	}
 	f.events[e.CaseID] = append(f.events[e.CaseID], *e)
 	return nil
 }
@@ -110,6 +117,19 @@ func (f *fakeRepository) ListEvents(_ context.Context, _ pgxtx.DBTX, caseID uuid
 	out := make([]Event, len(f.events[caseID]))
 	copy(out, f.events[caseID])
 	return out, nil
+}
+
+func (f *fakeRepository) AdvanceLastSeq(_ context.Context, _ pgxtx.DBTX, id uuid.UUID) (*Case, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	c, ok := f.cases[id]
+	if !ok {
+		return nil, ErrCaseNotFound
+	}
+	c.LastSeq++
+	f.cases[id] = c
+	return &c, nil
 }
 
 func (f *fakeRepository) ListByEligibility(_ context.Context, _ pgxtx.DBTX, filter InboxFilter) ([]Case, error) {

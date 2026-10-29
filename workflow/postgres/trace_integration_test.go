@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kafeiih/vogel/migrate"
+	"github.com/kafeiih/vogel/pgxtx"
 	"github.com/kafeiih/vogel/reqctx"
 	"github.com/kafeiih/vogel/workflow"
 	"github.com/kafeiih/vogel/workflow/migrations"
@@ -96,6 +97,7 @@ func TestRepository_AppendEvent_TakenSeqFails(t *testing.T) {
 	var pgErr *pgconn.PgError
 	require.True(t, errors.As(err, &pgErr), "got %v", err)
 	assert.Equal(t, "23505", pgErr.Code)
+	assert.ErrorIs(t, err, workflow.ErrConflict, "a taken seq is a concurrent append")
 }
 
 func TestRepository_CreateAndUpdate_PersistLastSeq(t *testing.T) {
@@ -422,4 +424,116 @@ func TestMigration004_DownFailsWhileTwoTenantsShareAnExternalID(t *testing.T) {
         SELECT count(*) FROM information_schema.columns
         WHERE table_name = 'workflow_case' AND column_name = 'tenant'`).Scan(&tenantColumn))
 	assert.Equal(t, 1, tenantColumn, "the failed Down must roll back as a whole, leaving 004 applied")
+}
+
+func TestRecordFailure_PersistsWithoutChangingRevision(t *testing.T) {
+	pool := startTestPool(t)
+	ctx := context.Background()
+	e := tenantTestEngine(t, postgres.NewRepository())
+
+	c, err := e.Open(ctx, pool, workflow.OpenInput{Definition: "purchase", Tenant: "tenant-a", Domain: "compras", ExternalID: "fail-1", Unit: "finance", Actor: workflow.Actor{Kind: workflow.ActorHuman, ID: "u1"}})
+	require.NoError(t, err)
+
+	evt, err := e.RecordFailure(ctx, pool, workflow.FailureInput{
+		CaseID: c.ID, Actor: workflow.Actor{Kind: workflow.ActorHuman, ID: "u2"}, Action: "submit",
+		Kind: workflow.FailureGuardRejected, Detail: json.RawMessage(`{"guard":"has-budget"}`),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), evt.Seq)
+
+	got, err := postgres.NewRepository().GetByID(ctx, pool, c.ID)
+	require.NoError(t, err)
+	assert.Equal(t, c.Revision, got.Revision, "RecordFailure never advances revision")
+	assert.Equal(t, int64(2), got.LastSeq)
+	assert.Equal(t, "draft", got.State)
+
+	history, err := e.History(ctx, pool, c.ID)
+	require.NoError(t, err)
+	require.Len(t, history, 2)
+	assert.Equal(t, workflow.EventFailed, history[1].Kind)
+	assert.Equal(t, "tenant-a", history[1].Tenant)
+	var d workflow.FailureDetail
+	require.NoError(t, json.Unmarshal(history[1].Detail, &d))
+	assert.Equal(t, workflow.FailureGuardRejected, d.Kind)
+	assert.JSONEq(t, `{"guard":"has-budget"}`, string(d.Detail))
+
+	_, err = e.RecordFailure(ctx, pool, workflow.FailureInput{CaseID: uuid.New(), Kind: workflow.FailureConflict})
+	require.ErrorIs(t, err, workflow.ErrCaseNotFound)
+}
+
+func TestMove_WithStepPersistsStepSubmitted(t *testing.T) {
+	pool := startTestPool(t)
+	ctx := context.Background()
+	e := tenantTestEngine(t, postgres.NewRepository())
+
+	c, err := e.Open(ctx, pool, workflow.OpenInput{Definition: "purchase", Domain: "compras", ExternalID: "step-1", Unit: "finance", Actor: workflow.Actor{Kind: workflow.ActorHuman, ID: "u1"}})
+	require.NoError(t, err)
+	step := &workflow.StepRecord{StepID: "draft-form", FormVersion: 2, PayloadDigest: "sha256:beef"}
+	_, err = e.Move(ctx, pool, workflow.MoveInput{CaseID: c.ID, Action: "submit", Actor: workflow.Actor{Kind: workflow.ActorHuman, ID: "u1"}, Step: step})
+	require.NoError(t, err)
+
+	history, err := e.History(ctx, pool, c.ID)
+	require.NoError(t, err)
+	require.Len(t, history, 4, "opened, step_submitted, moved, closed")
+	assert.Equal(t, workflow.EventStepSubmitted, history[1].Kind)
+	var d workflow.StepDetail
+	require.NoError(t, json.Unmarshal(history[1].Detail, &d))
+	assert.Equal(t, *step, d)
+}
+
+// TestMove_ConcurrentRecordFailureConflictsThenRetries commits a failure
+// record between Move's read and its write (from a guard, on a separate pool
+// connection): Move's revision CAS still matches, its first append collides
+// on the seq the failure took and fails with ErrConflict, the transaction
+// rolls back, and a retry from a fresh read succeeds after the failure.
+func TestMove_ConcurrentRecordFailureConflictsThenRetries(t *testing.T) {
+	pool := startTestPool(t)
+	ctx := context.Background()
+	e := tenantTestEngine(t, postgres.NewRepository())
+
+	c, err := e.Open(ctx, pool, workflow.OpenInput{Definition: "purchase", Domain: "compras", ExternalID: "race-1", Unit: "finance", Actor: workflow.Actor{Kind: workflow.ActorHuman, ID: "u1"}})
+	require.NoError(t, err)
+
+	guarded := workflow.Definition{
+		Name: "purchase", Version: 2,
+		Nodes: []workflow.Node{
+			{ID: "draft", Start: true, Eligible: workflow.ByPosition("buyer")},
+			{ID: "done", Terminal: true},
+		},
+		Transitions: []workflow.Transition{{From: "draft", To: "done", Action: "submit", Guard: "interleave"}},
+	}
+	require.NoError(t, e.Register(guarded))
+	_, err = pool.Exec(ctx, `UPDATE workflow_case SET version = 2 WHERE id = $1`, c.ID)
+	require.NoError(t, err)
+	var interleaved bool
+	require.NoError(t, e.RegisterGuard("interleave", func(ctx context.Context, _ pgxtx.DBTX, gc workflow.Case) (bool, error) {
+		if !interleaved {
+			interleaved = true
+			if _, err := e.RecordFailure(ctx, pool, workflow.FailureInput{CaseID: gc.ID, Kind: workflow.FailureConflict}); err != nil {
+				return false, err
+			}
+		}
+		return true, nil
+	}))
+
+	move := func() error {
+		tx, err := pool.Begin(ctx)
+		require.NoError(t, err)
+		defer func() { _ = tx.Rollback(ctx) }()
+		if _, err := e.Move(ctx, tx, workflow.MoveInput{CaseID: c.ID, Action: "submit", Actor: workflow.Actor{Kind: workflow.ActorHuman, ID: "u1"}}); err != nil {
+			return err
+		}
+		return tx.Commit(ctx)
+	}
+	require.ErrorIs(t, move(), workflow.ErrConflict)
+	require.NoError(t, move(), "a retry from a fresh read must succeed")
+
+	history, err := e.History(ctx, pool, c.ID)
+	require.NoError(t, err)
+	kinds := make([]workflow.EventKind, len(history))
+	for i, ev := range history {
+		kinds[i] = ev.Kind
+		assert.Equal(t, int64(i+1), ev.Seq)
+	}
+	assert.Equal(t, []workflow.EventKind{workflow.EventOpened, workflow.EventFailed, workflow.EventMoved, workflow.EventClosed}, kinds)
 }

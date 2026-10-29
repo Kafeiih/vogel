@@ -8,6 +8,38 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ### Cambios que rompen
 
+- **`workflow.Repository` suma `AdvanceLastSeq(ctx, db, id)`**, con la que
+  `RecordFailure` toma el siguiente `seq` sin tocar `revision`. Un
+  repositorio propio o un fake de test debe implementarla: incrementar sólo
+  `last_seq`, bloqueando la fila del caso, y devolver el caso actualizado o
+  `ErrCaseNotFound`.
+- **Un `seq` ya ocupado en `AppendEvent` es ahora `workflow.ErrConflict`**
+  (`workflow/postgres` lo envuelve junto al error de Postgres). Pasa cuando
+  un `RecordFailure` concurrente tomó ese `seq` entre la lectura y la
+  escritura de un `Move`, `Claim` o `Release`: se reintenta desde una lectura
+  nueva, como cualquier otro conflicto.
+
+### Agregado
+
+- **`workflow`: envío de paso.** `MoveInput.Step` (`*StepRecord{StepID,
+  FormVersion, PayloadDigest}`): cuando viene, `Move` agrega un
+  `EventStepSubmitted` (`step_submitted`) justo antes del `EventMoved`
+  humano, en la misma transacción y el mismo bloque de `seq`, con el registro
+  como `StepDetail`. El motor nunca ve el formulario, sólo su resumen.
+- **`workflow`: registro de movimientos rechazados.**
+  `Engine.RecordFailure(ctx, db, FailureInput{CaseID, Actor, Action, Kind,
+  Detail})` agrega un `EventNoRoute` (`no_route`) o un `EventFailed`
+  (`failed`) con un `FailureDetail{Kind, Detail}`, sin cambiar el estado, la
+  asignación ni `revision`. `FailureKind` es `no_route`, `guard_rejected`,
+  `conflict`, `validation_failed`, `comment_rejected`, `return_not_visited` o
+  `transition_not_found`; `FailureKindOf(err)` lo obtiene de los errores del
+  motor (`ErrInvalidActor` es `validation_failed`). El llamador hace
+  rollback de la transacción que falló y lo llama en una nueva. Un tipo
+  desconocido o un `Detail` que no es un objeto JSON fallan con
+  `ErrInvalidFailure` sin escribir nada.
+
+### Cambios que rompen
+
 - **`workflow.Repository.AppendEvent` guarda el `Seq` que recibe.** Antes lo
   calculaba en SQL (`MAX(seq) + 1`) y lo sobrescribía; ahora el motor lo
   asigna desde `Case.LastSeq` y un `Seq` ya ocupado falla por
