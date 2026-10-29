@@ -537,3 +537,30 @@ func TestMove_ConcurrentRecordFailureConflictsThenRetries(t *testing.T) {
 	}
 	assert.Equal(t, []workflow.EventKind{workflow.EventOpened, workflow.EventFailed, workflow.EventMoved, workflow.EventClosed}, kinds)
 }
+
+func TestRepository_Update_StaleLastSeq_ReturnsErrConflict(t *testing.T) {
+	pool := startTestPool(t)
+	repo := postgres.NewRepository()
+	ctx := context.Background()
+
+	c := newCase("compras", "stale-seq")
+	c.LastSeq = 1
+	require.NoError(t, repo.Create(ctx, pool, c))
+	stale, err := repo.GetByID(ctx, pool, c.ID)
+	require.NoError(t, err)
+
+	// A RecordFailure advances last_seq without touching revision.
+	_, err = repo.AdvanceLastSeq(ctx, pool, c.ID)
+	require.NoError(t, err)
+
+	stale.State = "review"
+	stale.LastSeq = 2
+	err = repo.Update(ctx, pool, stale, 1)
+	require.ErrorIs(t, err, workflow.ErrConflict, "a last_seq that moved on is a conflict, not a missing case")
+
+	got, err := repo.GetByID(ctx, pool, c.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "draft", got.State, "nothing is written")
+	assert.Equal(t, int64(0), got.Revision)
+	assert.Equal(t, int64(2), got.LastSeq)
+}

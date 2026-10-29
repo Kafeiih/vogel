@@ -230,29 +230,62 @@ func TestMove_ConcurrentRecordFailureIsAConflict(t *testing.T) {
 	assert.Equal(t, int64(4), res.Events[0].Seq)
 }
 
+// TestClaimAndRelease_ConcurrentRecordFailureIsAConflict drives ClaimWith
+// and ReleaseWith through a RecordFailure committed between their read and
+// their Update: both fail with ErrConflict and leave the case and its
+// history exactly as the failure left them.
 func TestClaimAndRelease_ConcurrentRecordFailureIsAConflict(t *testing.T) {
-	repo := newFakeRepository()
-	e := New(repo, Config{}, testLogger(), WithDefinitions(testDefinition()))
-	c := openTestCase(t, e)
+	tests := []struct {
+		name    string
+		prepare func(t *testing.T, e *Engine, c *Case)
+		act     func(e *Engine, c *Case) (*Case, error)
+	}{
+		{
+			name:    "claim",
+			prepare: func(*testing.T, *Engine, *Case) {},
+			act: func(e *Engine, c *Case) (*Case, error) {
+				return e.ClaimWith(context.Background(), nil, ClaimInput{CaseID: c.ID, Actor: Actor{Kind: ActorHuman, ID: "u2"}})
+			},
+		},
+		{
+			name: "release",
+			prepare: func(t *testing.T, e *Engine, c *Case) {
+				_, err := e.Claim(context.Background(), nil, c.ID, "u2")
+				require.NoError(t, err)
+			},
+			act: func(e *Engine, c *Case) (*Case, error) {
+				return e.ReleaseWith(context.Background(), nil, ReleaseInput{CaseID: c.ID, Actor: Actor{Kind: ActorHuman, ID: "u2"}, Reason: "busy"})
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			inner := newFakeRepository()
+			direct := New(inner, Config{}, testLogger(), WithDefinitions(testDefinition()))
+			c := openTestCase(t, direct)
+			tc.prepare(t, direct, c)
 
-	// A stale read: the failure lands after this copy of the case was taken.
-	stale, err := repo.GetByID(context.Background(), nil, c.ID)
-	require.NoError(t, err)
-	_, err = e.RecordFailure(context.Background(), nil, FailureInput{CaseID: c.ID, Kind: FailureGuardRejected})
-	require.NoError(t, err)
+			repo := &racingRepository{fakeRepository: inner, beforeUpdate: func() {
+				_, err := direct.RecordFailure(context.Background(), nil, FailureInput{CaseID: c.ID, Kind: FailureGuardRejected})
+				require.NoError(t, err)
+			}}
+			e := New(repo, Config{}, testLogger(), WithDefinitions(testDefinition()))
 
-	stale.AssignedTo = "u9"
-	stale.LastSeq++
-	err = repo.Update(context.Background(), nil, stale, stale.LastSeq-1)
-	require.ErrorIs(t, err, ErrConflict, "Update must compare the LastSeq it was read with")
+			_, err := tc.act(e, c)
+			require.ErrorIs(t, err, ErrConflict)
 
-	// Through the engine, a fresh read sees the failure and claims fine.
-	claimed, err := e.Claim(context.Background(), nil, c.ID, "u2")
-	require.NoError(t, err)
-	assert.Equal(t, int64(3), claimed.LastSeq)
-	released, err := e.Release(context.Background(), nil, c.ID, "u2")
-	require.NoError(t, err)
-	assert.Equal(t, int64(4), released.LastSeq)
+			after, err := inner.GetByID(context.Background(), nil, c.ID)
+			require.NoError(t, err)
+			events := storedEvents(t, inner, c.ID)
+			last := events[len(events)-1]
+			assert.Equal(t, EventFailed, last.Kind, "the failure is the newest event; nothing was appended after it")
+			assert.Equal(t, last.Seq, after.LastSeq)
+
+			// A retry from a fresh read goes through.
+			_, err = tc.act(e, c)
+			require.NoError(t, err)
+		})
+	}
 }
 
 func TestFailureKindOf_MapsEverySentinel(t *testing.T) {
