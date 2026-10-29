@@ -30,6 +30,12 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 - **`workflow.Repository` suma `ListParticipated(ctx, db, f)`**, que usa
   `Engine.Participated`. Un repositorio propio o un fake de test debe
   implementarla.
+- **`workflow.Repository` suma `ListEventDigests(ctx, db, caseID)`**, que usa
+  `Engine.VerifyChain`, y `AppendEvent` debe completar `e.PrevDigest` y
+  `e.Digest` con los valores guardados. Un repositorio propio o un fake de
+  test debe implementarlos: encadenar cada evento con el `Digest` del
+  `seq - 1` y devolver, por evento, el digest recalculado desde la fila
+  actual.
 - **`workflow.Repository.Update` recibe `expectedLastSeq`**:
   `Update(ctx, db, c, expectedLastSeq)` es ahora un compare-and-swap sobre
   `revision` y sobre el `last_seq` con el que se leyó el caso. Así un
@@ -53,6 +59,22 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ### Agregado
 
+- **`workflow`: cadena de hashes por caso.** Cada evento agregado después de
+  la migración `007_workflow_event_digest.sql` guarda `prev_digest` (el
+  `digest` del evento anterior del caso) y `digest`, SHA-256 sobre
+  `prev_digest` y todas las columnas guardadas del evento, `schema_version`
+  incluida. Los calcula un trigger `BEFORE INSERT` en Postgres, no el motor:
+  `detail` es `JSONB` y Postgres lo guarda normalizado, así que sólo un hash
+  sobre lo guardado se puede recalcular después. `Event.PrevDigest` y
+  `Event.Digest` los exponen. `Engine.VerifyChain(ctx, db, caseID)`
+  recalcula la cadena y devuelve un `*ChainBrokenError` (que calza con
+  `ErrChainBroken`) con el primer `Seq` alterado, quitado o fuera de lugar.
+  Los eventos anteriores a la 007 quedan sin encadenar y el primer evento
+  posterior empieza la cadena; no hay relleno, porque la tabla es de sólo
+  agregado. La cadena no detecta a quien reescribe filas y recalcula todos
+  los digests siguientes, ni el borrado de los últimos eventos: para eso hay
+  que comparar con un `Digest` guardado fuera de la base. La 007 cuesta una
+  búsqueda por índice y un SHA-256 por evento agregado.
 - **`workflow`: casos en los que participó una persona.**
   `Engine.Participated(ctx, db, ParticipationFilter{Tenant, ActorID, Limit,
   Offset})` devuelve los casos distintos en los que `ActorID` aparece como

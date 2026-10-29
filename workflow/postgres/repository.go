@@ -23,6 +23,10 @@ const eventColumns = `id, case_id, seq, kind, from_state, to_state, action, acto
     schema_version, detail, tenant, actor_kind, acting_as, on_behalf_of, via_client,
     request_id, trace_id, span_id`
 
+// eventReadColumns adds the hash chain columns, which migration 007's
+// trigger sets on insert, to the columns AppendEvent writes.
+const eventReadColumns = eventColumns + `, prev_digest, digest`
+
 // uniqueViolationCode is the PostgreSQL error code for a unique constraint
 // violation (23505).
 const uniqueViolationCode = "23505"
@@ -166,6 +170,8 @@ func (r *Repository) Update(ctx context.Context, db pgxtx.DBTX, c *workflow.Case
 // that does not set it) as 1, the version of an event without detail.
 // actor_id stores e.Actor.ID, or the deprecated e.ActorID when Actor.ID is
 // empty; an empty e.Actor.Kind is stored as workflow.ActorUnspecified.
+// e.PrevDigest and e.Digest are not written: migration 007's trigger computes
+// them from the stored row, and AppendEvent sets them on e from the insert.
 func (r *Repository) AppendEvent(ctx context.Context, db pgxtx.DBTX, e *workflow.Event) error {
 	if e.Seq < 1 {
 		return fmt.Errorf("workflow: append event: seq %d: must be at least 1", e.Seq)
@@ -183,13 +189,14 @@ func (r *Repository) AppendEvent(ctx context.Context, db pgxtx.DBTX, e *workflow
 	if actorKind == "" {
 		actorKind = workflow.ActorUnspecified
 	}
-	_, err := db.Exec(ctx, `
+	err := db.QueryRow(ctx, `
         INSERT INTO workflow_event (`+eventColumns+`)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)`,
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+        RETURNING prev_digest, digest`,
 		e.ID, e.CaseID, e.Seq, string(e.Kind), e.FromState, e.ToState, e.Action, actorID, e.OccurredAt, e.Comment,
 		schemaVersion, detail, e.Tenant, string(actorKind), e.Actor.ActingAs, e.Actor.OnBehalfOf, e.Actor.Via,
 		e.RequestID, e.TraceID, e.SpanID,
-	)
+	).Scan(&e.PrevDigest, &e.Digest)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == uniqueViolationCode && pgErr.ConstraintName == eventSeqConstraint {
@@ -227,7 +234,7 @@ func (r *Repository) AdvanceLastSeq(ctx context.Context, db pgxtx.DBTX, id uuid.
 // Upcasting older versions and rejecting newer ones is the engine's job (see
 // workflow.Engine.History).
 func (r *Repository) ListEvents(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID) ([]workflow.Event, error) {
-	rows, err := db.Query(ctx, `SELECT `+eventColumns+` FROM workflow_event WHERE case_id = $1 ORDER BY seq ASC`, caseID)
+	rows, err := db.Query(ctx, `SELECT `+eventReadColumns+` FROM workflow_event WHERE case_id = $1 ORDER BY seq ASC`, caseID)
 	if err != nil {
 		return nil, fmt.Errorf("workflow: list events: %w", err)
 	}
@@ -245,6 +252,36 @@ func (r *Repository) ListEvents(ctx context.Context, db pgxtx.DBTX, caseID uuid.
 		return nil, fmt.Errorf("workflow: list events: %w", err)
 	}
 	return events, nil
+}
+
+// ListEventDigests returns caseID's hash chain links in seq order: each
+// row's stored prev_digest and digest, and the digest migration 007's
+// vogel_workflow_event_digest computes again from the row as it is now and
+// its stored prev_digest (nil for an unchained row).
+func (r *Repository) ListEventDigests(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID) ([]workflow.EventDigest, error) {
+	rows, err := db.Query(ctx, `
+        SELECT e.seq, e.prev_digest, e.digest,
+               CASE WHEN e.digest IS NULL THEN NULL ELSE vogel_workflow_event_digest(e.prev_digest, e) END
+        FROM workflow_event e
+        WHERE e.case_id = $1
+        ORDER BY e.seq ASC`, caseID)
+	if err != nil {
+		return nil, fmt.Errorf("workflow: list event digests: %w", err)
+	}
+	defer rows.Close()
+
+	var links []workflow.EventDigest
+	for rows.Next() {
+		var l workflow.EventDigest
+		if err := rows.Scan(&l.Seq, &l.PrevDigest, &l.Digest, &l.Recomputed); err != nil {
+			return nil, fmt.Errorf("workflow: list event digests: %w", err)
+		}
+		links = append(links, l)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("workflow: list event digests: %w", err)
+	}
+	return links, nil
 }
 
 // ListByEligibility returns open cases matching f. An empty f.Tenant matches
@@ -366,7 +403,7 @@ func scanEvent(row rowScanner) (*workflow.Event, error) {
 	if err := row.Scan(
 		&e.ID, &e.CaseID, &e.Seq, &kind, &e.FromState, &e.ToState, &e.Action, &e.Actor.ID, &e.OccurredAt, &e.Comment,
 		&e.SchemaVersion, &e.Detail, &e.Tenant, &actorKind, &e.Actor.ActingAs, &e.Actor.OnBehalfOf, &e.Actor.Via,
-		&e.RequestID, &e.TraceID, &e.SpanID,
+		&e.RequestID, &e.TraceID, &e.SpanID, &e.PrevDigest, &e.Digest,
 	); err != nil {
 		return nil, err
 	}

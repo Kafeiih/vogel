@@ -13,6 +13,11 @@
 // these tables between cases must not TRUNCATE or DELETE them: use a fresh
 // database per test or roll back a transaction instead.
 //
+// 007_workflow_event_digest.sql chains every event appended after it to the
+// previous event of its case (prev_digest, digest), computed by a BEFORE
+// INSERT trigger over the stored row; workflow.Engine.VerifyChain checks it.
+// Events stored before 007 stay unchained.
+//
 // Consumers pass FS() to vogel/migrate.Up (or UpTo/UpByOne/Status) alongside
 // their own application migrations' fs.FS. Because this library's version
 // numbering starts at 001 independently of each application's own migration
