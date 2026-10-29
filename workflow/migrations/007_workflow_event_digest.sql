@@ -40,7 +40,10 @@
 --   - Appends must run in a transaction (pgxtx) as the engine documents: on
 --     a non-transactional db two concurrent appends to one case can leave an
 --     event that cannot see its predecessor, which VerifyChain then reports
---     as broken.
+--     as broken. The same happens after a gap in seq (a non-transactional
+--     append that advanced last_seq and then failed to insert): the trigger
+--     only links to seq - 1, so the next event starts without a predecessor
+--     and VerifyChain reports it.
 --
 -- Cost: one extra indexed lookup (the UNIQUE (case_id, seq) index) and one
 -- SHA-256 per append. Adding nullable columns does not rewrite the table.

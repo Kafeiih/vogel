@@ -1276,6 +1276,9 @@ func (e *Engine) VerifyChain(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUI
 			if chained {
 				return broken("event has no digest after the chain started")
 			}
+			if l.PrevDigest != nil {
+				return broken("event has a prev_digest but no digest")
+			}
 			continue
 		}
 		chained = true

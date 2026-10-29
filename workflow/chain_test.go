@@ -84,6 +84,16 @@ func TestVerifyChain_DetectsDigestRemovedAfterChainStart(t *testing.T) {
 	requireChainBroken(t, e.VerifyChain(context.Background(), nil, c.ID), c.ID, 2)
 }
 
+func TestVerifyChain_DetectsPrevDigestWithoutDigest(t *testing.T) {
+	e, repo, c := chainedTestCase(t)
+
+	// The chain never stores a link without its digest; clearing only the
+	// digest of the first event must not make it pass as unchained.
+	repo.mutateEvent(c.ID, 1, func(ev *Event) { ev.PrevDigest, ev.Digest = []byte("x"), nil })
+
+	requireChainBroken(t, e.VerifyChain(context.Background(), nil, c.ID), c.ID, 1)
+}
+
 func TestVerifyChain_LegacyPrefixIsUnchained(t *testing.T) {
 	e, repo, c := chainedTestCase(t)
 

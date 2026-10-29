@@ -184,6 +184,30 @@ func TestSubmit_RejectedMoveIsRecorded(t *testing.T) {
 	assert.Equal(t, "cerrada", c.State)
 }
 
+func TestSubmit_RejectionsBeforeTheMoveAreNotRecorded(t *testing.T) {
+	a := newApp(t)
+	id := a.startCase()
+	events := func() int {
+		history, err := a.eng.History(a.ctx, a.db, id)
+		require.NoError(t, err)
+		return len(history)
+	}
+
+	before := events()
+	_, err := a.d.Service.Submit(a.ctx, "luis", id, "responder", answer())
+	require.ErrorIs(t, err, domain.ErrNotClaimant)
+	assert.Equal(t, before, events(), "a submit by someone who has not claimed the case is not a rejected move")
+
+	_, err = a.d.Service.Claim(a.ctx, "luis", id)
+	require.NoError(t, err)
+	_, err = a.d.Service.Submit(a.ctx, "luis", id, "responder", answer())
+	require.NoError(t, err)
+	before = events()
+	_, err = a.d.Service.Submit(a.ctx, "luis", id, "responder", answer())
+	require.ErrorIs(t, err, workflow.ErrCaseClosed)
+	assert.Equal(t, before, events(), "a submit on a closed case is not a rejected move")
+}
+
 func TestSubmit_FormErrorIsNotRecorded(t *testing.T) {
 	a := newApp(t)
 	id := a.startCase()
