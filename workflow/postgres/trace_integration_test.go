@@ -113,7 +113,7 @@ func TestRepository_CreateAndUpdate_PersistLastSeq(t *testing.T) {
 	assert.Equal(t, int64(1), got.LastSeq)
 
 	got.LastSeq = 4
-	require.NoError(t, repo.Update(ctx, pool, got))
+	require.NoError(t, repo.Update(ctx, pool, got, 1))
 	got, err = repo.GetByID(ctx, pool, c.ID)
 	require.NoError(t, err)
 	assert.Equal(t, int64(4), got.LastSeq)

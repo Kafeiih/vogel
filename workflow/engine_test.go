@@ -77,7 +77,7 @@ func (f *fakeRepository) GetByExternalID(_ context.Context, _ pgxtx.DBTX, tenant
 	return &c, nil
 }
 
-func (f *fakeRepository) Update(_ context.Context, _ pgxtx.DBTX, c *Case) error {
+func (f *fakeRepository) Update(_ context.Context, _ pgxtx.DBTX, c *Case, expectedLastSeq int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -87,7 +87,7 @@ func (f *fakeRepository) Update(_ context.Context, _ pgxtx.DBTX, c *Case) error 
 	if !ok {
 		return ErrCaseNotFound
 	}
-	if stored.Revision != c.Revision {
+	if stored.Revision != c.Revision || stored.LastSeq != expectedLastSeq {
 		return ErrConflict
 	}
 	c.Revision++
@@ -968,9 +968,9 @@ type stateRecordingRepository struct {
 	updatedStates []string
 }
 
-func (r *stateRecordingRepository) Update(ctx context.Context, db pgxtx.DBTX, c *Case) error {
+func (r *stateRecordingRepository) Update(ctx context.Context, db pgxtx.DBTX, c *Case, expectedLastSeq int64) error {
 	r.updatedStates = append(r.updatedStates, c.State)
-	return r.fakeRepository.Update(ctx, db, c)
+	return r.fakeRepository.Update(ctx, db, c, expectedLastSeq)
 }
 
 func TestMove_DecisionNode_RoutesOnFirstTrueGuard(t *testing.T) {
@@ -1586,13 +1586,13 @@ type racingRepository struct {
 	beforeUpdate func()
 }
 
-func (r *racingRepository) Update(ctx context.Context, db pgxtx.DBTX, c *Case) error {
+func (r *racingRepository) Update(ctx context.Context, db pgxtx.DBTX, c *Case, expectedLastSeq int64) error {
 	r.once.Do(func() {
 		if r.beforeUpdate != nil {
 			r.beforeUpdate()
 		}
 	})
-	return r.fakeRepository.Update(ctx, db, c)
+	return r.fakeRepository.Update(ctx, db, c, expectedLastSeq)
 }
 
 // concurrentReassign is the competing writer used by the race tests: it
@@ -1602,7 +1602,7 @@ func concurrentReassign(t *testing.T, repo *fakeRepository, caseID uuid.UUID) fu
 		fresh, err := repo.GetByID(context.Background(), nil, caseID)
 		require.NoError(t, err)
 		fresh.AssignedTo = "intruder"
-		require.NoError(t, repo.Update(context.Background(), nil, fresh))
+		require.NoError(t, repo.Update(context.Background(), nil, fresh, fresh.LastSeq))
 	}
 }
 

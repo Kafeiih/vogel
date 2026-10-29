@@ -590,15 +590,9 @@ type MoveInput struct {
 // revision column overwrites cases without advancing it, so its writes can
 // be lost undetected until every such process is replaced (see
 // workflow/postgres Repository.Update for the deploy order).
-//
-// RecordFailure takes a Seq without advancing Revision, so one recorded
-// between Move's read and its write is not caught by the compare-and-swap:
-// Move's first append then collides on that Seq and fails with ErrConflict,
-// after the case update was already written. Inside a transaction the
-// rollback discards it and the retry works. On a plain pool connection that
-// update has already committed, leaving the case moved with no events, so
-// run Move (and Claim and Release) in a transaction whenever RecordFailure
-// can run concurrently on the same case.
+// The compare-and-swap also checks the LastSeq Move read, so a RecordFailure
+// committed in between (it advances LastSeq, not Revision) fails Move with
+// ErrConflict the same way, before anything is written.
 func (e *Engine) Move(ctx context.Context, db pgxtx.DBTX, in MoveInput) (*Case, error) {
 	res, err := e.MoveDetailed(ctx, db, in)
 	if err != nil {
@@ -714,7 +708,7 @@ func (e *Engine) MoveDetailed(ctx context.Context, db pgxtx.DBTX, in MoveInput) 
 		c.LastSeq++
 	}
 
-	if err := e.repo.Update(ctx, db, c); err != nil {
+	if err := e.repo.Update(ctx, db, c, seq); err != nil {
 		return nil, fmt.Errorf("workflow: move case %s: %w", c.ID, err)
 	}
 
@@ -919,7 +913,7 @@ func (e *Engine) ClaimWith(ctx context.Context, db pgxtx.DBTX, in ClaimInput) (*
 	}
 	c.AssignedTo = actor.ID
 	c.LastSeq++
-	if err := e.repo.Update(ctx, db, c); err != nil {
+	if err := e.repo.Update(ctx, db, c, c.LastSeq-1); err != nil {
 		return nil, fmt.Errorf("workflow: claim case %s: %w", c.ID, err)
 	}
 
@@ -958,7 +952,7 @@ func (e *Engine) ReleaseWith(ctx context.Context, db pgxtx.DBTX, in ReleaseInput
 	}
 	c.AssignedTo = ""
 	c.LastSeq++
-	if err := e.repo.Update(ctx, db, c); err != nil {
+	if err := e.repo.Update(ctx, db, c, c.LastSeq-1); err != nil {
 		return nil, fmt.Errorf("workflow: release case %s: %w", c.ID, err)
 	}
 
@@ -1150,9 +1144,10 @@ type FailureInput struct {
 // anything is written.
 //
 // A failure recorded while another call holds a stale read of the same case
-// takes a Seq that call also planned to use, without advancing Revision: that
-// call's append then fails with ErrConflict, and it retries from a fresh
-// read like any other concurrent change.
+// advances LastSeq but not Revision; that call's Repository.Update compares
+// the LastSeq it read too, so it fails with ErrConflict before writing
+// anything, and it retries from a fresh read like any other concurrent
+// change.
 func (e *Engine) RecordFailure(ctx context.Context, db pgxtx.DBTX, in FailureInput) (Event, error) {
 	if !in.Kind.Valid() {
 		return Event{}, fmt.Errorf("workflow: record failure on case %s: %w: kind %q", in.CaseID, ErrInvalidFailure, in.Kind)

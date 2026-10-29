@@ -939,11 +939,14 @@ type GuardFunc func(ctx context.Context, db pgxtx.DBTX, c Case) (bool, error)
 // history. See workflow/postgres for the PostgreSQL-backed implementation.
 //
 // Create must persist Revision as 0 and leave c.Revision at 0. Update is a
-// compare-and-swap on Revision: it writes only when the stored revision
-// equals c.Revision, and on success advances both the stored row and
+// compare-and-swap on Revision and on LastSeq: it writes only when the stored
+// revision equals c.Revision and the stored LastSeq equals expectedLastSeq
+// (the value the caller read, before it advanced c.LastSeq for the events it
+// is about to append), and on success advances both the stored row and
 // c.Revision by one. It returns ErrCaseNotFound when no case has c.ID, and
-// ErrConflict when the case exists but its revision moved on (a concurrent
-// write won); in both cases nothing is written. Create and Update persist
+// ErrConflict when the case exists but its revision or its LastSeq moved on
+// (a concurrent write, or a RecordFailure, won); in both cases nothing is
+// written. Create and Update persist
 // c.LastSeq as given.
 //
 // AppendEvent stores e exactly as given, Seq included: the engine assigns
@@ -960,7 +963,7 @@ type Repository interface {
 	Create(ctx context.Context, db pgxtx.DBTX, c *Case) error
 	GetByID(ctx context.Context, db pgxtx.DBTX, id uuid.UUID) (*Case, error)
 	GetByExternalID(ctx context.Context, db pgxtx.DBTX, tenant, domain, externalID string) (*Case, error)
-	Update(ctx context.Context, db pgxtx.DBTX, c *Case) error
+	Update(ctx context.Context, db pgxtx.DBTX, c *Case, expectedLastSeq int64) error
 	AppendEvent(ctx context.Context, db pgxtx.DBTX, e *Event) error
 	ListEvents(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID) ([]Event, error)
 	ListByEligibility(ctx context.Context, db pgxtx.DBTX, f InboxFilter) ([]Case, error)

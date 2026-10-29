@@ -100,9 +100,12 @@ func (r *Repository) GetByExternalID(ctx context.Context, db pgxtx.DBTX, tenant,
 }
 
 // Update persists every mutable field of c, LastSeq included, as a
-// compare-and-swap on c.Revision: the row is written only while its stored
-// revision still equals c.Revision, and the write advances it by one. On success c.Revision is
-// advanced to match, so a caller holding c can keep using it. When no row
+// compare-and-swap on c.Revision and on the LastSeq the case was read with
+// (expectedLastSeq): the row is written only while its stored revision still
+// equals c.Revision and its stored last_seq equals expectedLastSeq, and the
+// write advances revision by one. The last_seq check catches a
+// workflow.Engine.RecordFailure that took a Seq after the read without
+// advancing revision. On success c.Revision is advanced to match, so a caller holding c can keep using it. When no row
 // matches, a follow-up existence check tells the two failures apart:
 // workflow.ErrCaseNotFound when the case does not exist, workflow.ErrConflict
 // when a concurrent writer committed first (nothing is written either way).
@@ -124,16 +127,16 @@ func (r *Repository) GetByExternalID(ctx context.Context, db pgxtx.DBTX, tenant,
 // migration 003 first, then replace ALL old binaries (or stop them from
 // writing) before relying on ErrConflict; until then concurrent updates
 // can still be lost silently, exactly as before this check existed.
-func (r *Repository) Update(ctx context.Context, db pgxtx.DBTX, c *workflow.Case) error {
+func (r *Repository) Update(ctx context.Context, db pgxtx.DBTX, c *workflow.Case, expectedLastSeq int64) error {
 	tag, err := db.Exec(ctx, `
         UPDATE workflow_case SET
             definition = $2, version = $3, domain = $4, external_id = $5, unit = $6,
             state = $7, status = $8, assigned_to = $9, opened_at = $10, closed_at = $11, deadline_at = $12,
             last_seq = $14, tenant = $15, revision = revision + 1
-        WHERE id = $1 AND revision = $13`,
+        WHERE id = $1 AND revision = $13 AND last_seq = $16`,
 		c.ID, c.Definition, c.Version, c.Domain, c.ExternalID, c.Unit,
 		c.State, string(c.Status), c.AssignedTo, c.OpenedAt, c.ClosedAt, c.DeadlineAt,
-		c.Revision, c.LastSeq, c.Tenant,
+		c.Revision, c.LastSeq, c.Tenant, expectedLastSeq,
 	)
 	if err != nil {
 		return fmt.Errorf("workflow: update case: %w", err)
@@ -146,7 +149,7 @@ func (r *Repository) Update(ctx context.Context, db pgxtx.DBTX, c *workflow.Case
 		if !exists {
 			return fmt.Errorf("workflow: update case: %w", workflow.ErrCaseNotFound)
 		}
-		return fmt.Errorf("workflow: update case %s at revision %d: %w", c.ID, c.Revision, workflow.ErrConflict)
+		return fmt.Errorf("workflow: update case %s at revision %d, last seq %d: %w", c.ID, c.Revision, expectedLastSeq, workflow.ErrConflict)
 	}
 	c.Revision++
 	return nil

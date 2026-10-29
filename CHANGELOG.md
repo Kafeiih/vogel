@@ -8,23 +8,26 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ### Cambios que rompen
 
+- **`workflow.Repository.Update` recibe `expectedLastSeq`**:
+  `Update(ctx, db, c, expectedLastSeq)` es ahora un compare-and-swap sobre
+  `revision` y sobre el `last_seq` con el que se leyó el caso. Así un
+  `RecordFailure` que tomó un `seq` entre la lectura y la escritura (avanza
+  `last_seq` pero no `revision`) hace fallar la escritura con `ErrConflict`
+  antes de tocar nada, haya o no transacción. Un repositorio propio o un
+  fake de test debe agregar el parámetro y comparar ambos valores.
 - **`workflow.Repository` suma `AdvanceLastSeq(ctx, db, id)`**, con la que
   `RecordFailure` toma el siguiente `seq` sin tocar `revision`. Un
   repositorio propio o un fake de test debe implementarla: incrementar sólo
   `last_seq`, bloqueando la fila del caso, y devolver el caso actualizado o
   `ErrCaseNotFound`.
 - **Un `seq` ya ocupado en `AppendEvent` es ahora `workflow.ErrConflict`**
-  (`workflow/postgres` lo envuelve junto al error de Postgres). Pasa cuando
-  un `RecordFailure` concurrente tomó ese `seq` entre la lectura y la
-  escritura de un `Move`, `Claim` o `Release`: se reintenta desde una lectura
-  nueva, como cualquier otro conflicto. Como `RecordFailure` no avanza
-  `revision`, ese conflicto aparece al agregar el evento, después de que el
-  caso ya se actualizó: dentro de una transacción el rollback lo deshace,
-  pero con un `db` sin transacción el caso queda movido y sin eventos.
-  Llamar a `Move`, `Claim` y `Release` dentro de una transacción cuando
-  `RecordFailure` puede correr en paralelo sobre el mismo caso. Un binario
-  anterior a esta versión recibe ese mismo choque como un error 23505 sin
-  clasificar: no usar `RecordFailure` hasta reemplazar todos los binarios.
+  (`workflow/postgres` lo envuelve junto al error de Postgres). Con el
+  compare-and-swap de `Update` ya no lo provoca este binario; queda como
+  respaldo ante un escritor que no avanza `last_seq`. Un binario anterior a
+  esta versión no compara `last_seq` en `Update`: un `RecordFailure`
+  concurrente le llega como un error 23505 sin clasificar al agregar el
+  evento, con el caso ya actualizado si no corría en una transacción. No
+  usar `RecordFailure` hasta reemplazar todos los binarios.
 
 ### Agregado
 

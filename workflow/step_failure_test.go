@@ -191,10 +191,10 @@ func TestRecordFailure_UnknownCaseFails(t *testing.T) {
 
 // TestMove_ConcurrentRecordFailureIsAConflict pins what happens when a
 // failure is recorded on the case between Move's read and its write: the
-// failure takes the next seq without touching revision, so Move's
-// revision CAS still matches, and the seq collision on append surfaces as
-// ErrConflict, which the caller retries from a fresh read. The fake has no
-// transaction to roll back, so the retry is covered by the integration test.
+// failure takes the next seq without touching revision, and Move's
+// compare-and-swap also checks the LastSeq it read, so Move fails with
+// ErrConflict before writing anything, with or without a transaction, and a
+// retry from a fresh read continues after the failure.
 func TestMove_ConcurrentRecordFailureIsAConflict(t *testing.T) {
 	repo := newFakeRepository()
 	e := New(repo, Config{}, testLogger(), WithDefinitions(testDefinition()))
@@ -212,9 +212,47 @@ func TestMove_ConcurrentRecordFailureIsAConflict(t *testing.T) {
 	}))
 	_, err := e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "submit", ActorID: "u1"})
 	require.NoError(t, err)
+	before, err := repo.GetByID(context.Background(), nil, c.ID)
+	require.NoError(t, err)
 
 	_, err = e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "approve", ActorID: "u2"})
 	require.ErrorIs(t, err, ErrConflict)
+
+	after, err := repo.GetByID(context.Background(), nil, c.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "review", after.State, "the conflicting Move must not write the case")
+	assert.Equal(t, before.Revision, after.Revision)
+	assert.Equal(t, int64(3), after.LastSeq, "only the failure's seq was taken")
+	assert.Len(t, storedEvents(t, repo, c.ID), 3, "opened, moved, failed")
+
+	res, err := e.MoveDetailed(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "approve", ActorID: "u2"})
+	require.NoError(t, err, "a retry from a fresh read succeeds")
+	assert.Equal(t, int64(4), res.Events[0].Seq)
+}
+
+func TestClaimAndRelease_ConcurrentRecordFailureIsAConflict(t *testing.T) {
+	repo := newFakeRepository()
+	e := New(repo, Config{}, testLogger(), WithDefinitions(testDefinition()))
+	c := openTestCase(t, e)
+
+	// A stale read: the failure lands after this copy of the case was taken.
+	stale, err := repo.GetByID(context.Background(), nil, c.ID)
+	require.NoError(t, err)
+	_, err = e.RecordFailure(context.Background(), nil, FailureInput{CaseID: c.ID, Kind: FailureGuardRejected})
+	require.NoError(t, err)
+
+	stale.AssignedTo = "u9"
+	stale.LastSeq++
+	err = repo.Update(context.Background(), nil, stale, stale.LastSeq-1)
+	require.ErrorIs(t, err, ErrConflict, "Update must compare the LastSeq it was read with")
+
+	// Through the engine, a fresh read sees the failure and claims fine.
+	claimed, err := e.Claim(context.Background(), nil, c.ID, "u2")
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), claimed.LastSeq)
+	released, err := e.Release(context.Background(), nil, c.ID, "u2")
+	require.NoError(t, err)
+	assert.Equal(t, int64(4), released.LastSeq)
 }
 
 func TestFailureKindOf_MapsEverySentinel(t *testing.T) {
