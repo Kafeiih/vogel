@@ -304,7 +304,10 @@ func (r *Repository) ListByEligibility(ctx context.Context, db pgxtx.DBTX, f wor
 // actor of any event, ordered by that actor's newest event in each case
 // (newest first, case id as the tie-break), restricted to f.Tenant when set
 // and paged by f.Page. It reads the actor's events through
-// idx_workflow_event_actor (migration 006).
+// idx_workflow_event_actor (migration 006), filtering the tenant on the
+// events themselves (each event copies its case's tenant) before grouping.
+// The cost grows with how many events the actor wrote in the tenant, not
+// with the page size.
 func (r *Repository) ListParticipated(ctx context.Context, db pgxtx.DBTX, f workflow.ParticipationFilter) ([]workflow.Case, error) {
 	limit, offset, err := f.Page()
 	if err != nil {
@@ -317,10 +320,10 @@ func (r *Repository) ListParticipated(ctx context.Context, db pgxtx.DBTX, f work
             SELECT case_id, MAX(occurred_at) AS last_at
             FROM workflow_event
             WHERE actor_id = $1 AND actor_id <> ''
+              AND ($2::TEXT IS NULL OR tenant = $2)
             GROUP BY case_id
         ) p
         JOIN workflow_case ON workflow_case.id = p.case_id
-        WHERE ($2::TEXT IS NULL OR workflow_case.tenant = $2)
         ORDER BY p.last_at DESC, workflow_case.id
         LIMIT $3 OFFSET $4`
 

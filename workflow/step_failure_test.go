@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -338,23 +339,31 @@ func TestParticipated_ReturnsCasesWhereActorActedAfterReassign(t *testing.T) {
 	require.NoError(t, err)
 	open("t1", "3", "u9")                // u1 never acted
 	otherTenant := open("t2", "4", "u1") // u1 acted in another tenant
+	// A closed case still counts: u1 closes the first one, which also makes
+	// it u1's newest activity in t1.
+	require.NoError(t, e.RegisterGuard("under-budget", alwaysTrueGuard))
+	for _, action := range []string{"submit", "approve"} {
+		_, err = e.Move(ctx, nil, MoveInput{CaseID: first.ID, Action: action, Actor: Actor{Kind: ActorHuman, ID: "u1"}})
+		require.NoError(t, err)
+	}
 
 	got, err := e.Participated(ctx, nil, ParticipationFilter{Tenant: "t1", ActorID: "u1"})
 	require.NoError(t, err)
 	require.Len(t, got, 2)
-	assert.Equal(t, second.ID, got[0].ID, "newest activity of the actor first")
-	assert.Equal(t, first.ID, got[1].ID)
-	assert.Equal(t, "u9", got[0].AssignedTo, "the case is listed although it is assigned to someone else now")
+	assert.Equal(t, first.ID, got[0].ID, "newest activity of the actor first")
+	assert.Equal(t, StatusClosed, got[0].Status, "closed cases are listed")
+	assert.Equal(t, second.ID, got[1].ID)
+	assert.Equal(t, "u9", got[1].AssignedTo, "the case is listed although it is assigned to someone else now")
 
 	all, err := e.Participated(ctx, nil, ParticipationFilter{ActorID: "u1"})
 	require.NoError(t, err)
 	require.Len(t, all, 3, "an empty tenant means any tenant")
-	assert.Equal(t, otherTenant.ID, all[0].ID)
+	assert.Equal(t, []uuid.UUID{first.ID, otherTenant.ID, second.ID}, []uuid.UUID{all[0].ID, all[1].ID, all[2].ID})
 
 	page, err := e.Participated(ctx, nil, ParticipationFilter{ActorID: "u1", Limit: 1, Offset: 1})
 	require.NoError(t, err)
 	require.Len(t, page, 1)
-	assert.Equal(t, second.ID, page[0].ID)
+	assert.Equal(t, otherTenant.ID, page[0].ID)
 }
 
 func TestParticipated_RejectsOffsetOutOfRange(t *testing.T) {

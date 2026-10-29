@@ -61,10 +61,13 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   mismas reglas que `Inbox` (`ParticipationFilter.Page`). Un `ActorID` vacío
   falla con `ErrInvalidActor`. La migración
   `006_workflow_event_actor_index.sql` crea el índice
-  `idx_workflow_event_actor (actor_id, case_id) WHERE actor_id <> ''` con
-  `CREATE INDEX CONCURRENTLY`, sin bloquear los agregados mientras se
-  construye; si falla a mitad de camino, borrar el índice inválido y volver
-  a correrla.
+  `idx_workflow_event_actor (actor_id, case_id) INCLUDE (occurred_at) WHERE
+  actor_id <> ''` con `CREATE INDEX CONCURRENTLY`, sin bloquear los agregados
+  mientras se construye; si falla a mitad de camino deja un índice inválido
+  y el reintento falla a propósito: borrarlo (`DROP INDEX CONCURRENTLY
+  idx_workflow_event_actor`) y volver a correrla. Como en `Inbox`, un
+  `Tenant` vacío abarca todos los tenants: un consumidor con varios tenants
+  siempre debe pasarlo.
 - **`workflow`: envío de paso.** `MoveInput.Step` (`*StepRecord{StepID,
   FormVersion, PayloadDigest}`): cuando viene, `Move` agrega un
   `EventStepSubmitted` (`step_submitted`) justo antes del `EventMoved`

@@ -1017,7 +1017,8 @@ func (f InboxFilter) Page() (limit, offset int, err error) {
 
 // ParticipationFilter selects the cases an actor took part in (see
 // Engine.Participated). ActorID is required; Tenant, when set, restricts the
-// result to that tenant's cases.
+// result to that tenant's cases. Like InboxFilter.Tenant, an empty Tenant
+// means every tenant, so a multi-tenant consumer must always set it.
 type ParticipationFilter struct {
 	Tenant  string // empty = any
 	ActorID string

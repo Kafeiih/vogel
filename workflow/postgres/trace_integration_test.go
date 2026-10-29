@@ -594,23 +594,28 @@ func TestParticipated_ListsCasesFromPostgres(t *testing.T) {
 	require.NoError(t, err)
 	open("t1", "p-3", "u9")
 	other := open("t2", "p-4", "u1")
+	// A closed case still counts: u1 closed the first one, which also makes
+	// it u1's newest activity in t1.
+	_, err = e.Move(ctx, pool, workflow.MoveInput{CaseID: first.ID, Action: "submit", Actor: workflow.Actor{Kind: workflow.ActorHuman, ID: "u1"}})
+	require.NoError(t, err)
 
 	got, err := e.Participated(ctx, pool, workflow.ParticipationFilter{Tenant: "t1", ActorID: "u1"})
 	require.NoError(t, err)
 	require.Len(t, got, 2)
-	assert.Equal(t, second.ID, got[0].ID, "newest activity of the actor first")
-	assert.Equal(t, first.ID, got[1].ID)
-	assert.Equal(t, "u9", got[0].AssignedTo)
+	assert.Equal(t, first.ID, got[0].ID, "newest activity of the actor first")
+	assert.Equal(t, workflow.StatusClosed, got[0].Status, "closed cases are listed")
+	assert.Equal(t, second.ID, got[1].ID)
+	assert.Equal(t, "u9", got[1].AssignedTo, "listed although assigned to someone else now")
 
 	all, err := e.Participated(ctx, pool, workflow.ParticipationFilter{ActorID: "u1"})
 	require.NoError(t, err)
-	require.Len(t, all, 3)
-	assert.Equal(t, other.ID, all[0].ID)
+	require.Len(t, all, 3, "an empty tenant means any tenant")
+	assert.Equal(t, []uuid.UUID{first.ID, other.ID, second.ID}, []uuid.UUID{all[0].ID, all[1].ID, all[2].ID})
 
 	page, err := e.Participated(ctx, pool, workflow.ParticipationFilter{ActorID: "u1", Limit: 1, Offset: 1})
 	require.NoError(t, err)
 	require.Len(t, page, 1)
-	assert.Equal(t, second.ID, page[0].ID)
+	assert.Equal(t, other.ID, page[0].ID)
 
 	var valid bool
 	require.NoError(t, pool.QueryRow(ctx, `
@@ -623,7 +628,7 @@ func TestMigration006_UpDownRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	connStr := startTestPostgres(t)
 	opts := silentOptions()
-	require.NoError(t, migrate.Up(ctx, connStr, migrations.FS(), opts))
+	require.NoError(t, migrate.UpTo(ctx, connStr, migrations.FS(), 6, opts))
 
 	pool, err := pgxpool.New(ctx, connStr)
 	require.NoError(t, err)
@@ -637,6 +642,6 @@ func TestMigration006_UpDownRoundTrip(t *testing.T) {
 
 	require.NoError(t, migrate.Down(ctx, connStr, migrations.FS(), opts))
 	assert.Zero(t, indexes(), "Down must drop the index")
-	require.NoError(t, migrate.Up(ctx, connStr, migrations.FS(), opts))
+	require.NoError(t, migrate.UpTo(ctx, connStr, migrations.FS(), 6, opts))
 	assert.Equal(t, 1, indexes(), "Up must build it again")
 }
