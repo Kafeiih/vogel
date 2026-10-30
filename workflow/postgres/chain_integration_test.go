@@ -169,6 +169,41 @@ func TestVerifyChain_UnknownCaseIsNotFound(t *testing.T) {
 	require.ErrorIs(t, e.VerifyChain(context.Background(), pool, uuid.New()), workflow.ErrCaseNotFound)
 }
 
+func TestAppendEvent_ChainIgnoresShadowingFunctions(t *testing.T) {
+	ctx := context.Background()
+	connStr := startTestPostgres(t)
+	require.NoError(t, migrate.Up(ctx, connStr, migrations.FS(), silentOptions()))
+	pool, err := pgxpool.New(ctx, connStr)
+	require.NoError(t, err)
+	t.Cleanup(pool.Close)
+
+	// Functions named like 007's in a schema that comes first in a session's
+	// search_path. The trigger must keep using the ones 007 created.
+	_, err = pool.Exec(ctx, `
+        CREATE SCHEMA shadow;
+        CREATE FUNCTION shadow.vogel_workflow_event_field(b bytea) RETURNS bytea
+            LANGUAGE sql IMMUTABLE AS $$ SELECT '\x00'::bytea $$;
+        CREATE FUNCTION shadow.vogel_workflow_event_digest(prev bytea, e public.workflow_event) RETURNS bytea
+            LANGUAGE sql STABLE AS $$ SELECT '\x00'::bytea $$;`)
+	require.NoError(t, err)
+
+	cfg, err := pgxpool.ParseConfig(connStr)
+	require.NoError(t, err)
+	cfg.ConnConfig.RuntimeParams["search_path"] = "shadow, public"
+	shadowed, err := pgxpool.NewWithConfig(ctx, cfg)
+	require.NoError(t, err)
+	t.Cleanup(shadowed.Close)
+
+	c := openCaseWithEvents(t, shadowed, "chain-shadow")
+
+	e := tenantTestEngine(t, postgres.NewRepository())
+	history, err := e.History(ctx, pool, c.ID)
+	require.NoError(t, err)
+	require.Len(t, history, 2)
+	assert.Len(t, history[1].Digest, 32, "the digest is a SHA-256, not the shadow's")
+	require.NoError(t, e.VerifyChain(ctx, pool, c.ID), "the stored digests are the ones 007's functions compute")
+}
+
 func TestMigration007_UpDownRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	connStr := startTestPostgres(t)
