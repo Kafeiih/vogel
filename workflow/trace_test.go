@@ -552,7 +552,7 @@ func TestReleaseWith_EmptyActorIDIsStillAllowed(t *testing.T) {
 	_, err := e.Claim(context.Background(), nil, c.ID, "buyer-1")
 	require.NoError(t, err)
 
-	released, err := e.ReleaseWith(context.Background(), nil, ReleaseInput{CaseID: c.ID, Actor: Actor{Kind: ActorAnonymous}})
+	released, err := e.ReleaseWith(context.Background(), nil, ReleaseInput{CaseID: c.ID, Actor: Actor{Kind: ActorAnonymous}, Reason: "abandoned"})
 	require.NoError(t, err)
 	assert.Empty(t, released.AssignedTo)
 }
