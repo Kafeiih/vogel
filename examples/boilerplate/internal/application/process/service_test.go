@@ -104,8 +104,9 @@ func (t *memTx) Rollback(context.Context) error {
 
 // memCases is the workflow.Repository Submit's engine and case reader use.
 type memCases struct {
-	st        *memStore
-	updateErr error // returned by Update when set
+	st         *memStore
+	updateErr  error // returned by Update when set
+	advanceErr error // returned by AdvanceLastSeq when set
 }
 
 func (r *memCases) Create(_ context.Context, _ pgxtx.DBTX, c *workflow.Case) error {
@@ -152,6 +153,9 @@ func (r *memCases) ListEvents(_ context.Context, _ pgxtx.DBTX, caseID uuid.UUID)
 }
 
 func (r *memCases) AdvanceLastSeq(_ context.Context, _ pgxtx.DBTX, id uuid.UUID) (*workflow.Case, error) {
+	if r.advanceErr != nil {
+		return nil, r.advanceErr
+	}
 	c, ok := r.st.cases[id]
 	if !ok {
 		return nil, workflow.ErrCaseNotFound
@@ -284,6 +288,20 @@ func TestSubmitUnit_RejectedMoveIsRecordedAndItsValuesRolledBack(t *testing.T) {
 
 	assert.Equal(t, stateBefore, f.st.cases[id].State, "the case did not move")
 	assert.NotContains(t, f.st.values[id], "respuesta", "the form values went back with the rejected move")
+}
+
+func TestSubmitUnit_FailingRecordJoinsBothErrors(t *testing.T) {
+	f := newSubmitFixture(t)
+	id := f.claimedCase()
+	before := f.history(id)
+	f.cases.advanceErr = errNoSQL
+
+	c, err := f.svc.Submit(f.ctx, "luis", id, "archivar", map[string]any{"respuesta": "De 9 a 14 h."})
+	assert.Nil(t, c)
+	require.ErrorIs(t, err, workflow.ErrInvalidTransition, "the rejected move stays visible")
+	require.ErrorIs(t, err, errNoSQL, "and so does the failed record")
+	assert.Len(t, f.history(id), len(before), "the failed record leaves nothing behind")
+	assert.NotContains(t, f.st.values[id], "respuesta")
 }
 
 func TestSubmitUnit_ErrorsThatAreNotRejectedMovesAreNotRecorded(t *testing.T) {
