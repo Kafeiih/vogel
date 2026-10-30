@@ -66,6 +66,7 @@ var sentinels = []sentinel{
 	{"ErrInvalidDefinition", workflow.ErrInvalidDefinition, 0, ""},
 	{"ErrTooManyDecisionHops", workflow.ErrTooManyDecisionHops, 0, ""},
 	{"ErrUnknownEffect", workflow.ErrUnknownEffect, 0, ""},
+	{"ErrUnknownDeadlineRule", workflow.ErrUnknownDeadlineRule, 0, ""},
 	{"ErrUnsupportedEventSchema", workflow.ErrUnsupportedEventSchema, 0, ""},
 	{"ErrInvalidFailure", workflow.ErrInvalidFailure, 0, ""},
 	{"ErrChainBroken", workflow.ErrChainBroken, 0, ""},

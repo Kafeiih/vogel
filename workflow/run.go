@@ -278,10 +278,11 @@ func (e *Engine) route(ctx context.Context, db pgxtx.DBTX, run *caseRun, tok *To
 		default:
 			tok.Status = TokenActive
 			tok.Eligible = resolvedEligibility(next, run.c.Unit)
-			if next.Deadline > 0 {
-				deadline := run.now.Add(next.Deadline)
-				tok.DeadlineAt = &deadline
+			deadline, err := e.deadlineFor(ctx, next, run.now, *run.c, *tok)
+			if err != nil {
+				return err
 			}
+			tok.DeadlineAt = deadline
 			return nil
 		}
 	}

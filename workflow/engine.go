@@ -38,6 +38,10 @@ type Config struct {
 	// GuardFunc it runs inside the caller's transaction and must not call the
 	// network.
 	JoinCheck func(ctx context.Context, db pgxtx.DBTX, j JoinRecord) error
+	// Deadlines resolves Node.DeadlineRule when a token enters a node that
+	// declares one. Nil means no definition may declare a deadline rule
+	// (Engine.Register fails with ErrUnknownDeadlineRule).
+	Deadlines DeadlineResolver
 }
 
 // Engine runs a set of registered Definitions against a Repository: it
@@ -51,6 +55,8 @@ type Engine struct {
 	traceIDs func(ctx context.Context) (traceID, spanID string)
 	// joinCheck is Config.JoinCheck.
 	joinCheck func(ctx context.Context, db pgxtx.DBTX, j JoinRecord) error
+	// deadlines is Config.Deadlines.
+	deadlines DeadlineResolver
 
 	mu          sync.RWMutex
 	definitions map[string]Definition // by Key(): "Name@Version"
@@ -127,6 +133,7 @@ func New(repo Repository, cfg Config, logger *slog.Logger, opts ...Option) *Engi
 		now:         now,
 		traceIDs:    cfg.TraceIDs,
 		joinCheck:   cfg.JoinCheck,
+		deadlines:   cfg.Deadlines,
 		definitions: make(map[string]Definition),
 		latest:      make(map[string]Definition),
 		guards:      make(map[string]GuardFunc),
@@ -164,13 +171,19 @@ func WithDefinitions(defs ...Definition) Option {
 // under its bare Name, pointing at the highest version registered so far, so
 // callers can open a case without pinning a version. A definition naming an
 // effect fails with ErrUnknownEffect when no EffectSink is set, or when the
-// sink's HasEffect reports false for that name.
+// sink's HasEffect reports false for that name. A definition declaring a
+// Node.DeadlineRule fails with ErrUnknownDeadlineRule when Config.Deadlines
+// is nil.
 func (e *Engine) Register(d Definition) error {
 	if err := d.Validate(); err != nil {
 		return fmt.Errorf("workflow: register definition %q: %w", d.Key(), err)
 	}
 	if err := e.checkEffects(d); err != nil {
 		return fmt.Errorf("workflow: register definition %q: %w", d.Key(), err)
+	}
+	if rules := d.DeadlineRules(); len(rules) > 0 && e.deadlines == nil {
+		return fmt.Errorf("workflow: register definition %q: %w: no deadline resolver set for %s",
+			d.Key(), ErrUnknownDeadlineRule, strings.Join(rules, ", "))
 	}
 
 	e.mu.Lock()
@@ -359,26 +372,27 @@ func (e *Engine) OpenDetailed(ctx context.Context, db pgxtx.DBTX, in OpenInput) 
 		// already pointing at it.
 		LastSeq: 1,
 	}
-	if start.Deadline > 0 {
-		deadline := now.Add(start.Deadline)
-		c.DeadlineAt = &deadline
+	// The root scope and the root token share the case ID, so a case that
+	// never splits needs no other identifier.
+	root := &Token{
+		ID: c.ID, CaseID: c.ID, ScopeID: c.ID, Node: start.ID, Status: TokenActive,
+		Eligible: resolvedEligibility(start, c.Unit), EnteredSeq: 1, EnteredAt: now,
 	}
+	deadline, err := e.deadlineFor(ctx, start, now, *c, *root)
+	if err != nil {
+		return nil, fmt.Errorf("workflow: open case: %w", err)
+	}
+	c.DeadlineAt, root.DeadlineAt = deadline, deadline
 
 	if err := e.repo.Create(ctx, db, c); err != nil {
 		return nil, fmt.Errorf("workflow: open case: %w", err)
 	}
-	// The root scope and the root token share the case ID, so a case that
-	// never splits needs no other identifier.
 	if err := e.repo.CreateScope(ctx, db, &Scope{
 		ID: c.ID, CaseID: c.ID, Expected: 1, Status: ScopeOpen, OpenedSeq: 1,
 	}); err != nil {
 		return nil, fmt.Errorf("workflow: open case: create root scope: %w", err)
 	}
-	if err := e.repo.CreateToken(ctx, db, &Token{
-		ID: c.ID, CaseID: c.ID, ScopeID: c.ID, Node: start.ID, Status: TokenActive,
-		Eligible: resolvedEligibility(start, c.Unit), DeadlineAt: c.DeadlineAt,
-		EnteredSeq: 1, EnteredAt: now,
-	}); err != nil {
+	if err := e.repo.CreateToken(ctx, db, root); err != nil {
 		return nil, fmt.Errorf("workflow: open case: create root token: %w", err)
 	}
 

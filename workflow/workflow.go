@@ -304,6 +304,12 @@ type Node struct {
 	// Deadline is the duration after entering this node before it is
 	// considered overdue. Zero means no deadline.
 	Deadline time.Duration
+	// DeadlineRule names a rule the Engine's Config.Deadlines resolves to the
+	// deadline of a token entering this node, for deadlines a fixed duration
+	// cannot express (business days, a holiday calendar). It excludes
+	// Deadline (Definition.Validate rejects both set), and Engine.Register
+	// rejects it when no resolver is configured (ErrUnknownDeadlineRule).
+	DeadlineRule string
 	// Kind distinguishes an ordinary task node from a decision node. The
 	// zero value is NodeTask. See the NodeKind doc comment.
 	Kind NodeKind
@@ -433,6 +439,22 @@ func (d Definition) GuardNames() []string {
 	return names
 }
 
+// DeadlineRules returns the sorted, deduplicated set of deadline rule names
+// referenced by this definition's nodes.
+func (d Definition) DeadlineRules() []string {
+	seen := make(map[string]bool)
+	var names []string
+	for _, n := range d.Nodes {
+		if n.DeadlineRule == "" || seen[n.DeadlineRule] {
+			continue
+		}
+		seen[n.DeadlineRule] = true
+		names = append(names, n.DeadlineRule)
+	}
+	sort.Strings(names)
+	return names
+}
+
 // EffectNames returns the sorted, deduplicated set of effect names
 // referenced by this definition's nodes and transitions.
 func (d Definition) EffectNames() []string {
@@ -525,6 +547,9 @@ func (d Definition) Validate() error {
 		if n.Deadline < 0 {
 			addf("node %q: deadline must not be negative", n.ID)
 		}
+		if n.Deadline != 0 && n.DeadlineRule != "" {
+			addf("node %q: must not declare both a deadline and a deadline rule", n.ID)
+		}
 		checkEffects(fmt.Sprintf("node %q", n.ID), n.Effects)
 
 		if n.Kind.IsAutomatic() {
@@ -538,7 +563,7 @@ func (d Definition) Validate() error {
 			if !n.Eligible.IsZero() {
 				addf("%s %q: must not declare an eligibility", label, n.ID)
 			}
-			if n.Deadline != 0 {
+			if n.Deadline != 0 || n.DeadlineRule != "" {
 				addf("%s %q: must not declare a deadline", label, n.ID)
 			}
 			if n.OnExpire != "" {

@@ -273,3 +273,51 @@ func (e *Engine) Overdue(ctx context.Context, db pgxtx.DBTX, f OverdueFilter) ([
 	}
 	return items, nil
 }
+
+// ErrUnknownDeadlineRule reports a Definition declaring a Node.DeadlineRule
+// while the Engine has no Config.Deadlines, or (from a resolver such as
+// calendar.Rules) a rule name the resolver does not know.
+var ErrUnknownDeadlineRule = errors.New("workflow: deadline rule not known to the deadline resolver")
+
+// DueInput is what a DeadlineResolver receives: the rule a node declares,
+// the time the token entered the node, and the case and token as they are
+// being written.
+type DueInput struct {
+	Rule  string
+	From  time.Time
+	Case  Case
+	Token Token
+}
+
+// DeadlineResolver turns a Node.DeadlineRule into the deadline of a token
+// entering that node (see Config.Deadlines and package workflow/calendar).
+// A returned error fails the Open or Move that entered the node, with nothing
+// persisted.
+//
+// Like a GuardFunc it runs inside the caller's open transaction: it must not
+// call the network. Load holiday calendars and similar data before, or keep
+// them in memory.
+type DeadlineResolver interface {
+	Due(ctx context.Context, in DueInput) (time.Time, error)
+}
+
+// deadlineFor returns the deadline of tok entering n at from: the resolved
+// DeadlineRule, from + Deadline, or nil when n declares neither.
+func (e *Engine) deadlineFor(ctx context.Context, n Node, from time.Time, c Case, tok Token) (*time.Time, error) {
+	switch {
+	case n.DeadlineRule != "":
+		if e.deadlines == nil {
+			return nil, fmt.Errorf("node %q: %w: %s", n.ID, ErrUnknownDeadlineRule, n.DeadlineRule)
+		}
+		due, err := e.deadlines.Due(ctx, DueInput{Rule: n.DeadlineRule, From: from, Case: c, Token: tok})
+		if err != nil {
+			return nil, fmt.Errorf("node %q: deadline rule %q: %w", n.ID, n.DeadlineRule, err)
+		}
+		return &due, nil
+	case n.Deadline > 0:
+		due := from.Add(n.Deadline)
+		return &due, nil
+	default:
+		return nil, nil
+	}
+}

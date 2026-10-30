@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -402,4 +403,94 @@ func TestOverdue_PagesOldestFirst(t *testing.T) {
 	page, err = e.Overdue(context.Background(), nil, OverdueFilter{Tenant: "t1", Before: now.Add(-1000 * time.Hour)})
 	require.NoError(t, err)
 	assert.Empty(t, page, "Before bounds the deadlines listed")
+}
+
+// resolverFunc adapts a function to DeadlineResolver.
+type resolverFunc func(ctx context.Context, in DueInput) (time.Time, error)
+
+func (f resolverFunc) Due(ctx context.Context, in DueInput) (time.Time, error) { return f(ctx, in) }
+
+func TestValidate_RejectsDeadlineAndRuleTogether(t *testing.T) {
+	d := testDefinition()
+	d.Nodes[1].DeadlineRule = "two-business-days" // review also has Deadline: 48h
+	err := d.Validate()
+	require.ErrorIs(t, err, ErrInvalidDefinition)
+	assert.Contains(t, err.Error(), `node "review": must not declare both a deadline and a deadline rule`)
+
+	d.Nodes[1].Deadline = 0
+	require.NoError(t, d.Validate())
+}
+
+func TestRegister_RejectsRuleWithoutResolver(t *testing.T) {
+	d := testDefinition()
+	d.Nodes[1].Deadline = 0
+	d.Nodes[1].DeadlineRule = "two-business-days"
+
+	err := New(newFakeRepository(), Config{}, testLogger()).Register(d)
+	require.ErrorIs(t, err, ErrUnknownDeadlineRule)
+	assert.Contains(t, err.Error(), "two-business-days")
+
+	resolver := resolverFunc(func(context.Context, DueInput) (time.Time, error) { return time.Time{}, nil })
+	require.NoError(t, New(newFakeRepository(), Config{Deadlines: resolver}, testLogger()).Register(d))
+}
+
+func TestOpen_AppliesDeadlineRuleToStartToken(t *testing.T) {
+	now := time.Date(2026, 10, 30, 9, 0, 0, 0, time.UTC)
+	due := time.Date(2026, 11, 3, 0, 0, 0, 0, time.UTC)
+	var calls []DueInput
+	resolver := resolverFunc(func(_ context.Context, in DueInput) (time.Time, error) {
+		calls = append(calls, in)
+		return due, nil
+	})
+	d := testDefinition()
+	d.Nodes[0].DeadlineRule = "two-business-days" // draft
+	repo := newFakeRepository()
+	e := New(repo, Config{Now: func() time.Time { return now }, Deadlines: resolver}, testLogger(), WithDefinitions(d))
+
+	c := openTestCase(t, e)
+	require.NotNil(t, c.DeadlineAt)
+	assert.Equal(t, due, *c.DeadlineAt)
+	tokens, err := e.Tokens(context.Background(), nil, c.ID)
+	require.NoError(t, err)
+	require.NotNil(t, tokens[0].DeadlineAt)
+	assert.Equal(t, due, *tokens[0].DeadlineAt)
+
+	require.Len(t, calls, 1)
+	assert.Equal(t, "two-business-days", calls[0].Rule)
+	assert.Equal(t, now, calls[0].From)
+	assert.Equal(t, c.ID, calls[0].Case.ID)
+	assert.Equal(t, "draft", calls[0].Token.Node)
+
+	failing := resolverFunc(func(context.Context, DueInput) (time.Time, error) {
+		return time.Time{}, errors.New("calendar unavailable")
+	})
+	e = New(newFakeRepository(), Config{Deadlines: failing}, testLogger(), WithDefinitions(d))
+	_, err = e.Open(context.Background(), nil, OpenInput{Definition: "purchase", Domain: "compras", ExternalID: "x", ActorID: "u1"})
+	require.ErrorContains(t, err, "calendar unavailable", "a resolver error fails Open")
+}
+
+func TestMove_AppliesDeadlineRuleOnEntry(t *testing.T) {
+	now := time.Date(2026, 10, 30, 9, 0, 0, 0, time.UTC)
+	resolver := resolverFunc(func(_ context.Context, in DueInput) (time.Time, error) {
+		return in.From.Add(24 * time.Hour), nil
+	})
+	d := testDefinition()
+	d.Nodes[1].Deadline = 0
+	d.Nodes[1].DeadlineRule = "next-day" // review
+	repo := newFakeRepository()
+	e := New(repo, Config{Now: func() time.Time { return now }, Deadlines: resolver}, testLogger(), WithDefinitions(d))
+	c := openTestCase(t, e)
+
+	c, err := e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "submit", ActorID: "u1"})
+	require.NoError(t, err)
+	require.NotNil(t, c.DeadlineAt)
+	assert.Equal(t, now.Add(24*time.Hour), *c.DeadlineAt)
+
+	failing := resolverFunc(func(context.Context, DueInput) (time.Time, error) { return time.Time{}, errors.New("no rule") })
+	e = New(repo, Config{Deadlines: failing}, testLogger(), WithDefinitions(d))
+	other := openInTenant(t, e, "", "other")
+	before := storedEvents(t, repo, other.ID)
+	_, err = e.Move(context.Background(), nil, MoveInput{CaseID: other.ID, Action: "submit", ActorID: "u1"})
+	require.ErrorContains(t, err, "no rule")
+	assert.Equal(t, before, storedEvents(t, repo, other.ID), "nothing is persisted")
 }
