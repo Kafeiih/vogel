@@ -20,6 +20,7 @@ import (
 	auditmigrations "github.com/kafeiih/vogel/audit/migrations"
 
 	// vogel:component bpms begin
+	actionmigrations "github.com/kafeiih/vogel/action/migrations"
 	documentmigrations "github.com/kafeiih/vogel/document/migrations"
 	workflowmigrations "github.com/kafeiih/vogel/workflow/migrations"
 
@@ -69,6 +70,7 @@ func TestMigrateDown_RevertsOnlyTheAppSet(t *testing.T) {
 	// vogel:component bpms begin
 	workflowLatest := migrationVersions(t, workflowmigrations.FS()).latest()
 	documentLatest := migrationVersions(t, documentmigrations.FS()).latest()
+	actionLatest := migrationVersions(t, actionmigrations.FS()).latest()
 	bpmsLatest := migrationVersions(t, bpmsmigrations.FS).latest()
 	// vogel:component bpms end
 	checkEffect, ok := revertEffects[app.latestFile()]
@@ -91,6 +93,9 @@ func TestMigrateDown_RevertsOnlyTheAppSet(t *testing.T) {
 	}
 	if got := gooseVersion(ctx, t, pool, documentmigrations.DefaultTableName); got != documentLatest {
 		t.Fatalf("after up: document version = %d, want %d", got, documentLatest)
+	}
+	if got := gooseVersion(ctx, t, pool, actionmigrations.DefaultTableName); got != actionLatest {
+		t.Fatalf("after up: action version = %d, want %d", got, actionLatest)
 	}
 	if got := gooseVersion(ctx, t, pool, bpmsmigrations.TableName); got != bpmsLatest {
 		t.Fatalf("after up: bpms version = %d, want %d", got, bpmsLatest)
@@ -124,6 +129,9 @@ func TestMigrateDown_RevertsOnlyTheAppSet(t *testing.T) {
 	}
 	if got := gooseVersion(ctx, t, pool, documentmigrations.DefaultTableName); got != documentLatest {
 		t.Errorf("after down: document version = %d, want %d (unchanged)", got, documentLatest)
+	}
+	if got := gooseVersion(ctx, t, pool, actionmigrations.DefaultTableName); got != actionLatest {
+		t.Errorf("after down: action version = %d, want %d (unchanged)", got, actionLatest)
 	}
 	if got := gooseVersion(ctx, t, pool, bpmsmigrations.TableName); got != bpmsLatest {
 		t.Errorf("after down: bpms version = %d, want %d (unchanged)", got, bpmsLatest)

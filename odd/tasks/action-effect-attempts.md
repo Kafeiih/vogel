@@ -1,0 +1,96 @@
+Objective: make every effect run visible and safe to retry. Record one row per attempt with its outcome, give handlers a stable idempotency key, and hand them the triggering actor and correlation ids. Target v0.18.x (additive). Feature 3 of 4. Depends on `workflow-trace-metadata.md` (structured actor, request/trace ids). `workflow-tokens.md` later adds `TokenID` to `Args`/`Run` (its S12).
+Branch: feat/action-effect-attempts from master after v0.18.0. Delivery: ask-on-risk, one PR. Test runner: `go test -race ./action/... ./document/...`, `go test -tags integration ./action/... ./document/...`, `cd examples/boilerplate && go test ./...`, `cmd/create-vogel-app/check-generated.sh`.
+
+## Specs
+
+Source audits: `simple/docs/reverse-engineering/modules/01-case-trace.md` §5.1 TR-3, TR-20, TR-24; §5.2 A3; §6.4 (effect-attempt log, at-least-once + dedupe). Today effects are enqueued in the transition's tx with uniqueness on `(case, seq, effect, part)` (`vogel/action/action.go:117-137,200-219`), `Worker.Work` runs the handler (`vogel/action/worker.go:29-50`), and nothing records attempts or outcomes. River's job rows are operational and are pruned by retention (Inferred).
+
+- **S1 Idempotency key.** `func (r Run) IdempotencyKey() string` returns `<case>/<seq>/<effect>` for `Part == 0` and `<case>/<seq>/<effect>/<part>` otherwise. For part 0 this equals docflow's current source key (`vogel/document/docflow/docflow.go:62-63`). docflow switches to `r.IdempotencyKey()` with byte-identical keys, so no existing `document_record.source_key` changes. Handlers calling partners pass it outward, e.g. as an `Idempotency-Key` header.
+- **S2 Attempt log.** New package `action/migrations` (`migrations.FS()`, version table `action_db_version`, like `workflow/migrations`) with `001_create_action_attempt.sql`. Opt-in `WorkerOption` `WithAttemptLog(db pgxtx.DBTX)`, normally the pool. After the handler returns, `Worker.Work` inserts one row in its own statement on that db, never inside the job's work, with:
+  - `case_id`, `seq`, `effect`, `part`, `attempt`, River `job_id`;
+  - `started_at`, `finished_at`;
+  - `outcome`: `succeeded` | `retry` | `cancelled` | `snoozed` | `discarded` | `unknown_effect`;
+  - `error_class`: the Go type plus the matched sentinel. Never the error message, the same rule as `otelpgx` (L15 of `odd/tasks/otel-tracing.md`), because messages can carry personal data;
+  - `request_id`, `trace_id`, `actor_kind`, `actor_id`, `result_ref`, `result_digest`.
+  
+  `discarded` is written when the attempt was River's last and the handler failed. A failed insert never fails or retries the job: it is logged with context and counted by a new metric `vogel_action_attempt_log_errors_total`. Without the option, nothing is written (backward compatible).
+- **S3 Handler results.** `action.RecordResult(ctx, Result{Ref, Digest string})` lets a handler attach a reference (e.g. a `document_record` id or a partner's receipt id) and a digest of the response to its attempt row. `docflow.Generate` records the document id and sha256.
+- **S4 Read API.** `action.AttemptRepository` with `ListByCase(ctx, db, caseID) ([]Attempt, error)` and `ListByEvent(ctx, db, caseID, seq)`, plus a Postgres implementation in `action/postgres`. Consumers merge it into their timeline read model (TR-22). Rows are append-only, enforced by the same trigger pattern as `vogel/audit/migrations/002_audit_log_append_only.sql`.
+- **S5 Actor and correlation for handlers.** `Args`/`Run` gain:
+  - `Actor` (the structured actor of the triggering event, from `workflow-trace-metadata.md` S2). `Run.ActorID` stays, mirrored and deprecated.
+  - `Run.SystemActor() workflow.Actor`, which returns `{Kind: ActorSystem, ID: "vogel_action:" + Effect, OnBehalfOf: Actor.ID}`. Handlers use it when they write back into a case, so engine work is never attributed to a session user (TR-8, TR-24).
+  
+  The request id already travels via job metadata (`vogel/worker/requestid.go:18-25`) and the trace via `vogel/otel/otelriver`. The attempt row reads both from ctx.
+- **S6 Docs.** README rows for `action` and `action/migrations`, a CHANGELOG `Agregado` entry (Spanish), and a MIGRATION_GUIDE note that `action/migrations` is a new set with its own version table. The boilerplate adds the set to `migrationSets()` (engorro has the same list, `engorro/cmd/api/main.go:170-178`) and passes `WithAttemptLog(pool)` in the worker binary.
+
+### Migration draft `action/migrations/001_create_action_attempt.sql`
+
+```sql
+-- +goose Up
+CREATE TABLE action_attempt (
+    id             UUID PRIMARY KEY,
+    case_id        UUID   NOT NULL,           -- no FK: action is usable without workflow's tables, like document_record
+    seq            BIGINT NOT NULL,
+    effect         TEXT   NOT NULL,
+    part           INT    NOT NULL DEFAULT 0,
+    attempt        INT    NOT NULL CHECK (attempt >= 1),
+    job_id         BIGINT NOT NULL,
+    started_at     TIMESTAMPTZ NOT NULL,
+    finished_at    TIMESTAMPTZ NOT NULL,
+    outcome        TEXT NOT NULL CHECK (outcome IN ('succeeded','retry','cancelled','snoozed','discarded','unknown_effect')),
+    error_class    TEXT NOT NULL DEFAULT '',
+    request_id     TEXT NOT NULL DEFAULT '',
+    trace_id       TEXT NOT NULL DEFAULT '',
+    actor_kind     TEXT NOT NULL DEFAULT '',
+    actor_id       TEXT NOT NULL DEFAULT '',
+    result_ref     TEXT NOT NULL DEFAULT '',
+    result_digest  TEXT NOT NULL DEFAULT '',
+    UNIQUE (job_id, attempt)
+);
+CREATE INDEX idx_action_attempt_case_seq ON action_attempt (case_id, seq);
+CREATE INDEX idx_action_attempt_outcome ON action_attempt (outcome, finished_at DESC) WHERE outcome IN ('retry','discarded','unknown_effect');
+-- + append-only function and triggers (copy of the audit_log pattern)
+
+-- +goose Down
+DROP TABLE action_attempt;
+```
+
+`UNIQUE (job_id, attempt)` makes a duplicated write after a worker crash a no-op (`ON CONFLICT DO NOTHING`).
+
+### RED tests
+
+| Spec | Tests |
+|---|---|
+| S1 | `TestRun_IdempotencyKey_Part0MatchesDocflowSourceKey`, `TestRun_IdempotencyKey_IncludesPart`, `TestDocflowGenerate_SourceKeyUnchanged` |
+| S2 | `TestWorker_RecordsSucceededAttempt`, `TestWorker_RecordsRetryWithErrorClassNotMessage`, `TestWorker_RecordsCancelledOnJobCancel`, `TestWorker_RecordsDiscardedOnLastAttempt`, `TestWorker_RecordsUnknownEffect`, `TestWorker_AttemptLogFailureDoesNotFailJob`, `TestWorker_WithoutAttemptLogWritesNothing`, `TestAttemptLog_Integration_OneRowPerAttemptAndDuplicateIsNoop` (integration) |
+| S3 | `TestRecordResult_StoresRefAndDigest`, `TestDocflowGenerate_RecordsDocumentIDAndSHA` |
+| S4 | `TestAttemptRepository_ListByCaseOrdersBySeqThenAttempt` (integration), `TestActionAttempt_UpdateIsRejected` (integration) |
+| S5 | `TestDispatch_CopiesStructuredActor`, `TestRun_SystemActorOnBehalfOfTriggeringActor`, `TestWorker_AttemptCarriesRequestIDFromJobMetadata` |
+
+### Breaking changes
+
+None. Every change is additive or opt-in. `Run.ActorID` is deprecated, not removed.
+
+## Tasks
+
+| ID | Specs | Route | Status | Evidence |
+|---|---|---|---|---|
+| T1 | S1 | inline | done, 1cd6b34 | RED: `IdempotencyKey undefined`; GREEN `go test -race ./action/... ./document/...` |
+| T2 | S2 S4 (migration, worker option, repository) | inline | done, c01d41d, native review approved (review-1c42179427448d12, risk/resilience/reliability) (integration pending CI) | RED: `undefined: action.WithAttemptLog`; GREEN `go test -race ./action/...`; `go vet -tags integration ./action/...` compiles |
+| T3 | S3 S5 | inline | done, 6971d18 + e4a13af, native review approved (review-64bb5a59ede9e4f8) | RED: `args.Actor undefined`, then `TestDispatch_CopiesStructuredActor` failing on zero Actor; GREEN `go test -race ./action/... ./document/...` |
+| T4 | S6 | inline | done, d57cdb5 + c2af0bb, native review approved (review-64bb5a59ede9e4f8) | `cd examples/boilerplate && go test ./...` ok; `cmd/create-vogel-app/check-generated.sh` all combinations OK; `go test -race ./...` ok |
+
+Risk: item 1 (new persisted table) and item 5 (worker runtime path). T2 gets its own commit.
+
+## Log
+
+- L1 2026-10-28 Oscar: "vogel es mío, vamos con la opción A, pero si es necesario corregir algo de vogel armame un strachpad con todo lo necesario y lo levanto en un worktree"
+- L2 2026-10-28 Derived from `simple/docs/reverse-engineering/modules/01-case-trace.md` §5.2 A3 and §6.4. The scheduler and expiry parts of A3 live in `workflow-case-operations.md`.
+- L3 2026-10-30 Branch was cut before v0.18.0 (no `workflow.Actor`); recreated from `origin/master` (3ae0edc) since it had no commits. Integration tests cannot run locally (no Docker daemon); they compile with `-tags integration` and run in CI.
+- L4 2026-10-30 Deviation from the migration draft: River v0.49.0 gives a snoozed job its attempt back (`internal/jobexecutor/job_executor.go:446-448`, `jobRow.Attempt-1`), so `UNIQUE (job_id, attempt)` would drop the row of the run after a snooze via `ON CONFLICT DO NOTHING`. Added `snooze INT` (River's `snoozes` metadata count at start) and made the key `UNIQUE (job_id, attempt, snooze)`. Also added: Handler panics are recorded (`error_class = 'panic'`, outcome retry/discarded) and re-panicked; `error_class` is `<innermost Go type>` plus ` (<sentinel>)` for context.Canceled, context.DeadlineExceeded, workflow.ErrUnknownEffect; trace id comes from a `WithTraceIDs` port (same shape as `workflow.Config.TraceIDs`); `WithLogger` and `WithMetricsRegisterer` options; the insert runs on a ctx detached from the job's with a 5s timeout.
+- L5 2026-10-30 T2 review advisories (non-blocking): R3-001 empty actor_kind/result columns (fixed by T3); R3-002 no test for the detached insert ctx (added `TestWorker_RecordsAttemptOfJobWhoseContextIsCancelled`); R3-003 snooze key not exercised in Postgres (added `TestAttemptLog_Integration_RunAfterSnoozeGetsItsOwnRow`); R3-004 shared counter untested (added `TestNewWorker_TwoWorkersShareTheAttemptLogErrorCounter`); R3-005 unknown_effect on last attempt (documented on OutcomeUnknownEffect). Open follow-up: R4 the 5s attempt-log timeout is fixed and its latency is not observed.
+- L6 2026-10-30 `Args.Actor` is `workflow.Actor` with `json:"actor,omitzero"` (keys are Go field names: Kind, ID, ActingAs, OnBehalfOf, Via). It is not a `river:"unique"` field, so job uniqueness is unchanged. A job without it (enqueued by the previous release) runs with `Run.Actor = {Kind: unspecified, ID: ActorID}`, like an old event.
+- L7 2026-10-30 T4 also: `action_attempt`/`action_db_version` grants in `examples/boilerplate/deploy/initdb/runtime-grants.sql` (SELECT, INSERT only); `ci.yaml` River guard allows `action/postgres` (d57cdb5), since it imports `action`. Integration tests (`-tags integration`) compile but were not run locally: the Docker socket is not accessible here; CI runs them.
+- L8 2026-10-30 Slice c01d41d..c2af0bb native review approved (review-64bb5a59ede9e4f8, risk/readability/reliability), suggestions only. Applied: R2-002 anchor the docflow test fake on the action_attempt INSERT; R2-003 SystemActor derives its prefix from `Kind`; R3-001 `TestWorker_LegacyJobWritesItsActorID`. Left: R2-001 (test name kept as in the spec; the worker middleware that moves metadata to ctx is unexported and tested in `worker`), R3-002 (Actor.ID vs legacy ActorID divergence on hand-built events), R3-003 (RecordResult on panic/retry rows).
+- L9 2026-10-30 Independent verifier (whole document, baseline 3ae0edc, HEAD e4a13af): S1-S6 PASS, no blockers. Differential probes: Worker without WithAttemptLog behaves identically to baseline; Args JSON cross-decodes both ways; Part 0 source key byte-identical. Advisories: docflow key gains `/<part>` only for Part != 0 (docflow never fans out); Actor JSON keys are Go field names (L6); open R4 timeout follow-up. Integration tests not executed locally (Docker socket inaccessible); pending CI.
+- L10 2026-10-30 Whole-branch 4-lens native review 3ae0edc..3968ecc approved (review-4aa7faf635f1b129), no blockers. Advisories: R4-001/R3-002 synchronous attempt-log insert can hold a worker slot up to 5s under a slow DB (same open follow-up as L5 R4); R2-001 panic outcome built from a throwaway error; R2-002 shadowed ctx in recordAttempt; R3-001 no test for a panic on the last attempt (discarded).

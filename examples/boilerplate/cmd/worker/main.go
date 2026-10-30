@@ -190,7 +190,15 @@ func run(migrateFirst bool) error {
 	if err != nil {
 		return fmt.Errorf("initializing bpms: %w", err)
 	}
-	if err := action.AddWorker(workers, action.NewWorker(bpmsBase.Registry)); err != nil {
+	// Every effect attempt leaves an action_attempt row (action/migrations).
+	actionWorker := action.NewWorker(bpmsBase.Registry,
+		action.WithAttemptLog(pool),
+		action.WithLogger(appLogger.Logger),
+		// vogel:component tracing begin
+		action.WithTraceIDs(otel.SampledTraceIDs),
+		// vogel:component tracing end
+	)
+	if err := action.AddWorker(workers, actionWorker); err != nil {
 		return fmt.Errorf("registering bpms action worker: %w", err)
 	}
 	appLogger.Info("bpms action worker registered")

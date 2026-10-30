@@ -6,6 +6,8 @@ import (
 
 	auditmigrations "github.com/kafeiih/vogel/audit/migrations"
 	// vogel:component bpms begin
+
+	actionmigrations "github.com/kafeiih/vogel/action/migrations"
 	documentmigrations "github.com/kafeiih/vogel/document/migrations"
 	workflowmigrations "github.com/kafeiih/vogel/workflow/migrations"
 
@@ -25,6 +27,7 @@ func TestMigrationSets(t *testing.T) {
 		// vogel:component bpms begin
 		{name: "workflow", tableName: workflowmigrations.DefaultTableName},
 		{name: "document", tableName: documentmigrations.DefaultTableName},
+		{name: "action", tableName: actionmigrations.DefaultTableName},
 		{name: "bpms", tableName: bpmsmigrations.TableName},
 		// vogel:component bpms end
 	}
