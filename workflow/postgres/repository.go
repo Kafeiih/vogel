@@ -36,7 +36,7 @@ const scopeColumns = `id, case_id, parent_id, split_node, join_node, expected, s
 
 //nolint:gosec // G101 false positive: a column list of workflow_token, not a credential
 const tokenColumns = `id, case_id, scope_id, node, position, unit, status, assigned_to, deadline_at,
-    entered_seq, entered_at, ended_seq, ended_at`
+    entered_seq, entered_at, ended_seq, ended_at, expired_deadline_at`
 
 // uniqueViolationCode is the PostgreSQL error code for a unique constraint
 // violation (23505).
@@ -354,6 +354,12 @@ func (r *Repository) ListWorkItems(ctx context.Context, db pgxtx.DBTX, f workflo
 	if err != nil {
 		return nil, fmt.Errorf("workflow: list work items: %w", err)
 	}
+	return scanWorkItems(rows, "list work items")
+}
+
+// scanWorkItems reads rows of prefixedCaseColumns then prefixedTokenColumns
+// and closes them; op names the query in errors.
+func scanWorkItems(rows pgx.Rows, op string) ([]workflow.WorkItem, error) {
 	defer rows.Close()
 
 	var items []workflow.WorkItem
@@ -361,16 +367,41 @@ func (r *Repository) ListWorkItems(ctx context.Context, db pgxtx.DBTX, f workflo
 		var it workflow.WorkItem
 		var status, tokenStatus string
 		if err := rows.Scan(append(caseDest(&it.Case, &status), tokenDest(&it.Token, &tokenStatus)...)...); err != nil {
-			return nil, fmt.Errorf("workflow: list work items: %w", err)
+			return nil, fmt.Errorf("workflow: %s: %w", op, err)
 		}
 		it.Case.Status = workflow.Status(status)
 		it.Token.Status = workflow.TokenStatus(tokenStatus)
 		items = append(items, it)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("workflow: list work items: %w", err)
+		return nil, fmt.Errorf("workflow: %s: %w", op, err)
 	}
 	return items, nil
+}
+
+// ListOverdue returns one workflow.WorkItem per active token of an open case
+// whose deadline_at is before f.Before and not recorded as expired
+// (expired_deadline_at differs from deadline_at, migration 009), oldest
+// deadline first, then token id, at most f.Page() rows. An empty f.Tenant
+// matches every tenant. It reads the tokens through
+// idx_workflow_token_deadline (migration 008).
+func (r *Repository) ListOverdue(ctx context.Context, db pgxtx.DBTX, f workflow.OverdueFilter) ([]workflow.WorkItem, error) {
+	const q = `
+        SELECT ` + prefixedCaseColumns + `, ` + prefixedTokenColumns + `
+        FROM workflow_token t
+        JOIN workflow_case c ON c.id = t.case_id
+        WHERE t.status = 'active' AND t.deadline_at IS NOT NULL AND t.deadline_at < $1
+          AND t.expired_deadline_at IS DISTINCT FROM t.deadline_at
+          AND c.status = 'open'
+          AND ($2::TEXT IS NULL OR c.tenant = $2)
+        ORDER BY t.deadline_at ASC, t.id
+        LIMIT $3`
+
+	rows, err := db.Query(ctx, q, f.Before, nullString(f.Tenant), f.Page())
+	if err != nil {
+		return nil, fmt.Errorf("workflow: list overdue: %w", err)
+	}
+	return scanWorkItems(rows, "list overdue")
 }
 
 // CreateScope inserts s.
@@ -429,9 +460,9 @@ func (r *Repository) ListScopes(ctx context.Context, db pgxtx.DBTX, caseID uuid.
 func (r *Repository) CreateToken(ctx context.Context, db pgxtx.DBTX, t *workflow.Token) error {
 	if _, err := db.Exec(ctx, `
         INSERT INTO workflow_token (`+tokenColumns+`)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
 		t.ID, t.CaseID, t.ScopeID, t.Node, t.Eligible.Position, t.Eligible.Unit, string(t.Status), t.AssignedTo, t.DeadlineAt,
-		t.EnteredSeq, t.EnteredAt, nullSeq(t.EndedSeq), t.EndedAt,
+		t.EnteredSeq, t.EnteredAt, nullSeq(t.EndedSeq), t.EndedAt, t.ExpiredDeadline,
 	); err != nil {
 		return fmt.Errorf("workflow: create token: %w", err)
 	}
@@ -444,10 +475,10 @@ func (r *Repository) UpdateToken(ctx context.Context, db pgxtx.DBTX, t *workflow
 	tag, err := db.Exec(ctx, `
         UPDATE workflow_token SET
             node = $2, position = $3, unit = $4, status = $5, assigned_to = $6, deadline_at = $7,
-            entered_seq = $8, entered_at = $9, ended_seq = $10, ended_at = $11
+            entered_seq = $8, entered_at = $9, ended_seq = $10, ended_at = $11, expired_deadline_at = $12
         WHERE id = $1`,
 		t.ID, t.Node, t.Eligible.Position, t.Eligible.Unit, string(t.Status), t.AssignedTo, t.DeadlineAt,
-		t.EnteredSeq, t.EnteredAt, nullSeq(t.EndedSeq), t.EndedAt,
+		t.EnteredSeq, t.EnteredAt, nullSeq(t.EndedSeq), t.EndedAt, t.ExpiredDeadline,
 	)
 	if err != nil {
 		return fmt.Errorf("workflow: update token: %w", err)
@@ -489,7 +520,7 @@ const prefixedCaseColumns = `c.id, c.definition, c.version, c.domain, c.external
 
 //nolint:gosec // G101 false positive: a column list of workflow_token, not a credential
 const prefixedTokenColumns = `t.id, t.case_id, t.scope_id, t.node, t.position, t.unit, t.status, t.assigned_to, t.deadline_at,
-    t.entered_seq, t.entered_at, t.ended_seq, t.ended_at`
+    t.entered_seq, t.entered_at, t.ended_seq, t.ended_at, t.expired_deadline_at`
 
 // caseDest returns the scan destinations of caseColumns into c, the status
 // into status.
@@ -505,7 +536,7 @@ func caseDest(c *workflow.Case, status *string) []any {
 func tokenDest(t *workflow.Token, status *string) []any {
 	return []any{
 		&t.ID, &t.CaseID, &t.ScopeID, &t.Node, &t.Eligible.Position, &t.Eligible.Unit, status, &t.AssignedTo, &t.DeadlineAt,
-		&t.EnteredSeq, &t.EnteredAt, (*nullableSeq)(&t.EndedSeq), &t.EndedAt,
+		&t.EnteredSeq, &t.EnteredAt, (*nullableSeq)(&t.EndedSeq), &t.EndedAt, &t.ExpiredDeadline,
 	}
 }
 

@@ -123,6 +123,10 @@ func cloneToken(t Token) Token {
 		d := *t.EndedAt
 		t.EndedAt = &d
 	}
+	if t.ExpiredDeadline != nil {
+		d := *t.ExpiredDeadline
+		t.ExpiredDeadline = &d
+	}
 	return t
 }
 
@@ -384,6 +388,39 @@ func (f *fakeRepository) ListWorkItems(_ context.Context, _ pgxtx.DBTX, filter I
 		return nil, nil
 	}
 	return out[offset:min(offset+limit, len(out))], nil
+}
+
+func (f *fakeRepository) ListOverdue(_ context.Context, _ pgxtx.DBTX, filter OverdueFilter) ([]WorkItem, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	var out []WorkItem
+	for _, t := range f.tokens {
+		c := f.cases[t.CaseID]
+		if t.Status != TokenActive || c.Status != StatusOpen || t.DeadlineAt == nil {
+			continue
+		}
+		if filter.Tenant != "" && c.Tenant != filter.Tenant {
+			continue
+		}
+		if !t.DeadlineAt.Before(filter.Before) {
+			continue
+		}
+		if t.ExpiredDeadline != nil && t.ExpiredDeadline.Equal(*t.DeadlineAt) {
+			continue
+		}
+		out = append(out, WorkItem{Case: c, Token: cloneToken(t)})
+	}
+	// Same order as workflow/postgres: oldest deadline first, token ID as the
+	// tie-break.
+	sort.Slice(out, func(i, j int) bool {
+		a, b := out[i].Token, out[j].Token
+		if !a.DeadlineAt.Equal(*b.DeadlineAt) {
+			return a.DeadlineAt.Before(*b.DeadlineAt)
+		}
+		return a.ID.String() < b.ID.String()
+	})
+	return out[:min(filter.Page(), len(out))], nil
 }
 
 func containsEligibility(list []Eligibility, e Eligibility) bool {

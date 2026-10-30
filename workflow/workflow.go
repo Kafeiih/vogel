@@ -90,6 +90,12 @@ const (
 	// EventCancelled records Engine.Cancel ending the case; the Detail is a
 	// CancelDetail.
 	EventCancelled EventKind = "cancelled"
+	// EventDeadlineChanged records Engine.SetDeadline replacing a token's
+	// deadline; the Detail is a DeadlineDetail.
+	EventDeadlineChanged EventKind = "deadline_changed"
+	// EventExpired records Engine.Expire marking a token's deadline as
+	// passed; the Detail is an ExpiryDetail.
+	EventExpired EventKind = "expired"
 )
 
 // Valid reports whether k is one of the known EventKind values.
@@ -97,7 +103,8 @@ func (k EventKind) Valid() bool {
 	switch k {
 	case EventOpened, EventMoved, EventAssigned, EventUnassigned, EventClosed,
 		EventStepSubmitted, EventNoRoute, EventFailed,
-		EventSplit, EventWaiting, EventJoined, EventTokenCancelled, EventCancelled:
+		EventSplit, EventWaiting, EventJoined, EventTokenCancelled, EventCancelled,
+		EventDeadlineChanged, EventExpired:
 		return true
 	default:
 		return false
@@ -297,6 +304,12 @@ type Node struct {
 	// Deadline is the duration after entering this node before it is
 	// considered overdue. Zero means no deadline.
 	Deadline time.Duration
+	// DeadlineRule names a rule the Engine's Config.Deadlines resolves to the
+	// deadline of a token entering this node, for deadlines a fixed duration
+	// cannot express (business days, a holiday calendar). It excludes
+	// Deadline (Definition.Validate rejects both set), and Engine.Register
+	// rejects it when no resolver is configured (ErrUnknownDeadlineRule).
+	DeadlineRule string
 	// Kind distinguishes an ordinary task node from a decision node. The
 	// zero value is NodeTask. See the NodeKind doc comment.
 	Kind NodeKind
@@ -314,6 +327,12 @@ type Node struct {
 	// NodeParallel or NodeInclusive node may set it, and each join is named by
 	// exactly one split: together they bound a block (see Definition.Validate).
 	Join string
+	// OnExpire names the Action of one of this node's outgoing transitions:
+	// Engine.Expire moves an overdue token through it, as the system actor.
+	// Empty leaves an expired token where it is. Definition.Validate rejects
+	// a name that is not an outgoing transition, a return transition, and
+	// OnExpire on a decision node, split or join.
+	OnExpire string
 }
 
 // Transition is a named move from one node to another, optionally gated by
@@ -375,9 +394,10 @@ type Definition struct {
 
 // Node returns the node with the given ID, if any.
 func (d Definition) Node(id string) (Node, bool) {
-	for _, n := range d.Nodes {
+	for i := range d.Nodes {
+		n := &d.Nodes[i]
 		if n.ID == id {
-			return n, true
+			return *n, true
 		}
 	}
 	return Node{}, false
@@ -385,9 +405,10 @@ func (d Definition) Node(id string) (Node, bool) {
 
 // StartNode returns the definition's single start node, if any.
 func (d Definition) StartNode() (Node, bool) {
-	for _, n := range d.Nodes {
+	for i := range d.Nodes {
+		n := &d.Nodes[i]
 		if n.Start {
-			return n, true
+			return *n, true
 		}
 	}
 	return Node{}, false
@@ -420,6 +441,23 @@ func (d Definition) GuardNames() []string {
 	return names
 }
 
+// DeadlineRules returns the sorted, deduplicated set of deadline rule names
+// referenced by this definition's nodes.
+func (d Definition) DeadlineRules() []string {
+	seen := make(map[string]bool)
+	var names []string
+	for i := range d.Nodes {
+		n := &d.Nodes[i]
+		if n.DeadlineRule == "" || seen[n.DeadlineRule] {
+			continue
+		}
+		seen[n.DeadlineRule] = true
+		names = append(names, n.DeadlineRule)
+	}
+	sort.Strings(names)
+	return names
+}
+
 // EffectNames returns the sorted, deduplicated set of effect names
 // referenced by this definition's nodes and transitions.
 func (d Definition) EffectNames() []string {
@@ -434,7 +472,8 @@ func (d Definition) EffectNames() []string {
 			names = append(names, name)
 		}
 	}
-	for _, n := range d.Nodes {
+	for i := range d.Nodes {
+		n := &d.Nodes[i]
 		add(n.Effects)
 	}
 	for _, tr := range d.Transitions {
@@ -487,7 +526,8 @@ func (d Definition) Validate() error {
 	nodeByID := make(map[string]Node, len(d.Nodes))
 	startNodes, terminalNodes := 0, 0
 
-	for i, n := range d.Nodes {
+	for i := range d.Nodes {
+		n := &d.Nodes[i]
 		if n.ID == "" {
 			addf("node[%d]: empty ID", i)
 		} else {
@@ -495,7 +535,7 @@ func (d Definition) Validate() error {
 				addf("duplicate node ID %q", n.ID)
 			}
 			seenNodeIDs[n.ID] = true
-			nodeByID[n.ID] = n
+			nodeByID[n.ID] = *n
 		}
 		if !n.Kind.Valid() {
 			addf("node %q: invalid kind %q", n.ID, n.Kind)
@@ -512,6 +552,9 @@ func (d Definition) Validate() error {
 		if n.Deadline < 0 {
 			addf("node %q: deadline must not be negative", n.ID)
 		}
+		if n.Deadline != 0 && n.DeadlineRule != "" {
+			addf("node %q: must not declare both a deadline and a deadline rule", n.ID)
+		}
 		checkEffects(fmt.Sprintf("node %q", n.ID), n.Effects)
 
 		if n.Kind.IsAutomatic() {
@@ -525,8 +568,11 @@ func (d Definition) Validate() error {
 			if !n.Eligible.IsZero() {
 				addf("%s %q: must not declare an eligibility", label, n.ID)
 			}
-			if n.Deadline != 0 {
+			if n.Deadline != 0 || n.DeadlineRule != "" {
 				addf("%s %q: must not declare a deadline", label, n.ID)
+			}
+			if n.OnExpire != "" {
+				addf("%s %q: must not declare on_expire", label, n.ID)
 			}
 			if len(n.Effects) > 0 {
 				addf("%s %q: must not declare effects (declare them on its routes)", label, n.ID)
@@ -604,7 +650,22 @@ func (d Definition) Validate() error {
 		seenTransitionKeys[key] = true
 	}
 
-	for _, n := range d.Nodes {
+	for i := range d.Nodes {
+		n := &d.Nodes[i]
+		if n.OnExpire == "" || n.Kind.IsAutomatic() {
+			continue
+		}
+		tr, found := findTransition(outgoingByNode[n.ID], n.OnExpire)
+		switch {
+		case !found:
+			addf("node %q: on_expire %q is not an outgoing transition", n.ID, n.OnExpire)
+		case tr.Return:
+			addf("node %q: on_expire %q must not be a return transition", n.ID, n.OnExpire)
+		}
+	}
+
+	for i := range d.Nodes {
+		n := &d.Nodes[i]
 		if n.ID == "" || !n.Kind.IsAutomatic() {
 			continue
 		}
@@ -645,7 +706,8 @@ func (d Definition) Validate() error {
 
 	if len(gatewayAdjacency) > 0 {
 		gatewayNodes := make([]string, 0, len(d.Nodes))
-		for _, n := range d.Nodes {
+		for i := range d.Nodes {
+			n := &d.Nodes[i]
 			if n.ID != "" && n.Kind.IsAutomatic() {
 				gatewayNodes = append(gatewayNodes, n.ID)
 			}
@@ -661,7 +723,8 @@ func (d Definition) Validate() error {
 		}
 	}
 
-	for _, n := range d.Nodes {
+	for i := range d.Nodes {
+		n := &d.Nodes[i]
 		if n.ID == "" || n.Terminal {
 			continue
 		}
@@ -684,7 +747,8 @@ func (d Definition) Validate() error {
 				}
 			}
 		}
-		for _, n := range d.Nodes {
+		for i := range d.Nodes {
+			n := &d.Nodes[i]
 			if n.ID == "" {
 				continue
 			}
@@ -1133,6 +1197,12 @@ type GuardFunc func(ctx context.Context, db pgxtx.DBTX, c Case) (bool, error)
 // ListWorkItems returns one WorkItem per active token of an open case that
 // matches f, oldest case first (OpenedAt, then case ID), then the case's
 // tokens by EnteredSeq, then token ID, paged by f.Page.
+//
+// ListOverdue returns one WorkItem per active token of an open case (of
+// f.Tenant when set) whose DeadlineAt is before f.Before and whose
+// ExpiredDeadline is not that same deadline, ordered by DeadlineAt, then
+// token ID, at most f.Page() of them. UpdateToken and CreateToken persist
+// Token.ExpiredDeadline like every other field.
 type Repository interface {
 	Create(ctx context.Context, db pgxtx.DBTX, c *Case) error
 	GetByID(ctx context.Context, db pgxtx.DBTX, id uuid.UUID) (*Case, error)
@@ -1141,6 +1211,7 @@ type Repository interface {
 	AppendEvent(ctx context.Context, db pgxtx.DBTX, e *Event) error
 	ListEvents(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID) ([]Event, error)
 	ListWorkItems(ctx context.Context, db pgxtx.DBTX, f InboxFilter) ([]WorkItem, error)
+	ListOverdue(ctx context.Context, db pgxtx.DBTX, f OverdueFilter) ([]WorkItem, error)
 	AdvanceLastSeq(ctx context.Context, db pgxtx.DBTX, id uuid.UUID) (*Case, error)
 	ListParticipated(ctx context.Context, db pgxtx.DBTX, f ParticipationFilter) ([]Case, error)
 	ListEventDigests(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID) ([]EventDigest, error)

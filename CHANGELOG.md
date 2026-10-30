@@ -6,6 +6,83 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ## [Unreleased]
 
+### Agregado
+
+- **`workflow`: reasignación administrativa.** `Engine.Reassign`
+  (`ReassignInput{CaseID, TokenID, To, Actor, Reason, ExpectedRevision}`)
+  pasa un token a otra persona, la tenga alguien o no. `Reason` es
+  obligatoria (`ErrReasonRequired`) y `To` no puede ir vacío
+  (`ErrInvalidActor`). Agrega un `assigned` con
+  `AssignmentDetail{From, To, Reason}` y nunca despacha efectos, así que las
+  acciones de entrada del nodo no se repiten. Validar que `To` tenga la
+  elegibilidad del nodo sigue siendo tarea del llamador.
+- **`workflow`: cambio de plazo.** `Engine.SetDeadline`
+  (`SetDeadlineInput{CaseID, TokenID, DeadlineAt, Actor, Reason,
+  ExpectedRevision}`, `Reason` obligatoria) reemplaza el plazo de un token
+  (`nil` lo quita) y agrega un `deadline_changed` con
+  `DeadlineDetail{From, To, Reason}`. También borra la marca de vencido del
+  token, para que un plazo extendido pueda vencer otra vez.
+- **`workflow`: vencimiento.** `Engine.Expire`
+  (`ExpireInput{CaseID, TokenID, Actor}`) exige un actor `ActorSystem`
+  (`ErrInvalidActor` si no), falla con `ErrNotOverdue` si el token no tiene
+  plazo o todavía no venció, y agrega un `expired` (`ExpiryDetail{DeadlineAt}`)
+  una sola vez por plazo: un reintento del planificador recibe
+  `ErrAlreadyExpired`. Si el nodo declara `Node.OnExpire` (la acción de una de
+  sus transiciones salientes, que no sea un retorno; `Definition.Validate` lo
+  comprueba), el token sigue por esa transición en la misma transacción, con
+  el actor de sistema y `{"cause":"expired"}` como `Detail` del `moved`, y sus
+  efectos se despachan como en `Move`. Sin `OnExpire` el token se queda donde
+  está, vencido a la vista.
+- **`workflow`: listado de vencidos.** `Engine.Overdue`
+  (`OverdueFilter{Tenant, Limit, Before}`) devuelve los tokens activos con un
+  plazo anterior a `Before` (por defecto, ahora) que todavía no se marcaron
+  como vencidos, el plazo más antiguo primero. El trabajo periódico que llama
+  a `Overdue` y luego a `Expire` es del consumidor (por ejemplo, un trabajo
+  periódico de River).
+- **`workflow`: plazos en días hábiles.** `Node.DeadlineRule` nombra una
+  regla que resuelve el puerto nuevo `Config.Deadlines`
+  (`DeadlineResolver.Due(ctx, DueInput{Rule, From, Case, Token})`) cuando un
+  token entra al nodo. `Definition.Validate` rechaza `Deadline` y
+  `DeadlineRule` juntos, y `Engine.Register` rechaza una regla sin resolvedor
+  con `ErrUnknownDeadlineRule`. El paquete nuevo `workflow/calendar` trae
+  `BusinessDays(n, loc, holidays)`, evaluado siempre en una zona horaria
+  explícita, el puerto `Holidays` (los feriados los pone el consumidor) y
+  `Rules`, que implementa `DeadlineResolver` por nombre. El resolvedor corre
+  dentro de la transacción y no debe llamar a la red.
+- **`workflow`: `ExpectedRevision`.** `MoveInput`, `ClaimInput`,
+  `ReleaseInput`, `ReassignInput`, `SetDeadlineInput` y `CancelInput` aceptan
+  `ExpectedRevision *int64`: si no coincide con la revisión guardada, la
+  llamada falla con `ErrConflict` apenas lee el caso, antes de comprobar su
+  estado o escribir nada, para que un cliente sin conexión o un formulario
+  largo detecte una vista vieja sin volver a leer.
+- **`workflow/workflowhttp`.** `Status(err) (status, code, ok)` traduce los
+  errores de `workflow` a 404, 409, 422 o 400 con los códigos de
+  `httpx/response`; cualquier otro error devuelve `ok = false` (500). Un test
+  falla si aparece un `Err*` en `workflow` sin clasificar.
+- **`workflow/migrations`: `009_workflow_token_expired.sql`** agrega
+  `workflow_token.expired_deadline_at`, nula y sin valor por defecto, así que
+  no reescribe la tabla. Se puede aplicar con binarios viejos corriendo.
+
+### Cambiado
+
+- **`workflow`: liberar el token de otra persona exige motivo.**
+  `ReleaseWith` falla con `ErrReasonRequired` cuando `Actor.ID` no es quien
+  tiene el token y `Reason` está vacía; liberarse uno mismo sigue sin
+  exigirlo. El envoltorio obsoleto `Release(ctx, db, caseID, actorID)` no
+  lleva motivo, así que ahora sólo libera la asignación del propio `actorID`.
+- **`workflow.Repository` agrega `ListOverdue`**, y `Token` el campo
+  `ExpiredDeadline`, que `CreateToken`/`UpdateToken` deben guardar. Una
+  implementación propia del puerto tiene que sumarlos;
+  `workflow/postgres.Repository` ya lo hace.
+
+### Corregido
+
+- **`examples/boilerplate`:** el manejador de procesos traduce los errores
+  del motor con `workflowhttp.Status` antes que nada, así que `ErrNoRoute`,
+  `ErrGuardRejected` y `ErrReturnNotVisited` responden 409, y
+  `ErrCommentRequired`/`ErrCommentNotAllowed` 422, en vez de 500.
+  `ErrTokenRequired` pasa de 409 a 422.
+
 ## [0.19.0] — 2026-10-30
 
 ### Agregado
