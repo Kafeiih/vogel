@@ -45,8 +45,20 @@
 --     only links to seq - 1, so the next event starts without a predecessor
 --     and VerifyChain reports it.
 --
+-- Name resolution: the digest and chain functions run with search_path
+-- pinned to the schema this migration ran in, then pg_temp. Without it they
+-- would resolve vogel_workflow_event_field, vogel_workflow_event_digest and
+-- workflow_event through the search_path of whichever session inserts, so a
+-- same-named object in a schema listed earlier could replace them. The
+-- schema is read with current_schema() rather than written here because
+-- vogel's migrations run in whatever schema the caller's search_path picks.
+-- vogel_workflow_event_field only calls built-ins, which pg_catalog
+-- resolves first, so it keeps no setting and stays inlinable.
+--
 -- Cost: one extra indexed lookup (the UNIQUE (case_id, seq) index) and one
--- SHA-256 per append. Adding nullable columns does not rewrite the table.
+-- SHA-256 per append; the pinned search_path keeps the digest function from
+-- being inlined into its callers. Adding nullable columns does not rewrite
+-- the table.
 --
 -- Deploy order: the workflow/postgres repository of this version writes and
 -- reads prev_digest and digest, so it fails on every append and every
@@ -109,6 +121,15 @@ BEGIN
     NEW.prev_digest := prev;
     NEW.digest := vogel_workflow_event_digest(prev, NEW);
     RETURN NEW;
+END;
+$$;
+-- +goose StatementEnd
+
+-- +goose StatementBegin
+DO $$
+BEGIN
+    EXECUTE format('ALTER FUNCTION vogel_workflow_event_digest(bytea, workflow_event) SET search_path = %I, pg_temp', current_schema());
+    EXECUTE format('ALTER FUNCTION vogel_workflow_event_chain() SET search_path = %I, pg_temp', current_schema());
 END;
 $$;
 -- +goose StatementEnd

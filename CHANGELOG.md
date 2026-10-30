@@ -118,7 +118,10 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   los digests siguientes, ni el borrado de los últimos eventos, ni a quien
   borra `prev_digest` y `digest` de todos los eventos de un caso (`VerifyChain`
   no lo distingue de un caso anterior a la 007): para eso hay que comparar
-  con un `Digest` guardado fuera de la base. La 007 cuesta una
+  con un `Digest` guardado fuera de la base. Las funciones del trigger
+  corren con el `search_path` fijado al schema donde se aplicó la 007 (más
+  `pg_temp`), así que un objeto con el mismo nombre en otro schema del
+  `search_path` de la sesión no las reemplaza. La 007 cuesta una
   búsqueda por índice y un SHA-256 por evento agregado.
 - **`workflow`: casos en los que participó una persona.**
   `Engine.Participated(ctx, db, ParticipationFilter{Tenant, ActorID, Limit,
