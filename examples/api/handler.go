@@ -530,7 +530,7 @@ func (h *DocumentHandler) Inbox(w http.ResponseWriter, r *http.Request) {
 	}
 
 	db := pgxtx.DBFromContext(r.Context(), h.pool)
-	cases, err := h.engine.Inbox(r.Context(), db, workflow.InboxFilter{
+	items, err := h.engine.Inbox(r.Context(), db, workflow.InboxFilter{
 		Domain:     DocumentDomain,
 		Unassigned: true,
 		Limit:      limit,
@@ -542,6 +542,12 @@ func (h *DocumentHandler) Inbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The document workflow never splits, so each work item is its case's
+	// only token: the response stays a list of cases.
+	cases := make([]workflow.Case, len(items))
+	for i, it := range items {
+		cases[i] = it.Case
+	}
 	response.JSON(w, http.StatusOK, cases)
 }
 

@@ -40,12 +40,15 @@ type Status string
 const (
 	StatusOpen   Status = "open"
 	StatusClosed Status = "closed"
+	// StatusCancelled is a case ended by Engine.Cancel instead of reaching a
+	// terminal node.
+	StatusCancelled Status = "cancelled"
 )
 
 // Valid reports whether s is one of the known Status values.
 func (s Status) Valid() bool {
 	switch s {
-	case StatusOpen, StatusClosed:
+	case StatusOpen, StatusClosed, StatusCancelled:
 		return true
 	default:
 		return false
@@ -71,13 +74,30 @@ const (
 	// Detail is a FailureDetail.
 	EventNoRoute EventKind = "no_route"
 	EventFailed  EventKind = "failed"
+	// EventSplit records a split consuming the arriving token (TokenID, in
+	// its ScopeID) and opening a scope; the Detail is a SplitDetail. The
+	// emitted tokens' EventMoved hops follow it.
+	EventSplit EventKind = "split"
+	// EventWaiting records a token arriving at its scope's join.
+	EventWaiting EventKind = "waiting"
+	// EventJoined records a join consuming its scope's waiting tokens. Its
+	// ScopeID is the scope that joined and its TokenID the token the join
+	// creates in the parent scope; the Detail is a JoinDetail.
+	EventJoined EventKind = "joined"
+	// EventTokenCancelled records one token cancelled by Engine.Cancel or
+	// Engine.CancelToken; the Detail is a CancelDetail.
+	EventTokenCancelled EventKind = "token_cancelled"
+	// EventCancelled records Engine.Cancel ending the case; the Detail is a
+	// CancelDetail.
+	EventCancelled EventKind = "cancelled"
 )
 
 // Valid reports whether k is one of the known EventKind values.
 func (k EventKind) Valid() bool {
 	switch k {
 	case EventOpened, EventMoved, EventAssigned, EventUnassigned, EventClosed,
-		EventStepSubmitted, EventNoRoute, EventFailed:
+		EventStepSubmitted, EventNoRoute, EventFailed,
+		EventSplit, EventWaiting, EventJoined, EventTokenCancelled, EventCancelled:
 		return true
 	default:
 		return false
@@ -798,11 +818,17 @@ type Case struct {
 	Domain     string // e.g. "compras"
 	ExternalID string // e.g. "solicitud-123"
 	Unit       string // organizational unit the case belongs to
-	State      string // current node ID
-	Status     Status
-	AssignedTo string // person id; empty when unclaimed
+	// State is the node of the case's only active token: empty while the
+	// case has several active tokens (inside a parallel block), the terminal
+	// node once closed.
+	State  string
+	Status Status
+	// AssignedTo is the person id holding the only active token; empty when
+	// it is unclaimed or the case has several active tokens.
+	AssignedTo string
 	OpenedAt   time.Time
 	ClosedAt   *time.Time
+	// DeadlineAt is the earliest deadline among the active tokens.
 	DeadlineAt *time.Time
 	// Revision is the row's optimistic-concurrency token. It is unrelated
 	// to Version, which is the Definition version the case runs on. Create
@@ -822,8 +848,9 @@ type Case struct {
 
 // CurrentEventSchema is the Event.SchemaVersion the engine writes. Version 1
 // is every event stored before schema_version existed: no Detail. Version 2
-// adds Detail and LastSeq-assigned Seq.
-const CurrentEventSchema = 2
+// adds Detail and LastSeq-assigned Seq. Version 3 adds TokenID and ScopeID;
+// an older event reads as the case's root token in its root scope.
+const CurrentEventSchema = 3
 
 // AssignmentDetail is the Event.Detail of EventAssigned (written by Claim,
 // From empty) and EventUnassigned (written by Release, To empty). From and To
@@ -881,11 +908,13 @@ type FailureDetail struct {
 	Detail json.RawMessage `json:"detail,omitempty"`
 }
 
-// MoveResult is what OpenDetailed and MoveDetailed return: the case as
-// persisted and exactly the events the call appended, in Seq order.
+// MoveResult is what OpenDetailed, MoveDetailed and CancelToken return: the
+// case as persisted, exactly the events the call appended, in Seq order, and
+// every join the call fired, in the order they fired.
 type MoveResult struct {
 	Case   *Case
 	Events []Event
+	Joined []JoinRecord
 }
 
 // Event is a single append-only history record for a Case.
@@ -901,8 +930,14 @@ type Event struct {
 	// one Move; Seq, assigned in append order from Case.LastSeq, is what
 	// makes that order recoverable. workflow/postgres.ListEvents orders its
 	// query by `seq ASC` for exactly this reason (see repository.go).
-	Seq       int64
-	Kind      EventKind
+	Seq  int64
+	Kind EventKind
+	// TokenID and ScopeID name the token the event concerns and that token's
+	// scope (see EventSplit and EventJoined for the two kinds that differ).
+	// Events stored before tokens existed read as the case ID for both: the
+	// root token in the root scope.
+	TokenID   uuid.UUID
+	ScopeID   uuid.UUID
 	FromState string
 	ToState   string
 	Action    string
@@ -1084,6 +1119,19 @@ type GuardFunc func(ctx context.Context, db pgxtx.DBTX, c Case) (bool, error)
 // gets the event as stored. ListEvents returns both as stored.
 // ListEventDigests returns the case's chain links in Seq order, each with
 // the digest recomputed from the row as it is now.
+//
+// Tokens and scopes are mutable state of a case. The engine writes them only
+// after Update's compare-and-swap succeeded in the same transaction, so the
+// case revision serializes them and they need no revision of their own.
+// CreateScope and CreateToken insert a new row; UpdateScope and UpdateToken
+// write every mutable field of an existing one (ErrConflict when it does not
+// exist). ListScopes and ListTokens return every row of the case, tokens
+// ordered by EnteredSeq, then ID. Event.TokenID and Event.ScopeID are stored
+// as given; a repository that stores no value for them (uuid.Nil) reads them
+// back as uuid.Nil, which the engine reads as the case ID.
+//
+// ListWorkItems returns one WorkItem per active token of an open case that
+// matches f, ordered by the token's EnteredAt, then its ID, paged by f.Page.
 type Repository interface {
 	Create(ctx context.Context, db pgxtx.DBTX, c *Case) error
 	GetByID(ctx context.Context, db pgxtx.DBTX, id uuid.UUID) (*Case, error)
@@ -1091,25 +1139,34 @@ type Repository interface {
 	Update(ctx context.Context, db pgxtx.DBTX, c *Case, expectedLastSeq int64) error
 	AppendEvent(ctx context.Context, db pgxtx.DBTX, e *Event) error
 	ListEvents(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID) ([]Event, error)
-	ListByEligibility(ctx context.Context, db pgxtx.DBTX, f InboxFilter) ([]Case, error)
+	ListWorkItems(ctx context.Context, db pgxtx.DBTX, f InboxFilter) ([]WorkItem, error)
 	AdvanceLastSeq(ctx context.Context, db pgxtx.DBTX, id uuid.UUID) (*Case, error)
 	ListParticipated(ctx context.Context, db pgxtx.DBTX, f ParticipationFilter) ([]Case, error)
 	ListEventDigests(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID) ([]EventDigest, error)
+	CreateScope(ctx context.Context, db pgxtx.DBTX, s *Scope) error
+	UpdateScope(ctx context.Context, db pgxtx.DBTX, s *Scope) error
+	ListScopes(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID) ([]Scope, error)
+	CreateToken(ctx context.Context, db pgxtx.DBTX, t *Token) error
+	UpdateToken(ctx context.Context, db pgxtx.DBTX, t *Token) error
+	ListTokens(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID) ([]Token, error)
 }
 
-// InboxFilter selects open cases. States is the set of node IDs a caller
-// considers itself eligible for — that mapping from Position/Unit to a set
-// of eligible node IDs is resolved by the caller (see Engine.EligibilityFor
-// and the package doc comment), not by this filter.
+// InboxFilter selects the active tokens of open cases (see Engine.Inbox).
+// States is the set of node IDs a caller considers itself eligible for, and
+// Eligibility the set of (position, unit) pairs it holds: a token matches when
+// its node is in States (when set) and its resolved Token.Eligible equals one
+// of the pairs (when set). AssignedTo, Unassigned and Overdue apply to the
+// token, not the case.
 type InboxFilter struct {
-	Tenant     string // empty = any
-	Domain     string
-	States     []string
-	AssignedTo string // empty = any
-	Unassigned bool   // true = only unclaimed
-	Overdue    bool   // true = only past DeadlineAt
-	Limit      int    // <= 0 means DefaultListLimit; clamped to MaxListLimit
-	Offset     int    // must be within [0, MaxListOffset]
+	Tenant      string // empty = any
+	Domain      string
+	States      []string
+	Eligibility []Eligibility
+	AssignedTo  string // empty = any
+	Unassigned  bool   // true = only unclaimed
+	Overdue     bool   // true = only past Token.DeadlineAt
+	Limit       int    // <= 0 means DefaultListLimit; clamped to MaxListLimit
+	Offset      int    // must be within [0, MaxListOffset]
 }
 
 // List paging bounds. A repository list query applies them through InboxFilter.Page:

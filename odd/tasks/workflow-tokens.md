@@ -229,16 +229,16 @@ Down is only safe before any case has split (Inferred). Document that Down on a 
 
 | ID | Specs | Route | Status | Evidence |
 |---|---|---|---|---|
-| T1 | S1 S2 | inline (Oscar) | pending | — |
-| T2 | S3 + repository interface + fakes | inline (Oscar) | pending | — |
-| T3 | S4 S6 | inline (Oscar) | pending | — |
-| T4 | S5 + concurrency tests | inline (Oscar) | pending | — |
-| T5 | S7 S9 S11 | inline (Oscar) | pending | — |
-| T6 | S8 | inline (Oscar) | pending | — |
-| T7 | S10 | inline (Oscar) | pending | — |
-| T8 | S12 S15 | inline (Oscar) | pending | — |
-| T9 | S13 S14 (migration 007, shim, random walk) | inline (Oscar) | pending | — |
-| T10 | S16 | inline (Oscar) | pending | — |
+| T1 | S1 S2 | inline | done | RED (compile) → GREEN; `79f3cc6` |
+| T2 | S3 + repository interface + fakes | inline | done | compile RED → GREEN; commit B |
+| T3 | S4 S6 | inline | done | tests after code; mutation-checked (L8); commit B |
+| T4 | S5 + concurrency tests | inline | done (integration pending CI) | fake race test green; postgres race/double-submit/index tests compile, not run (no Docker); commit B |
+| T5 | S7 S9 S11 | inline | done | mutation-checked; commit B |
+| T6 | S8 | inline | done (SQL pending CI) | fake inbox tests green; `TestInbox_FiltersByEligibilityInSQL` compiles; commit B |
+| T7 | S10 | inline | done | commit B |
+| T8 | S12 S15 | inline | done | engine part commit B; action `TokenID` RED → GREEN, commit C |
+| T9 | S13 S14 (migration 008, shim, random walk) | inline | done (migration tests pending CI) | random walk 40 seeds × 3 cases green, mutation-checked; differential vs v0.18.0 identical (L9); commit B |
+| T10 | S16 | inline | pending | — |
 
 Risk: items 1 (persisted format, data migration), 3 (public API) and 4 (concurrency: join race) → an independent verifier for T4 and T9 at least. T4 and T9 each get their own commit so a review can take them alone.
 
@@ -250,3 +250,6 @@ Risk: items 1 (persisted format, data migration), 3 (public API) and 4 (concurre
 - L4 2026-10-28 Open: whether SIMPLE processes need unstructured (non-block) parallelism or a "first finisher wins" discriminator. Neither is specified here; the production count of `paralelo`/`union` processes (01 open questions) decides whether they are ever needed.
 - L5 2026-10-30 Oscar: "Hola!, Implementá @odd/tasks/workflow-tokens.md"
 - L6 2026-10-30 Setup: the branch had no commits of its own and sat 40 behind origin/master; fast-forwarded to v0.18.0 (3ae0edc). Migration 007 already exists (`007_workflow_event_digest.sql`), so the token migration is `008_workflow_tokens.sql` and S14's "Migration 007" reads as 008. The digest of 007 covers 20 fixed columns; `token_id`/`scope_id` are not covered (covering them needs a new version tag, unrequested) — follow-up candidate. No Docker daemon on this machine: integration tests compile here and run in CI.
+- L7 2026-10-30 Decisions while implementing: a token keeps its ID while it moves inside its scope (root token = case ID for life, per S3); a split consumes the arriving token and emits new ones; a join creates a new token in the parent scope. `EventJoined` carries `ScopeID` = the joined scope (for the unique index) and `TokenID` = the token it creates, so every new event has a non-NULL token (NULL stays reserved for legacy rows). `Token` gained `Eligible` (the stored `position`/`unit` of S8). `Tokens()` orders by `EnteredSeq` (no creation column). A closed case keeps `State` = terminal node and a cancelled one keeps its last projection (S7's projection applies while open; legacy tests pin the closed behavior). Cancelled cases answer `ErrCaseClosed` to Move/Claim/Cancel. `RefreshEligibility(ctx, db, caseID)` added: migration 008 cannot know `position`/`unit` (the draft flagged it as Inferred) and the engine also fills them on load, persisted on the next write. Validation also rejects gateways as start/terminal, returns from/into gateways and `Join` on non-splits ("like decision nodes", S2f). Commit plan changed: T2–T9 engine + repository + migration ship as one commit (B) because the `Repository` interface change does not build in slices; action `TokenID` is commit C; docs/boilerplate commit D.
+- L8 2026-10-30 Test-first exception: T3–T7 engine code was written before its behavior tests. Evidence instead: 7 single-line mutations of run.go/engine.go (join fires on first arrival, occupiedStates ignores scope, pick takes first token, JoinCheck ignored, no projection, inclusive takes every route, last-branch cancel allowed) each fail at least one test; 3 of 4 mutations are caught by the random walk alone. I4 was refined while testing: "one token per branch" — tokens a nested split consumed are not counted, and an unjoined child scope stands for its branch (the literal "tokens created in it" is false for any scope containing a nested block or the root).
+- L9 2026-10-30 Differential check: a scripted single-token run (decision, step, claim/double claim, inbox, return accepted and rejected, release, close, ops on the closed case) on v0.18.0 and on this tree prints identical output except for random case IDs. `go test -race ./...` green. Integration (`-tags integration`) compiles; not run here (no Docker daemon): `tokens_integration_test.go` and the existing suites need CI.

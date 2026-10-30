@@ -29,6 +29,15 @@ type Config struct {
 	// It has the shape of postgres.Config.TraceIDs, so otel.SampledTraceIDs
 	// fits it without this package depending on any tracing library.
 	TraceIDs func(ctx context.Context) (traceID, spanID string)
+	// JoinCheck, if set, runs inside the transaction of every call that fires
+	// a join, before anything is written, with the scope as joined and the
+	// tokens it consumed. A non-nil error aborts the call with ErrJoinRejected
+	// wrapping it, and nothing is persisted. Consumers use it to enforce how
+	// branch-scoped data merges (reject a conflict, namespace or collect the
+	// branches' values) without the engine reading domain data. Like a
+	// GuardFunc it runs inside the caller's transaction and must not call the
+	// network.
+	JoinCheck func(ctx context.Context, db pgxtx.DBTX, j JoinRecord) error
 }
 
 // Engine runs a set of registered Definitions against a Repository: it
@@ -40,6 +49,8 @@ type Engine struct {
 	now    func() time.Time
 	// traceIDs is Config.TraceIDs; nil leaves Event.TraceID/SpanID empty.
 	traceIDs func(ctx context.Context) (traceID, spanID string)
+	// joinCheck is Config.JoinCheck.
+	joinCheck func(ctx context.Context, db pgxtx.DBTX, j JoinRecord) error
 
 	mu          sync.RWMutex
 	definitions map[string]Definition // by Key(): "Name@Version"
@@ -70,13 +81,14 @@ type EffectSink interface {
 	// persisted, instead of committing a transition whose effects are then
 	// lost.
 	CheckDB(db pgxtx.DBTX) error
-	// Dispatch is called by Open and Move exactly once, after all their
-	// persistence succeeded, with the definition the case runs on, the final
-	// case, and exactly the events that call appended, in Seq order (Open:
-	// the EventOpened; Move: the EventStepSubmitted when MoveInput.Step is
-	// set, the human-driven EventMoved, every automatic
-	// decision-node EventMoved, then the automatic EventClosed if the case
-	// closed). db is the exact value the caller passed to Open or Move, so
+	// Dispatch is called by Open, Move and CancelToken exactly once, after
+	// all their persistence succeeded, with the definition the case runs on,
+	// the final case, and exactly the events that call appended, in Seq order
+	// (Open: the EventOpened; Move: the EventStepSubmitted when MoveInput.Step
+	// is set, the human-driven EventMoved, then every automatic event that
+	// followed it: decision-node hops, splits and the branch tokens' hops,
+	// waits, joins, and the EventClosed if the case closed). Each event names
+	// its Event.TokenID. db is the exact value the caller passed to Open or Move, so
 	// whatever Dispatch writes commits or rolls back with the caller's
 	// transaction. A returned error fails Open or Move (wrapped); the caller
 	// must then roll back. Like a GuardFunc, Dispatch runs inside that open
@@ -114,6 +126,7 @@ func New(repo Repository, cfg Config, logger *slog.Logger, opts ...Option) *Engi
 		logger:      logger,
 		now:         now,
 		traceIDs:    cfg.TraceIDs,
+		joinCheck:   cfg.JoinCheck,
 		definitions: make(map[string]Definition),
 		latest:      make(map[string]Definition),
 		guards:      make(map[string]GuardFunc),
@@ -354,10 +367,26 @@ func (e *Engine) OpenDetailed(ctx context.Context, db pgxtx.DBTX, in OpenInput) 
 	if err := e.repo.Create(ctx, db, c); err != nil {
 		return nil, fmt.Errorf("workflow: open case: %w", err)
 	}
+	// The root scope and the root token share the case ID, so a case that
+	// never splits needs no other identifier.
+	if err := e.repo.CreateScope(ctx, db, &Scope{
+		ID: c.ID, CaseID: c.ID, Expected: 1, Status: ScopeOpen, OpenedSeq: 1,
+	}); err != nil {
+		return nil, fmt.Errorf("workflow: open case: create root scope: %w", err)
+	}
+	if err := e.repo.CreateToken(ctx, db, &Token{
+		ID: c.ID, CaseID: c.ID, ScopeID: c.ID, Node: start.ID, Status: TokenActive,
+		Eligible: resolvedEligibility(start, c.Unit), DeadlineAt: c.DeadlineAt,
+		EnteredSeq: 1, EnteredAt: now,
+	}); err != nil {
+		return nil, fmt.Errorf("workflow: open case: create root token: %w", err)
+	}
 
 	evt, err := e.appendEvent(ctx, db, c, &Event{
 		Seq:        c.LastSeq,
 		Kind:       EventOpened,
+		TokenID:    c.ID,
+		ScopeID:    c.ID,
 		ToState:    start.ID,
 		Actor:      actor,
 		OccurredAt: now,
@@ -374,34 +403,56 @@ func (e *Engine) OpenDetailed(ctx context.Context, db pgxtx.DBTX, in OpenInput) 
 	return &MoveResult{Case: c, Events: events}, nil
 }
 
-// Available returns the transitions leaving the case's current state whose
-// guard (if any) currently evaluates true. A return transition (Transition.
-// Return) is filtered out unless the case previously occupied its To node
+// Available returns the transitions leaving the current node of the case's
+// only active token whose guard (if any) currently evaluates true; it is
+// AvailableFor with a zero token ID, so a case with several active tokens
+// fails with ErrTokenRequired. A closed or cancelled case offers none.
+func (e *Engine) Available(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID) ([]Transition, error) {
+	return e.AvailableFor(ctx, db, caseID, uuid.Nil)
+}
+
+// AvailableFor returns the transitions leaving tokenID's current node whose
+// guard (if any) currently evaluates true; a zero tokenID names the case's
+// only active token (ErrTokenRequired with several, ErrTokenNotFound when the
+// token is not active in the case). A return transition (Transition.Return)
+// is filtered out unless the token's scope previously occupied its To node
 // (see occupiedStates) — checked before the guard, exactly like Engine.Move
 // orders the same two checks. A guard returning an error aborts the whole
 // call. The case's event history is read at most once, and only when at
 // least one candidate transition is a return.
-func (e *Engine) Available(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID) ([]Transition, error) {
+func (e *Engine) AvailableFor(ctx context.Context, db pgxtx.DBTX, caseID, tokenID uuid.UUID) ([]Transition, error) {
 	c, err := e.repo.GetByID(ctx, db, caseID)
 	if err != nil {
 		return nil, fmt.Errorf("workflow: available transitions: %w", err)
+	}
+	if c.Status != StatusOpen && tokenID == uuid.Nil {
+		return []Transition{}, nil
 	}
 
 	d, err := e.resolveDefinition(c.Definition, c.Version)
 	if err != nil {
 		return nil, err
 	}
+	run, err := e.loadRun(ctx, db, c, d)
+	if err != nil {
+		return nil, fmt.Errorf("workflow: available transitions: %w", err)
+	}
+	tok, err := run.pick(tokenID)
+	if err != nil {
+		return nil, fmt.Errorf("workflow: available transitions: %w", err)
+	}
 
-	candidates := d.TransitionsFrom(c.State)
+	candidates := d.TransitionsFrom(tok.Node)
 
 	var occupied map[string]bool
 	if hasReturnTransition(candidates) {
-		occupied, err = e.occupiedStates(ctx, db, caseID)
+		occupied, err = e.occupiedStates(ctx, db, caseID, tok.ScopeID)
 		if err != nil {
 			return nil, fmt.Errorf("workflow: available transitions: %w", err)
 		}
 	}
 
+	snapshot := run.snapshot(tok, tok.Node)
 	out := make([]Transition, 0, len(candidates))
 	for _, tr := range candidates {
 		if tr.Return && !occupied[tr.To] {
@@ -416,7 +467,7 @@ func (e *Engine) Available(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID)
 		if err != nil {
 			return nil, err
 		}
-		ok, err := fn(ctx, db, *c)
+		ok, err := fn(ctx, db, snapshot)
 		if err != nil {
 			return nil, fmt.Errorf("workflow: available transitions: guard %q: %w", tr.Guard, err)
 		}
@@ -441,17 +492,18 @@ func hasReturnTransition(candidates []Transition) bool {
 }
 
 // occupiedStates returns every node ID the case identified by caseID has
-// entered or left, derived entirely from its own event history: the node it
-// was opened at (EventOpened.ToState), plus every EventMoved record's
-// FromState and ToState — including decision nodes the case automatically
-// routed through, since each decision-node hop appends its own EventMoved
-// (see planMove). It is the single source of truth Transition.Return checks
-// against — never the Definition's graph reachability — so a return is only
-// ever offered or accepted for a node this specific case actually passed
-// through. A decision node can appear in this set, but that can never make a
-// return into one possible: Definition.Validate rejects any return
-// transition whose To is a decision node, regardless of occupancy.
-func (e *Engine) occupiedStates(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID) (map[string]bool, error) {
+// entered or left inside scopeID, derived entirely from its own event
+// history: the node it was opened at (EventOpened.ToState, root scope only),
+// plus the FromState and ToState of every EventMoved recorded in that scope —
+// including decision nodes routed through, since each decision-node hop
+// appends its own EventMoved. Only the scope's own events count: a return
+// never crosses a block boundary (Definition.Validate), so another branch's
+// or another scope's history must not make a return possible. It is the
+// single source of truth Transition.Return checks against — never the
+// Definition's graph reachability. A gateway can appear in this set, but that
+// can never make a return into one possible: Definition.Validate rejects any
+// return transition whose To is not a task node.
+func (e *Engine) occupiedStates(ctx context.Context, db pgxtx.DBTX, caseID, scopeID uuid.UUID) (map[string]bool, error) {
 	events, err := e.listEvents(ctx, db, caseID)
 	if err != nil {
 		return nil, fmt.Errorf("workflow: resolve occupied states: %w", err)
@@ -462,6 +514,9 @@ func (e *Engine) occupiedStates(ctx context.Context, db pgxtx.DBTX, caseID uuid.
 	// Kind/FromState/ToState are read here, over a case history that grows
 	// without bound.
 	for i := range events {
+		if events[i].ScopeID != scopeID {
+			continue
+		}
 		switch events[i].Kind {
 		case EventOpened:
 			occupied[events[i].ToState] = true
@@ -469,11 +524,9 @@ func (e *Engine) occupiedStates(ctx context.Context, db pgxtx.DBTX, caseID uuid.
 			occupied[events[i].FromState] = true
 			occupied[events[i].ToState] = true
 		default:
-			// EventAssigned, EventUnassigned, and EventClosed never add a
-			// node this set doesn't already have: EventClosed shares its
-			// FromState/ToState with the terminal node's own EventMoved
-			// (already counted), and Assigned/Unassigned carry the current
-			// state unchanged.
+			// Every other kind carries a node the scope's EventMoved records
+			// already counted (EventClosed shares the terminal node's hop,
+			// assignment events the current node).
 		}
 	}
 	return occupied, nil
@@ -487,24 +540,15 @@ func (e *Engine) occupiedStates(ctx context.Context, db pgxtx.DBTX, caseID uuid.
 // Validate (or a future bug in it) spinning Move forever.
 const maxDecisionHops = 32
 
-// decisionHop records one EventMoved worth of routing. Move builds the full
-// chain of hops — the human-driven move and every automatic decision-node
-// hop it leads to — in planMove, entirely in memory, before writing
-// anything: only once the chain is known to end on a task or terminal node
-// does Move persist the case and append one event per hop.
-type decisionHop struct {
-	fromState string
-	toState   string
-	action    string
-	// comment is only ever non-empty on the first (human-driven) hop: an
-	// automatic decision-node hop has nothing a human said to record.
-	comment string
-}
-
 // MoveInput describes a transition to apply to a case.
 type MoveInput struct {
 	CaseID uuid.UUID
-	Action string
+	// TokenID names the token to move. The zero value means the case's only
+	// active token: with several active tokens Move fails with
+	// ErrTokenRequired, and a token not active in the case fails with
+	// ErrTokenNotFound.
+	TokenID uuid.UUID
+	Action  string
 	// Actor is who performs the move. Every event the move appends records
 	// it.
 	Actor Actor
@@ -527,13 +571,25 @@ type MoveInput struct {
 	Step *StepRecord
 }
 
-// Move applies the transition matching (current state, Action) to the case,
-// then — if that lands on a decision node — keeps routing automatically,
-// within this same call and the same db transaction, until the case comes
-// to rest on a task node or a terminal node. A case is never persisted
-// resting on a decision node. Moving into a terminal node closes the case.
-// Assignment is always cleared on a move, since a new node means a new
-// claim.
+// Move applies the transition matching (token's node, Action) to the token
+// MoveInput.TokenID names (the case's only active token when zero), then —
+// if that lands on a decision node, a split or a join — keeps routing
+// automatically, within this same call and the same db transaction, until
+// every token it touched comes to rest on a task node, waits at a join, or
+// closes the case on a terminal node. A token is never persisted resting on
+// a decision node, a split or a join.
+//
+// A split consumes the arriving token, opens a Scope expecting one token per
+// route taken (every route of a NodeParallel; every passing route of a
+// NodeInclusive, or its default when none passes) and routes each new token
+// in turn. A token arriving at its scope's join waits; once waiting plus
+// cancelled tokens reach Scope.Expected, the join consumes the waiting ones,
+// asks Config.JoinCheck, and one new token continues in the parent scope
+// (which may cascade into an outer join). Every token and scope change is
+// written after the case's revision compare-and-swap, so two moves of one
+// case never commit concurrently: the slower fails with ErrConflict and its
+// retry sees the other's tokens. Assignment is always cleared on a move,
+// since a new node means a new claim.
 //
 // The human-driven transition is checked in a fixed order before anything
 // is mutated: first its CommentPolicy (see checkComment), then — only if it
@@ -562,8 +618,9 @@ type MoveInput struct {
 // defensively, a Definition that reached the engine without going through
 // Validate somehow lacks an unguarded default — Move fails (with the
 // guard's own error, or ErrNoRoute) and leaves the case and its history
-// completely untouched: the whole hop chain is planned in memory, in
-// planMove, before anything is written.
+// completely untouched: every hop, split and join is planned in memory
+// before anything is written. A Config.JoinCheck rejection fails the same
+// way, with ErrJoinRejected.
 //
 // When the hop chain ends on a terminal node, the automatic EventClosed
 // Move appends takes its Action from the LAST hop in the chain: the final
@@ -614,7 +671,7 @@ func (e *Engine) MoveDetailed(ctx context.Context, db pgxtx.DBTX, in MoveInput) 
 	if err != nil {
 		return nil, fmt.Errorf("workflow: move case: %w", err)
 	}
-	if c.Status == StatusClosed {
+	if c.Status != StatusOpen {
 		return nil, fmt.Errorf("workflow: move case %s: %w", c.ID, ErrCaseClosed)
 	}
 
@@ -625,10 +682,18 @@ func (e *Engine) MoveDetailed(ctx context.Context, db pgxtx.DBTX, in MoveInput) 
 	if err := e.checkEffectDB(d, db); err != nil {
 		return nil, fmt.Errorf("workflow: move case %s: %w", c.ID, err)
 	}
+	run, err := e.loadRun(ctx, db, c, d)
+	if err != nil {
+		return nil, fmt.Errorf("workflow: move case %s: %w", c.ID, err)
+	}
+	tok, err := run.pick(in.TokenID)
+	if err != nil {
+		return nil, fmt.Errorf("workflow: move case %s: %w", c.ID, err)
+	}
 
-	transition, found := findTransition(d.TransitionsFrom(c.State), in.Action)
+	transition, found := findTransition(d.TransitionsFrom(tok.Node), in.Action)
 	if !found {
-		return nil, fmt.Errorf("workflow: move case %s: action %q from state %q: %w", c.ID, in.Action, c.State, ErrInvalidTransition)
+		return nil, fmt.Errorf("workflow: move case %s: action %q from state %q: %w", c.ID, in.Action, tok.Node, ErrInvalidTransition)
 	}
 
 	// Enforce the transition's comment policy before any state change or
@@ -642,7 +707,7 @@ func (e *Engine) MoveDetailed(ctx context.Context, db pgxtx.DBTX, in MoveInput) 
 	// A return transition is checked next, before the guard: the case's
 	// event history is read only for a transition that actually needs it.
 	if transition.Return {
-		occupied, err := e.occupiedStates(ctx, db, in.CaseID)
+		occupied, err := e.occupiedStates(ctx, db, in.CaseID, tok.ScopeID)
 		if err != nil {
 			return nil, fmt.Errorf("workflow: move case %s: %w", c.ID, err)
 		}
@@ -656,7 +721,7 @@ func (e *Engine) MoveDetailed(ctx context.Context, db pgxtx.DBTX, in MoveInput) 
 		if err != nil {
 			return nil, err
 		}
-		ok, err := fn(ctx, db, *c)
+		ok, err := fn(ctx, db, run.snapshot(tok, tok.Node))
 		if err != nil {
 			return nil, fmt.Errorf("workflow: move case %s: guard %q: %w", c.ID, transition.Guard, err)
 		}
@@ -665,146 +730,38 @@ func (e *Engine) MoveDetailed(ctx context.Context, db pgxtx.DBTX, in MoveInput) 
 		}
 	}
 
-	destNode, ok := d.Node(transition.To)
-	if !ok {
-		return nil, fmt.Errorf("workflow: move case %s: destination node %q not found in definition %q", c.ID, transition.To, d.Key())
-	}
-
-	hops, restNode, err := e.planMove(ctx, db, d, *c, c.State, in.Action, comment, destNode)
-	if err != nil {
-		return nil, fmt.Errorf("workflow: move case %s: %w", c.ID, err)
-	}
-
-	now := e.now()
-	c.State = restNode.ID
-	c.AssignedTo = ""
-	c.DeadlineAt = nil
-	if restNode.Deadline > 0 {
-		deadline := now.Add(restNode.Deadline)
-		c.DeadlineAt = &deadline
-	}
-
-	terminated := restNode.Terminal
-	if terminated {
-		c.Status = StatusClosed
-		c.ClosedAt = &now
-		c.DeadlineAt = nil
-	}
-
-	// Every event this call appends gets its Seq from the case's LastSeq,
-	// advanced here and persisted by the Update compare-and-swap below, so
-	// two racing Moves can never both claim the same Seq block.
 	var stepDetail json.RawMessage
 	if in.Step != nil {
 		if stepDetail, err = marshalDetail(*in.Step); err != nil {
 			return nil, fmt.Errorf("workflow: move case %s: %w", c.ID, err)
 		}
 	}
-	seq := c.LastSeq
-	c.LastSeq += int64(len(hops))
-	if terminated {
-		c.LastSeq++
-	}
-	if in.Step != nil {
-		c.LastSeq++
-	}
 
-	if err := e.repo.Update(ctx, db, c, seq); err != nil {
+	// Plan every event and token change in memory first: a routing failure
+	// (a route's guard erroring, no route, a rejected join) leaves the case
+	// and its history untouched.
+	run.begin(e.now(), actor)
+	if in.Step != nil {
+		// The submission is recorded at the node it was made in, before the
+		// human hop that leaves it.
+		run.emit(Event{
+			Kind: EventStepSubmitted, TokenID: tok.ID, ScopeID: tok.ScopeID,
+			FromState: tok.Node, ToState: tok.Node, Action: in.Action, Detail: stepDetail,
+		})
+	}
+	if err := e.route(ctx, db, run, tok, transition, comment); err != nil {
 		return nil, fmt.Errorf("workflow: move case %s: %w", c.ID, err)
 	}
 
-	appended := make([]Event, 0, len(hops)+2)
-	if in.Step != nil {
-		// The submission is recorded at the state it was made in, before the
-		// human hop that leaves it.
-		seq++
-		evt, err := e.appendEvent(ctx, db, c, &Event{
-			Seq: seq, Kind: EventStepSubmitted,
-			FromState: hops[0].fromState, ToState: hops[0].fromState, Action: in.Action,
-			Actor: actor, OccurredAt: now, Detail: stepDetail,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("workflow: move case %s: append step event: %w", c.ID, err)
-		}
-		appended = append(appended, evt)
+	appended, err := e.persist(ctx, db, run)
+	if err != nil {
+		return nil, fmt.Errorf("workflow: move case %s: %w", c.ID, err)
 	}
-	for _, h := range hops {
-		seq++
-		evt, err := e.appendEvent(ctx, db, c, &Event{
-			Seq: seq, Kind: EventMoved,
-			FromState: h.fromState, ToState: h.toState, Action: h.action,
-			Actor: actor, Comment: h.comment, OccurredAt: now,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("workflow: move case %s: append event: %w", c.ID, err)
-		}
-		appended = append(appended, evt)
-	}
-
-	if terminated {
-		// The automatic close event shares the last hop's Action and the
-		// original Actor but never repeats any comment: the comment
-		// belongs to the human-driven hop's own EventMoved record, appended
-		// above, so Comment is passed as "" here rather than reused.
-		lastAction := hops[len(hops)-1].action
-		seq++
-		evt, err := e.appendEvent(ctx, db, c, &Event{
-			Seq: seq, Kind: EventClosed,
-			FromState: restNode.ID, ToState: restNode.ID, Action: lastAction,
-			Actor: actor, OccurredAt: now,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("workflow: move case %s: append close event: %w", c.ID, err)
-		}
-		appended = append(appended, evt)
-	}
-
 	if err := e.dispatch(ctx, db, d, *c, appended); err != nil {
 		return nil, fmt.Errorf("workflow: move case %s: dispatch effects: %w", c.ID, err)
 	}
 
-	return &MoveResult{Case: c, Events: appended}, nil
-}
-
-// planMove computes the full chain of hops one Move produces, without
-// writing anything: the initial human-driven hop from fromState to dest via
-// action (carrying comment), followed by zero or more automatic
-// decision-node hops, each resolved by evaluating that decision node's
-// routes — via resolveRoute, in declaration order — against a snapshot of
-// base with State set to the decision node currently being routed from. It
-// returns once it reaches a task or terminal node — the node this Move must
-// come to rest on — together with the ordered hops that led there.
-//
-// A route's guard may itself write to the caller's db (that write is the
-// caller's responsibility to roll back on error, like any other guard); but
-// planMove itself never touches the case or its event history, so a
-// mid-chain routing failure leaves both exactly as they were.
-func (e *Engine) planMove(ctx context.Context, db pgxtx.DBTX, d Definition, base Case, fromState, action, comment string, dest Node) ([]decisionHop, Node, error) {
-	hops := []decisionHop{{fromState: fromState, toState: dest.ID, action: action, comment: comment}}
-	cur := dest
-
-	for cur.Kind == NodeDecision {
-		if len(hops) >= maxDecisionHops {
-			return nil, Node{}, ErrTooManyDecisionHops
-		}
-
-		snapshot := base
-		snapshot.State = cur.ID
-		route, err := e.resolveRoute(ctx, db, d.TransitionsFrom(cur.ID), snapshot)
-		if err != nil {
-			return nil, Node{}, err
-		}
-
-		next, ok := d.Node(route.To)
-		if !ok {
-			return nil, Node{}, fmt.Errorf("decision node %q: route %q: destination node %q not found in definition %q", cur.ID, route.Action, route.To, d.Key())
-		}
-
-		hops = append(hops, decisionHop{fromState: cur.ID, toState: next.ID, action: route.Action})
-		cur = next
-	}
-
-	return hops, cur, nil
+	return &MoveResult{Case: c, Events: appended, Joined: run.joined}, nil
 }
 
 // resolveRoute evaluates routes — a decision node's outgoing transitions —
@@ -861,31 +818,38 @@ func (e *Engine) Release(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID, a
 	return e.ReleaseWith(ctx, db, ReleaseInput{CaseID: caseID, Actor: Actor{Kind: ActorHuman, ID: actorID}})
 }
 
-// ClaimInput describes a claim: Actor becomes the case's assignee (its ID is
-// stored as Case.AssignedTo), so Actor.ID is required whatever the kind. An
-// empty Actor.Kind means ActorHuman.
+// ClaimInput describes a claim: Actor becomes the token's assignee (its ID
+// is stored as Token.AssignedTo), so Actor.ID is required whatever the kind.
+// An empty Actor.Kind means ActorHuman. TokenID names the token; zero means
+// the case's only active token (see MoveInput.TokenID).
 type ClaimInput struct {
-	CaseID uuid.UUID
-	Actor  Actor
+	CaseID  uuid.UUID
+	TokenID uuid.UUID
+	Actor   Actor
 }
 
-// ReleaseInput describes a release: Actor clears the assignment, for Reason.
-// An empty Actor.Kind means ActorHuman.
+// ReleaseInput describes a release: Actor clears the token's assignment, for
+// Reason. An empty Actor.Kind means ActorHuman. TokenID works like
+// ClaimInput.TokenID.
 type ReleaseInput struct {
-	CaseID uuid.UUID
-	Actor  Actor
+	CaseID  uuid.UUID
+	TokenID uuid.UUID
+	Actor   Actor
 	// Reason is the caller's free-text reason, recorded in the event's
 	// AssignmentDetail.
 	Reason string
 }
 
-// ClaimWith assigns the case to in.Actor.ID. Re-claiming by the same actor ID
-// is a no-op success; claiming a case already assigned to someone else fails.
-// An invalid Actor, or one without an ID (a claim must name its assignee),
-// fails with ErrInvalidActor before anything is read. ClaimWith never calls the EffectSink: no effect can be declared on a claim.
-// Like Move, the case update is a revision compare-and-swap performed before
-// the event is appended: a concurrent change fails with ErrConflict and
-// persists nothing, so two racing claimers can never both win.
+// ClaimWith assigns the token to in.Actor.ID. Re-claiming by the same actor
+// ID is a no-op success; claiming a token already assigned to someone else
+// fails with ErrAlreadyAssigned. Claims are per token: two branches of one
+// case can be held by different people. An invalid Actor, or one without an
+// ID (a claim must name its assignee), fails with ErrInvalidActor before
+// anything is read. ClaimWith never calls the EffectSink: no effect can be
+// declared on a claim. Like Move, the case update is a revision
+// compare-and-swap performed before the event is appended: a concurrent
+// change fails with ErrConflict and persists nothing, so two racing claimers
+// can never both win.
 func (e *Engine) ClaimWith(ctx context.Context, db pgxtx.DBTX, in ClaimInput) (*Case, error) {
 	actor, err := resolveActor(in.Actor, "")
 	if err != nil {
@@ -898,11 +862,15 @@ func (e *Engine) ClaimWith(ctx context.Context, db pgxtx.DBTX, in ClaimInput) (*
 	if err != nil {
 		return nil, fmt.Errorf("workflow: claim case: %w", err)
 	}
-	if c.Status == StatusClosed {
+	if c.Status != StatusOpen {
 		return nil, fmt.Errorf("workflow: claim case %s: %w", c.ID, ErrCaseClosed)
 	}
-	if c.AssignedTo != "" {
-		if c.AssignedTo == actor.ID {
+	run, tok, err := e.loadToken(ctx, db, c, in.TokenID)
+	if err != nil {
+		return nil, fmt.Errorf("workflow: claim case %s: %w", c.ID, err)
+	}
+	if tok.AssignedTo != "" {
+		if tok.AssignedTo == actor.ID {
 			return c, nil
 		}
 		return nil, fmt.Errorf("workflow: claim case %s: %w", c.ID, ErrAlreadyAssigned)
@@ -912,27 +880,24 @@ func (e *Engine) ClaimWith(ctx context.Context, db pgxtx.DBTX, in ClaimInput) (*
 	if err != nil {
 		return nil, fmt.Errorf("workflow: claim case %s: %w", c.ID, err)
 	}
-	c.AssignedTo = actor.ID
-	c.LastSeq++
-	if err := e.repo.Update(ctx, db, c, c.LastSeq-1); err != nil {
+	run.begin(e.now(), actor)
+	tok.AssignedTo = actor.ID
+	run.touch(tok.ID)
+	run.emit(Event{
+		Kind: EventAssigned, TokenID: tok.ID, ScopeID: tok.ScopeID,
+		FromState: tok.Node, ToState: tok.Node, Detail: detail,
+	})
+	if _, err := e.persist(ctx, db, run); err != nil {
 		return nil, fmt.Errorf("workflow: claim case %s: %w", c.ID, err)
 	}
-
-	if _, err := e.appendEvent(ctx, db, c, &Event{
-		Seq: c.LastSeq, Kind: EventAssigned,
-		FromState: c.State, ToState: c.State, Actor: actor,
-		OccurredAt: e.now(), Detail: detail,
-	}); err != nil {
-		return nil, fmt.Errorf("workflow: claim case %s: append event: %w", c.ID, err)
-	}
-
 	return c, nil
 }
 
-// ReleaseWith clears the case's assignment, recording the previous assignee
+// ReleaseWith clears the token's assignment, recording the previous assignee
 // and in.Reason in the event's AssignmentDetail. An invalid Actor fails with
-// ErrInvalidActor before anything is read. A concurrent change to the case
-// fails with ErrConflict and persists nothing (see ClaimWith). Like
+// ErrInvalidActor before anything is read, and a token nobody holds (or a
+// case that is no longer open) with ErrNotAssigned. A concurrent change to
+// the case fails with ErrConflict and persists nothing (see ClaimWith). Like
 // ClaimWith, it never calls the EffectSink.
 func (e *Engine) ReleaseWith(ctx context.Context, db pgxtx.DBTX, in ReleaseInput) (*Case, error) {
 	actor, err := resolveActor(in.Actor, "")
@@ -943,29 +908,50 @@ func (e *Engine) ReleaseWith(ctx context.Context, db pgxtx.DBTX, in ReleaseInput
 	if err != nil {
 		return nil, fmt.Errorf("workflow: release case: %w", err)
 	}
-	if c.AssignedTo == "" {
+	if c.Status != StatusOpen {
 		return nil, fmt.Errorf("workflow: release case %s: %w", c.ID, ErrNotAssigned)
 	}
-
-	detail, err := marshalDetail(AssignmentDetail{From: c.AssignedTo, Reason: in.Reason})
+	run, tok, err := e.loadToken(ctx, db, c, in.TokenID)
 	if err != nil {
 		return nil, fmt.Errorf("workflow: release case %s: %w", c.ID, err)
 	}
-	c.AssignedTo = ""
-	c.LastSeq++
-	if err := e.repo.Update(ctx, db, c, c.LastSeq-1); err != nil {
+	if tok.AssignedTo == "" {
+		return nil, fmt.Errorf("workflow: release case %s: %w", c.ID, ErrNotAssigned)
+	}
+
+	detail, err := marshalDetail(AssignmentDetail{From: tok.AssignedTo, Reason: in.Reason})
+	if err != nil {
 		return nil, fmt.Errorf("workflow: release case %s: %w", c.ID, err)
 	}
-
-	if _, err := e.appendEvent(ctx, db, c, &Event{
-		Seq: c.LastSeq, Kind: EventUnassigned,
-		FromState: c.State, ToState: c.State, Actor: actor,
-		OccurredAt: e.now(), Detail: detail,
-	}); err != nil {
-		return nil, fmt.Errorf("workflow: release case %s: append event: %w", c.ID, err)
+	run.begin(e.now(), actor)
+	tok.AssignedTo = ""
+	run.touch(tok.ID)
+	run.emit(Event{
+		Kind: EventUnassigned, TokenID: tok.ID, ScopeID: tok.ScopeID,
+		FromState: tok.Node, ToState: tok.Node, Detail: detail,
+	})
+	if _, err := e.persist(ctx, db, run); err != nil {
+		return nil, fmt.Errorf("workflow: release case %s: %w", c.ID, err)
 	}
-
 	return c, nil
+}
+
+// loadToken resolves c's definition, loads its run and picks the active
+// token tokenID names (see caseRun.pick).
+func (e *Engine) loadToken(ctx context.Context, db pgxtx.DBTX, c *Case, tokenID uuid.UUID) (*caseRun, *Token, error) {
+	d, err := e.resolveDefinition(c.Definition, c.Version)
+	if err != nil {
+		return nil, nil, err
+	}
+	run, err := e.loadRun(ctx, db, c, d)
+	if err != nil {
+		return nil, nil, err
+	}
+	tok, err := run.pick(tokenID)
+	if err != nil {
+		return nil, nil, err
+	}
+	return run, tok, nil
 }
 
 // History returns every event recorded for caseID, ordered by Seq ascending
@@ -984,19 +970,31 @@ func (e *Engine) History(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID) (
 	return sorted, nil
 }
 
-// Inbox returns open cases matching f.
-func (e *Engine) Inbox(ctx context.Context, db pgxtx.DBTX, f InboxFilter) ([]Case, error) {
-	cases, err := e.repo.ListByEligibility(ctx, db, f)
+// Inbox returns one WorkItem per active token of an open case matching f,
+// oldest token first (by when it entered its node), paged by f.Page. States,
+// Eligibility, AssignedTo, Unassigned and Overdue apply to the token.
+func (e *Engine) Inbox(ctx context.Context, db pgxtx.DBTX, f InboxFilter) ([]WorkItem, error) {
+	items, err := e.repo.ListWorkItems(ctx, db, f)
 	if err != nil {
 		return nil, fmt.Errorf("workflow: inbox: %w", err)
 	}
-	return cases, nil
+	return items, nil
 }
 
-// EligibilityFor returns the current node's eligibility for caseID, with
-// ResolveUnit already applied against the case's own unit. This is what a
-// caller hands to its org-context service to resolve actual people.
+// EligibilityFor returns the eligibility of the node the case's only active
+// token rests on, with ResolveUnit already applied against the case's own
+// unit; it is EligibilityForToken with a zero token ID. This is what a caller
+// hands to its org-context service to resolve actual people. A closed or
+// cancelled case answers for the node it ended on.
 func (e *Engine) EligibilityFor(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID) (Eligibility, error) {
+	return e.EligibilityForToken(ctx, db, caseID, uuid.Nil)
+}
+
+// EligibilityForToken returns the eligibility of the node tokenID rests on,
+// with ResolveUnit applied. A zero tokenID names the case's only active token
+// (ErrTokenRequired with several, ErrTokenNotFound when the token is not
+// active in the case).
+func (e *Engine) EligibilityForToken(ctx context.Context, db pgxtx.DBTX, caseID, tokenID uuid.UUID) (Eligibility, error) {
 	c, err := e.repo.GetByID(ctx, db, caseID)
 	if err != nil {
 		return Eligibility{}, fmt.Errorf("workflow: eligibility: %w", err)
@@ -1007,15 +1005,262 @@ func (e *Engine) EligibilityFor(ctx context.Context, db pgxtx.DBTX, caseID uuid.
 		return Eligibility{}, err
 	}
 
-	node, ok := d.Node(c.State)
+	state := c.State
+	if c.Status == StatusOpen || tokenID != uuid.Nil {
+		run, err := e.loadRun(ctx, db, c, d)
+		if err != nil {
+			return Eligibility{}, fmt.Errorf("workflow: eligibility: %w", err)
+		}
+		tok, err := run.pick(tokenID)
+		if err != nil {
+			return Eligibility{}, fmt.Errorf("workflow: eligibility: %w", err)
+		}
+		state = tok.Node
+	}
+
+	node, ok := d.Node(state)
 	if !ok {
-		return Eligibility{}, fmt.Errorf("workflow: eligibility: node %q not found in definition %q", c.State, d.Key())
+		return Eligibility{}, fmt.Errorf("workflow: eligibility: node %q not found in definition %q", state, d.Key())
 	}
 
 	return Eligibility{
 		Position: node.Eligible.Position,
 		Unit:     node.Eligible.ResolveUnit(c.Unit),
 	}, nil
+}
+
+// Tokens returns every token of caseID — active, waiting, consumed and
+// cancelled — ordered by EnteredSeq (oldest first), then ID.
+func (e *Engine) Tokens(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID) ([]Token, error) {
+	c, err := e.repo.GetByID(ctx, db, caseID)
+	if err != nil {
+		return nil, fmt.Errorf("workflow: tokens: %w", err)
+	}
+	d, err := e.resolveDefinition(c.Definition, c.Version)
+	if err != nil {
+		return nil, err
+	}
+	run, err := e.loadRun(ctx, db, c, d)
+	if err != nil {
+		return nil, fmt.Errorf("workflow: tokens: %w", err)
+	}
+	out := make([]Token, len(run.tokens))
+	for i, t := range run.tokens {
+		out[i] = *t
+	}
+	sortTokens(out)
+	return out, nil
+}
+
+// RefreshEligibility writes the resolved eligibility of every active token of
+// caseID that is stored without one, and reports whether it wrote anything.
+// Tokens migration 008 materialized have none (a node's eligibility lives in
+// the Definition), so they do not match InboxFilter.Eligibility until their
+// case is written again; calling RefreshEligibility once per open case after
+// the migration closes that gap. It appends no event, and like every write it
+// is a compare-and-swap on the case revision (ErrConflict on a concurrent
+// change).
+func (e *Engine) RefreshEligibility(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID) (bool, error) {
+	c, err := e.repo.GetByID(ctx, db, caseID)
+	if err != nil {
+		return false, fmt.Errorf("workflow: refresh eligibility: %w", err)
+	}
+	if c.Status != StatusOpen {
+		return false, nil
+	}
+	d, err := e.resolveDefinition(c.Definition, c.Version)
+	if err != nil {
+		return false, err
+	}
+	run, err := e.loadRun(ctx, db, c, d)
+	if err != nil {
+		return false, fmt.Errorf("workflow: refresh eligibility %s: %w", c.ID, err)
+	}
+	if len(run.changed) == 0 && len(run.created) == 0 {
+		return false, nil
+	}
+	run.begin(e.now(), Actor{})
+	if _, err := e.persist(ctx, db, run); err != nil {
+		return false, fmt.Errorf("workflow: refresh eligibility %s: %w", c.ID, err)
+	}
+	return true, nil
+}
+
+// sortTokens orders tokens by EnteredSeq, then ID.
+func sortTokens(tokens []Token) {
+	sort.Slice(tokens, func(i, j int) bool {
+		if tokens[i].EnteredSeq != tokens[j].EnteredSeq {
+			return tokens[i].EnteredSeq < tokens[j].EnteredSeq
+		}
+		return tokens[i].ID.String() < tokens[j].ID.String()
+	})
+}
+
+// CancelInput describes the cancellation of a whole case.
+type CancelInput struct {
+	CaseID uuid.UUID
+	Actor  Actor
+	// Reason is required: Cancel fails with ErrReasonRequired when it is
+	// empty after trimming.
+	Reason string
+}
+
+// Cancel ends an open case without reaching a terminal node: it cancels
+// every active and waiting token (one EventTokenCancelled each, in token
+// order), sets every open scope to ScopeCancelled, sets the case to
+// StatusCancelled with ClosedAt, and appends one EventCancelled. Both kinds
+// carry the reason in a CancelDetail. A case that is not open fails with
+// ErrCaseClosed. Cancel never calls the EffectSink.
+func (e *Engine) Cancel(ctx context.Context, db pgxtx.DBTX, in CancelInput) (*Case, error) {
+	reason := strings.TrimSpace(in.Reason)
+	if reason == "" {
+		return nil, fmt.Errorf("workflow: cancel case %s: %w", in.CaseID, ErrReasonRequired)
+	}
+	actor, err := resolveActor(in.Actor, "")
+	if err != nil {
+		return nil, fmt.Errorf("workflow: cancel case %s: %w", in.CaseID, err)
+	}
+	c, err := e.repo.GetByID(ctx, db, in.CaseID)
+	if err != nil {
+		return nil, fmt.Errorf("workflow: cancel case: %w", err)
+	}
+	if c.Status != StatusOpen {
+		return nil, fmt.Errorf("workflow: cancel case %s: %w", c.ID, ErrCaseClosed)
+	}
+	d, err := e.resolveDefinition(c.Definition, c.Version)
+	if err != nil {
+		return nil, err
+	}
+	run, err := e.loadRun(ctx, db, c, d)
+	if err != nil {
+		return nil, fmt.Errorf("workflow: cancel case %s: %w", c.ID, err)
+	}
+	detail, err := cancelDetail(reason)
+	if err != nil {
+		return nil, fmt.Errorf("workflow: cancel case %s: %w", c.ID, err)
+	}
+
+	run.begin(e.now(), actor)
+	live := make([]Token, 0, len(run.tokens))
+	for _, t := range run.tokens {
+		if t.Status.Live() {
+			live = append(live, *t)
+		}
+	}
+	sortTokens(live)
+	for _, l := range live {
+		t := run.token(l.ID)
+		seq := run.emit(Event{
+			Kind: EventTokenCancelled, TokenID: t.ID, ScopeID: t.ScopeID,
+			FromState: t.Node, ToState: t.Node, Detail: detail,
+		})
+		run.end(t, TokenCancelled, seq)
+	}
+	seq := run.emit(Event{
+		Kind: EventCancelled, TokenID: c.ID, ScopeID: c.ID,
+		FromState: c.State, ToState: c.State, Detail: detail,
+	})
+	for _, s := range run.scopes {
+		if s.Status == ScopeOpen {
+			s.Status = ScopeCancelled
+			s.ClosedSeq = seq
+			run.touch(s.ID)
+		}
+	}
+	now := run.now
+	c.Status = StatusCancelled
+	c.ClosedAt = &now
+
+	if _, err := e.persist(ctx, db, run); err != nil {
+		return nil, fmt.Errorf("workflow: cancel case %s: %w", c.ID, err)
+	}
+	return c, nil
+}
+
+// CancelTokenInput describes the cancellation of one branch.
+type CancelTokenInput struct {
+	CaseID  uuid.UUID
+	TokenID uuid.UUID
+	Actor   Actor
+	// Reason is required (see CancelInput.Reason).
+	Reason string
+}
+
+// CancelToken cancels one active token (EventTokenCancelled with a
+// CancelDetail) and counts it toward its scope's join: when every other
+// token of the scope already waits, the join fires and routing continues in
+// this same call, exactly like Move (effects dispatched, MoveResult.Joined
+// reported). It fails with ErrLastBranch when the token is its scope's only
+// live branch, root scope included — an open case must never be left
+// without a live token; use Cancel to end the whole case — with
+// ErrTokenNotFound when the token is not active in the case, and with
+// ErrCaseClosed when the case is not open.
+func (e *Engine) CancelToken(ctx context.Context, db pgxtx.DBTX, in CancelTokenInput) (*MoveResult, error) {
+	reason := strings.TrimSpace(in.Reason)
+	if reason == "" {
+		return nil, fmt.Errorf("workflow: cancel token %s: %w", in.TokenID, ErrReasonRequired)
+	}
+	if in.TokenID == uuid.Nil {
+		return nil, fmt.Errorf("workflow: cancel token: %w: TokenID is required", ErrTokenNotFound)
+	}
+	actor, err := resolveActor(in.Actor, "")
+	if err != nil {
+		return nil, fmt.Errorf("workflow: cancel token %s: %w", in.TokenID, err)
+	}
+	c, err := e.repo.GetByID(ctx, db, in.CaseID)
+	if err != nil {
+		return nil, fmt.Errorf("workflow: cancel token: %w", err)
+	}
+	if c.Status != StatusOpen {
+		return nil, fmt.Errorf("workflow: cancel token %s: %w", in.TokenID, ErrCaseClosed)
+	}
+	d, err := e.resolveDefinition(c.Definition, c.Version)
+	if err != nil {
+		return nil, err
+	}
+	if err := e.checkEffectDB(d, db); err != nil {
+		return nil, fmt.Errorf("workflow: cancel token %s: %w", in.TokenID, err)
+	}
+	run, err := e.loadRun(ctx, db, c, d)
+	if err != nil {
+		return nil, fmt.Errorf("workflow: cancel token %s: %w", in.TokenID, err)
+	}
+	tok, err := run.pick(in.TokenID)
+	if err != nil {
+		return nil, fmt.Errorf("workflow: cancel token %s: %w", in.TokenID, err)
+	}
+	others := 0
+	for _, t := range run.tokens {
+		if t.ScopeID == tok.ScopeID && t.ID != tok.ID && t.Status.Live() {
+			others++
+		}
+	}
+	if others == 0 {
+		return nil, fmt.Errorf("workflow: cancel token %s: %w", in.TokenID, ErrLastBranch)
+	}
+	detail, err := cancelDetail(reason)
+	if err != nil {
+		return nil, fmt.Errorf("workflow: cancel token %s: %w", in.TokenID, err)
+	}
+
+	run.begin(e.now(), actor)
+	seq := run.emit(Event{
+		Kind: EventTokenCancelled, TokenID: tok.ID, ScopeID: tok.ScopeID,
+		FromState: tok.Node, ToState: tok.Node, Detail: detail,
+	})
+	run.end(tok, TokenCancelled, seq)
+	if err := e.tryJoin(ctx, db, run, run.scope(tok.ScopeID)); err != nil {
+		return nil, fmt.Errorf("workflow: cancel token %s: %w", in.TokenID, err)
+	}
+
+	appended, err := e.persist(ctx, db, run)
+	if err != nil {
+		return nil, fmt.Errorf("workflow: cancel token %s: %w", in.TokenID, err)
+	}
+	if err := e.dispatch(ctx, db, d, *c, appended); err != nil {
+		return nil, fmt.Errorf("workflow: cancel token %s: dispatch effects: %w", in.TokenID, err)
+	}
+	return &MoveResult{Case: c, Events: appended, Joined: run.joined}, nil
 }
 
 // appendEvent appends evt, whose Seq, Actor and payload the caller set, to c:
@@ -1066,7 +1311,9 @@ func (e *Engine) listEvents(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID
 // comes from a repository that does not store the version and reads as 1.
 // An event without an actor kind (a version-1 row read from a repository that
 // does not store the kind) reads as ActorUnspecified, and Actor.ID and the
-// deprecated ActorID fill each other. It updates evt in place.
+// deprecated ActorID fill each other. An event without a token or scope (one
+// written before tokens existed) reads as the root token in the root scope,
+// both of which share the case ID. It updates evt in place.
 func upcastEvent(evt *Event) {
 	if evt.SchemaVersion < 1 {
 		evt.SchemaVersion = 1
@@ -1080,6 +1327,12 @@ func upcastEvent(evt *Event) {
 	evt.ActorID = evt.Actor.ID
 	if len(evt.Detail) == 0 {
 		evt.Detail = emptyDetail()
+	}
+	if evt.TokenID == uuid.Nil {
+		evt.TokenID = evt.CaseID
+	}
+	if evt.ScopeID == uuid.Nil {
+		evt.ScopeID = evt.CaseID
 	}
 }
 
