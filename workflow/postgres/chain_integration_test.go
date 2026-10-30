@@ -202,6 +202,14 @@ func TestAppendEvent_ChainIgnoresShadowingFunctions(t *testing.T) {
 	require.Len(t, history, 2)
 	assert.Len(t, history[1].Digest, 32, "the digest is a SHA-256, not the shadow's")
 	require.NoError(t, e.VerifyChain(ctx, pool, c.ID), "the stored digests are the ones 007's functions compute")
+
+	// The digest function keeps its own pin when called outside the trigger,
+	// as ListEventDigests does from the caller's session.
+	var matches bool
+	require.NoError(t, shadowed.QueryRow(ctx, `
+        SELECT public.vogel_workflow_event_digest(e.prev_digest, e) = e.digest
+        FROM public.workflow_event e WHERE e.case_id = $1 AND e.seq = 2`, c.ID).Scan(&matches))
+	assert.True(t, matches, "a direct call ignores the shadowing field function")
 }
 
 func TestMigration007_UpDownRoundTrip(t *testing.T) {
