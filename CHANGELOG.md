@@ -6,6 +6,8 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ## [Unreleased]
 
+## [0.18.0] — 2026-10-30
+
 ### Cambios que rompen
 
 - **`workflow_event` pasa a ser sólo de agregado.** La migración
