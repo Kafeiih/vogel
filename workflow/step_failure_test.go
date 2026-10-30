@@ -374,8 +374,9 @@ func TestParticipated_EqualTimestampsOrderByCaseID(t *testing.T) {
 	e := New(repo, Config{Now: func() time.Time { return at }}, testLogger(), WithDefinitions(testDefinition()))
 	ctx := context.Background()
 
-	var want []uuid.UUID
-	for i := range 5 {
+	const cases = 5
+	want := make([]uuid.UUID, 0, cases)
+	for i := range cases {
 		c, err := e.Open(ctx, nil, OpenInput{Definition: "purchase", Domain: "compras", ExternalID: fmt.Sprint(i), Unit: "finance", Actor: Actor{Kind: ActorHuman, ID: "u1"}})
 		require.NoError(t, err)
 		want = append(want, c.ID)
@@ -386,7 +387,7 @@ func TestParticipated_EqualTimestampsOrderByCaseID(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, want, caseIDs(got), "cases whose newest activity shares a timestamp are ordered by case id")
 
-	var paged []uuid.UUID
+	paged := make([]uuid.UUID, 0, len(want))
 	for offset := range len(want) {
 		page, err := e.Participated(ctx, nil, ParticipationFilter{ActorID: "u1", Limit: 1, Offset: offset})
 		require.NoError(t, err)

@@ -676,8 +676,9 @@ func TestParticipated_EqualTimestampsOrderByCaseIDInPostgres(t *testing.T) {
 			Transitions: []workflow.Transition{{From: "draft", To: "done", Action: "submit"}},
 		}))
 
-	var want []uuid.UUID
-	for i := range 5 {
+	const cases = 5
+	want := make([]uuid.UUID, 0, cases)
+	for i := range cases {
 		c, err := e.Open(ctx, pool, workflow.OpenInput{Definition: "purchase", Domain: "compras", ExternalID: fmt.Sprintf("tie-%d", i), Unit: "finance", Actor: workflow.Actor{Kind: workflow.ActorHuman, ID: "u1"}})
 		require.NoError(t, err)
 		want = append(want, c.ID)
@@ -697,7 +698,7 @@ func TestParticipated_EqualTimestampsOrderByCaseIDInPostgres(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, want, ids(got), "cases whose newest activity shares a timestamp are ordered by case id")
 
-	var paged []uuid.UUID
+	paged := make([]uuid.UUID, 0, len(want))
 	for offset := range len(want) {
 		page, err := e.Participated(ctx, pool, workflow.ParticipationFilter{ActorID: "u1", Limit: 1, Offset: offset})
 		require.NoError(t, err)
