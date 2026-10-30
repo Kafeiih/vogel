@@ -233,6 +233,7 @@ func (r *caseRun) end(tok *Token, status TokenStatus, seq int64) {
 	tok.EndedAt = &now
 	tok.AssignedTo = ""
 	tok.DeadlineAt = nil
+	tok.ExpiredDeadline = nil
 	r.touch(tok.ID)
 }
 
@@ -255,7 +256,7 @@ func (e *Engine) route(ctx context.Context, db pgxtx.DBTX, run *caseRun, tok *To
 		comment = ""
 		tok.Node = next.ID
 		tok.EnteredSeq, tok.EnteredAt = seq, run.now
-		tok.AssignedTo, tok.DeadlineAt, tok.Eligible = "", nil, Eligibility{}
+		tok.AssignedTo, tok.DeadlineAt, tok.ExpiredDeadline, tok.Eligible = "", nil, nil, Eligibility{}
 		run.touch(tok.ID)
 
 		switch {

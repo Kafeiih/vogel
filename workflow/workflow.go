@@ -90,6 +90,12 @@ const (
 	// EventCancelled records Engine.Cancel ending the case; the Detail is a
 	// CancelDetail.
 	EventCancelled EventKind = "cancelled"
+	// EventDeadlineChanged records Engine.SetDeadline replacing a token's
+	// deadline; the Detail is a DeadlineDetail.
+	EventDeadlineChanged EventKind = "deadline_changed"
+	// EventExpired records Engine.Expire marking a token's deadline as
+	// passed; the Detail is an ExpiryDetail.
+	EventExpired EventKind = "expired"
 )
 
 // Valid reports whether k is one of the known EventKind values.
@@ -97,7 +103,8 @@ func (k EventKind) Valid() bool {
 	switch k {
 	case EventOpened, EventMoved, EventAssigned, EventUnassigned, EventClosed,
 		EventStepSubmitted, EventNoRoute, EventFailed,
-		EventSplit, EventWaiting, EventJoined, EventTokenCancelled, EventCancelled:
+		EventSplit, EventWaiting, EventJoined, EventTokenCancelled, EventCancelled,
+		EventDeadlineChanged, EventExpired:
 		return true
 	default:
 		return false
@@ -314,6 +321,12 @@ type Node struct {
 	// NodeParallel or NodeInclusive node may set it, and each join is named by
 	// exactly one split: together they bound a block (see Definition.Validate).
 	Join string
+	// OnExpire names the Action of one of this node's outgoing transitions:
+	// Engine.Expire moves an overdue token through it, as the system actor.
+	// Empty leaves an expired token where it is. Definition.Validate rejects
+	// a name that is not an outgoing transition, a return transition, and
+	// OnExpire on a decision node, split or join.
+	OnExpire string
 }
 
 // Transition is a named move from one node to another, optionally gated by
@@ -528,6 +541,9 @@ func (d Definition) Validate() error {
 			if n.Deadline != 0 {
 				addf("%s %q: must not declare a deadline", label, n.ID)
 			}
+			if n.OnExpire != "" {
+				addf("%s %q: must not declare on_expire", label, n.ID)
+			}
 			if len(n.Effects) > 0 {
 				addf("%s %q: must not declare effects (declare them on its routes)", label, n.ID)
 			}
@@ -602,6 +618,19 @@ func (d Definition) Validate() error {
 			addf("ambiguous transition: duplicate (from=%q, action=%q)", tr.From, tr.Action)
 		}
 		seenTransitionKeys[key] = true
+	}
+
+	for _, n := range d.Nodes {
+		if n.OnExpire == "" || n.Kind.IsAutomatic() {
+			continue
+		}
+		tr, found := findTransition(outgoingByNode[n.ID], n.OnExpire)
+		switch {
+		case !found:
+			addf("node %q: on_expire %q is not an outgoing transition", n.ID, n.OnExpire)
+		case tr.Return:
+			addf("node %q: on_expire %q must not be a return transition", n.ID, n.OnExpire)
+		}
 	}
 
 	for _, n := range d.Nodes {
@@ -1133,6 +1162,12 @@ type GuardFunc func(ctx context.Context, db pgxtx.DBTX, c Case) (bool, error)
 // ListWorkItems returns one WorkItem per active token of an open case that
 // matches f, oldest case first (OpenedAt, then case ID), then the case's
 // tokens by EnteredSeq, then token ID, paged by f.Page.
+//
+// ListOverdue returns one WorkItem per active token of an open case (of
+// f.Tenant when set) whose DeadlineAt is before f.Before and whose
+// ExpiredDeadline is not that same deadline, ordered by DeadlineAt, then
+// token ID, at most f.Page() of them. UpdateToken and CreateToken persist
+// Token.ExpiredDeadline like every other field.
 type Repository interface {
 	Create(ctx context.Context, db pgxtx.DBTX, c *Case) error
 	GetByID(ctx context.Context, db pgxtx.DBTX, id uuid.UUID) (*Case, error)
@@ -1141,6 +1176,7 @@ type Repository interface {
 	AppendEvent(ctx context.Context, db pgxtx.DBTX, e *Event) error
 	ListEvents(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID) ([]Event, error)
 	ListWorkItems(ctx context.Context, db pgxtx.DBTX, f InboxFilter) ([]WorkItem, error)
+	ListOverdue(ctx context.Context, db pgxtx.DBTX, f OverdueFilter) ([]WorkItem, error)
 	AdvanceLastSeq(ctx context.Context, db pgxtx.DBTX, id uuid.UUID) (*Case, error)
 	ListParticipated(ctx context.Context, db pgxtx.DBTX, f ParticipationFilter) ([]Case, error)
 	ListEventDigests(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID) ([]EventDigest, error)

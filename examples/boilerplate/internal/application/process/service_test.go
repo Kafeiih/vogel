@@ -177,6 +177,10 @@ func (r *memCases) ListWorkItems(context.Context, pgxtx.DBTX, workflow.InboxFilt
 	return nil, errNoSQL
 }
 
+func (r *memCases) ListOverdue(context.Context, pgxtx.DBTX, workflow.OverdueFilter) ([]workflow.WorkItem, error) {
+	return nil, errNoSQL
+}
+
 func (r *memCases) CreateScope(_ context.Context, _ pgxtx.DBTX, sc *workflow.Scope) error {
 	r.st.scopes[sc.ID] = *sc
 	return nil

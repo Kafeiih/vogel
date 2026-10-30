@@ -47,6 +47,8 @@ var sentinels = []sentinel{
 	{"ErrGuardRejected", workflow.ErrGuardRejected, http.StatusConflict, response.CodeConflict},
 	{"ErrLastBranch", workflow.ErrLastBranch, http.StatusConflict, response.CodeConflict},
 	{"ErrJoinRejected", workflow.ErrJoinRejected, http.StatusConflict, response.CodeConflict},
+	{"ErrAlreadyExpired", workflow.ErrAlreadyExpired, http.StatusConflict, response.CodeConflict},
+	{"ErrNotOverdue", workflow.ErrNotOverdue, http.StatusConflict, response.CodeConflict},
 
 	{"ErrCommentRequired", workflow.ErrCommentRequired, http.StatusUnprocessableEntity, response.CodeUnprocessableEntity},
 	{"ErrCommentNotAllowed", workflow.ErrCommentNotAllowed, http.StatusUnprocessableEntity, response.CodeUnprocessableEntity},

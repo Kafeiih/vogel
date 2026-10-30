@@ -49,8 +49,13 @@ type Token struct {
 	// against the case's unit, stored so an inbox can filter by it.
 	Eligible   Eligibility
 	AssignedTo string
-	// DeadlineAt is Node.Deadline applied when the token entered Node.
+	// DeadlineAt is Node.Deadline applied when the token entered Node, or the
+	// deadline Engine.SetDeadline set since.
 	DeadlineAt *time.Time
+	// ExpiredDeadline is the deadline Engine.Expire recorded as expired. The
+	// token counts as expired while it equals DeadlineAt; entering a node and
+	// Engine.SetDeadline clear it.
+	ExpiredDeadline *time.Time
 	// EnteredSeq and EnteredAt are the Seq and time of the event that moved
 	// the token onto Node.
 	EnteredSeq int64
