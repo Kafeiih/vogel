@@ -80,7 +80,8 @@ func (p *Process) ValidateNode(nodeID string, values, caseData map[string]any) (
 
 func (p *Process) ProfiledNodes() []string {
 	var ids []string
-	for _, n := range p.Definition.Nodes {
+	for i := range p.Definition.Nodes {
+		n := &p.Definition.Nodes[i]
 		if !n.Eligible.IsZero() {
 			ids = append(ids, n.ID)
 		}

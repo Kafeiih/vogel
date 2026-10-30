@@ -130,7 +130,8 @@ func (s *Service) heldEligibilities(ctx context.Context, actor string) ([]workfl
 	seen := map[workflow.Eligibility]bool{}
 	var held []workflow.Eligibility
 	for _, p := range s.catalog.All() {
-		for _, n := range p.Definition.Nodes {
+		for i := range p.Definition.Nodes {
+			n := &p.Definition.Nodes[i]
 			if n.Eligible.IsZero() {
 				continue
 			}

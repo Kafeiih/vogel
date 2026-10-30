@@ -394,9 +394,10 @@ type Definition struct {
 
 // Node returns the node with the given ID, if any.
 func (d Definition) Node(id string) (Node, bool) {
-	for _, n := range d.Nodes {
+	for i := range d.Nodes {
+		n := &d.Nodes[i]
 		if n.ID == id {
-			return n, true
+			return *n, true
 		}
 	}
 	return Node{}, false
@@ -404,9 +405,10 @@ func (d Definition) Node(id string) (Node, bool) {
 
 // StartNode returns the definition's single start node, if any.
 func (d Definition) StartNode() (Node, bool) {
-	for _, n := range d.Nodes {
+	for i := range d.Nodes {
+		n := &d.Nodes[i]
 		if n.Start {
-			return n, true
+			return *n, true
 		}
 	}
 	return Node{}, false
@@ -444,7 +446,8 @@ func (d Definition) GuardNames() []string {
 func (d Definition) DeadlineRules() []string {
 	seen := make(map[string]bool)
 	var names []string
-	for _, n := range d.Nodes {
+	for i := range d.Nodes {
+		n := &d.Nodes[i]
 		if n.DeadlineRule == "" || seen[n.DeadlineRule] {
 			continue
 		}
@@ -469,7 +472,8 @@ func (d Definition) EffectNames() []string {
 			names = append(names, name)
 		}
 	}
-	for _, n := range d.Nodes {
+	for i := range d.Nodes {
+		n := &d.Nodes[i]
 		add(n.Effects)
 	}
 	for _, tr := range d.Transitions {
@@ -522,7 +526,8 @@ func (d Definition) Validate() error {
 	nodeByID := make(map[string]Node, len(d.Nodes))
 	startNodes, terminalNodes := 0, 0
 
-	for i, n := range d.Nodes {
+	for i := range d.Nodes {
+		n := &d.Nodes[i]
 		if n.ID == "" {
 			addf("node[%d]: empty ID", i)
 		} else {
@@ -530,7 +535,7 @@ func (d Definition) Validate() error {
 				addf("duplicate node ID %q", n.ID)
 			}
 			seenNodeIDs[n.ID] = true
-			nodeByID[n.ID] = n
+			nodeByID[n.ID] = *n
 		}
 		if !n.Kind.Valid() {
 			addf("node %q: invalid kind %q", n.ID, n.Kind)
@@ -645,7 +650,8 @@ func (d Definition) Validate() error {
 		seenTransitionKeys[key] = true
 	}
 
-	for _, n := range d.Nodes {
+	for i := range d.Nodes {
+		n := &d.Nodes[i]
 		if n.OnExpire == "" || n.Kind.IsAutomatic() {
 			continue
 		}
@@ -658,7 +664,8 @@ func (d Definition) Validate() error {
 		}
 	}
 
-	for _, n := range d.Nodes {
+	for i := range d.Nodes {
+		n := &d.Nodes[i]
 		if n.ID == "" || !n.Kind.IsAutomatic() {
 			continue
 		}
@@ -699,7 +706,8 @@ func (d Definition) Validate() error {
 
 	if len(gatewayAdjacency) > 0 {
 		gatewayNodes := make([]string, 0, len(d.Nodes))
-		for _, n := range d.Nodes {
+		for i := range d.Nodes {
+			n := &d.Nodes[i]
 			if n.ID != "" && n.Kind.IsAutomatic() {
 				gatewayNodes = append(gatewayNodes, n.ID)
 			}
@@ -715,7 +723,8 @@ func (d Definition) Validate() error {
 		}
 	}
 
-	for _, n := range d.Nodes {
+	for i := range d.Nodes {
+		n := &d.Nodes[i]
 		if n.ID == "" || n.Terminal {
 			continue
 		}
@@ -738,7 +747,8 @@ func (d Definition) Validate() error {
 				}
 			}
 		}
-		for _, n := range d.Nodes {
+		for i := range d.Nodes {
+			n := &d.Nodes[i]
 			if n.ID == "" {
 				continue
 			}

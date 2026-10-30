@@ -81,8 +81,7 @@ func BusinessDays(n int, loc *time.Location, h Holidays) DueFunc {
 // isBusinessDay reports whether d is a weekday h does not report as a
 // holiday.
 func isBusinessDay(ctx context.Context, d Date, h Holidays) (bool, error) {
-	switch d.weekday() {
-	case time.Saturday, time.Sunday:
+	if wd := d.weekday(); wd == time.Saturday || wd == time.Sunday {
 		return false, nil
 	}
 	if h == nil {
@@ -112,6 +111,8 @@ var _ workflow.DeadlineResolver = Rules(nil)
 
 // Due resolves in.Rule. A name with no DueFunc fails with
 // workflow.ErrUnknownDeadlineRule.
+//
+//nolint:gocritic // hugeParam: DeadlineResolver takes DueInput by value, so a resolver cannot change the engine's case or token.
 func (r Rules) Due(ctx context.Context, in workflow.DueInput) (time.Time, error) {
 	fn, ok := r[in.Rule]
 	if !ok || fn == nil {

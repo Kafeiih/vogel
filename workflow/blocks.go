@@ -90,7 +90,8 @@ func buildBlock(s Node, outgoing map[string][]Transition) *block {
 func validateBlocks(d Definition, nodeByID map[string]Node, outgoing map[string][]Transition, addf func(string, ...any)) {
 	namedBy := make(map[string][]string)
 	var blocks []*block
-	for _, n := range d.Nodes {
+	for i := range d.Nodes {
+		n := &d.Nodes[i]
 		if n.ID == "" || !n.Kind.IsSplit() {
 			continue
 		}
@@ -105,10 +106,11 @@ func validateBlocks(d Definition, nodeByID map[string]Node, outgoing map[string]
 			addf("%s %q: names %q, which is not a join node", label, n.ID, n.Join)
 		default:
 			namedBy[n.Join] = append(namedBy[n.Join], n.ID)
-			blocks = append(blocks, buildBlock(n, outgoing))
+			blocks = append(blocks, buildBlock(*n, outgoing))
 		}
 	}
-	for _, n := range d.Nodes {
+	for i := range d.Nodes {
+		n := &d.Nodes[i]
 		if n.ID == "" || n.Kind != NodeJoin {
 			continue
 		}

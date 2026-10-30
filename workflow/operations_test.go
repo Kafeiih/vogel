@@ -252,14 +252,16 @@ func TestSetDeadline_RecordsOldAndNew(t *testing.T) {
 
 	_, err = e.SetDeadline(context.Background(), nil, SetDeadlineInput{CaseID: c.ID, Actor: Actor{ID: "s"}, Reason: "x", ExpectedRevision: revision(0)})
 	require.ErrorIs(t, err, ErrConflict)
+	assertInvariants(t, e, repo, c.ID)
 }
 
 func TestSetDeadline_ExtensionAllowsExpiringAgain(t *testing.T) {
 	now := time.Date(2026, 10, 30, 9, 0, 0, 0, time.UTC)
-	e, _, c := clockEngine(t, &now, nil)
+	e, repo, c := clockEngine(t, &now, nil)
 	now = now.Add(49 * time.Hour)
 	_, err := e.Expire(context.Background(), nil, ExpireInput{CaseID: c.ID, Actor: scheduler})
 	require.NoError(t, err)
+	assertInvariants(t, e, repo, c.ID)
 
 	extended := now.Add(time.Hour)
 	_, err = e.SetDeadline(context.Background(), nil, SetDeadlineInput{CaseID: c.ID, DeadlineAt: &extended, Actor: Actor{ID: "s"}, Reason: "extension"})
@@ -270,6 +272,7 @@ func TestSetDeadline_ExtensionAllowsExpiringAgain(t *testing.T) {
 	now = now.Add(2 * time.Hour)
 	_, err = e.Expire(context.Background(), nil, ExpireInput{CaseID: c.ID, Actor: scheduler})
 	require.NoError(t, err, "the extended deadline expires again")
+	assertInvariants(t, e, repo, c.ID)
 }
 
 func TestExpire_BeforeDeadlineIsNotOverdue(t *testing.T) {
@@ -315,6 +318,7 @@ func TestExpire_RecordsExpiredOnce(t *testing.T) {
 	_, err = e.Expire(context.Background(), nil, ExpireInput{CaseID: c.ID, Actor: scheduler})
 	require.ErrorIs(t, err, ErrAlreadyExpired, "a scheduler retry is idempotent")
 	assert.Equal(t, before, storedEvents(t, repo, c.ID))
+	assertInvariants(t, e, repo, c.ID)
 }
 
 func TestExpire_TakesOnExpireTransitionAsSystem(t *testing.T) {
@@ -341,6 +345,7 @@ func TestExpire_TakesOnExpireTransitionAsSystem(t *testing.T) {
 	assert.Equal(t, StatusClosed, res.Case.Status)
 	assert.Equal(t, res.Events, storedEvents(t, repo, c.ID)[len(storedEvents(t, repo, c.ID))-3:])
 	assert.Equal(t, eventKinds(res.Events), eventKinds(sink.lastCall(t).events), "the transition's effects are dispatched")
+	assertInvariants(t, e, repo, c.ID)
 }
 
 func TestExpire_RequiresSystemActor(t *testing.T) {
@@ -374,7 +379,7 @@ func TestOverdue_PagesOldestFirst(t *testing.T) {
 	now := time.Date(2026, 10, 30, 9, 0, 0, 0, time.UTC)
 	repo := newFakeRepository()
 	e := New(repo, Config{Now: func() time.Time { return now }}, testLogger(), WithDefinitions(testDefinition()))
-	var ids []uuid.UUID
+	ids := make([]uuid.UUID, 0, 3)
 	for i := range 3 {
 		c := openInTenant(t, e, "t1", fmt.Sprintf("case-%d", i))
 		_, err := e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "submit", ActorID: "u1"})

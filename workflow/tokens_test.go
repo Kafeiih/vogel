@@ -884,12 +884,12 @@ func replay(t *testing.T, d Definition, c *Case, events []Event) ([]Token, []Sco
 	end := func(tok *Token, status TokenStatus, ev Event) {
 		at := ev.OccurredAt
 		tok.Status, tok.EndedSeq, tok.EndedAt = status, ev.Seq, &at
-		tok.AssignedTo, tok.DeadlineAt = "", nil
+		tok.AssignedTo, tok.DeadlineAt, tok.ExpiredDeadline = "", nil, nil
 	}
 	enter := func(tok *Token, node string, ev Event) {
 		tok.Node, tok.Status = node, TokenActive
 		tok.EnteredSeq, tok.EnteredAt = ev.Seq, ev.OccurredAt
-		tok.AssignedTo, tok.DeadlineAt, tok.Eligible = "", nil, Eligibility{}
+		tok.AssignedTo, tok.DeadlineAt, tok.ExpiredDeadline, tok.Eligible = "", nil, nil, Eligibility{}
 		n, _ := d.Node(node)
 		if !n.Kind.IsAutomatic() && !n.Terminal {
 			tok.Eligible = resolvedEligibility(n, c.Unit)
@@ -948,6 +948,14 @@ func replay(t *testing.T, d Definition, c *Case, events []Event) ([]Token, []Sco
 			var detail AssignmentDetail
 			require.NoError(t, json.Unmarshal(ev.Detail, &detail))
 			tokens[ev.TokenID].AssignedTo = detail.To
+		case EventDeadlineChanged:
+			var detail DeadlineDetail
+			require.NoError(t, json.Unmarshal(ev.Detail, &detail))
+			tokens[ev.TokenID].DeadlineAt, tokens[ev.TokenID].ExpiredDeadline = detail.To, nil
+		case EventExpired:
+			var detail ExpiryDetail
+			require.NoError(t, json.Unmarshal(ev.Detail, &detail))
+			tokens[ev.TokenID].ExpiredDeadline = &detail.DeadlineAt
 		case EventStepSubmitted, EventNoRoute, EventFailed:
 			// They change no token or scope.
 		}
