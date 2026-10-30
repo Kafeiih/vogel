@@ -16,6 +16,7 @@ import (
 	"github.com/kafeiih/vogel/httpx/response"
 	"github.com/kafeiih/vogel/request"
 	"github.com/kafeiih/vogel/workflow"
+	"github.com/kafeiih/vogel/workflow/workflowhttp"
 
 	"github.com/kafeiih/vogel/examples/boilerplate/internal/application/process"
 	domain "github.com/kafeiih/vogel/examples/boilerplate/internal/domain/process"
@@ -344,20 +345,20 @@ func (h *ProcessHandler) failure(err error) error {
 }
 
 func (h *ProcessHandler) fail(w http.ResponseWriter, r *http.Request, err error) {
+	if status, code, ok := workflowhttp.Status(err); ok {
+		response.Error(w, r, status, code, err.Error())
+		return
+	}
 	var formErr *domain.FormError
 	switch {
 	case errors.As(err, &formErr):
 		request.LogValidationFailure(h.logger, r, formErr.Fields)
 		response.ValidationError(w, r, formErr.Fields)
-	case errors.Is(err, domain.ErrProcessNotFound), errors.Is(err, workflow.ErrCaseNotFound),
-		errors.Is(err, workflow.ErrTokenNotFound):
+	case errors.Is(err, domain.ErrProcessNotFound):
 		response.Error(w, r, http.StatusNotFound, response.CodeNotFound, err.Error())
 	case errors.Is(err, domain.ErrNotHolder), errors.Is(err, domain.ErrNotClaimant), errors.Is(err, domain.ErrNoAccess):
 		response.Error(w, r, http.StatusForbidden, response.CodeForbidden, err.Error())
-	case errors.Is(err, workflow.ErrAlreadyAssigned), errors.Is(err, workflow.ErrConflict),
-		errors.Is(err, workflow.ErrTokenRequired),
-		errors.Is(err, workflow.ErrCaseClosed), errors.Is(err, workflow.ErrInvalidTransition),
-		errors.Is(err, domain.ErrPublishConflict):
+	case errors.Is(err, domain.ErrPublishConflict):
 		response.Error(w, r, http.StatusConflict, response.CodeConflict, err.Error())
 	default:
 		h.logger.ErrorContext(r.Context(), "bpms request failed", "path", r.URL.Path, "error", err)

@@ -164,7 +164,7 @@ func TestProcessHandler_MapsServiceErrors(t *testing.T) {
 		{"already assigned", workflow.ErrAlreadyAssigned, http.StatusConflict},
 		{"closed", workflow.ErrCaseClosed, http.StatusConflict},
 		{"token not found", workflow.ErrTokenNotFound, http.StatusNotFound},
-		{"token required", workflow.ErrTokenRequired, http.StatusConflict},
+		{"token required", workflow.ErrTokenRequired, http.StatusUnprocessableEntity},
 		{"invalid transition", workflow.ErrInvalidTransition, http.StatusConflict},
 		{"unknown", errors.New("db down"), http.StatusInternalServerError},
 	} {
@@ -176,6 +176,29 @@ func TestProcessHandler_MapsServiceErrors(t *testing.T) {
 			}
 			if tc.want == http.StatusInternalServerError && strings.Contains(body["message"].(string), "db down") {
 				t.Fatalf("500 leaks the cause: %v", body)
+			}
+		})
+	}
+}
+
+// TestProcessHandler_NoRouteIsConflictNot500 pins that the handler maps the
+// engine's rejections through workflowhttp.Status instead of answering 500.
+func TestProcessHandler_NoRouteIsConflictNot500(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want int
+	}{
+		{fmt.Errorf("workflow: move case x: %w", workflow.ErrNoRoute), http.StatusConflict},
+		{workflow.ErrGuardRejected, http.StatusConflict},
+		{workflow.ErrReturnNotVisited, http.StatusConflict},
+		{workflow.ErrCommentRequired, http.StatusUnprocessableEntity},
+		{workflow.ErrCommentNotAllowed, http.StatusUnprocessableEntity},
+	} {
+		t.Run(tc.err.Error(), func(t *testing.T) {
+			code, body := serveProcess(t, &stubProcessService{err: tc.err}, http.MethodPost,
+				"/cases/"+uuid.NewString()+"/submit", "user-1", `{"action":"responder","values":{}}`)
+			if code != tc.want {
+				t.Fatalf("status = %d, want %d (%v)", code, tc.want, body)
 			}
 		})
 	}
