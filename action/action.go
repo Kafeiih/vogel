@@ -82,7 +82,15 @@ type Run struct {
 	Domain     string
 	ExternalID string
 	Unit       string
-	// ActorID is the actor of the event that caused this effect.
+	// Actor is the actor of the event that caused this effect. A job
+	// enqueued before Args carried it reads as Actor{Kind:
+	// workflow.ActorUnspecified, ID: ActorID}, as the engine reads old
+	// events. Use SystemActor, not Actor, when the Handler writes back into
+	// a case.
+	Actor workflow.Actor
+	// ActorID mirrors Actor.ID.
+	//
+	// Deprecated: use Actor.ID.
 	ActorID string
 	// Attempt is River's attempt number, starting at 1.
 	Attempt int
@@ -103,6 +111,13 @@ func (r Run) IdempotencyKey() string {
 		key += "/" + strconv.Itoa(r.Part)
 	}
 	return key
+}
+
+// SystemActor is the actor a Handler uses when it writes back into a case
+// (a Move, an audit row): the effect itself, acting for the actor of the
+// triggering event, so engine work is never attributed to a session user.
+func (r Run) SystemActor() workflow.Actor {
+	return workflow.Actor{Kind: workflow.ActorSystem, ID: "vogel_action:" + r.Effect, OnBehalfOf: r.Actor.ID}
 }
 
 // Handler runs one effect. Returning an error makes River retry the job;
@@ -138,7 +153,12 @@ type Args struct {
 	Domain     string    `json:"domain"`
 	ExternalID string    `json:"external_id"`
 	Unit       string    `json:"unit"`
-	ActorID    string    `json:"actor_id"`
+	// Actor is the structured actor of the triggering event. Jobs enqueued
+	// before it existed decode it as the zero Actor.
+	Actor workflow.Actor `json:"actor,omitzero"`
+	// ActorID mirrors Actor.ID, kept so a worker on the previous release
+	// still reads the actor of a job this release enqueues.
+	ActorID string `json:"actor_id"`
 }
 
 // Kind returns the stable River job kind, Kind.
@@ -250,6 +270,7 @@ func (r *Registry) plan(d workflow.Definition, c workflow.Case, events []workflo
 				Domain:     c.Domain,
 				ExternalID: c.ExternalID,
 				Unit:       c.Unit,
+				Actor:      evt.Actor,
 				ActorID:    eventActorID(evt),
 			})
 		}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -30,8 +31,10 @@ const (
 	OutcomeSnoozed Outcome = "snoozed"
 	// OutcomeDiscarded: the Handler failed on River's last attempt.
 	OutcomeDiscarded Outcome = "discarded"
-	// OutcomeUnknownEffect: no Handler is registered for the effect; River
-	// retries the job (see Worker.Work).
+	// OutcomeUnknownEffect: no Handler is registered for the effect. River
+	// retries the job (see Worker.Work) and, on its last attempt, discards
+	// it; the row still says unknown_effect, so count both outcomes for the
+	// jobs River gave up on.
 	OutcomeUnknownEffect Outcome = "unknown_effect"
 )
 
@@ -78,6 +81,42 @@ type AttemptRepository interface {
 	// ListByEvent returns the attempts of the effects one event triggered,
 	// in the same order.
 	ListByEvent(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID, seq int64) ([]Attempt, error)
+}
+
+// Result is what a Handler produced, for its attempt row: Ref references it
+// (a document_record id, a partner's receipt id) and Digest fingerprints it
+// (a sha256 of the response). Both are references, never the data itself.
+type Result struct {
+	Ref    string
+	Digest string
+}
+
+type resultKey struct{}
+
+// resultSlot holds the Result of the attempt running on a context. A Handler
+// may call RecordResult from its own goroutines.
+type resultSlot struct {
+	mu  sync.Mutex
+	res Result
+}
+
+func (s *resultSlot) get() Result {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.res
+}
+
+// RecordResult attaches res to the attempt the Handler running on ctx is
+// making; the last call wins. It is a no-op on a context a Worker built
+// without WithAttemptLog, or outside a Worker.
+func RecordResult(ctx context.Context, res Result) {
+	slot, ok := ctx.Value(resultKey{}).(*resultSlot)
+	if !ok {
+		return
+	}
+	slot.mu.Lock()
+	defer slot.mu.Unlock()
+	slot.res = res
 }
 
 // insertAttemptSQL writes one attempt row. (job_id, attempt, snooze) is

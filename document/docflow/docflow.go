@@ -42,7 +42,9 @@ type BuildFunc func(ctx context.Context, r action.Run) (document.GenerateInput, 
 // (document.ErrRenderRejected) and an empty PDF cancel the job, since a
 // retry cannot fix them; every other error, including one from build, is
 // returned so River retries. db is where the metadata row
-// is written, typically the pool.
+// is written, typically the pool. The document's id and sha256 are recorded
+// on the attempt (action.RecordResult), so a Worker with an attempt log ties
+// each attempt to the document it produced or found.
 func Generate(svc *document.Service, db pgxtx.DBTX, build BuildFunc) action.Handler {
 	return action.HandlerFunc(func(ctx context.Context, r action.Run) error {
 		in, err := build(ctx, r)
@@ -62,12 +64,14 @@ func Generate(svc *document.Service, db pgxtx.DBTX, build BuildFunc) action.Hand
 		if in.SourceKey == "" {
 			in.SourceKey = r.IdempotencyKey()
 		}
-		if _, err := svc.Generate(ctx, db, in); err != nil {
+		doc, err := svc.Generate(ctx, db, in)
+		if err != nil {
 			if permanent(err) {
 				return river.JobCancel(err)
 			}
 			return err
 		}
+		action.RecordResult(ctx, action.Result{Ref: doc.ID.String(), Digest: doc.SHA256})
 		return nil
 	})
 }

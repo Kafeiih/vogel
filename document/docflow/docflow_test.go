@@ -4,10 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/rivertype"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -237,4 +243,44 @@ func TestDocflowGenerate_SourceKeyUnchanged(t *testing.T) {
 	require.Len(t, repo.docs, 1)
 	assert.Equal(t, fmt.Sprintf("%s/%d/%s", r.CaseID, r.Seq, r.Effect), repo.docs[0].SourceKey)
 	assert.Equal(t, r.IdempotencyKey(), repo.docs[0].SourceKey)
+}
+
+// attemptDB captures the attempt row an action.Worker writes, keyed by column.
+type attemptDB struct{ row map[string]any }
+
+func (d *attemptDB) Exec(_ context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+	start, end := strings.Index(sql, "("), strings.Index(sql, ")")
+	d.row = map[string]any{}
+	for i, col := range strings.Split(sql[start+1:end], ",") {
+		d.row[strings.TrimSpace(col)] = args[i]
+	}
+	return pgconn.NewCommandTag("INSERT 0 1"), nil
+}
+
+func (d *attemptDB) Query(context.Context, string, ...any) (pgx.Rows, error) {
+	return nil, errors.New("not used")
+}
+
+func (d *attemptDB) QueryRow(context.Context, string, ...any) pgx.Row { return nil }
+
+func TestDocflowGenerate_RecordsDocumentIDAndSHA(t *testing.T) {
+	svc, repo, _ := newService()
+	reg := action.NewRegistry(nil)
+	require.NoError(t, reg.Register("document.generate", docflow.Generate(svc, nil, func(context.Context, action.Run) (document.GenerateInput, error) {
+		return document.GenerateInput{Template: acta, Data: map[string]any{"N": 1}}, nil
+	})))
+	db := &attemptDB{}
+	w := action.NewWorker(reg, action.WithAttemptLog(db), action.WithMetricsRegisterer(prometheus.NewRegistry()))
+	job := &river.Job[action.Args]{
+		JobRow: &rivertype.JobRow{ID: 1, Attempt: 1, MaxAttempts: 25},
+		Args:   action.Args{CaseID: uuid.New(), Seq: 4, Effect: "document.generate", Domain: "compras", ExternalID: "solicitud-9"},
+	}
+
+	require.NoError(t, w.Work(context.Background(), job))
+
+	require.Len(t, repo.docs, 1)
+	d := repo.docs[0]
+	require.NotEmpty(t, d.SHA256)
+	assert.Equal(t, d.ID.String(), db.row["result_ref"])
+	assert.Equal(t, d.SHA256, db.row["result_digest"])
 }

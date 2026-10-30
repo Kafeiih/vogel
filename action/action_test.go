@@ -139,6 +139,20 @@ func TestDispatch_Opened_EnqueuesStartNodeEffects(t *testing.T) {
 	assert.True(t, got.opts.UniqueOpts.ByArgs, "jobs must be unique by (case id, seq, effect)")
 }
 
+func TestDispatch_CopiesStructuredActor(t *testing.T) {
+	r, q := newRegistry(t, "on_draft")
+	c := testCase()
+	actor := workflow.Actor{Kind: workflow.ActorOperator, ID: "u1", ActingAs: "jefe@finanzas", OnBehalfOf: "u9", Via: "backoffice"}
+	events := []workflow.Event{{CaseID: c.ID, Seq: 1, Kind: workflow.EventOpened, ToState: "draft", Actor: actor, ActorID: "u1"}}
+
+	require.NoError(t, r.Dispatch(context.Background(), fakeTx{}, effectsDefinition(), c, events))
+
+	require.Len(t, q.calls, 1)
+	args := q.calls[0].args
+	assert.Equal(t, actor, args.Actor)
+	assert.Equal(t, "u1", args.ActorID, "ActorID stays, mirroring Actor.ID")
+}
+
 func TestDispatch_Moved_EnqueuesTransitionThenRouteEffectsInSeqOrder(t *testing.T) {
 	r, q := newRegistry(t, "on_submit", "audit", "on_big", "on_approved")
 	c := testCase()

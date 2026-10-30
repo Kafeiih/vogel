@@ -134,8 +134,12 @@ func (w *Worker) Work(ctx context.Context, job *river.Job[Args]) error {
 		Domain:     a.Domain,
 		ExternalID: a.ExternalID,
 		Unit:       a.Unit,
+		Actor:      a.Actor,
 		ActorID:    a.ActorID,
 		Part:       a.Part,
+	}
+	if run.Actor == (workflow.Actor{}) && a.ActorID != "" {
+		run.Actor = workflow.Actor{Kind: workflow.ActorUnspecified, ID: a.ActorID}
 	}
 	if job.JobRow != nil {
 		run.Attempt = job.Attempt
@@ -153,6 +157,8 @@ func (w *Worker) Work(ctx context.Context, job *river.Job[Args]) error {
 		return h.Handle(ctx, run)
 	}
 
+	result := &resultSlot{}
+	ctx = context.WithValue(ctx, resultKey{}, result)
 	panicked := true
 	defer func() {
 		if panicked {
@@ -185,7 +191,12 @@ func (w *Worker) recordAttempt(ctx context.Context, job *river.Job[Args], run Ru
 		Outcome:    outcome,
 		ErrorClass: class,
 		RequestID:  reqctx.RequestIDFromContext(ctx),
-		ActorID:    run.ActorID,
+		ActorKind:  run.Actor.Kind,
+		ActorID:    run.Actor.ID,
+	}
+	if slot, ok := ctx.Value(resultKey{}).(*resultSlot); ok {
+		res := slot.get()
+		at.ResultRef, at.ResultDigest = res.Ref, res.Digest
 	}
 	if w.traceIDs != nil {
 		at.TraceID, _ = w.traceIDs(ctx)

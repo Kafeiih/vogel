@@ -23,6 +23,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kafeiih/vogel/action"
+	"github.com/kafeiih/vogel/reqctx"
 	"github.com/kafeiih/vogel/workflow"
 )
 
@@ -32,13 +33,17 @@ type attemptDB struct {
 	mu   sync.Mutex
 	rows []map[string]any
 	err  error
+	// ctxErrs holds ctx.Err() of every Exec, to prove the insert does not
+	// run on a cancelled job context.
+	ctxErrs []error
 }
 
 var insertColumns = regexp.MustCompile(`(?s)INSERT INTO action_attempt \(([^)]*)\)`)
 
-func (d *attemptDB) Exec(_ context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+func (d *attemptDB) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	d.ctxErrs = append(d.ctxErrs, ctx.Err())
 	if d.err != nil {
 		return pgconn.CommandTag{}, d.err
 	}
@@ -249,4 +254,76 @@ func gatherCounter(t *testing.T, reg *prometheus.Registry, name string) float64 
 	}
 	t.Fatalf("metric %s not found", name)
 	return 0
+}
+
+func TestRecordResult_StoresRefAndDigest(t *testing.T) {
+	r, _ := newRegistry(t)
+	require.NoError(t, r.Register("notify", action.HandlerFunc(func(ctx context.Context, _ action.Run) error {
+		action.RecordResult(ctx, action.Result{Ref: "receipt-1", Digest: "draft"})
+		action.RecordResult(ctx, action.Result{Ref: "receipt-9", Digest: "abc123"})
+		return nil
+	})))
+	db := &attemptDB{}
+	w, _ := loggingWorker(t, r, db)
+
+	require.NoError(t, w.Work(context.Background(), jobAt(action.Args{Effect: "notify"}, 1, 25)))
+
+	row := db.only(t)
+	assert.Equal(t, "receipt-9", row["result_ref"], "the last RecordResult wins")
+	assert.Equal(t, "abc123", row["result_digest"])
+}
+
+func TestRecordResult_OutsideAWorkerIsANoop(t *testing.T) {
+	assert.NotPanics(t, func() { action.RecordResult(context.Background(), action.Result{Ref: "x"}) })
+}
+
+func TestWorker_AttemptCarriesRequestIDFromJobMetadata(t *testing.T) {
+	r, _ := newRegistry(t)
+	registerReturning(t, r, "notify", nil)
+	db := &attemptDB{}
+	w := action.NewWorker(r, action.WithAttemptLog(db), action.WithMetricsRegisterer(prometheus.NewRegistry()),
+		action.WithTraceIDs(func(context.Context) (string, string) { return "4bf92f3577b34da6a3ce929d0e0e4736", "00f067aa0ba902b7" }))
+	// worker's request-ID middleware puts the job metadata's request ID on
+	// the job context with reqctx.WithRequestID before Work runs.
+	ctx := reqctx.WithRequestID(context.Background(), "req-77")
+	args := action.Args{Effect: "notify", ActorID: "u1", Actor: workflow.Actor{Kind: workflow.ActorOperator, ID: "u1"}}
+
+	require.NoError(t, w.Work(ctx, jobAt(args, 1, 25)))
+
+	row := db.only(t)
+	assert.Equal(t, "req-77", row["request_id"])
+	assert.Equal(t, "4bf92f3577b34da6a3ce929d0e0e4736", row["trace_id"])
+	assert.Equal(t, "operator", row["actor_kind"])
+	assert.Equal(t, "u1", row["actor_id"])
+}
+
+func TestWorker_RecordsAttemptOfJobWhoseContextIsCancelled(t *testing.T) {
+	r, _ := newRegistry(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	require.NoError(t, r.Register("notify", action.HandlerFunc(func(ctx context.Context, _ action.Run) error {
+		cancel() // the job's own timeout fires while the Handler runs
+		return ctx.Err()
+	})))
+	db := &attemptDB{}
+	w, _ := loggingWorker(t, r, db)
+
+	require.Error(t, w.Work(ctx, jobAt(action.Args{Effect: "notify"}, 1, 25)))
+
+	row := db.only(t)
+	assert.Equal(t, "*errors.errorString (context.Canceled)", row["error_class"])
+	assert.NoError(t, db.ctxErrs[0], "the attempt-log insert must run on a context detached from the cancelled job")
+}
+
+func TestNewWorker_TwoWorkersShareTheAttemptLogErrorCounter(t *testing.T) {
+	r, _ := newRegistry(t)
+	registerReturning(t, r, "notify", nil)
+	reg := prometheus.NewRegistry()
+	db := &attemptDB{err: errors.New("connection refused")}
+	opts := []action.WorkerOption{action.WithAttemptLog(db), action.WithMetricsRegisterer(reg), action.WithLogger(slog.New(slog.DiscardHandler))}
+	first, second := action.NewWorker(r, opts...), action.NewWorker(r, opts...)
+
+	require.NoError(t, first.Work(context.Background(), jobAt(action.Args{Effect: "notify"}, 1, 25)))
+	require.NoError(t, second.Work(context.Background(), jobAt(action.Args{Effect: "notify"}, 1, 25)))
+
+	assert.Equal(t, 2.0, gatherCounter(t, reg, "vogel_action_attempt_log_errors_total"), "the second Worker reuses the registered counter")
 }

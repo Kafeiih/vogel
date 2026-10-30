@@ -122,6 +122,35 @@ func TestAttemptLog_Integration_OneRowPerAttemptAndDuplicateIsNoop(t *testing.T)
 	assert.False(t, got[1].FinishedAt.Before(got[1].StartedAt))
 }
 
+func TestAttemptLog_Integration_RunAfterSnoozeGetsItsOwnRow(t *testing.T) {
+	pool := setup(t)
+	ctx := context.Background()
+	snooze := true
+	w := newWorker(t, pool, map[string]action.Handler{
+		"notify": action.HandlerFunc(func(context.Context, action.Run) error {
+			if snooze {
+				return river.JobSnooze(time.Minute)
+			}
+			return nil
+		}),
+	})
+	args := action.Args{CaseID: uuid.New(), Seq: 1, Effect: "notify"}
+
+	require.Error(t, w.Work(ctx, jobRow(8, 1, args)))
+	// River gives a snoozed job its attempt back and counts the snooze in
+	// its metadata, so the next run has the same attempt number.
+	snooze = false
+	again := jobRow(8, 1, args)
+	again.Metadata = []byte(`{"snoozes": 1}`)
+	require.NoError(t, w.Work(ctx, again))
+
+	got, err := postgres.NewAttemptRepository().ListByEvent(ctx, pool, args.CaseID, 1)
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	assert.Equal(t, []action.Outcome{action.OutcomeSnoozed, action.OutcomeSucceeded}, []action.Outcome{got[0].Outcome, got[1].Outcome})
+	assert.Equal(t, []int{0, 1}, []int{got[0].Snooze, got[1].Snooze})
+}
+
 func TestAttemptRepository_ListByCaseOrdersBySeqThenAttempt(t *testing.T) {
 	pool := setup(t)
 	ctx := context.Background()
