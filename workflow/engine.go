@@ -1390,9 +1390,9 @@ type FailureInput struct {
 	// branch; zero records it at the case level (the root token).
 	TokenID uuid.UUID
 	Actor   Actor
-	Action string
-	Kind   FailureKind
-	Detail json.RawMessage
+	Action  string
+	Kind    FailureKind
+	Detail  json.RawMessage
 }
 
 // RecordFailure appends a record of a rejected move to the case: an
