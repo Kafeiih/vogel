@@ -172,6 +172,20 @@ func TestDispatch_Moved_EnqueuesDestinationNodeEffects(t *testing.T) {
 	assert.Equal(t, []string{"on_review"}, effectsOf(q.calls))
 }
 
+func TestDispatch_CopiesTokenIDToArgs(t *testing.T) {
+	r, q := newRegistry(t, "on_review")
+	branch := uuid.New()
+	events := []workflow.Event{
+		{Seq: 7, Kind: workflow.EventMoved, TokenID: branch, FromState: "route", ToState: "review", Action: "small"},
+	}
+
+	require.NoError(t, r.Dispatch(context.Background(), fakeTx{}, effectsDefinition(), testCase(), events))
+
+	require.Len(t, q.calls, 1)
+	assert.Equal(t, branch, q.calls[0].args.TokenID, "the job names the token whose event caused it")
+	assert.Equal(t, testCase().ID, q.calls[0].args.CaseID)
+}
+
 func TestDispatch_ClosedAndAssignmentEventsAddNothing(t *testing.T) {
 	r, q := newRegistry(t, "on_approved")
 	events := []workflow.Event{

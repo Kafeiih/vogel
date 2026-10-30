@@ -27,14 +27,14 @@ func TestWorker_RunsRegisteredHandlerWithRun(t *testing.T) {
 		return nil
 	})))
 	args := action.Args{
-		CaseID: uuid.New(), Seq: 3, Effect: "on_draft", Definition: "purchase", Version: 2,
+		CaseID: uuid.New(), TokenID: uuid.New(), Seq: 3, Effect: "on_draft", Definition: "purchase", Version: 2,
 		Domain: "compras", ExternalID: "s-1", Unit: "finanzas", ActorID: "u1",
 	}
 
 	require.NoError(t, action.NewWorker(r).Work(context.Background(), job(args)))
 
 	assert.Equal(t, action.Run{
-		CaseID: args.CaseID, Seq: 3, Effect: "on_draft", Definition: "purchase", Version: 2,
+		CaseID: args.CaseID, TokenID: args.TokenID, Seq: 3, Effect: "on_draft", Definition: "purchase", Version: 2,
 		Domain: "compras", ExternalID: "s-1", Unit: "finanzas", ActorID: "u1", Attempt: 2,
 	}, got)
 }
