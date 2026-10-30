@@ -7,10 +7,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/kafeiih/vogel/migrate"
 	"github.com/kafeiih/vogel/workflow"
+	"github.com/kafeiih/vogel/workflow/migrations"
 )
 
 func TestOverdue_ListsOnlyUnexpiredOverdueTokens(t *testing.T) {
@@ -64,4 +67,49 @@ func TestOverdue_ListsOnlyUnexpiredOverdueTokens(t *testing.T) {
 	items, err = current.Overdue(ctx, pool, workflow.OverdueFilter{Tenant: "tenant-a"})
 	require.NoError(t, err)
 	assert.Len(t, items, 2)
+}
+
+func TestMigration009_UpDownRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	connStr := startTestPostgres(t)
+	opts := silentOptions()
+	require.NoError(t, migrate.UpTo(ctx, connStr, migrations.FS(), 9, opts))
+	pool, err := pgxpool.New(ctx, connStr)
+	require.NoError(t, err)
+	t.Cleanup(pool.Close)
+
+	past, _ := tokenTestEngine(t, func() time.Time { return time.Now().Add(-2 * time.Hour) })
+	c, active := splitCase(t, pool, past, "tenant-a", "round-trip")
+	current, _ := tokenTestEngine(t, nil)
+	_, err = current.Expire(ctx, pool, workflow.ExpireInput{
+		CaseID: c.ID, TokenID: active["legal"].ID, Actor: workflow.Actor{Kind: workflow.ActorSystem, ID: "scheduler"},
+	})
+	require.NoError(t, err)
+
+	column := func() int {
+		var n int
+		require.NoError(t, pool.QueryRow(ctx, `
+            SELECT count(*) FROM information_schema.columns
+            WHERE table_name = 'workflow_token' AND column_name = 'expired_deadline_at'`).Scan(&n))
+		return n
+	}
+	tokens := func() int {
+		var n int
+		require.NoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM workflow_token WHERE case_id = $1`, c.ID).Scan(&n))
+		return n
+	}
+	var marked int
+	require.NoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM workflow_token WHERE expired_deadline_at IS NOT NULL`).Scan(&marked))
+	assert.Equal(t, 1, marked, "Expire wrote the mark")
+	before := tokens()
+	assert.Equal(t, 1, column())
+
+	require.NoError(t, migrate.Down(ctx, connStr, migrations.FS(), opts))
+	assert.Zero(t, column(), "Down drops the column")
+	assert.Equal(t, before, tokens(), "Down keeps every token row")
+
+	require.NoError(t, migrate.UpTo(ctx, connStr, migrations.FS(), 9, opts))
+	assert.Equal(t, 1, column())
+	require.NoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM workflow_token WHERE expired_deadline_at IS NOT NULL`).Scan(&marked))
+	assert.Zero(t, marked, "the mark is lost on Down, as the migration header says")
 }
