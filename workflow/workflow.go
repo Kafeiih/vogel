@@ -169,6 +169,19 @@ const (
 	NodeTask NodeKind = ""
 	// NodeDecision marks a decision node: see the NodeKind doc comment.
 	NodeDecision NodeKind = "decision"
+	// NodeParallel is an AND split: a token arriving at it is consumed and one
+	// new token leaves through every outgoing transition, none of which may
+	// have a guard. Node.Join names the NodeJoin where the branches meet.
+	NodeParallel NodeKind = "parallel"
+	// NodeInclusive is an OR split: one new token leaves through every
+	// outgoing route whose guard passes. Exactly one unguarded default route,
+	// declared last, is taken only when no guarded route passes. Node.Join
+	// names the NodeJoin where the branches meet.
+	NodeInclusive NodeKind = "inclusive"
+	// NodeJoin is where the branches of the split naming it meet: it waits
+	// until every token that split emitted arrived (or was cancelled), then
+	// one token continues through its single, unguarded outgoing transition.
+	NodeJoin NodeKind = "join"
 )
 
 // nodeTaskAlias is the sole spelling of the NodeTask "task" alias literal,
@@ -183,10 +196,40 @@ const nodeTaskAlias NodeKind = "task"
 // Valid reports whether k is one of the known NodeKind values.
 func (k NodeKind) Valid() bool {
 	switch k {
-	case NodeTask, nodeTaskAlias, NodeDecision:
+	case NodeTask, nodeTaskAlias, NodeDecision, NodeParallel, NodeInclusive, NodeJoin:
 		return true
 	default:
 		return false
+	}
+}
+
+// IsSplit reports whether k is a split gateway (NodeParallel or
+// NodeInclusive).
+func (k NodeKind) IsSplit() bool {
+	return k == NodeParallel || k == NodeInclusive
+}
+
+// IsAutomatic reports whether a case never rests on a node of kind k: a
+// decision node, a split or a join. Engine.Move routes through them within
+// the same call.
+func (k NodeKind) IsAutomatic() bool {
+	return k == NodeDecision || k.IsSplit() || k == NodeJoin
+}
+
+// label names k in Validate's messages: "decision node", "parallel split",
+// "inclusive split", "join node", or "node" for a task node.
+func (k NodeKind) label() string {
+	switch k {
+	case NodeDecision:
+		return "decision node"
+	case NodeParallel:
+		return "parallel split"
+	case NodeInclusive:
+		return "inclusive split"
+	case NodeJoin:
+		return "join node"
+	default:
+		return "node"
 	}
 }
 
@@ -244,8 +287,13 @@ type Node struct {
 	// asynchronously, outside the request that advanced the case. Every name
 	// must be known to that sink (see Engine.Register and ErrUnknownEffect).
 	// Definition.Validate rejects an empty or duplicate name within one
-	// node, and any effect on a decision node: a case never rests there.
+	// node, and any effect on a decision node, split or join: a case never
+	// rests there.
 	Effects []string
+	// Join names the NodeJoin where the branches of this split meet. Only a
+	// NodeParallel or NodeInclusive node may set it, and each join is named by
+	// exactly one split: together they bound a block (see Definition.Validate).
+	Join string
 }
 
 // Transition is a named move from one node to another, optionally gated by
@@ -446,22 +494,26 @@ func (d Definition) Validate() error {
 		}
 		checkEffects(fmt.Sprintf("node %q", n.ID), n.Effects)
 
-		if n.Kind == NodeDecision {
+		if n.Kind.IsAutomatic() {
+			label := n.Kind.label()
 			if n.Start {
-				addf("decision node %q: must not be a start node", n.ID)
+				addf("%s %q: must not be a start node", label, n.ID)
 			}
 			if n.Terminal {
-				addf("decision node %q: must not be a terminal node", n.ID)
+				addf("%s %q: must not be a terminal node", label, n.ID)
 			}
 			if !n.Eligible.IsZero() {
-				addf("decision node %q: must not declare an eligibility", n.ID)
+				addf("%s %q: must not declare an eligibility", label, n.ID)
 			}
 			if n.Deadline != 0 {
-				addf("decision node %q: must not declare a deadline", n.ID)
+				addf("%s %q: must not declare a deadline", label, n.ID)
 			}
 			if len(n.Effects) > 0 {
-				addf("decision node %q: must not declare effects (declare them on its routes)", n.ID)
+				addf("%s %q: must not declare effects (declare them on its routes)", label, n.ID)
 			}
+		}
+		if n.Join != "" && !n.Kind.IsSplit() {
+			addf("node %q: only a split may name a join", n.ID)
 		}
 	}
 
@@ -476,7 +528,9 @@ func (d Definition) Validate() error {
 	outgoing := make(map[string]int, len(d.Nodes))
 	adjacency := make(map[string][]string, len(d.Nodes))
 	outgoingByNode := make(map[string][]Transition, len(d.Nodes))
-	decisionAdjacency := make(map[string][]string, len(d.Nodes))
+	// gatewayAdjacency holds the edges between automatic nodes (decisions,
+	// splits, joins): a cycle made only of them would route forever.
+	gatewayAdjacency := make(map[string][]string, len(d.Nodes))
 
 	for i, tr := range d.Transitions {
 		if tr.Action == "" {
@@ -504,20 +558,23 @@ func (d Definition) Validate() error {
 			outgoingByNode[tr.From] = append(outgoingByNode[tr.From], tr)
 		}
 
-		if fromOK && fromNode.Kind == NodeDecision && tr.Comment.Canonical() != CommentNone {
-			addf("transition[%d]: route from decision node %q must not declare a comment policy", i, tr.From)
+		if fromOK && (fromNode.Kind == NodeDecision || fromNode.Kind.IsSplit()) && tr.Comment.Canonical() != CommentNone {
+			addf("transition[%d]: route from %s %q must not declare a comment policy", i, fromNode.Kind.label(), tr.From)
 		}
-		if fromOK && fromNode.Kind == NodeDecision && tr.Return {
-			addf("transition[%d]: route from decision node %q must not be a return transition", i, tr.From)
+		if fromOK && fromNode.Kind.IsAutomatic() && tr.Return {
+			addf("transition[%d]: route from %s %q must not be a return transition", i, fromNode.Kind.label(), tr.From)
+		}
+		if fromOK && fromNode.Kind == NodeParallel && tr.Guard != "" {
+			addf("transition[%d]: route from parallel split %q must not declare a guard", i, tr.From)
 		}
 		if toOK && toNode.Terminal && tr.Return {
 			addf("transition[%d]: return transition must not target terminal node %q", i, tr.To)
 		}
-		if toOK && toNode.Kind == NodeDecision && tr.Return {
-			addf("transition[%d]: return transition must target a task node, got decision node %q", i, tr.To)
+		if toOK && toNode.Kind.IsAutomatic() && tr.Return {
+			addf("transition[%d]: return transition must target a task node, got %s %q", i, toNode.Kind.label(), tr.To)
 		}
-		if fromOK && toOK && fromNode.Kind == NodeDecision && toNode.Kind == NodeDecision {
-			decisionAdjacency[tr.From] = append(decisionAdjacency[tr.From], tr.To)
+		if fromOK && toOK && fromNode.Kind.IsAutomatic() && toNode.Kind.IsAutomatic() {
+			gatewayAdjacency[tr.From] = append(gatewayAdjacency[tr.From], tr.To)
 		}
 
 		key := tr.From + "\x00" + tr.Action
@@ -528,13 +585,25 @@ func (d Definition) Validate() error {
 	}
 
 	for _, n := range d.Nodes {
-		if n.ID == "" || n.Kind != NodeDecision {
+		if n.ID == "" || !n.Kind.IsAutomatic() {
 			continue
 		}
 		routes := outgoingByNode[n.ID]
-		if len(routes) < 2 {
-			addf("decision node %q: requires at least two outgoing routes, found %d", n.ID, len(routes))
+		label := n.Kind.label()
+		if n.Kind == NodeJoin {
+			if len(routes) != 1 {
+				addf("join node %q: requires exactly one outgoing transition, found %d", n.ID, len(routes))
+			} else if routes[0].Guard != "" {
+				addf("join node %q: its outgoing transition must not declare a guard", n.ID)
+			}
 			continue
+		}
+		if len(routes) < 2 {
+			addf("%s %q: requires at least two outgoing routes, found %d", label, n.ID, len(routes))
+			continue
+		}
+		if n.Kind == NodeParallel {
+			continue // guards are rejected per transition above
 		}
 
 		unguardedCount, unguardedIdx := 0, -1
@@ -546,23 +615,29 @@ func (d Definition) Validate() error {
 		}
 		switch {
 		case unguardedCount == 0:
-			addf("decision node %q: requires exactly one unguarded default route, found none", n.ID)
+			addf("%s %q: requires exactly one unguarded default route, found none", label, n.ID)
 		case unguardedCount > 1:
-			addf("decision node %q: requires exactly one unguarded default route, found %d", n.ID, unguardedCount)
+			addf("%s %q: requires exactly one unguarded default route, found %d", label, n.ID, unguardedCount)
 		case unguardedIdx != len(routes)-1:
-			addf("decision node %q: the unguarded default route (action %q) must be declared last", n.ID, routes[unguardedIdx].Action)
+			addf("%s %q: the unguarded default route (action %q) must be declared last", label, n.ID, routes[unguardedIdx].Action)
 		}
 	}
 
-	if len(decisionAdjacency) > 0 {
-		decisionNodes := make([]string, 0, len(d.Nodes))
+	if len(gatewayAdjacency) > 0 {
+		gatewayNodes := make([]string, 0, len(d.Nodes))
 		for _, n := range d.Nodes {
-			if n.ID != "" && n.Kind == NodeDecision {
-				decisionNodes = append(decisionNodes, n.ID)
+			if n.ID != "" && n.Kind.IsAutomatic() {
+				gatewayNodes = append(gatewayNodes, n.ID)
 			}
 		}
-		if cycle := detectDecisionCycle(decisionNodes, decisionAdjacency); cycle != nil {
-			addf("decision-only cycle detected: %s", strings.Join(cycle, " -> "))
+		if cycle := detectDecisionCycle(gatewayNodes, gatewayAdjacency); cycle != nil {
+			kind := "decision-only"
+			for _, id := range cycle {
+				if nodeByID[id].Kind != NodeDecision {
+					kind = "gateway-only"
+				}
+			}
+			addf("%s cycle detected: %s", kind, strings.Join(cycle, " -> "))
 		}
 	}
 
@@ -599,6 +674,8 @@ func (d Definition) Validate() error {
 		}
 	}
 
+	validateBlocks(d, nodeByID, outgoingByNode, addf)
+
 	if len(errs) == 0 {
 		return nil
 	}
@@ -606,8 +683,8 @@ func (d Definition) Validate() error {
 }
 
 // detectDecisionCycle returns the node IDs forming one cycle within adj — a
-// directed graph already restricted to decision-kind nodes and the edges
-// between them — or nil if adj is acyclic. nodes fixes DFS traversal order,
+// directed graph already restricted to automatic nodes (decisions, splits,
+// joins) and the edges between them — or nil if adj is acyclic. nodes fixes DFS traversal order,
 // so the result (and therefore Validate's error message) is deterministic
 // across calls on the same Definition.
 func detectDecisionCycle(nodes []string, adj map[string][]string) []string {
