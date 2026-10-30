@@ -327,3 +327,17 @@ func TestNewWorker_TwoWorkersShareTheAttemptLogErrorCounter(t *testing.T) {
 
 	assert.Equal(t, 2.0, gatherCounter(t, reg, "vogel_action_attempt_log_errors_total"), "the second Worker reuses the registered counter")
 }
+
+func TestWorker_LegacyJobWritesItsActorID(t *testing.T) {
+	r, _ := newRegistry(t)
+	registerReturning(t, r, "notify", nil)
+	db := &attemptDB{}
+	w, _ := loggingWorker(t, r, db)
+
+	// A job the previous release enqueued carries only ActorID.
+	require.NoError(t, w.Work(context.Background(), jobAt(action.Args{Effect: "notify", ActorID: "u1"}, 1, 25)))
+
+	row := db.only(t)
+	assert.Equal(t, "unspecified", row["actor_kind"])
+	assert.Equal(t, "u1", row["actor_id"])
+}

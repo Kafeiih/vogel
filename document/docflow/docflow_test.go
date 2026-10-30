@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -249,9 +250,12 @@ func TestDocflowGenerate_SourceKeyUnchanged(t *testing.T) {
 type attemptDB struct{ row map[string]any }
 
 func (d *attemptDB) Exec(_ context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
-	start, end := strings.Index(sql, "("), strings.Index(sql, ")")
+	m := regexp.MustCompile(`(?s)INSERT INTO action_attempt \(([^)]*)\)`).FindStringSubmatch(sql)
+	if m == nil {
+		return pgconn.CommandTag{}, fmt.Errorf("unexpected statement: %s", sql)
+	}
 	d.row = map[string]any{}
-	for i, col := range strings.Split(sql[start+1:end], ",") {
+	for i, col := range strings.Split(m[1], ",") {
 		d.row[strings.TrimSpace(col)] = args[i]
 	}
 	return pgconn.NewCommandTag("INSERT 0 1"), nil

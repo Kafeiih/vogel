@@ -117,7 +117,7 @@ func (r Run) IdempotencyKey() string {
 // (a Move, an audit row): the effect itself, acting for the actor of the
 // triggering event, so engine work is never attributed to a session user.
 func (r Run) SystemActor() workflow.Actor {
-	return workflow.Actor{Kind: workflow.ActorSystem, ID: "vogel_action:" + r.Effect, OnBehalfOf: r.Actor.ID}
+	return workflow.Actor{Kind: workflow.ActorSystem, ID: Kind + ":" + r.Effect, OnBehalfOf: r.Actor.ID}
 }
 
 // Handler runs one effect. Returning an error makes River retry the job;
