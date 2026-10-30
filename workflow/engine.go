@@ -971,7 +971,8 @@ func (e *Engine) History(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID) (
 }
 
 // Inbox returns one WorkItem per active token of an open case matching f,
-// oldest token first (by when it entered its node), paged by f.Page. States,
+// oldest case first, as before tokens existed, then the case's tokens in the
+// order they entered their node, paged by f.Page. States,
 // Eligibility, AssignedTo, Unassigned and Overdue apply to the token.
 func (e *Engine) Inbox(ctx context.Context, db pgxtx.DBTX, f InboxFilter) ([]WorkItem, error) {
 	items, err := e.repo.ListWorkItems(ctx, db, f)
@@ -1191,7 +1192,8 @@ type CancelTokenInput struct {
 // token of the scope already waits, the join fires and routing continues in
 // this same call, exactly like Move (effects dispatched, MoveResult.Joined
 // reported). It fails with ErrLastBranch when the token is its scope's only
-// live branch, root scope included — an open case must never be left
+// live branch (a sibling running inside a nested block that has not joined
+// counts as live), root scope included — an open case must never be left
 // without a live token; use Cancel to end the whole case — with
 // ErrTokenNotFound when the token is not active in the case, and with
 // ErrCaseClosed when the case is not open.
@@ -1229,9 +1231,16 @@ func (e *Engine) CancelToken(ctx context.Context, db pgxtx.DBTX, in CancelTokenI
 	if err != nil {
 		return nil, fmt.Errorf("workflow: cancel token %s: %w", in.TokenID, err)
 	}
+	// A sibling branch is live while it has a live token in the scope, or
+	// while it runs inside a nested block whose scope has not joined yet.
 	others := 0
 	for _, t := range run.tokens {
 		if t.ScopeID == tok.ScopeID && t.ID != tok.ID && t.Status.Live() {
+			others++
+		}
+	}
+	for _, s := range run.scopes {
+		if s.ParentID != nil && *s.ParentID == tok.ScopeID && s.Status == ScopeOpen {
 			others++
 		}
 	}
@@ -1377,7 +1386,10 @@ func marshalDetail(v any) (json.RawMessage, error) {
 // FailureInput describes a rejected move to record (see RecordFailure).
 type FailureInput struct {
 	CaseID uuid.UUID
-	Actor  Actor
+	// TokenID names the token whose move failed, so the record lands in its
+	// branch; zero records it at the case level (the root token).
+	TokenID uuid.UUID
+	Actor   Actor
 	Action string
 	Kind   FailureKind
 	Detail json.RawMessage
@@ -1394,8 +1406,9 @@ type FailureInput struct {
 // RecordFailure runs in the caller's next transaction (db), so the record
 // survives the rollback. FailureKindOf maps the engine's sentinel errors to
 // a FailureKind. An unknown kind, a Detail that is not a JSON object or an
-// invalid Actor fails with ErrInvalidFailure or ErrInvalidActor before
-// anything is written.
+// invalid Actor fails with ErrInvalidFailure or ErrInvalidActor, and a
+// TokenID the case does not have with ErrTokenNotFound, before anything is
+// written.
 //
 // A failure recorded while another call holds a stale read of the same case
 // advances LastSeq but not Revision; that call's Repository.Update compares
@@ -1418,6 +1431,22 @@ func (e *Engine) RecordFailure(ctx context.Context, db pgxtx.DBTX, in FailureInp
 		return Event{}, fmt.Errorf("workflow: record failure on case %s: %w", in.CaseID, err)
 	}
 
+	var tok *Token
+	if in.TokenID != uuid.Nil {
+		tokens, err := e.repo.ListTokens(ctx, db, in.CaseID)
+		if err != nil {
+			return Event{}, fmt.Errorf("workflow: record failure on case %s: %w", in.CaseID, err)
+		}
+		for i := range tokens {
+			if tokens[i].ID == in.TokenID {
+				tok = &tokens[i]
+			}
+		}
+		if tok == nil {
+			return Event{}, fmt.Errorf("workflow: record failure on case %s: %w: token %s", in.CaseID, ErrTokenNotFound, in.TokenID)
+		}
+	}
+
 	c, err := e.repo.AdvanceLastSeq(ctx, db, in.CaseID)
 	if err != nil {
 		return Event{}, fmt.Errorf("workflow: record failure on case %s: %w", in.CaseID, err)
@@ -1427,15 +1456,20 @@ func (e *Engine) RecordFailure(ctx context.Context, db pgxtx.DBTX, in FailureInp
 	if in.Kind == FailureNoRoute {
 		kind = EventNoRoute
 	}
-	evt, err := e.appendEvent(ctx, db, c, &Event{
-		Seq: c.LastSeq, Kind: kind,
+	evt := &Event{
+		Seq: c.LastSeq, Kind: kind, TokenID: c.ID, ScopeID: c.ID,
 		FromState: c.State, ToState: c.State, Action: in.Action,
 		Actor: actor, OccurredAt: e.now(), Detail: detail,
-	})
+	}
+	if tok != nil {
+		evt.TokenID, evt.ScopeID = tok.ID, tok.ScopeID
+		evt.FromState, evt.ToState = tok.Node, tok.Node
+	}
+	stored, err := e.appendEvent(ctx, db, c, evt)
 	if err != nil {
 		return Event{}, fmt.Errorf("workflow: record failure on case %s: append event: %w", c.ID, err)
 	}
-	return evt, nil
+	return stored, nil
 }
 
 // failureKinds maps each sentinel a rejected Move, Claim or Release can

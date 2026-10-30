@@ -482,3 +482,30 @@ func TestCancel_PersistsCancelledStatus(t *testing.T) {
 	_, err = e.Move(ctx, pool, workflow.MoveInput{CaseID: c.ID, Action: "clear", Actor: workflow.Actor{ID: "u1"}})
 	assert.True(t, errors.Is(err, workflow.ErrCaseClosed))
 }
+
+// TestInbox_KeepsCaseOrderInPostgres pins ListWorkItems' ORDER BY: oldest
+// case first, as before tokens existed, then the case's tokens by entry.
+func TestInbox_KeepsCaseOrderInPostgres(t *testing.T) {
+	pool := startTestPool(t)
+	ctx := context.Background()
+	now := time.Now().Add(-3 * time.Hour).UTC().Truncate(time.Microsecond)
+	e, _ := tokenTestEngine(t, func() time.Time { return now })
+
+	older, err := e.Open(ctx, pool, workflow.OpenInput{Definition: "contract", Domain: "contracts", ExternalID: "older", Unit: "hq", Actor: workflow.Actor{ID: "u1"}})
+	require.NoError(t, err)
+	now = now.Add(time.Hour)
+	newer, err := e.Open(ctx, pool, workflow.OpenInput{Definition: "contract", Domain: "contracts", ExternalID: "newer", Unit: "hq", Actor: workflow.Actor{ID: "u1"}})
+	require.NoError(t, err)
+	now = now.Add(time.Hour)
+	inTx(t, pool, func(tx pgxtx.DBTX) error {
+		_, err := e.Move(ctx, tx, workflow.MoveInput{CaseID: older.ID, Action: "submit", Actor: workflow.Actor{ID: "u1"}})
+		return err
+	})
+
+	items, err := e.Inbox(ctx, pool, workflow.InboxFilter{Domain: "contracts"})
+	require.NoError(t, err)
+	require.Len(t, items, 3)
+	assert.Equal(t, []uuid.UUID{older.ID, older.ID, newer.ID}, []uuid.UUID{items[0].Case.ID, items[1].Case.ID, items[2].Case.ID})
+	assert.Equal(t, "legal", items[0].Token.Node, "inside a case, tokens in the order they entered")
+	assert.Equal(t, "finance", items[1].Token.Node)
+}

@@ -42,15 +42,29 @@
 -- and persisted on its next write; that compatibility path is deprecated and
 -- goes away in v0.21.0.)
 --
+-- Retention: the purge recipe in 005's header now has to delete the cases'
+-- tokens and scopes before the cases themselves (their foreign keys to
+-- workflow_case are ON DELETE RESTRICT). Inside that same transaction, before
+-- deleting from workflow_case:
+--
+--   DELETE FROM workflow_token WHERE case_id IN (SELECT id FROM workflow_case WHERE closed_at < now() - interval '10 years');
+--   DELETE FROM workflow_scope WHERE case_id IN (SELECT id FROM workflow_case WHERE closed_at < now() - interval '10 years');
+--
+-- workflow_scope.parent_id is NO ACTION rather than RESTRICT so that one
+-- DELETE can remove a case's whole scope tree: the check runs at the end of
+-- the statement, not row by row.
+--
 -- Down drops both tables and the event columns. It is only lossless before
 -- any case split: on a database with split cases it loses the branch state
--- (which tokens are where), and the cases cannot continue.
+-- (which tokens are where), and the cases cannot continue. Cases Cancel left
+-- in status 'cancelled' stay as they are; a binary before this version reads
+-- them as an unknown status.
 
 -- +goose Up
 CREATE TABLE workflow_scope (
     id          UUID PRIMARY KEY,
     case_id     UUID NOT NULL REFERENCES workflow_case(id) ON DELETE RESTRICT,
-    parent_id   UUID NULL REFERENCES workflow_scope(id) ON DELETE RESTRICT,
+    parent_id   UUID NULL REFERENCES workflow_scope(id),
     split_node  TEXT NOT NULL DEFAULT '',
     join_node   TEXT NOT NULL DEFAULT '',
     expected    INT  NOT NULL CHECK (expected >= 1),
@@ -89,7 +103,7 @@ INSERT INTO workflow_scope (id, case_id, parent_id, expected, status, opened_seq
 SELECT c.id, c.id, NULL, 1,
        CASE WHEN c.status = 'open' THEN 'open' ELSE 'closed' END,
        1,
-       CASE WHEN c.status = 'open' THEN NULL ELSE c.last_seq END
+       CASE WHEN c.status = 'open' THEN NULL ELSE GREATEST(c.last_seq, 1) END
 FROM workflow_case c;
 
 INSERT INTO workflow_token (id, case_id, scope_id, node, status, assigned_to, deadline_at,

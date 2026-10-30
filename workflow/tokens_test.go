@@ -1022,3 +1022,77 @@ func TestRefreshEligibility_WritesMissingEligibility(t *testing.T) {
 	assert.Len(t, history, 1, "no event is appended")
 	assertInvariants(t, e, repo, c.ID)
 }
+
+// TestInbox_KeepsCaseOrderThenTokenOrder pins the inbox order: oldest case
+// first, as before tokens existed, then the case's tokens by when they
+// entered their node.
+func TestInbox_KeepsCaseOrderThenTokenOrder(t *testing.T) {
+	now := time.Date(2026, 10, 30, 9, 0, 0, 0, time.UTC)
+	clock := func() time.Time { return now }
+	e, repo := tokenEngine(t, Config{Now: clock}, nil)
+
+	older := openCase(t, e, "contract") // opened 09:00
+	now = now.Add(time.Hour)
+	newer := openCase(t, e, "contract") // opened 10:00, never moves
+	now = now.Add(time.Hour)
+	move(t, e, older.ID, uuid.Nil, "submit") // older's tokens enter at 11:00
+	assertInvariants(t, e, repo, older.ID)
+
+	items, err := e.Inbox(context.Background(), nil, InboxFilter{})
+	require.NoError(t, err)
+	require.Len(t, items, 3)
+	assert.Equal(t, []uuid.UUID{older.ID, older.ID, newer.ID}, workItemCaseIDs(items))
+	assert.Equal(t, "legal", items[0].Token.Node, "inside a case, by EnteredSeq-ordered entry")
+
+	page, err := e.Inbox(context.Background(), nil, InboxFilter{Limit: 1})
+	require.NoError(t, err)
+	assert.Equal(t, older.ID, page[0].Case.ID)
+}
+
+// TestCancelToken_SiblingLiveInsideANestedBlockCounts cancels the outer
+// "finance" branch while the "legal" branch is still running inside its
+// inner block: the inner scope is that branch, so finance is not the last.
+func TestCancelToken_SiblingLiveInsideANestedBlockCounts(t *testing.T) {
+	e, repo := tokenEngine(t, Config{}, nil)
+	c := openCase(t, e, "contract-nested")
+	move(t, e, c.ID, uuid.Nil, "submit")
+	active := activeTokens(t, e, c.ID)
+
+	_, err := e.CancelToken(context.Background(), nil, CancelTokenInput{CaseID: c.ID, TokenID: active["finance"].ID, Actor: Actor{ID: "u1"}, Reason: "not needed"})
+	require.NoError(t, err)
+	assertInvariants(t, e, repo, c.ID)
+
+	move(t, e, c.ID, active["contracts"].ID, "clear")
+	res := move(t, e, c.ID, active["compliance"].ID, "clear")
+	assertInvariants(t, e, repo, c.ID)
+	require.Len(t, res.Joined, 2, "the inner join fires, then the outer one counts the cancelled branch")
+	assert.Equal(t, StatusClosed, res.Case.Status)
+}
+
+func TestRecordFailure_NamesTheBranchToken(t *testing.T) {
+	e, repo := tokenEngine(t, Config{}, nil)
+	c, active := splitToLegalAndFinance(t, e, repo)
+	legal := active["legal"]
+
+	evt, err := e.RecordFailure(context.Background(), nil, FailureInput{
+		CaseID: c.ID, TokenID: legal.ID, Actor: Actor{ID: "u1"}, Action: "clear", Kind: FailureGuardRejected,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, legal.ID, evt.TokenID)
+	assert.Equal(t, legal.ScopeID, evt.ScopeID)
+	assert.Equal(t, "legal", evt.FromState)
+	assertInvariants(t, e, repo, c.ID)
+
+	_, err = e.RecordFailure(context.Background(), nil, FailureInput{
+		CaseID: c.ID, TokenID: uuid.New(), Actor: Actor{ID: "u1"}, Kind: FailureGuardRejected,
+	})
+	require.ErrorIs(t, err, ErrTokenNotFound)
+
+	// Without a token the record is case-level, as before: the root token.
+	evt, err = e.RecordFailure(context.Background(), nil, FailureInput{CaseID: c.ID, Actor: Actor{ID: "u1"}, Kind: FailureConflict})
+	require.NoError(t, err)
+	history, err := e.History(context.Background(), nil, c.ID)
+	require.NoError(t, err)
+	assert.Equal(t, c.ID, history[len(history)-1].TokenID)
+	assert.Equal(t, evt.Seq, history[len(history)-1].Seq)
+}

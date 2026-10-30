@@ -304,7 +304,9 @@ func (r *Repository) ListEventDigests(ctx context.Context, db pgxtx.DBTX, caseID
 }
 
 // ListWorkItems returns one workflow.WorkItem per active token of an open
-// case matching f, oldest token first (entered_at, then id), paged by f.Page.
+// case matching f, oldest case first (opened_at, as before tokens existed,
+// then case id), then the case's tokens by entered_seq and id, paged by
+// f.Page.
 // An empty f.Tenant matches every tenant. f.States restricts the token's
 // node, f.Eligibility its stored (position, unit) pair, and f.AssignedTo,
 // f.Unassigned and f.Overdue its assignment and deadline. Turning a person's
@@ -333,7 +335,7 @@ func (r *Repository) ListWorkItems(ctx context.Context, db pgxtx.DBTX, f workflo
           AND (NOT $5::BOOLEAN OR (t.deadline_at IS NOT NULL AND t.deadline_at < now()))
           AND ($8::TEXT    IS NULL OR c.tenant = $8)
           AND ($9::TEXT[]  IS NULL OR (t.position, t.unit) IN (SELECT * FROM unnest($9::TEXT[], $10::TEXT[])))
-        ORDER BY t.entered_at ASC, t.id
+        ORDER BY c.opened_at ASC, c.id, t.entered_seq ASC, t.id
         LIMIT $6 OFFSET $7`
 
 	rows, err := db.Query(ctx, q,

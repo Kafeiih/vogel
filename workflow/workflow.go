@@ -1131,7 +1131,8 @@ type GuardFunc func(ctx context.Context, db pgxtx.DBTX, c Case) (bool, error)
 // back as uuid.Nil, which the engine reads as the case ID.
 //
 // ListWorkItems returns one WorkItem per active token of an open case that
-// matches f, ordered by the token's EnteredAt, then its ID, paged by f.Page.
+// matches f, oldest case first (OpenedAt, then case ID), then the case's
+// tokens by EnteredSeq, then token ID, paged by f.Page.
 type Repository interface {
 	Create(ctx context.Context, db pgxtx.DBTX, c *Case) error
 	GetByID(ctx context.Context, db pgxtx.DBTX, id uuid.UUID) (*Case, error)

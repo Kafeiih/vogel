@@ -366,12 +366,19 @@ func (f *fakeRepository) ListWorkItems(_ context.Context, _ pgxtx.DBTX, filter I
 		}
 		out = append(out, WorkItem{Case: c, Token: cloneToken(t)})
 	}
-	// Same order as workflow/postgres: oldest token first, ID as tie-break.
+	// Same order as workflow/postgres: oldest case first, case ID as the
+	// tie-break, then the case's tokens by EnteredSeq and ID.
 	sort.Slice(out, func(i, j int) bool {
-		if !out[i].Token.EnteredAt.Equal(out[j].Token.EnteredAt) {
-			return out[i].Token.EnteredAt.Before(out[j].Token.EnteredAt)
+		a, b := out[i], out[j]
+		switch {
+		case !a.Case.OpenedAt.Equal(b.Case.OpenedAt):
+			return a.Case.OpenedAt.Before(b.Case.OpenedAt)
+		case a.Case.ID != b.Case.ID:
+			return a.Case.ID.String() < b.Case.ID.String()
+		case a.Token.EnteredSeq != b.Token.EnteredSeq:
+			return a.Token.EnteredSeq < b.Token.EnteredSeq
 		}
-		return out[i].Token.ID.String() < out[j].Token.ID.String()
+		return a.Token.ID.String() < b.Token.ID.String()
 	})
 	if offset >= len(out) {
 		return nil, nil
