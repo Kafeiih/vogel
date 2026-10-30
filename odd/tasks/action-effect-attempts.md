@@ -76,7 +76,7 @@ None. Every change is additive or opt-in. `Run.ActorID` is deprecated, not remov
 | ID | Specs | Route | Status | Evidence |
 |---|---|---|---|---|
 | T1 | S1 | inline | done | RED: `IdempotencyKey undefined`; GREEN `go test -race ./action/... ./document/...` |
-| T2 | S2 S4 (migration, worker option, repository) | inline (Oscar) | pending | — |
+| T2 | S2 S4 (migration, worker option, repository) | inline | done (integration pending CI) | RED: `undefined: action.WithAttemptLog`; GREEN `go test -race ./action/...`; `go vet -tags integration ./action/...` compiles |
 | T3 | S3 S5 | inline (Oscar) | pending | — |
 | T4 | S6 | inline (Oscar) | pending | — |
 
@@ -87,3 +87,4 @@ Risk: item 1 (new persisted table) and item 5 (worker runtime path). T2 gets its
 - L1 2026-10-28 Oscar: "vogel es mío, vamos con la opción A, pero si es necesario corregir algo de vogel armame un strachpad con todo lo necesario y lo levanto en un worktree"
 - L2 2026-10-28 Derived from `simple/docs/reverse-engineering/modules/01-case-trace.md` §5.2 A3 and §6.4. The scheduler and expiry parts of A3 live in `workflow-case-operations.md`.
 - L3 2026-10-30 Branch was cut before v0.18.0 (no `workflow.Actor`); recreated from `origin/master` (3ae0edc) since it had no commits. Integration tests cannot run locally (no Docker daemon); they compile with `-tags integration` and run in CI.
+- L4 2026-10-30 Deviation from the migration draft: River v0.49.0 gives a snoozed job its attempt back (`internal/jobexecutor/job_executor.go:446-448`, `jobRow.Attempt-1`), so `UNIQUE (job_id, attempt)` would drop the row of the run after a snooze via `ON CONFLICT DO NOTHING`. Added `snooze INT` (River's `snoozes` metadata count at start) and made the key `UNIQUE (job_id, attempt, snooze)`. Also added: Handler panics are recorded (`error_class = 'panic'`, outcome retry/discarded) and re-panicked; `error_class` is `<innermost Go type>` plus ` (<sentinel>)` for context.Canceled, context.DeadlineExceeded, workflow.ErrUnknownEffect; trace id comes from a `WithTraceIDs` port (same shape as `workflow.Config.TraceIDs`); `WithLogger` and `WithMetricsRegisterer` options; the insert runs on a ctx detached from the job's with a 5s timeout.
