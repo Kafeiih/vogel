@@ -1,7 +1,7 @@
 # Guía de migración a vogel
 
 Esta guía documenta cómo migrar `go-crucible` y `go-licencias` de su código
-duplicado local a `github.com/kafeiih/vogel` (hoy en `v0.18.0`). Es un manual de
+duplicado local a `github.com/kafeiih/vogel` (hoy en `v0.19.0`). Es un manual de
 ejecución: cada sección indica qué archivo local se borra, qué import lo
 reemplaza, y el diff exacto de las llamadas cuya firma cambió.
 
@@ -30,7 +30,7 @@ tienen visibilidad de un repo privado.
 Desde la raíz de `go-crucible` o `go-licencias`:
 
 ```bash
-go get github.com/kafeiih/vogel@v0.18.0
+go get github.com/kafeiih/vogel@v0.19.0
 ```
 
 Esto agrega la entrada a `go.mod` y `go.sum`. `vogel` no publica todos sus
@@ -1213,7 +1213,7 @@ de la migración del código duplicado existente.
 
 Para una app que ya usa `workflow`, esta versión cambia el esquema y el
 puerto `Repository`. El detalle de cada cambio está en el CHANGELOG
-(`[Unreleased]`); esta es la lista de pasos.
+(`[0.18.0]`); esta es la lista de pasos.
 
 1. **Migraciones antes que binarios.** Aplicar `004` a `007` de
    `workflow/migrations` y recién después arrancar los binarios nuevos, todos
@@ -1273,7 +1273,7 @@ tokens (`workflow_token`) agrupados en scopes (`workflow_scope`), y
 `Case.State`, `Case.AssignedTo` y `Case.DeadlineAt` pasan a ser proyecciones.
 Una definición sin `NodeParallel`/`NodeInclusive` se comporta exactamente como
 antes: su caso tiene un único token cuyo id es el del caso. El detalle está en
-el CHANGELOG (`[Unreleased]`); estos son los pasos.
+el CHANGELOG (`[0.19.0]`); estos son los pasos.
 
 1. **Detener los binarios viejos, migrar y arrancar los nuevos, todos
    juntos.** La `008_workflow_tokens.sql` crea las tablas, agrega

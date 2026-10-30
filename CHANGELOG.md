@@ -6,6 +6,8 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ## [Unreleased]
 
+## [0.19.0] — 2026-10-30
+
 ### Agregado
 
 - **`action`: registro de intentos de cada efecto.** El nuevo conjunto de
