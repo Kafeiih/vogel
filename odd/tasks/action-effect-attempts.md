@@ -75,10 +75,10 @@ None. Every change is additive or opt-in. `Run.ActorID` is deprecated, not remov
 
 | ID | Specs | Route | Status | Evidence |
 |---|---|---|---|---|
-| T1 | S1 | inline | done | RED: `IdempotencyKey undefined`; GREEN `go test -race ./action/... ./document/...` |
+| T1 | S1 | inline | done, 1cd6b34 | RED: `IdempotencyKey undefined`; GREEN `go test -race ./action/... ./document/...` |
 | T2 | S2 S4 (migration, worker option, repository) | inline | done, c01d41d, native review approved (review-1c42179427448d12, risk/resilience/reliability) (integration pending CI) | RED: `undefined: action.WithAttemptLog`; GREEN `go test -race ./action/...`; `go vet -tags integration ./action/...` compiles |
-| T3 | S3 S5 | inline | done | RED: `args.Actor undefined`, then `TestDispatch_CopiesStructuredActor` failing on zero Actor; GREEN `go test -race ./action/... ./document/...` |
-| T4 | S6 | inline | done | `cd examples/boilerplate && go test ./...` ok; `cmd/create-vogel-app/check-generated.sh` all combinations OK; `go test -race ./...` ok |
+| T3 | S3 S5 | inline | done, 6971d18 + e4a13af, native review approved (review-64bb5a59ede9e4f8) | RED: `args.Actor undefined`, then `TestDispatch_CopiesStructuredActor` failing on zero Actor; GREEN `go test -race ./action/... ./document/...` |
+| T4 | S6 | inline | done, d57cdb5 + c2af0bb, native review approved (review-64bb5a59ede9e4f8) | `cd examples/boilerplate && go test ./...` ok; `cmd/create-vogel-app/check-generated.sh` all combinations OK; `go test -race ./...` ok |
 
 Risk: item 1 (new persisted table) and item 5 (worker runtime path). T2 gets its own commit.
 
@@ -92,3 +92,4 @@ Risk: item 1 (new persisted table) and item 5 (worker runtime path). T2 gets its
 - L6 2026-10-30 `Args.Actor` is `workflow.Actor` with `json:"actor,omitzero"` (keys are Go field names: Kind, ID, ActingAs, OnBehalfOf, Via). It is not a `river:"unique"` field, so job uniqueness is unchanged. A job without it (enqueued by the previous release) runs with `Run.Actor = {Kind: unspecified, ID: ActorID}`, like an old event.
 - L7 2026-10-30 T4 also: `action_attempt`/`action_db_version` grants in `examples/boilerplate/deploy/initdb/runtime-grants.sql` (SELECT, INSERT only); `ci.yaml` River guard allows `action/postgres` (d57cdb5), since it imports `action`. Integration tests (`-tags integration`) compile but were not run locally: the Docker socket is not accessible here; CI runs them.
 - L8 2026-10-30 Slice c01d41d..c2af0bb native review approved (review-64bb5a59ede9e4f8, risk/readability/reliability), suggestions only. Applied: R2-002 anchor the docflow test fake on the action_attempt INSERT; R2-003 SystemActor derives its prefix from `Kind`; R3-001 `TestWorker_LegacyJobWritesItsActorID`. Left: R2-001 (test name kept as in the spec; the worker middleware that moves metadata to ctx is unexported and tested in `worker`), R3-002 (Actor.ID vs legacy ActorID divergence on hand-built events), R3-003 (RecordResult on panic/retry rows).
+- L9 2026-10-30 Independent verifier (whole document, baseline 3ae0edc, HEAD e4a13af): S1-S6 PASS, no blockers. Differential probes: Worker without WithAttemptLog behaves identically to baseline; Args JSON cross-decodes both ways; Part 0 source key byte-identical. Advisories: docflow key gains `/<part>` only for Part != 0 (docflow never fans out); Actor JSON keys are Go field names (L6); open R4 timeout follow-up. Integration tests not executed locally (Docker socket inaccessible); pending CI.
