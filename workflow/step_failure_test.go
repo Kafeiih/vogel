@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -364,6 +366,33 @@ func TestParticipated_ReturnsCasesWhereActorActedAfterReassign(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, page, 1)
 	assert.Equal(t, otherTenant.ID, page[0].ID)
+}
+
+func TestParticipated_EqualTimestampsOrderByCaseID(t *testing.T) {
+	repo := newFakeRepository()
+	at := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
+	e := New(repo, Config{Now: func() time.Time { return at }}, testLogger(), WithDefinitions(testDefinition()))
+	ctx := context.Background()
+
+	var want []uuid.UUID
+	for i := range 5 {
+		c, err := e.Open(ctx, nil, OpenInput{Definition: "purchase", Domain: "compras", ExternalID: fmt.Sprint(i), Unit: "finance", Actor: Actor{Kind: ActorHuman, ID: "u1"}})
+		require.NoError(t, err)
+		want = append(want, c.ID)
+	}
+	slices.SortFunc(want, func(a, b uuid.UUID) int { return strings.Compare(a.String(), b.String()) })
+
+	got, err := e.Participated(ctx, nil, ParticipationFilter{ActorID: "u1"})
+	require.NoError(t, err)
+	assert.Equal(t, want, caseIDs(got), "cases whose newest activity shares a timestamp are ordered by case id")
+
+	var paged []uuid.UUID
+	for offset := range len(want) {
+		page, err := e.Participated(ctx, nil, ParticipationFilter{ActorID: "u1", Limit: 1, Offset: offset})
+		require.NoError(t, err)
+		paged = append(paged, caseIDs(page)...)
+	}
+	assert.Equal(t, want, paged, "paging one at a time neither repeats nor skips a case")
 }
 
 func TestParticipated_RejectsOffsetOutOfRange(t *testing.T) {

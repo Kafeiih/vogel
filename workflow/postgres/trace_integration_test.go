@@ -6,6 +6,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -657,6 +660,50 @@ func TestParticipated_ListsCasesFromPostgres(t *testing.T) {
         SELECT i.indisvalid FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
         WHERE c.relname = 'idx_workflow_event_actor'`).Scan(&valid))
 	assert.True(t, valid, "migration 006 must leave a valid index")
+}
+
+func TestParticipated_EqualTimestampsOrderByCaseIDInPostgres(t *testing.T) {
+	pool := startTestPool(t)
+	ctx := context.Background()
+	at := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
+	e := workflow.New(postgres.NewRepository(), workflow.Config{Now: func() time.Time { return at }}, nil,
+		workflow.WithDefinitions(workflow.Definition{
+			Name: "purchase", Version: 1,
+			Nodes: []workflow.Node{
+				{ID: "draft", Start: true, Eligible: workflow.ByPosition("buyer")},
+				{ID: "done", Terminal: true},
+			},
+			Transitions: []workflow.Transition{{From: "draft", To: "done", Action: "submit"}},
+		}))
+
+	var want []uuid.UUID
+	for i := range 5 {
+		c, err := e.Open(ctx, pool, workflow.OpenInput{Definition: "purchase", Domain: "compras", ExternalID: fmt.Sprintf("tie-%d", i), Unit: "finance", Actor: workflow.Actor{Kind: workflow.ActorHuman, ID: "u1"}})
+		require.NoError(t, err)
+		want = append(want, c.ID)
+	}
+	// Postgres orders uuid by its bytes, which is the order of the
+	// lowercase hex text.
+	slices.SortFunc(want, func(a, b uuid.UUID) int { return strings.Compare(a.String(), b.String()) })
+
+	ids := func(cases []workflow.Case) []uuid.UUID {
+		out := make([]uuid.UUID, 0, len(cases))
+		for i := range cases {
+			out = append(out, cases[i].ID)
+		}
+		return out
+	}
+	got, err := e.Participated(ctx, pool, workflow.ParticipationFilter{ActorID: "u1"})
+	require.NoError(t, err)
+	assert.Equal(t, want, ids(got), "cases whose newest activity shares a timestamp are ordered by case id")
+
+	var paged []uuid.UUID
+	for offset := range len(want) {
+		page, err := e.Participated(ctx, pool, workflow.ParticipationFilter{ActorID: "u1", Limit: 1, Offset: offset})
+		require.NoError(t, err)
+		paged = append(paged, ids(page)...)
+	}
+	assert.Equal(t, want, paged, "paging one at a time neither repeats nor skips a case")
 }
 
 func TestMigration006_UpDownRoundTrip(t *testing.T) {
