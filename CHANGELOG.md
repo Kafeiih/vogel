@@ -6,6 +6,8 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ## [Unreleased]
 
+## [0.20.0] — 2026-10-30
+
 ### Agregado
 
 - **`workflow`: reasignación administrativa.** `Engine.Reassign`
