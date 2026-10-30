@@ -34,6 +34,20 @@ func insertLegacyEvent(t *testing.T, pool *pgxpool.Pool, caseID uuid.UUID, seq i
 	require.NoError(t, err)
 }
 
+// insertEvent004 writes an event the way a binary at schema 004 does, with
+// every column 004 added holding a non-default value.
+func insertEvent004(t *testing.T, pool *pgxpool.Pool, caseID uuid.UUID, seq int64, kind workflow.EventKind) {
+	t.Helper()
+	_, err := pool.Exec(context.Background(), `
+        INSERT INTO workflow_event (id, case_id, seq, kind, from_state, to_state, action, actor_id, occurred_at, comment,
+            schema_version, detail, tenant, actor_kind, acting_as, on_behalf_of, via_client, request_id, trace_id, span_id)
+        VALUES ($1, $2, $3, $4, 'draft', 'review', 'submit', 'u1', now(), 'ok',
+            2, '{"k": "v"}', 'tenant-a', 'human', 'approver', 'u2', 'web', 'req-1',
+            '4bf92f3577b34da6a3ce929d0e0e4736', '00f067aa0ba902b7')`,
+		uuid.New(), caseID, seq, string(kind))
+	require.NoError(t, err)
+}
+
 // seedCaseBefore007 stores a case and its events with seqs 1..events the way
 // a binary of a schema older than 007 would: the repository of this version
 // needs migration 007 to append or read events, so tests that stop at an
@@ -388,7 +402,12 @@ func TestMigration004_DownRestoresPreviousSchema(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(pool.Close)
 
-	c := seedCaseBefore007(t, pool, "", "down-1", 1)
+	// One legacy row and one that holds every 004 column, so Down drops
+	// columns that carry data, not only defaults.
+	c := seedCaseBefore007(t, pool, "tenant-a", "down-1", 1)
+	insertEvent004(t, pool, c.ID, 2, workflow.EventMoved)
+	_, err = pool.Exec(ctx, `UPDATE workflow_case SET last_seq = 2 WHERE id = $1`, c.ID)
+	require.NoError(t, err)
 
 	require.NoError(t, migrate.Down(ctx, connStr, migrations.FS(), opts), "a clean rollback of 004 must succeed")
 
@@ -408,7 +427,14 @@ func TestMigration004_DownRestoresPreviousSchema(t *testing.T) {
 
 	var events int
 	require.NoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM workflow_event WHERE case_id = $1`, c.ID).Scan(&events))
-	assert.Equal(t, 1, events, "rows survive the rollback")
+	assert.Equal(t, 2, events, "rows survive the rollback")
+
+	var kind, from, to, action, actor, comment string
+	require.NoError(t, pool.QueryRow(ctx, `
+        SELECT kind, from_state, to_state, action, actor_id, comment
+        FROM workflow_event WHERE case_id = $1 AND seq = 2`, c.ID).Scan(&kind, &from, &to, &action, &actor, &comment))
+	assert.Equal(t, []string{string(workflow.EventMoved), "draft", "review", "submit", "u1", "ok"},
+		[]string{kind, from, to, action, actor, comment}, "the pre-004 columns of a 004 row keep their values")
 }
 
 func TestMigration004_DownFailsWhileTwoTenantsShareAnExternalID(t *testing.T) {
