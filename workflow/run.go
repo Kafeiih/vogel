@@ -217,11 +217,11 @@ func (r *caseRun) touch(id uuid.UUID) {
 
 // emit plans evt as the call's next event, assigning its Seq, time and
 // actor, and returns the Seq.
-func (r *caseRun) emit(evt Event) int64 {
+func (r *caseRun) emit(evt *Event) int64 {
 	evt.Seq = r.baseSeq + int64(len(r.events)) + 1
 	evt.OccurredAt = r.now
 	evt.Actor = r.actor
-	r.events = append(r.events, evt)
+	r.events = append(r.events, *evt)
 	return evt.Seq
 }
 
@@ -247,7 +247,7 @@ func (e *Engine) route(ctx context.Context, db pgxtx.DBTX, run *caseRun, tok *To
 		if !ok {
 			return fmt.Errorf("transition %q: destination node %q not found in definition %q", tr.Action, tr.To, run.d.Key())
 		}
-		seq := run.emit(Event{
+		seq := run.emit(&Event{
 			Kind: EventMoved, TokenID: tok.ID, ScopeID: tok.ScopeID,
 			FromState: tok.Node, ToState: next.ID, Action: tr.Action, Comment: comment,
 		})
@@ -348,7 +348,7 @@ func (e *Engine) split(ctx context.Context, db pgxtx.DBTX, run *caseRun, tok *To
 	if err != nil {
 		return err
 	}
-	seq := run.emit(Event{
+	seq := run.emit(&Event{
 		Kind: EventSplit, TokenID: tok.ID, ScopeID: tok.ScopeID,
 		FromState: node.ID, ToState: node.ID, Detail: detail,
 	})
@@ -373,7 +373,7 @@ func (e *Engine) arrive(ctx context.Context, db pgxtx.DBTX, run *caseRun, tok *T
 		return fmt.Errorf("token %s arrived at join %q outside its block", tok.ID, node.ID)
 	}
 	tok.Status = TokenWaiting
-	run.emit(Event{
+	run.emit(&Event{
 		Kind: EventWaiting, TokenID: tok.ID, ScopeID: tok.ScopeID,
 		FromState: node.ID, ToState: node.ID,
 	})
@@ -399,6 +399,8 @@ func (e *Engine) tryJoin(ctx context.Context, db pgxtx.DBTX, run *caseRun, scope
 			waiting = append(waiting, t)
 		case TokenCancelled:
 			cancelled++
+		case TokenActive, TokenConsumed:
+			// Still on its way, or a nested split consumed it: not arrived.
 		}
 	}
 	if len(waiting) == 0 || len(waiting)+cancelled != scope.Expected {
@@ -425,7 +427,7 @@ func (e *Engine) tryJoin(ctx context.Context, db pgxtx.DBTX, run *caseRun, scope
 	if err != nil {
 		return err
 	}
-	seq := run.emit(Event{
+	seq := run.emit(&Event{
 		Kind: EventJoined, TokenID: next.ID, ScopeID: scope.ID,
 		FromState: join.ID, ToState: join.ID, Detail: detail,
 	})
@@ -455,7 +457,7 @@ func (r *caseRun) closeCase(tok *Token, node Node, action string) error {
 	if tok.ScopeID != r.c.ID {
 		return fmt.Errorf("token %s reached terminal node %q inside a block", tok.ID, node.ID)
 	}
-	seq := r.emit(Event{
+	seq := r.emit(&Event{
 		Kind: EventClosed, TokenID: tok.ID, ScopeID: tok.ScopeID,
 		FromState: node.ID, ToState: node.ID, Action: action,
 	})

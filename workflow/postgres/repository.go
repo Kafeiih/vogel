@@ -34,6 +34,7 @@ const eventReadColumns = eventColumns + `, COALESCE(token_id, case_id), COALESCE
 
 const scopeColumns = `id, case_id, parent_id, split_node, join_node, expected, status, opened_seq, closed_seq`
 
+//nolint:gosec // G101 false positive: a column list of workflow_token, not a credential
 const tokenColumns = `id, case_id, scope_id, node, position, unit, status, assigned_to, deadline_at,
     entered_seq, entered_at, ended_seq, ended_at`
 
@@ -486,6 +487,7 @@ func (r *Repository) ListTokens(ctx context.Context, db pgxtx.DBTX, caseID uuid.
 const prefixedCaseColumns = `c.id, c.definition, c.version, c.domain, c.external_id, c.unit, c.state, c.status,
     c.assigned_to, c.opened_at, c.closed_at, c.deadline_at, c.revision, c.last_seq, c.tenant`
 
+//nolint:gosec // G101 false positive: a column list of workflow_token, not a credential
 const prefixedTokenColumns = `t.id, t.case_id, t.scope_id, t.node, t.position, t.unit, t.status, t.assigned_to, t.deadline_at,
     t.entered_seq, t.entered_at, t.ended_seq, t.ended_at`
 

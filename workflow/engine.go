@@ -744,7 +744,7 @@ func (e *Engine) MoveDetailed(ctx context.Context, db pgxtx.DBTX, in MoveInput) 
 	if in.Step != nil {
 		// The submission is recorded at the node it was made in, before the
 		// human hop that leaves it.
-		run.emit(Event{
+		run.emit(&Event{
 			Kind: EventStepSubmitted, TokenID: tok.ID, ScopeID: tok.ScopeID,
 			FromState: tok.Node, ToState: tok.Node, Action: in.Action, Detail: stepDetail,
 		})
@@ -883,7 +883,7 @@ func (e *Engine) ClaimWith(ctx context.Context, db pgxtx.DBTX, in ClaimInput) (*
 	run.begin(e.now(), actor)
 	tok.AssignedTo = actor.ID
 	run.touch(tok.ID)
-	run.emit(Event{
+	run.emit(&Event{
 		Kind: EventAssigned, TokenID: tok.ID, ScopeID: tok.ScopeID,
 		FromState: tok.Node, ToState: tok.Node, Detail: detail,
 	})
@@ -926,7 +926,7 @@ func (e *Engine) ReleaseWith(ctx context.Context, db pgxtx.DBTX, in ReleaseInput
 	run.begin(e.now(), actor)
 	tok.AssignedTo = ""
 	run.touch(tok.ID)
-	run.emit(Event{
+	run.emit(&Event{
 		Kind: EventUnassigned, TokenID: tok.ID, ScopeID: tok.ScopeID,
 		FromState: tok.Node, ToState: tok.Node, Detail: detail,
 	})
@@ -1149,15 +1149,15 @@ func (e *Engine) Cancel(ctx context.Context, db pgxtx.DBTX, in CancelInput) (*Ca
 		}
 	}
 	sortTokens(live)
-	for _, l := range live {
-		t := run.token(l.ID)
-		seq := run.emit(Event{
+	for i := range live {
+		t := run.token(live[i].ID)
+		seq := run.emit(&Event{
 			Kind: EventTokenCancelled, TokenID: t.ID, ScopeID: t.ScopeID,
 			FromState: t.Node, ToState: t.Node, Detail: detail,
 		})
 		run.end(t, TokenCancelled, seq)
 	}
-	seq := run.emit(Event{
+	seq := run.emit(&Event{
 		Kind: EventCancelled, TokenID: c.ID, ScopeID: c.ID,
 		FromState: c.State, ToState: c.State, Detail: detail,
 	})
@@ -1253,7 +1253,7 @@ func (e *Engine) CancelToken(ctx context.Context, db pgxtx.DBTX, in CancelTokenI
 	}
 
 	run.begin(e.now(), actor)
-	seq := run.emit(Event{
+	seq := run.emit(&Event{
 		Kind: EventTokenCancelled, TokenID: tok.ID, ScopeID: tok.ScopeID,
 		FromState: tok.Node, ToState: tok.Node, Detail: detail,
 	})

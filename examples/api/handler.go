@@ -545,8 +545,8 @@ func (h *DocumentHandler) Inbox(w http.ResponseWriter, r *http.Request) {
 	// The document workflow never splits, so each work item is its case's
 	// only token: the response stays a list of cases.
 	cases := make([]workflow.Case, len(items))
-	for i, it := range items {
-		cases[i] = it.Case
+	for i := range items {
+		cases[i] = items[i].Case
 	}
 	response.JSON(w, http.StatusOK, cases)
 }

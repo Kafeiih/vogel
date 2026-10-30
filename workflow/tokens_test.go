@@ -802,7 +802,7 @@ func assertInvariants(t *testing.T, e *Engine, repo *fakeRepository, caseID uuid
 		}
 	}
 	for _, tok := range tokens {
-		if n, _ := d.Node(tok.Node); !(tok.Status == TokenConsumed && n.Kind.IsSplit()) {
+		if n, _ := d.Node(tok.Node); tok.Status != TokenConsumed || !n.Kind.IsSplit() {
 			branches[tok.ScopeID]++
 		}
 		switch tok.Status {
@@ -810,6 +810,7 @@ func assertInvariants(t *testing.T, e *Engine, repo *fakeRepository, caseID uuid
 			active = append(active, tok)
 		case TokenWaiting:
 			waiting = append(waiting, tok)
+		case TokenConsumed, TokenCancelled:
 		}
 	}
 
@@ -947,6 +948,8 @@ func replay(t *testing.T, d Definition, c *Case, events []Event) ([]Token, []Sco
 			var detail AssignmentDetail
 			require.NoError(t, json.Unmarshal(ev.Detail, &detail))
 			tokens[ev.TokenID].AssignedTo = detail.To
+		case EventStepSubmitted, EventNoRoute, EventFailed:
+			// They change no token or scope.
 		}
 	}
 	outT := make([]Token, 0, len(tokenOrder))

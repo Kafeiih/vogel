@@ -181,9 +181,9 @@ func (s *Service) activeToken(ctx context.Context, db pgxtx.DBTX, caseID, tokenI
 		return workflow.Token{}, err
 	}
 	var active []workflow.Token
-	for _, t := range tokens {
-		if t.Status == workflow.TokenActive {
-			active = append(active, t)
+	for i := range tokens {
+		if tokens[i].Status == workflow.TokenActive {
+			active = append(active, tokens[i])
 		}
 	}
 	if tokenID == uuid.Nil {
@@ -196,9 +196,9 @@ func (s *Service) activeToken(ctx context.Context, db pgxtx.DBTX, caseID, tokenI
 			return workflow.Token{}, workflow.ErrTokenRequired
 		}
 	}
-	for _, t := range active {
-		if t.ID == tokenID {
-			return t, nil
+	for i := range active {
+		if active[i].ID == tokenID {
+			return active[i], nil
 		}
 	}
 	return workflow.Token{}, workflow.ErrTokenNotFound
@@ -309,7 +309,8 @@ func (s *Service) related(ctx context.Context, actor string, c *workflow.Case) (
 	if err != nil {
 		return false, err
 	}
-	for _, t := range tokens {
+	for i := range tokens {
+		t := &tokens[i]
 		if t.Status != workflow.TokenActive {
 			continue
 		}
