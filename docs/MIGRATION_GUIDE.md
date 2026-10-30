@@ -1265,6 +1265,25 @@ puerto `Repository`. El detalle de cada cambio está en el CHANGELOG
    guardar fuera de la base el `Digest` del último evento de cada caso (una
    exportación, un log firmado) y compararlo.
 
+### `action/migrations` (conjunto nuevo, opcional)
+
+`action/migrations` es un conjunto de migraciones nuevo, con su propia tabla
+de versión `action_db_version` (`migrations.DefaultTableName`). Como todo
+conjunto de `vogel`, numera desde `001`, así que no puede compartir tabla con
+`goose_db_version`, `vogel_db_version`, `workflow_db_version` ni
+`document_db_version`: se pasa a `migrate.Up` con
+`migrate.Options{TableName: migrations.DefaultTableName}`, igual que los demás.
+`001_create_action_attempt.sql` crea `action_attempt`, de sólo agregado (los
+mismos triggers y SQLSTATE 23001 que `audit_log`).
+
+Sólo hace falta si el worker escribe el registro de intentos con
+`action.WithAttemptLog(pool)`; sin esa opción, `action.Worker` no escribe nada
+y la tabla no se usa. Aplicar la migración antes de desplegar el worker con la
+opción: sin la tabla, cada intento falla al escribir su fila (el trabajo no
+falla; el error se registra y suma en `vogel_action_attempt_log_errors_total`).
+Con roles separados, el rol del worker necesita `SELECT, INSERT` sobre
+`action_attempt` y `SELECT` sobre `action_db_version`.
+
 ## Verificación posterior
 
 Después de migrar cada paquete (o cada tanda, según el orden recomendado):

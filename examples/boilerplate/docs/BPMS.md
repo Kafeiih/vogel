@@ -18,10 +18,13 @@ encola) y el worker (que ejecuta) llaman a la misma función, así que los dos
 registran exactamente los mismos efectos. La API no corre ningún efecto:
 solo los encola; el worker los ejecuta con `action.AddWorker`.
 
-`migrate up` aplica tres conjuntos de migraciones más, cada uno con su tabla
-de versión: `vogel/workflow/migrations` (`workflow_db_version`),
-`vogel/document/migrations` (`document_db_version`) y las del dominio de
+`migrate up` aplica cuatro conjuntos de migraciones más, cada uno con su
+tabla de versión: `vogel/workflow/migrations` (`workflow_db_version`),
+`vogel/document/migrations` (`document_db_version`),
+`vogel/action/migrations` (`action_db_version`) y las del dominio de
 procesos, `internal/infrastructure/bpms/migrations` (`bpms_db_version`).
+El worker corre los efectos con `action.WithAttemptLog(pool)`, así que cada
+intento deja una fila en `action_attempt`.
 
 ## El dominio de procesos
 
