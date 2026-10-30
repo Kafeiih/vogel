@@ -238,7 +238,7 @@ Down is only safe before any case has split (Inferred). Document that Down on a 
 | T7 | S10 | inline | done | commit B |
 | T8 | S12 S15 | inline | done | engine part commit B; action `TokenID` RED → GREEN, commit C |
 | T9 | S13 S14 (migration 008, shim, random walk) | inline | done (migration tests pending CI) | random walk 40 seeds × 3 cases green, mutation-checked; differential vs v0.18.0 identical (L9); commit B |
-| T10 | S16 | inline | pending | — |
+| T10 | S16 | inline | done | boilerplate handler tests RED→GREEN; `TestInbox_FiltersByProfileInTheDatabase` (integration, compile only) pins E-D1/E-D2; `check-generated.sh` all combinations OK; commit D |
 
 Risk: items 1 (persisted format, data migration), 3 (public API) and 4 (concurrency: join race) → an independent verifier for T4 and T9 at least. T4 and T9 each get their own commit so a review can take them alone.
 

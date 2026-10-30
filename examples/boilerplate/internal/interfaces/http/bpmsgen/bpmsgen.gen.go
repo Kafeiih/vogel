@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -76,6 +77,9 @@ type Case struct {
 	AssignedTo *string            `json:"assignedTo,omitempty"`
 	OpenedAt   time.Time          `json:"openedAt"`
 	ClosedAt   *time.Time         `json:"closedAt,omitempty"`
+
+	// TokenId Set on inbox entries, the work item's token.
+	TokenId *openapi_types.UUID `json:"tokenId,omitempty"`
 }
 
 // CaseListResponse defines model for CaseListResponse.
@@ -180,6 +184,15 @@ type Submission struct {
 	Values *map[string]interface{} `json:"values,omitempty"`
 }
 
+// SubmitRequest defines model for SubmitRequest.
+type SubmitRequest struct {
+	Action *string `json:"action,omitempty"`
+
+	// TokenId The work item to move; optional while the case has a single active token.
+	TokenId *openapi_types.UUID     `json:"tokenId,omitempty"`
+	Values  *map[string]interface{} `json:"values,omitempty"`
+}
+
 // ValidationErrorResponse defines model for ValidationErrorResponse.
 type ValidationErrorResponse struct {
 	Code ValidationErrorResponseCode `json:"code"`
@@ -205,6 +218,9 @@ type ID = string
 // ProcessName defines model for ProcessName.
 type ProcessName = string
 
+// TokenID defines model for TokenID.
+type TokenID = openapi_types.UUID
+
 // BpmsBadRequest defines model for BpmsBadRequest.
 type BpmsBadRequest = BadRequestResponse
 
@@ -229,8 +245,14 @@ type Unauthorized = ErrorResponse
 // UnprocessableEntity defines model for UnprocessableEntity.
 type UnprocessableEntity = ErrorResponse
 
+// ClaimCaseParams defines parameters for ClaimCase.
+type ClaimCaseParams struct {
+	// TokenId The work item (token) to act on. Optional while the case has a single active token; required while it runs parallel branches.
+	TokenId *TokenID `form:"tokenId,omitempty" json:"tokenId,omitempty"`
+}
+
 // SubmitCaseJSONRequestBody defines body for SubmitCase for application/json ContentType.
-type SubmitCaseJSONRequestBody = Submission
+type SubmitCaseJSONRequestBody = SubmitRequest
 
 // PublishProcessJSONRequestBody defines body for PublishProcess for application/json ContentType.
 type PublishProcessJSONRequestBody = ProcessSpec
@@ -307,7 +329,7 @@ type ServerInterface interface {
 	GetCase(w http.ResponseWriter, r *http.Request, id ID)
 	// ClaimCase Claim a case
 	// (POST /cases/{id}/claim)
-	ClaimCase(w http.ResponseWriter, r *http.Request, id ID)
+	ClaimCase(w http.ResponseWriter, r *http.Request, id ID, params ClaimCaseParams)
 	// SubmitCase Submit an action
 	// (POST /cases/{id}/submit)
 	SubmitCase(w http.ResponseWriter, r *http.Request, id ID)
@@ -337,7 +359,7 @@ func (_ Unimplemented) GetCase(w http.ResponseWriter, r *http.Request, id ID) {
 
 // ClaimCase Claim a case
 // (POST /cases/{id}/claim)
-func (_ Unimplemented) ClaimCase(w http.ResponseWriter, r *http.Request, id ID) {
+func (_ Unimplemented) ClaimCase(w http.ResponseWriter, r *http.Request, id ID, params ClaimCaseParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -421,8 +443,24 @@ func (siw *ServerInterfaceWrapper) ClaimCase(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ClaimCaseParams
+
+	// ------------- Optional query parameter "tokenId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "tokenId", r.URL.Query(), &params.TokenId, runtime.BindQueryParameterOptions{Type: "string", Format: "uuid"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "tokenId"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "tokenId", Err: err})
+		}
+		return
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.ClaimCase(w, r, id)
+		siw.Handler.ClaimCase(w, r, id, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -793,7 +831,8 @@ func (response GetCase500JSONResponse) VisitGetCaseResponse(w http.ResponseWrite
 }
 
 type ClaimCaseRequestObject struct {
-	Id ID `json:"id"`
+	Id     ID `json:"id"`
+	Params ClaimCaseParams
 }
 
 type ClaimCaseResponseObject interface {
@@ -1522,10 +1561,11 @@ func (sh *strictHandler) GetCase(w http.ResponseWriter, r *http.Request, id ID) 
 }
 
 // ClaimCase operation middleware
-func (sh *strictHandler) ClaimCase(w http.ResponseWriter, r *http.Request, id ID) {
+func (sh *strictHandler) ClaimCase(w http.ResponseWriter, r *http.Request, id ID, params ClaimCaseParams) {
 	var request ClaimCaseRequestObject
 
 	request.Id = id
+	request.Params = params
 
 	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
 		return sh.ssi.ClaimCase(ctx, request.(ClaimCaseRequestObject))

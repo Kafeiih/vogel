@@ -78,25 +78,28 @@ func (s *Service) Start(ctx context.Context, actor, process, action string, valu
 	return c, err
 }
 
-func (s *Service) Inbox(ctx context.Context, actor string) ([]workflow.Case, error) {
+// Inbox returns the work items the actor can act on: the unclaimed tokens
+// whose (position, unit) the actor holds, then the tokens claimed by them.
+// The holder check runs once per distinct eligibility the catalog declares,
+// and the database filters the tokens by it, so the page is never cut short
+// by a filter applied after it and no case costs a resolver call of its own.
+func (s *Service) Inbox(ctx context.Context, actor string) ([]workflow.WorkItem, error) {
 	states := s.profiledStates()
 	if len(states) == 0 {
 		return nil, nil
 	}
-
-	unclaimed, err := s.engine.Inbox(ctx, s.db, workflow.InboxFilter{Domain: CaseDomain, States: states, Unassigned: true})
+	held, err := s.heldEligibilities(ctx, actor)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]workflow.Case, 0, len(unclaimed))
-	for i := range unclaimed {
-		ok, err := s.holdsCurrent(ctx, s.db, unclaimed[i].ID, actor)
+
+	var out []workflow.WorkItem
+	if len(held) > 0 {
+		unclaimed, err := s.engine.Inbox(ctx, s.db, workflow.InboxFilter{Domain: CaseDomain, Eligibility: held, Unassigned: true})
 		if err != nil {
 			return nil, err
 		}
-		if ok {
-			out = append(out, unclaimed[i])
-		}
+		out = append(out, unclaimed...)
 	}
 
 	claimed, err := s.engine.Inbox(ctx, s.db, workflow.InboxFilter{Domain: CaseDomain, States: states, AssignedTo: actor})
@@ -120,34 +123,108 @@ func (s *Service) profiledStates() []string {
 	return states
 }
 
-func (s *Service) Claim(ctx context.Context, actor string, caseID uuid.UUID) (*workflow.Case, error) {
+// heldEligibilities returns the distinct eligibilities declared by the
+// catalog's nodes that actor holds. Cases are opened without a unit, so a
+// node's eligibility resolves to its own unit, the value its tokens store.
+func (s *Service) heldEligibilities(ctx context.Context, actor string) ([]workflow.Eligibility, error) {
+	seen := map[workflow.Eligibility]bool{}
+	var held []workflow.Eligibility
+	for _, p := range s.catalog.All() {
+		for _, n := range p.Definition.Nodes {
+			if n.Eligible.IsZero() {
+				continue
+			}
+			e := workflow.Eligibility{Position: n.Eligible.Position, Unit: n.Eligible.ResolveUnit("")}
+			if seen[e] {
+				continue
+			}
+			seen[e] = true
+			ok, err := domain.Holds(ctx, s.profiles, e, actor)
+			if err != nil {
+				return nil, err
+			}
+			if ok {
+				held = append(held, e)
+			}
+		}
+	}
+	return held, nil
+}
+
+// Claim assigns a token of the case to the actor, who must hold its
+// eligibility. A zero tokenID names the case's only active token.
+func (s *Service) Claim(ctx context.Context, actor string, caseID, tokenID uuid.UUID) (*workflow.Case, error) {
 	var c *workflow.Case
 	err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
-		ok, err := s.holdsCurrent(ctx, tx, caseID, actor)
+		tok, err := s.activeToken(ctx, tx, caseID, tokenID)
+		if err != nil {
+			return err
+		}
+		ok, err := domain.Holds(ctx, s.profiles, tok.Eligible, actor)
 		if err != nil {
 			return err
 		}
 		if !ok {
 			return domain.ErrNotHolder
 		}
-		c, err = s.engine.Claim(ctx, tx, caseID, actor)
+		c, err = s.engine.ClaimWith(ctx, tx, workflow.ClaimInput{CaseID: caseID, TokenID: tok.ID, Actor: workflow.Actor{Kind: workflow.ActorHuman, ID: actor}})
 		return err
 	})
 	return c, err
 }
 
-func (s *Service) Submit(ctx context.Context, actor string, caseID uuid.UUID, action string, values map[string]any) (*workflow.Case, error) {
+// activeToken returns the active token tokenID names, or the case's only
+// active token when tokenID is zero (workflow.ErrTokenRequired with several).
+func (s *Service) activeToken(ctx context.Context, db pgxtx.DBTX, caseID, tokenID uuid.UUID) (workflow.Token, error) {
+	tokens, err := s.engine.Tokens(ctx, db, caseID)
+	if err != nil {
+		return workflow.Token{}, err
+	}
+	var active []workflow.Token
+	for _, t := range tokens {
+		if t.Status == workflow.TokenActive {
+			active = append(active, t)
+		}
+	}
+	if tokenID == uuid.Nil {
+		switch len(active) {
+		case 1:
+			return active[0], nil
+		case 0:
+			return workflow.Token{}, workflow.ErrCaseClosed
+		default:
+			return workflow.Token{}, workflow.ErrTokenRequired
+		}
+	}
+	for _, t := range active {
+		if t.ID == tokenID {
+			return t, nil
+		}
+	}
+	return workflow.Token{}, workflow.ErrTokenNotFound
+}
+
+// Submit moves a token of the case with its form values. A zero tokenID
+// names the case's only active token.
+func (s *Service) Submit(ctx context.Context, actor string, caseID, tokenID uuid.UUID, action string, values map[string]any) (*workflow.Case, error) {
 	var c *workflow.Case
+	// moved is the token Move was asked to move, for the failure record.
+	moved := tokenID
 	err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
 		current, err := s.cases.GetByID(ctx, tx, caseID)
 		if err != nil {
 			return err
 		}
-		if current.Status == workflow.StatusClosed {
+		if current.Status != workflow.StatusOpen {
 			return workflow.ErrCaseClosed
 		}
+		tok, err := s.activeToken(ctx, tx, caseID, tokenID)
+		if err != nil {
+			return err
+		}
+		moved = tok.ID
 		// Engine.Move does not compare its actor with the assignee.
-		if current.AssignedTo != actor {
+		if tok.AssignedTo != actor {
 			return domain.ErrNotClaimant
 		}
 		p, ok := s.catalog.Get(current.Definition, current.Version)
@@ -158,14 +235,14 @@ func (s *Service) Submit(ctx context.Context, actor string, caseID uuid.UUID, ac
 		if err != nil {
 			return err
 		}
-		clean, err := p.ValidateNode(current.State, values, caseData)
+		clean, err := p.ValidateNode(tok.Node, values, caseData)
 		if err != nil {
 			return err
 		}
-		if err := s.values.Save(ctx, tx, caseID, current.State, actor, clean); err != nil {
+		if err := s.values.Save(ctx, tx, caseID, tok.Node, actor, clean); err != nil {
 			return err
 		}
-		c, err = s.engine.Move(ctx, tx, workflow.MoveInput{CaseID: caseID, Action: action, Actor: workflow.Actor{Kind: workflow.ActorHuman, ID: actor}})
+		c, err = s.engine.Move(ctx, tx, workflow.MoveInput{CaseID: caseID, TokenID: tok.ID, Action: action, Actor: workflow.Actor{Kind: workflow.ActorHuman, ID: actor}})
 		return err
 	})
 	// The rejected move was rolled back with its form values; its record goes
@@ -173,7 +250,7 @@ func (s *Service) Submit(ctx context.Context, actor string, caseID uuid.UUID, ac
 	if kind, ok := workflow.FailureKindOf(err); ok {
 		rerr := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
 			_, err := s.engine.RecordFailure(ctx, tx, workflow.FailureInput{
-				CaseID: caseID, Actor: workflow.Actor{Kind: workflow.ActorHuman, ID: actor}, Action: action, Kind: kind,
+				CaseID: caseID, TokenID: moved, Actor: workflow.Actor{Kind: workflow.ActorHuman, ID: actor}, Action: action, Kind: kind,
 			})
 			return err
 		})
@@ -215,9 +292,6 @@ func (s *Service) View(ctx context.Context, actor string, caseID uuid.UUID) (*Ca
 }
 
 func (s *Service) related(ctx context.Context, actor string, c *workflow.Case) (bool, error) {
-	if c.AssignedTo == actor {
-		return true, nil
-	}
 	events, err := s.engine.History(ctx, s.db, c.ID)
 	if err != nil {
 		return false, err
@@ -228,16 +302,24 @@ func (s *Service) related(ctx context.Context, actor string, c *workflow.Case) (
 			return true, nil
 		}
 	}
-	if c.Status == workflow.StatusClosed {
+	if c.Status != workflow.StatusOpen {
 		return false, nil
 	}
-	return s.holdsCurrent(ctx, s.db, c.ID, actor)
-}
-
-func (s *Service) holdsCurrent(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID, actor string) (bool, error) {
-	e, err := s.engine.EligibilityFor(ctx, db, caseID)
+	tokens, err := s.engine.Tokens(ctx, s.db, c.ID)
 	if err != nil {
 		return false, err
 	}
-	return domain.Holds(ctx, s.profiles, e, actor)
+	for _, t := range tokens {
+		if t.Status != workflow.TokenActive {
+			continue
+		}
+		if t.AssignedTo == actor {
+			return true, nil
+		}
+		ok, err := domain.Holds(ctx, s.profiles, t.Eligible, actor)
+		if err != nil || ok {
+			return ok, err
+		}
+	}
+	return false, nil
 }

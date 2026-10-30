@@ -1202,9 +1202,10 @@ BPM/workflow genérico disponible para adoptar cuando la app lo necesite,
 independiente de esta migración: `Definition` (nodos, transiciones,
 guardas), `Case`, `Event`, y el puerto `Repository`
 (`workflow/postgres.Repository`: `Create`, `GetByID`, `GetByExternalID`,
-`Update`, `AppendEvent`, `ListEvents`, `ListByEligibility`,
-`AdvanceLastSeq`, `ListParticipated`, `ListEventDigests`). Su migración de
-esquema propia (`001_create_workflow.sql` a `007_workflow_event_digest.sql`, tabla de versión
+`Update`, `AppendEvent`, `ListEvents`, `ListWorkItems`,
+`AdvanceLastSeq`, `ListParticipated`, `ListEventDigests` y los métodos de
+tokens y scopes). Su migración de
+esquema propia (`001_create_workflow.sql` a `008_workflow_tokens.sql`, tabla de versión
 `workflow_db_version`) se aplica solo si la app decide usarlo — no es parte
 de la migración del código duplicado existente.
 
@@ -1264,6 +1265,66 @@ puerto `Repository`. El detalle de cada cambio está en el CHANGELOG
    evento alterado o quitado. Para detectar también una reescritura completa,
    guardar fuera de la base el `Digest` del último evento de cada caso (una
    exportación, un log firmado) y compararlo.
+
+#### De un estado a tokens
+
+Desde esta versión un caso puede tener ramas en paralelo: su estado vive en
+tokens (`workflow_token`) agrupados en scopes (`workflow_scope`), y
+`Case.State`, `Case.AssignedTo` y `Case.DeadlineAt` pasan a ser proyecciones.
+Una definición sin `NodeParallel`/`NodeInclusive` se comporta exactamente como
+antes: su caso tiene un único token cuyo id es el del caso. El detalle está en
+el CHANGELOG (`[Unreleased]`); estos son los pasos.
+
+1. **Detener los binarios viejos, migrar y arrancar los nuevos, todos
+   juntos.** La `008_workflow_tokens.sql` crea las tablas, agrega
+   `workflow_event.token_id`/`scope_id` y materializa un scope raíz y un token
+   raíz por caso existente. Un despliegue escalonado **no es seguro**: un
+   binario anterior mueve el caso sin mover su token, y los dos quedan
+   desalineados. Como con la `003`, primero se reemplazan todos los binarios.
+   La `008` construye un índice único sobre `workflow_event` dentro de su
+   transacción y bloquea los agregados mientras dura; en una tabla grande,
+   aplicarla en una ventana de mantención. Su `Down` sólo es seguro si
+   ningún caso se bifurcó: con casos en paralelo pierde el estado de las
+   ramas.
+2. **Rellenar la elegibilidad de los tokens migrados.** La `008` no puede
+   saber la posición y unidad de un nodo (viven en la `Definition`, no en
+   SQL), así que los tokens migrados no calzan con `InboxFilter.Eligibility`
+   hasta que su caso se vuelve a escribir. Llamar una vez por caso abierto,
+   con los binarios nuevos ya arriba:
+
+   ```go
+   wrote, err := engine.RefreshEligibility(ctx, tx, caseID)
+   ```
+
+   `InboxFilter.States` sí calza con los tokens migrados desde el primer
+   momento.
+3. **El inbox devuelve `WorkItem`.** `Engine.Inbox` devuelve
+   `[]workflow.WorkItem{Case, Token}`, uno por token activo; `States`,
+   `AssignedTo`, `Unassigned` y `Overdue` se aplican al token y la página
+   cuenta tokens, no casos. Mostrar `item.Token.Node` y
+   `item.Token.AssignedTo`, y guardar `item.Token.ID` para actuar sobre él.
+   En vez de traer una página y filtrar por posición en la aplicación (lo
+   que corta la página y llama al resolvedor una vez por caso), pasar las
+   `(posición, unidad)` que la persona ocupa en `InboxFilter.Eligibility`,
+   como `process.Service.Inbox` en `examples/boilerplate`.
+4. **Actuar sobre un token.** `MoveInput.TokenID`, `ClaimInput.TokenID` y
+   `ReleaseInput.TokenID` nombran el token; en cero significan "el único
+   token activo" y fallan con `workflow.ErrTokenRequired` si hay varios.
+   `Available`/`EligibilityFor` tienen sus variantes por token
+   (`AvailableFor`, `EligibilityForToken`). Leer `Case.State` sólo para casos
+   sin ramas: vale `""` mientras el caso corre en paralelo.
+5. **Repositorio propio o fake.** `Repository` cambia `ListByEligibility` por
+   `ListWorkItems` y suma `CreateScope`, `UpdateScope`, `ListScopes`,
+   `CreateToken`, `UpdateToken` y `ListTokens`. Quien usa
+   `workflow/postgres.Repository` no tiene que hacer nada.
+6. **Nuevo estado `cancelled`.** `Engine.Cancel` deja el caso en
+   `workflow.StatusCancelled`: un `switch` sobre `Case.Status` debe
+   contemplarlo. `Move`, `Claim` y `Cancel` sobre un caso cancelado fallan con
+   `ErrCaseClosed`.
+7. **Eventos y efectos.** Cada evento nuevo lleva `TokenID`/`ScopeID`
+   (`CurrentEventSchema` pasa a 3; los eventos anteriores se leen como el
+   token raíz), y `action.Args`/`action.Run` llevan el `TokenID` del evento
+   que causó el efecto. La cadena de la `007` no cubre esas dos columnas.
 
 ## Verificación posterior
 

@@ -6,6 +6,99 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ## [Unreleased]
 
+### Agregado
+
+- **Ramas en paralelo en `workflow` con el modelo de tokens.** Nuevos tipos de
+  nodo `NodeParallel` (`"parallel"`, split AND: toma todas sus salidas, sin
+  guardas), `NodeInclusive` (`"inclusive"`, split OR: toma cada ruta cuya
+  guarda pasa, o la ruta por defecto sin guarda, declarada al final, si
+  ninguna pasa) y `NodeJoin` (`"join"`); un split nombra su join en
+  `Node.Join`. `Definition.Validate` exige bloques bien anidados: cada split
+  nombra un join existente y cada join lo nombra un único split; cada rama
+  llega a su propio join sin pasar por un nodo terminal, sin volver a entrar
+  al split y sin que se entre a ella desde fuera del bloque; las ramas
+  hermanas no comparten nodos; los nodos terminales sólo existen en el ámbito
+  raíz; un join tiene una única salida sin guarda; un retorno no cruza el
+  borde de un bloque; las compuertas rechazan `Eligible`, `Deadline`,
+  `Effects`, `Start` y `Terminal` (sus transiciones sí pueden declarar
+  efectos); las rutas que salen de un split no declaran `CommentPolicy`; y no
+  hay ciclos formados sólo por compuertas.
+- `Token`, `Scope`, `TokenStatus` (`active`, `waiting`, `consumed`,
+  `cancelled`) y `ScopeStatus` (`open`, `joined`, `cancelled`, `closed`). El
+  scope raíz y el token raíz de un caso comparten el id del caso. Un split
+  consume el token que llega, abre un scope con `Expected` igual a los tokens
+  que emite y enruta cada uno; un join espera hasta que los tokens en espera
+  más los cancelados sumen `Expected`, los consume y sigue con un token nuevo
+  en el scope padre. Todo cambio de tokens y scopes se escribe después del
+  compare-and-swap de `revision` del caso: dos ramas del mismo caso nunca
+  confirman a la vez (la segunda recibe `ErrConflict` y su reintento ve a la
+  otra en espera), y un join dispara una sola vez.
+- API por token: `MoveInput.TokenID`, `ClaimInput.TokenID`,
+  `ReleaseInput.TokenID` (cero = el único token activo), `Engine.Tokens`,
+  `Engine.AvailableFor`, `Engine.EligibilityForToken`,
+  `Engine.RefreshEligibility` (escribe la elegibilidad de los tokens que la
+  `008` materializó sin ella) y los errores `ErrTokenRequired` y
+  `ErrTokenNotFound`. `Node.Deadline` se aplica por token
+  (`Token.DeadlineAt`) e `InboxFilter.Overdue` lo evalúa por token. Un retorno
+  sólo ve el historial del scope del token que se mueve. `FailureInput.TokenID`
+  deja el registro de un movimiento rechazado en la rama de ese token (en cero
+  queda a nivel de caso, como antes).
+- `Engine.Cancel(CancelInput{CaseID, Actor, Reason})` cancela todos los
+  tokens activos y en espera (un evento `token_cancelled` cada uno), cierra
+  los scopes abiertos y deja el caso en `StatusCancelled` con un evento
+  `cancelled`; `Engine.CancelToken` cancela una rama y la cuenta para el join,
+  que puede disparar. Ambos exigen `Reason` (`ErrReasonRequired`), y
+  `CancelToken` falla con `ErrLastBranch` si dejaría su scope sin ramas vivas.
+- `Event.TokenID` y `Event.ScopeID`, y los tipos de evento `split`,
+  `waiting`, `joined`, `token_cancelled` y `cancelled` (detalles
+  `SplitDetail`, `JoinDetail`, `CancelDetail`). `MoveResult.Joined` informa
+  los joins que disparó la llamada, y `Config.JoinCheck` corre dentro de la
+  transacción antes de que un join se confirme: un error aborta la llamada
+  con `ErrJoinRejected` sin persistir nada, para imponer cómo se combinan los
+  datos de las ramas.
+- `InboxFilter.Eligibility` filtra en la base por la `(posición, unidad)`
+  resuelta que guarda cada token.
+- `action.Args.TokenID` y `action.Run.TokenID`: el token del evento que causó
+  el efecto. La unicidad de los trabajos no cambia.
+- Migración `008_workflow_tokens.sql`: tablas `workflow_scope` y
+  `workflow_token`, columnas nulas `workflow_event.token_id`/`scope_id` (los
+  eventos previos se leen como el token raíz, sin rellenar filas, así que los
+  triggers de la `005` siguen activos; la cadena de la `007` no cubre estas
+  columnas), el índice único `uq_workflow_event_joined_once` (un `joined` por
+  scope) y un scope y un token raíz por caso existente.
+- `examples/boilerplate`: el inbox devuelve un elemento por token, con
+  `tokenId`; `claim` acepta `?tokenId=` y `submit` acepta `tokenId` en el
+  cuerpo (`SubmitRequest`). El inbox filtra por perfil en la base con
+  `InboxFilter.Eligibility`, con una consulta al resolvedor por perfil
+  distinto del catálogo: ya no corta la página después de traerla (E-D1) ni
+  consulta el resolvedor una vez por caso (E-D2).
+
+### Cambios que rompen
+
+- **`Engine.Inbox` devuelve `[]WorkItem`** (caso y token), uno por token
+  activo; `States`, `AssignedTo`, `Unassigned` y `Overdue` se aplican al token
+  y la página cuenta tokens. `Repository.ListByEligibility` se reemplaza por
+  `ListWorkItems`. El orden sigue siendo el de antes (caso más antiguo
+  primero) y, dentro de un caso, los tokens en el orden en que entraron a su
+  nodo.
+- **`Repository` suma** `CreateScope`, `UpdateScope`, `ListScopes`,
+  `CreateToken`, `UpdateToken` y `ListTokens`: un repositorio propio o un fake
+  debe implementarlos.
+- **`Case.State`, `Case.AssignedTo` y `Case.DeadlineAt` son proyecciones**:
+  el nodo y el responsable del único token activo (vacíos mientras un caso
+  corre en paralelo) y el plazo activo más próximo.
+- **`Status` suma `cancelled`**: quien hace `switch` sobre `Case.Status` debe
+  contemplarlo.
+- **`CurrentEventSchema` pasa a 3.**
+- **La migración `008` es obligatoria antes de desplegar y todos los binarios
+  se reemplazan juntos**: un binario anterior mueve el caso sin mover su
+  token. Un caso abierto que un binario anterior creó después de la `008`,
+  sin tokens, recibe su token raíz al leerse y lo persiste en su siguiente
+  escritura; ese camino de compatibilidad está obsoleto y se quita en
+  v0.21.0.
+- Las definiciones sin splits se comportan como antes y `MoveInput.TokenID`
+  puede quedar en cero para ellas.
+
 ## [0.18.0] — 2026-10-30
 
 ### Cambios que rompen

@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kafeiih/vogel/workflow"
+	wfpostgres "github.com/kafeiih/vogel/workflow/postgres"
 
 	"github.com/kafeiih/vogel/examples/boilerplate/internal/application/process"
 	domain "github.com/kafeiih/vogel/examples/boilerplate/internal/domain/process"
@@ -52,11 +53,11 @@ func (a *app) startCase() uuid.UUID {
 
 func (a *app) inbox(actor string) []uuid.UUID {
 	a.t.Helper()
-	cases, err := a.d.Service.Inbox(a.ctx, actor)
+	items, err := a.d.Service.Inbox(a.ctx, actor)
 	require.NoError(a.t, err)
-	ids := make([]uuid.UUID, 0, len(cases))
-	for i := range cases {
-		ids = append(ids, cases[i].ID)
+	ids := make([]uuid.UUID, 0, len(items))
+	for i := range items {
+		ids = append(ids, items[i].Case.ID)
 	}
 	return ids
 }
@@ -111,10 +112,10 @@ func TestClaim_OnlyTheCurrentHolder(t *testing.T) {
 	id := a.startCase()
 	a.dir.Set("encargado", "atencion", "maria")
 
-	_, err := a.d.Service.Claim(a.ctx, "luis", id)
+	_, err := a.d.Service.Claim(a.ctx, "luis", id, uuid.Nil)
 	assert.ErrorIs(t, err, domain.ErrNotHolder)
 
-	c, err := a.d.Service.Claim(a.ctx, "maria", id)
+	c, err := a.d.Service.Claim(a.ctx, "maria", id, uuid.Nil)
 	require.NoError(t, err)
 	assert.Equal(t, "maria", c.AssignedTo)
 }
@@ -122,7 +123,7 @@ func TestClaim_OnlyTheCurrentHolder(t *testing.T) {
 func TestClaim_TheClaimantKeepsTheTaskWhenTheProfileChanges(t *testing.T) {
 	a := newApp(t)
 	id := a.startCase()
-	_, err := a.d.Service.Claim(a.ctx, "luis", id)
+	_, err := a.d.Service.Claim(a.ctx, "luis", id, uuid.Nil)
 	require.NoError(t, err)
 
 	a.dir.Set("encargado", "atencion", "maria")
@@ -135,37 +136,37 @@ func TestSubmit_OnlyTheClaimant(t *testing.T) {
 	a := newApp(t)
 	id := a.startCase()
 
-	_, err := a.d.Service.Submit(a.ctx, "luis", id, "responder", answer())
+	_, err := a.d.Service.Submit(a.ctx, "luis", id, uuid.Nil, "responder", answer())
 	assert.ErrorIs(t, err, domain.ErrNotClaimant, "an unclaimed case cannot be submitted")
 
-	_, err = a.d.Service.Claim(a.ctx, "luis", id)
+	_, err = a.d.Service.Claim(a.ctx, "luis", id, uuid.Nil)
 	require.NoError(t, err)
-	_, err = a.d.Service.Submit(a.ctx, "maria", id, "responder", answer())
+	_, err = a.d.Service.Submit(a.ctx, "maria", id, uuid.Nil, "responder", answer())
 	assert.ErrorIs(t, err, domain.ErrNotClaimant)
 
-	_, err = a.d.Service.Submit(a.ctx, "luis", id, "responder", map[string]any{})
+	_, err = a.d.Service.Submit(a.ctx, "luis", id, uuid.Nil, "responder", map[string]any{})
 	var formErr *domain.FormError
 	require.ErrorAs(t, err, &formErr)
 	assert.Equal(t, "is required", formErr.Fields["respuesta"])
 
-	c, err := a.d.Service.Submit(a.ctx, "luis", id, "responder", answer())
+	c, err := a.d.Service.Submit(a.ctx, "luis", id, uuid.Nil, "responder", answer())
 	require.NoError(t, err)
 	assert.Equal(t, "cerrada", c.State)
 	assert.Equal(t, workflow.StatusClosed, c.Status)
 
-	_, err = a.d.Service.Submit(a.ctx, "luis", id, "responder", answer())
+	_, err = a.d.Service.Submit(a.ctx, "luis", id, uuid.Nil, "responder", answer())
 	assert.ErrorIs(t, err, workflow.ErrCaseClosed)
 }
 
 func TestSubmit_RejectedMoveIsRecorded(t *testing.T) {
 	a := newApp(t)
 	id := a.startCase()
-	_, err := a.d.Service.Claim(a.ctx, "luis", id)
+	_, err := a.d.Service.Claim(a.ctx, "luis", id, uuid.Nil)
 	require.NoError(t, err)
 	before, err := a.eng.History(a.ctx, a.db, id)
 	require.NoError(t, err)
 
-	_, err = a.d.Service.Submit(a.ctx, "luis", id, "archivar", answer())
+	_, err = a.d.Service.Submit(a.ctx, "luis", id, uuid.Nil, "archivar", answer())
 	require.ErrorIs(t, err, workflow.ErrInvalidTransition)
 
 	history, err := a.eng.History(a.ctx, a.db, id)
@@ -179,7 +180,7 @@ func TestSubmit_RejectedMoveIsRecorded(t *testing.T) {
 	require.NoError(t, json.Unmarshal(failed.Detail, &detail))
 	assert.Equal(t, workflow.FailureTransitionNotFound, detail.Kind)
 
-	c, err := a.d.Service.Submit(a.ctx, "luis", id, "responder", answer())
+	c, err := a.d.Service.Submit(a.ctx, "luis", id, uuid.Nil, "responder", answer())
 	require.NoError(t, err, "the case is unchanged and still accepts the right action")
 	assert.Equal(t, "cerrada", c.State)
 }
@@ -194,16 +195,16 @@ func TestSubmit_RejectionsBeforeTheMoveAreNotRecorded(t *testing.T) {
 	}
 
 	before := events()
-	_, err := a.d.Service.Submit(a.ctx, "luis", id, "responder", answer())
+	_, err := a.d.Service.Submit(a.ctx, "luis", id, uuid.Nil, "responder", answer())
 	require.ErrorIs(t, err, domain.ErrNotClaimant)
 	assert.Equal(t, before, events(), "a submit by someone who has not claimed the case is not a rejected move")
 
-	_, err = a.d.Service.Claim(a.ctx, "luis", id)
+	_, err = a.d.Service.Claim(a.ctx, "luis", id, uuid.Nil)
 	require.NoError(t, err)
-	_, err = a.d.Service.Submit(a.ctx, "luis", id, "responder", answer())
+	_, err = a.d.Service.Submit(a.ctx, "luis", id, uuid.Nil, "responder", answer())
 	require.NoError(t, err)
 	before = events()
-	_, err = a.d.Service.Submit(a.ctx, "luis", id, "responder", answer())
+	_, err = a.d.Service.Submit(a.ctx, "luis", id, uuid.Nil, "responder", answer())
 	require.ErrorIs(t, err, workflow.ErrCaseClosed)
 	assert.Equal(t, before, events(), "a submit on a closed case is not a rejected move")
 }
@@ -211,12 +212,12 @@ func TestSubmit_RejectionsBeforeTheMoveAreNotRecorded(t *testing.T) {
 func TestSubmit_FormErrorIsNotRecorded(t *testing.T) {
 	a := newApp(t)
 	id := a.startCase()
-	_, err := a.d.Service.Claim(a.ctx, "luis", id)
+	_, err := a.d.Service.Claim(a.ctx, "luis", id, uuid.Nil)
 	require.NoError(t, err)
 	before, err := a.eng.History(a.ctx, a.db, id)
 	require.NoError(t, err)
 
-	_, err = a.d.Service.Submit(a.ctx, "luis", id, "responder", map[string]any{})
+	_, err = a.d.Service.Submit(a.ctx, "luis", id, uuid.Nil, "responder", map[string]any{})
 	var formErr *domain.FormError
 	require.ErrorAs(t, err, &formErr)
 
@@ -228,9 +229,9 @@ func TestSubmit_FormErrorIsNotRecorded(t *testing.T) {
 func TestView_ShowsValuesAndHistoryToRelatedActors(t *testing.T) {
 	a := newApp(t)
 	id := a.startCase()
-	_, err := a.d.Service.Claim(a.ctx, "luis", id)
+	_, err := a.d.Service.Claim(a.ctx, "luis", id, uuid.Nil)
 	require.NoError(t, err)
-	_, err = a.d.Service.Submit(a.ctx, "luis", id, "responder", answer())
+	_, err = a.d.Service.Submit(a.ctx, "luis", id, uuid.Nil, "responder", answer())
 	require.NoError(t, err)
 
 	v, err := a.d.Service.View(a.ctx, "ana", id)
@@ -269,9 +270,9 @@ func TestCatalog_AnOpenCaseKeepsItsVersion(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 2, p.Definition.Version)
 
-	_, err = a.d.Service.Claim(a.ctx, "luis", id)
+	_, err = a.d.Service.Claim(a.ctx, "luis", id, uuid.Nil)
 	require.NoError(t, err)
-	_, err = a.d.Service.Submit(a.ctx, "luis", id, "responder", answer())
+	_, err = a.d.Service.Submit(a.ctx, "luis", id, uuid.Nil, "responder", answer())
 	assert.NoError(t, err, "version 1 does not require folio")
 
 	c, err := a.d.Service.Start(a.ctx, "ana", "consulta", "enviar", validConsulta())
@@ -296,4 +297,56 @@ func TestCatalog_PublishStoresNothingForAnInvalidSpec(t *testing.T) {
 	var n int
 	require.NoError(t, a.db.QueryRow(a.ctx, `SELECT count(*) FROM process_version`).Scan(&n))
 	assert.Equal(t, 1, n)
+}
+
+// countingProfiles counts the resolver calls the inbox makes.
+type countingProfiles struct {
+	domain.ProfileResolver
+	calls int
+}
+
+func (c *countingProfiles) Holders(ctx context.Context, position, unit string) ([]string, error) {
+	c.calls++
+	return c.ProfileResolver.Holders(ctx, position, unit)
+}
+
+const revisionSpec = `{
+  "name": "revision",
+  "nodes": [
+    {"id": "ingreso", "start": true},
+    {"id": "revisar", "profile": {"position": "revisor", "unit": "atencion"}},
+    {"id": "fin", "terminal": true}
+  ],
+  "transitions": [
+    {"from": "ingreso", "to": "revisar", "action": "enviar"},
+    {"from": "revisar", "to": "fin", "action": "cerrar"}
+  ]
+}`
+
+// TestInbox_FiltersByProfileInTheDatabase pins the fix of E-D1 and E-D2:
+// cases at a node the actor does not hold, created first, no longer fill the
+// page before the actor's own case, and the resolver is called once per
+// distinct profile of the catalog instead of once per case.
+func TestInbox_FiltersByProfileInTheDatabase(t *testing.T) {
+	a := newApp(t)
+	profiles := &countingProfiles{ProfileResolver: a.dir}
+	svc := process.NewService(process.ServiceDeps{
+		DB: a.db, Engine: a.eng, Cases: wfpostgres.NewRepository(), Values: bpms.NewValueRepository(), Catalog: a.d.Catalog, Profiles: profiles,
+	})
+	spec, err := domain.ParseProcessSpec([]byte(revisionSpec))
+	require.NoError(t, err)
+	_, err = svc.Publish(a.ctx, spec)
+	require.NoError(t, err)
+	for i := 0; i < workflow.DefaultListLimit; i++ {
+		_, err := svc.Start(a.ctx, "ana", "revision", "enviar", nil)
+		require.NoError(t, err)
+	}
+	mine := a.startCase()
+
+	items, err := svc.Inbox(a.ctx, "luis")
+	require.NoError(t, err)
+	require.Len(t, items, 1, "the page holds only what luis holds")
+	assert.Equal(t, mine, items[0].Case.ID)
+	assert.Equal(t, mine, items[0].Token.ID, "a case that never split has its root token")
+	assert.Equal(t, 2, profiles.calls, "one resolver call per distinct profile, not per case")
 }
