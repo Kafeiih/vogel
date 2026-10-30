@@ -113,3 +113,78 @@ func TestRelease_SelfReleaseNeedsNoReason(t *testing.T) {
 	events := storedEvents(t, repo, c.ID)
 	assert.Equal(t, AssignmentDetail{From: "buyer-1"}, decodeAssignment(t, events[len(events)-1]))
 }
+
+func revision(v int64) *int64 { return &v }
+
+func TestMove_ExpectedRevisionMismatchIsConflictAndPersistsNothing(t *testing.T) {
+	repo := newFakeRepository()
+	e := New(repo, Config{}, testLogger(), WithDefinitions(testDefinition()))
+	c := openTestCase(t, e)
+	_, err := e.Claim(context.Background(), nil, c.ID, "buyer-1") // revision 0 -> 1
+	require.NoError(t, err)
+	before := storedEvents(t, repo, c.ID)
+	stored, err := repo.GetByID(context.Background(), nil, c.ID)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), stored.Revision)
+
+	// The stale view would also fail later checks (unknown action): the
+	// revision is checked first.
+	_, err = e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "nope", ActorID: "buyer-1", ExpectedRevision: revision(0)})
+	require.ErrorIs(t, err, ErrConflict)
+	require.NotErrorIs(t, err, ErrInvalidTransition)
+
+	after, err := repo.GetByID(context.Background(), nil, c.ID)
+	require.NoError(t, err)
+	assert.Equal(t, *stored, *after, "the case is untouched")
+	assert.Equal(t, before, storedEvents(t, repo, c.ID), "no event is appended")
+
+	got, err := e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "submit", ActorID: "buyer-1", ExpectedRevision: revision(1)})
+	require.NoError(t, err)
+	assert.Equal(t, "review", got.State)
+}
+
+func TestClaim_ExpectedRevisionMatchProceeds(t *testing.T) {
+	repo := newFakeRepository()
+	e := New(repo, Config{}, testLogger(), WithDefinitions(testDefinition()))
+	c := openTestCase(t, e)
+
+	got, err := e.ClaimWith(context.Background(), nil, ClaimInput{CaseID: c.ID, Actor: Actor{ID: "buyer-1"}, ExpectedRevision: revision(0)})
+	require.NoError(t, err)
+	assert.Equal(t, "buyer-1", got.AssignedTo)
+	assert.Equal(t, int64(1), got.Revision)
+
+	_, err = e.ClaimWith(context.Background(), nil, ClaimInput{CaseID: c.ID, Actor: Actor{ID: "buyer-1"}, ExpectedRevision: revision(0)})
+	require.ErrorIs(t, err, ErrConflict, "a stale view fails even where the call would be a no-op")
+}
+
+// TestExpectedRevision_MismatchIsConflictOnEveryInput covers the other
+// inputs that carry ExpectedRevision.
+func TestExpectedRevision_MismatchIsConflictOnEveryInput(t *testing.T) {
+	stale := revision(7)
+	for name, call := range map[string]func(e *Engine, c *Case) error{
+		"release": func(e *Engine, c *Case) error {
+			_, err := e.ReleaseWith(context.Background(), nil, ReleaseInput{CaseID: c.ID, Actor: Actor{ID: "buyer-1"}, ExpectedRevision: stale})
+			return err
+		},
+		"reassign": func(e *Engine, c *Case) error {
+			_, err := e.Reassign(context.Background(), nil, ReassignInput{CaseID: c.ID, To: "buyer-2", Actor: Actor{ID: "s"}, Reason: "x", ExpectedRevision: stale})
+			return err
+		},
+		"cancel": func(e *Engine, c *Case) error {
+			_, err := e.Cancel(context.Background(), nil, CancelInput{CaseID: c.ID, Actor: Actor{ID: "s"}, Reason: "x", ExpectedRevision: stale})
+			return err
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			repo := newFakeRepository()
+			e := New(repo, Config{}, testLogger(), WithDefinitions(testDefinition()))
+			c := openTestCase(t, e)
+			_, err := e.Claim(context.Background(), nil, c.ID, "buyer-1")
+			require.NoError(t, err)
+			before := storedEvents(t, repo, c.ID)
+
+			require.ErrorIs(t, call(e, c), ErrConflict)
+			assert.Equal(t, before, storedEvents(t, repo, c.ID))
+		})
+	}
+}
