@@ -42,6 +42,11 @@ type Holidays interface {
 	IsHoliday(ctx context.Context, d Date) (bool, error)
 }
 
+// maxGapDays bounds how many consecutive non-business days BusinessDays
+// skips before it gives up: a Holidays that reports every day as a holiday
+// would otherwise loop forever inside the caller's transaction.
+const maxGapDays = 366
+
 // DueFunc returns the deadline of something that starts at from.
 type DueFunc func(ctx context.Context, from time.Time) (time.Time, error)
 
@@ -53,7 +58,8 @@ type DueFunc func(ctx context.Context, from time.Time) (time.Time, error)
 //
 // loc is required, so the day boundaries never depend on the server's time
 // zone or on from's location. The DueFunc fails when n < 1, when loc is nil,
-// or when h fails.
+// when h fails, when ctx is done, or when it finds no business day within a
+// year of the previous one (a misconfigured Holidays).
 func BusinessDays(n int, loc *time.Location, h Holidays) DueFunc {
 	return func(ctx context.Context, from time.Time) (time.Time, error) {
 		if n < 1 {
@@ -63,15 +69,23 @@ func BusinessDays(n int, loc *time.Location, h Holidays) DueFunc {
 			return time.Time{}, errors.New("calendar: business days: location is required")
 		}
 		day := DateOf(from.In(loc))
-		for counted := 0; counted < n; {
+		for counted, gap := 0, 0; counted < n; {
+			if err := ctx.Err(); err != nil {
+				return time.Time{}, fmt.Errorf("calendar: business days: %w", err)
+			}
 			day = day.addDays(1)
 			ok, err := isBusinessDay(ctx, day, h)
 			if err != nil {
 				return time.Time{}, err
 			}
-			if ok {
-				counted++
+			if !ok {
+				gap++
+				if gap > maxGapDays {
+					return time.Time{}, fmt.Errorf("calendar: business days: no business day in the %d days after %04d-%02d-%02d", maxGapDays, day.Year, day.Month, day.Day)
+				}
+				continue
 			}
+			counted, gap = counted+1, 0
 		}
 		end := day.addDays(1)
 		return time.Date(end.Year, end.Month, end.Day, 0, 0, 0, 0, loc), nil

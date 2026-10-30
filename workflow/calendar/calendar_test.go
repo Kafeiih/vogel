@@ -81,3 +81,19 @@ func TestRules_ResolvesByName(t *testing.T) {
 	_, err = rules.Due(context.Background(), workflow.DueInput{Rule: "nope", From: friday})
 	require.ErrorIs(t, err, workflow.ErrUnknownDeadlineRule)
 }
+
+// everyDay reports every date as a holiday: a broken calendar.
+type everyDay struct{}
+
+func (everyDay) IsHoliday(context.Context, calendar.Date) (bool, error) { return true, nil }
+
+func TestCalendar_BusinessDaysIsBounded(t *testing.T) {
+	friday := time.Date(2026, 10, 30, 10, 0, 0, 0, time.UTC)
+	_, err := calendar.BusinessDays(1, time.UTC, everyDay{})(context.Background(), friday)
+	require.ErrorContains(t, err, "no business day", "a calendar without business days fails instead of looping forever")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = calendar.BusinessDays(1, time.UTC, holidaySet{})(ctx, friday)
+	require.ErrorIs(t, err, context.Canceled)
+}
