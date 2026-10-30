@@ -20,6 +20,7 @@ import (
 
 	// vogel:component storage end
 	// vogel:component bpms begin
+	actionmigrations "github.com/kafeiih/vogel/action/migrations"
 	documentmigrations "github.com/kafeiih/vogel/document/migrations"
 	"github.com/kafeiih/vogel/worker"
 	workflowmigrations "github.com/kafeiih/vogel/workflow/migrations"
@@ -203,6 +204,7 @@ func migrationSets() []migrationSet {
 		// vogel:component bpms begin
 		{name: "workflow", fsys: workflowmigrations.FS(), opts: migrate.Options{TableName: workflowmigrations.DefaultTableName}},
 		{name: "document", fsys: documentmigrations.FS(), opts: migrate.Options{TableName: documentmigrations.DefaultTableName}},
+		{name: "action", fsys: actionmigrations.FS(), opts: migrate.Options{TableName: actionmigrations.DefaultTableName}},
 		{name: "bpms", fsys: bpmsmigrations.FS, opts: migrate.Options{TableName: bpmsmigrations.TableName}},
 		// vogel:component bpms end
 	}

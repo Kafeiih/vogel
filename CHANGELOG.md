@@ -6,6 +6,56 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ## [Unreleased]
 
+### Agregado
+
+- **`action`: registro de intentos de cada efecto.** El nuevo conjunto de
+  migraciones `action/migrations` (tabla de versión `action_db_version`) crea
+  `action_attempt`, de sólo agregado como `audit_log`. Con la opción
+  `action.WithAttemptLog(pool)`, `action.Worker` escribe una fila por intento
+  después de que el `Handler` termina, en su propia sentencia y fuera del
+  trabajo del `Handler`: caso, `seq`, efecto, parte, número de intento,
+  conteo de snoozes, id del trabajo de River, inicio y fin, resultado
+  (`succeeded`, `retry`, `cancelled`, `snoozed`, `discarded` o
+  `unknown_effect`), la clase del error (el tipo Go y el centinela conocido
+  que calza, nunca el mensaje, que puede traer datos personales), el
+  `request_id`, el `trace_id`, el actor y el resultado del `Handler`. Un
+  `Handler` que entra en pánico también deja su fila (`error_class` `panic`).
+  River devuelve el número de intento a un trabajo en snooze, así que la
+  unicidad es `(job_id, attempt, snooze)`: reescribir el mismo intento
+  después de una caída del worker no duplica, y la corrida posterior a un
+  snooze tiene su propia fila. Si la escritura falla, el trabajo no falla ni
+  se reintenta: se registra en el log y suma en la métrica nueva
+  `vogel_action_attempt_log_errors_total`. Sin la opción no se escribe nada.
+  `WithLogger`, `WithMetricsRegisterer` y `WithTraceIDs` (con la forma de
+  `workflow.Config.TraceIDs`, así que sirve `otel.SampledTraceIDs`)
+  configuran el resto.
+- **`action`: lectura de intentos.** `action.AttemptRepository`
+  (`ListByCase`, `ListByEvent`), implementado por
+  `action/postgres.AttemptRepository`, para sumar los intentos a la línea de
+  tiempo de un caso.
+- **`action`: resultados, clave de idempotencia y actor.**
+  `action.RecordResult(ctx, Result{Ref, Digest})` deja en la fila del intento
+  una referencia y un digest de lo que produjo el `Handler`;
+  `docflow.Generate` registra el id y el sha256 del documento.
+  `Run.IdempotencyKey()` devuelve `<caso>/<seq>/<efecto>` (y `/<parte>` en un
+  trabajo de fan-out), igual en todos los intentos, para pasarlo a quien el
+  `Handler` llama (por ejemplo, como encabezado `Idempotency-Key`);
+  `docflow.Generate` la usa como clave de origen, idéntica a la anterior, así
+  que ningún `document_record.source_key` cambia. `Args` y `Run` llevan
+  `Actor`, el actor estructurado del evento que disparó el efecto (un
+  trabajo encolado por la versión anterior lo lee como `ActorUnspecified`
+  con el `ActorID`), y `Run.SystemActor()` devuelve
+  `{Kind: ActorSystem, ID: "vogel_action:" + Effect, OnBehalfOf: Actor.ID}`
+  para que un `Handler` que escribe de vuelta en un caso no le atribuya el
+  trabajo del motor a un usuario.
+- **`examples/boilerplate`:** monta `action/migrations` en
+  `migrationSets()` y el worker usa `action.WithAttemptLog(pool)`.
+
+### Obsoleto
+
+- `action.Run.ActorID`: usar `Run.Actor.ID`. Se mantiene, igual a
+  `Actor.ID`.
+
 ## [0.18.0] — 2026-10-30
 
 ### Cambios que rompen

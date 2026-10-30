@@ -373,13 +373,14 @@ en silencio — por eso `migrate.Options.TableName` es un parámetro obligatorio
 del llamador, no una constante escondida en la librería.
 <!-- vogel:component bpms begin -->
 
-Con la base BPMS este servicio monta además tres conjuntos, después de los
+Con la base BPMS este servicio monta además cuatro conjuntos, después de los
 dos de arriba:
 
 | Conjunto | Tabla de versión |
 |---|---|
 | `vogel/workflow/migrations` | `workflow_db_version` |
 | `vogel/document/migrations` | `document_db_version` |
+| `vogel/action/migrations` | `action_db_version` |
 | `internal/infrastructure/bpms/migrations` | `bpms_db_version` |
 
 `migrate down` tampoco los revierte.

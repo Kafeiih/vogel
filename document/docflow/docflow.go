@@ -36,13 +36,15 @@ type BuildFunc func(ctx context.Context, r action.Run) (document.GenerateInput, 
 
 // Generate returns the handler for a document-generating effect. Each run
 // generates at most one document: the source key defaults to
-// "<case id>/<event seq>/<effect>", so a retried job returns the document a
+// r.IdempotencyKey() ("<case id>/<event seq>/<effect>"), so a retried job returns the document a
 // previous attempt stored. Input the document package rejects as invalid, a
 // template that fails to parse or execute, a document the Renderer rejects
 // (document.ErrRenderRejected) and an empty PDF cancel the job, since a
 // retry cannot fix them; every other error, including one from build, is
 // returned so River retries. db is where the metadata row
-// is written, typically the pool.
+// is written, typically the pool. The document's id and sha256 are recorded
+// on the attempt (action.RecordResult), so a Worker with an attempt log ties
+// each attempt to the document it produced or found.
 func Generate(svc *document.Service, db pgxtx.DBTX, build BuildFunc) action.Handler {
 	return action.HandlerFunc(func(ctx context.Context, r action.Run) error {
 		in, err := build(ctx, r)
@@ -60,14 +62,16 @@ func Generate(svc *document.Service, db pgxtx.DBTX, build BuildFunc) action.Hand
 			in.CaseID = &caseID
 		}
 		if in.SourceKey == "" {
-			in.SourceKey = fmt.Sprintf("%s/%d/%s", r.CaseID, r.Seq, r.Effect)
+			in.SourceKey = r.IdempotencyKey()
 		}
-		if _, err := svc.Generate(ctx, db, in); err != nil {
+		doc, err := svc.Generate(ctx, db, in)
+		if err != nil {
 			if permanent(err) {
 				return river.JobCancel(err)
 			}
 			return err
 		}
+		action.RecordResult(ctx, action.Result{Ref: doc.ID.String(), Digest: doc.SHA256})
 		return nil
 	})
 }
