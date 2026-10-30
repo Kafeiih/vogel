@@ -28,6 +28,9 @@ type fakeRepository struct {
 	cases   map[uuid.UUID]Case
 	byExtID map[string]uuid.UUID
 	events  map[uuid.UUID][]Event
+	// tokens and scopes are keyed by their own ID.
+	tokens map[uuid.UUID]Token
+	scopes map[uuid.UUID]Scope
 }
 
 func newFakeRepository() *fakeRepository {
@@ -35,7 +38,100 @@ func newFakeRepository() *fakeRepository {
 		cases:   make(map[uuid.UUID]Case),
 		byExtID: make(map[string]uuid.UUID),
 		events:  make(map[uuid.UUID][]Event),
+		tokens:  make(map[uuid.UUID]Token),
+		scopes:  make(map[uuid.UUID]Scope),
 	}
+}
+
+func (f *fakeRepository) CreateScope(_ context.Context, _ pgxtx.DBTX, s *Scope) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, exists := f.scopes[s.ID]; exists {
+		return ErrConflict
+	}
+	f.scopes[s.ID] = cloneScope(*s)
+	return nil
+}
+
+func (f *fakeRepository) UpdateScope(_ context.Context, _ pgxtx.DBTX, s *Scope) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, exists := f.scopes[s.ID]; !exists {
+		return ErrConflict
+	}
+	f.scopes[s.ID] = cloneScope(*s)
+	return nil
+}
+
+func (f *fakeRepository) ListScopes(_ context.Context, _ pgxtx.DBTX, caseID uuid.UUID) ([]Scope, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []Scope
+	for _, s := range f.scopes {
+		if s.CaseID == caseID {
+			out = append(out, cloneScope(s))
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].OpenedSeq < out[j].OpenedSeq })
+	return out, nil
+}
+
+func (f *fakeRepository) CreateToken(_ context.Context, _ pgxtx.DBTX, t *Token) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, exists := f.tokens[t.ID]; exists {
+		return ErrConflict
+	}
+	if _, exists := f.scopes[t.ScopeID]; !exists {
+		return errors.New("fake: token references a missing scope")
+	}
+	f.tokens[t.ID] = cloneToken(*t)
+	return nil
+}
+
+func (f *fakeRepository) UpdateToken(_ context.Context, _ pgxtx.DBTX, t *Token) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, exists := f.tokens[t.ID]; !exists {
+		return ErrConflict
+	}
+	f.tokens[t.ID] = cloneToken(*t)
+	return nil
+}
+
+func (f *fakeRepository) ListTokens(_ context.Context, _ pgxtx.DBTX, caseID uuid.UUID) ([]Token, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []Token
+	for _, t := range f.tokens {
+		if t.CaseID == caseID {
+			out = append(out, cloneToken(t))
+		}
+	}
+	sortTokens(out)
+	return out, nil
+}
+
+// cloneToken and cloneScope copy the pointer fields, so a stored row never
+// aliases the engine's working copy.
+func cloneToken(t Token) Token {
+	if t.DeadlineAt != nil {
+		d := *t.DeadlineAt
+		t.DeadlineAt = &d
+	}
+	if t.EndedAt != nil {
+		d := *t.EndedAt
+		t.EndedAt = &d
+	}
+	return t
+}
+
+func cloneScope(s Scope) Scope {
+	if s.ParentID != nil {
+		p := *s.ParentID
+		s.ParentID = &p
+	}
+	return s
 }
 
 func extKey(tenant, domain, externalID string) string {
@@ -233,33 +329,70 @@ func (f *fakeRepository) AdvanceLastSeq(_ context.Context, _ pgxtx.DBTX, id uuid
 	return &c, nil
 }
 
-func (f *fakeRepository) ListByEligibility(_ context.Context, _ pgxtx.DBTX, filter InboxFilter) ([]Case, error) {
+func (f *fakeRepository) ListWorkItems(_ context.Context, _ pgxtx.DBTX, filter InboxFilter) ([]WorkItem, error) {
+	limit, offset, err := filter.Page()
+	if err != nil {
+		return nil, err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	var out []Case
-	for _, c := range f.cases {
+	var out []WorkItem
+	for _, t := range f.tokens {
+		c := f.cases[t.CaseID]
+		if t.Status != TokenActive || c.Status != StatusOpen {
+			continue
+		}
 		if filter.Tenant != "" && c.Tenant != filter.Tenant {
 			continue
 		}
 		if filter.Domain != "" && c.Domain != filter.Domain {
 			continue
 		}
-		if len(filter.States) > 0 && !containsString(filter.States, c.State) {
+		if len(filter.States) > 0 && !containsString(filter.States, t.Node) {
 			continue
 		}
-		if filter.AssignedTo != "" && c.AssignedTo != filter.AssignedTo {
+		if len(filter.Eligibility) > 0 && !containsEligibility(filter.Eligibility, t.Eligible) {
 			continue
 		}
-		if filter.Unassigned && c.AssignedTo != "" {
+		if filter.AssignedTo != "" && t.AssignedTo != filter.AssignedTo {
 			continue
 		}
-		if filter.Overdue && (c.DeadlineAt == nil || !c.DeadlineAt.Before(time.Now())) {
+		if filter.Unassigned && t.AssignedTo != "" {
 			continue
 		}
-		out = append(out, c)
+		if filter.Overdue && (t.DeadlineAt == nil || !t.DeadlineAt.Before(time.Now())) {
+			continue
+		}
+		out = append(out, WorkItem{Case: c, Token: cloneToken(t)})
 	}
-	return out, nil
+	// Same order as workflow/postgres: oldest case first, case ID as the
+	// tie-break, then the case's tokens by EnteredSeq and ID.
+	sort.Slice(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		switch {
+		case !a.Case.OpenedAt.Equal(b.Case.OpenedAt):
+			return a.Case.OpenedAt.Before(b.Case.OpenedAt)
+		case a.Case.ID != b.Case.ID:
+			return a.Case.ID.String() < b.Case.ID.String()
+		case a.Token.EnteredSeq != b.Token.EnteredSeq:
+			return a.Token.EnteredSeq < b.Token.EnteredSeq
+		}
+		return a.Token.ID.String() < b.Token.ID.String()
+	})
+	if offset >= len(out) {
+		return nil, nil
+	}
+	return out[offset:min(offset+limit, len(out))], nil
+}
+
+func containsEligibility(list []Eligibility, e Eligibility) bool {
+	for _, item := range list {
+		if item == e {
+			return true
+		}
+	}
+	return false
 }
 
 // sentinelDBTX is a minimal pgxtx.DBTX whose only job is to be a distinct,

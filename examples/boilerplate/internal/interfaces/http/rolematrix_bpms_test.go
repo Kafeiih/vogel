@@ -23,16 +23,18 @@ func (matrixProcessService) Start(context.Context, string, string, string, map[s
 	return nil, domain.ErrProcessNotFound
 }
 
-func (matrixProcessService) Inbox(context.Context, string) ([]workflow.Case, error) { return nil, nil }
+func (matrixProcessService) Inbox(context.Context, string) ([]workflow.WorkItem, error) {
+	return nil, nil
+}
 
 func (matrixProcessService) View(context.Context, string, uuid.UUID) (*process.CaseView, error) {
 	return nil, workflow.ErrCaseNotFound
 }
 
-func (matrixProcessService) Claim(context.Context, string, uuid.UUID) (*workflow.Case, error) {
+func (matrixProcessService) Claim(context.Context, string, uuid.UUID, uuid.UUID) (*workflow.Case, error) {
 	return nil, workflow.ErrCaseNotFound
 }
 
-func (matrixProcessService) Submit(context.Context, string, uuid.UUID, string, map[string]any) (*workflow.Case, error) {
+func (matrixProcessService) Submit(context.Context, string, uuid.UUID, uuid.UUID, string, map[string]any) (*workflow.Case, error) {
 	return nil, workflow.ErrCaseNotFound
 }

@@ -28,8 +28,12 @@ type stubProcessService struct {
 	err       error
 	gotActor  string
 	gotValues map[string]any
+	gotToken  uuid.UUID
 	published *domain.ProcessSpec
 }
+
+// stubToken is the token of the inbox entry stubProcessService returns.
+var stubToken = uuid.MustParse("22222222-2222-2222-2222-222222222222")
 
 func (s *stubProcessService) Publish(_ context.Context, spec domain.ProcessSpec) (*domain.Process, error) {
 	s.published = &spec
@@ -54,9 +58,12 @@ func (s *stubProcessService) Start(_ context.Context, actor, _, _ string, values
 	return &workflow.Case{ID: uuid.New(), Definition: "consulta", Version: 1, State: "respuesta", Status: workflow.StatusOpen}, nil
 }
 
-func (s *stubProcessService) Inbox(_ context.Context, actor string) ([]workflow.Case, error) {
+func (s *stubProcessService) Inbox(_ context.Context, actor string) ([]workflow.WorkItem, error) {
 	s.gotActor = actor
-	return []workflow.Case{{ID: uuid.New(), State: "respuesta"}}, s.err
+	return []workflow.WorkItem{{
+		Case:  workflow.Case{ID: uuid.New(), State: ""},
+		Token: workflow.Token{ID: stubToken, Node: "respuesta", AssignedTo: "user-9"},
+	}}, s.err
 }
 
 func (s *stubProcessService) View(_ context.Context, actor string, id uuid.UUID) (*process.CaseView, error) {
@@ -67,16 +74,16 @@ func (s *stubProcessService) View(_ context.Context, actor string, id uuid.UUID)
 	return &process.CaseView{Case: &workflow.Case{ID: id}, Values: map[string]any{"tema": "general"}}, nil
 }
 
-func (s *stubProcessService) Claim(_ context.Context, actor string, id uuid.UUID) (*workflow.Case, error) {
-	s.gotActor = actor
+func (s *stubProcessService) Claim(_ context.Context, actor string, id, tokenID uuid.UUID) (*workflow.Case, error) {
+	s.gotActor, s.gotToken = actor, tokenID
 	if s.err != nil {
 		return nil, s.err
 	}
 	return &workflow.Case{ID: id, AssignedTo: actor}, nil
 }
 
-func (s *stubProcessService) Submit(_ context.Context, actor string, id uuid.UUID, _ string, values map[string]any) (*workflow.Case, error) {
-	s.gotActor, s.gotValues = actor, values
+func (s *stubProcessService) Submit(_ context.Context, actor string, id, tokenID uuid.UUID, _ string, values map[string]any) (*workflow.Case, error) {
+	s.gotActor, s.gotValues, s.gotToken = actor, values, tokenID
 	if s.err != nil {
 		return nil, s.err
 	}
@@ -156,6 +163,8 @@ func TestProcessHandler_MapsServiceErrors(t *testing.T) {
 		{"no access", domain.ErrNoAccess, http.StatusForbidden},
 		{"already assigned", workflow.ErrAlreadyAssigned, http.StatusConflict},
 		{"closed", workflow.ErrCaseClosed, http.StatusConflict},
+		{"token not found", workflow.ErrTokenNotFound, http.StatusNotFound},
+		{"token required", workflow.ErrTokenRequired, http.StatusConflict},
 		{"invalid transition", workflow.ErrInvalidTransition, http.StatusConflict},
 		{"unknown", errors.New("db down"), http.StatusInternalServerError},
 	} {
@@ -258,6 +267,50 @@ func TestProcessHandler_InboxViewClaimSubmit(t *testing.T) {
 		if code != tc.want || svc.gotActor != "user-2" {
 			t.Errorf("%s %s status = %d actor = %q body = %v", tc.method, tc.path, code, svc.gotActor, body)
 		}
+	}
+}
+
+func TestProcessHandler_PassesTheTokenOfTheWorkItem(t *testing.T) {
+	id := uuid.NewString()
+	tok := uuid.NewString()
+
+	svc := &stubProcessService{}
+	code, body := serveProcess(t, svc, http.MethodPost, "/cases/"+id+"/claim?tokenId="+tok, "user-2", ``)
+	if code != http.StatusOK || svc.gotToken.String() != tok {
+		t.Fatalf("claim status = %d token = %s body = %v, want 200 and %s", code, svc.gotToken, body, tok)
+	}
+	svc = &stubProcessService{}
+	code, body = serveProcess(t, svc, http.MethodPost, "/cases/"+id+"/submit", "user-2", `{"action":"responder","values":{},"tokenId":"`+tok+`"}`)
+	if code != http.StatusOK || svc.gotToken.String() != tok {
+		t.Fatalf("submit status = %d token = %s body = %v, want 200 and %s", code, svc.gotToken, body, tok)
+	}
+	svc = &stubProcessService{}
+	code, _ = serveProcess(t, svc, http.MethodPost, "/cases/"+id+"/claim", "user-2", ``)
+	if code != http.StatusOK || svc.gotToken != uuid.Nil {
+		t.Fatalf("claim without token status = %d token = %s, want 200 and the zero token", code, svc.gotToken)
+	}
+	code, body = serveProcess(t, &stubProcessService{}, http.MethodPost, "/cases/"+id+"/claim?tokenId=nope", "user-2", ``)
+	if code != http.StatusNotFound {
+		t.Fatalf("malformed token status = %d body = %v, want 404", code, body)
+	}
+	code, body = serveProcess(t, &stubProcessService{}, http.MethodPost, "/processes/consulta/cases", "user-2", `{"action":"enviar","tokenId":"`+tok+`"}`)
+	if code != http.StatusBadRequest {
+		t.Fatalf("start with a token status = %d body = %v, want 400: a new case has no token to name", code, body)
+	}
+}
+
+func TestProcessHandler_InboxListsWorkItems(t *testing.T) {
+	code, body := serveProcess(t, &stubProcessService{}, http.MethodGet, "/inbox", "user-2", ``)
+	if code != http.StatusOK {
+		t.Fatalf("status = %d body = %v", code, body)
+	}
+	items := body["data"].([]any)
+	if len(items) != 1 {
+		t.Fatalf("data = %v, want one work item", items)
+	}
+	item := items[0].(map[string]any)
+	if item["tokenId"] != stubToken.String() || item["state"] != "respuesta" || item["assignedTo"] != "user-9" {
+		t.Fatalf("item = %v, want the token's id, node and assignee", item)
 	}
 }
 

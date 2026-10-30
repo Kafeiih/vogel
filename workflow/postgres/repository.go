@@ -23,9 +23,20 @@ const eventColumns = `id, case_id, seq, kind, from_state, to_state, action, acto
     schema_version, detail, tenant, actor_kind, acting_as, on_behalf_of, via_client,
     request_id, trace_id, span_id`
 
-// eventReadColumns adds the hash chain columns, which migration 007's
-// trigger sets on insert, to the columns AppendEvent writes.
-const eventReadColumns = eventColumns + `, prev_digest, digest`
+// eventWriteColumns adds the token and scope columns of migration 008 to the
+// columns every event has.
+const eventWriteColumns = eventColumns + `, token_id, scope_id`
+
+// eventReadColumns reads a NULL token_id or scope_id (an event stored before
+// migration 008) as the case id — the root token in the root scope — and
+// adds the hash chain columns, which migration 007's trigger sets on insert.
+const eventReadColumns = eventColumns + `, COALESCE(token_id, case_id), COALESCE(scope_id, case_id), prev_digest, digest`
+
+const scopeColumns = `id, case_id, parent_id, split_node, join_node, expected, status, opened_seq, closed_seq`
+
+//nolint:gosec // G101 false positive: a column list of workflow_token, not a credential
+const tokenColumns = `id, case_id, scope_id, node, position, unit, status, assigned_to, deadline_at,
+    entered_seq, entered_at, ended_seq, ended_at`
 
 // uniqueViolationCode is the PostgreSQL error code for a unique constraint
 // violation (23505).
@@ -35,6 +46,10 @@ const uniqueViolationCode = "23505"
 // workflow_event in migration 001. A violation of it means another writer
 // appended that Seq first.
 const eventSeqConstraint = "workflow_event_case_id_seq_key"
+
+// joinedOnceIndex is migration 008's unique index allowing one "joined"
+// event per scope. A violation of it means the scope already joined.
+const joinedOnceIndex = "uq_workflow_event_joined_once"
 
 // Repository implements workflow.Repository using pgx. It is stateless:
 // every method receives the pgxtx.DBTX to run against, so the caller decides
@@ -172,6 +187,9 @@ func (r *Repository) Update(ctx context.Context, db pgxtx.DBTX, c *workflow.Case
 // empty; an empty e.Actor.Kind is stored as workflow.ActorUnspecified.
 // e.PrevDigest and e.Digest are not written: migration 007's trigger computes
 // them from the stored row, and AppendEvent sets them on e from the insert.
+// e.TokenID and e.ScopeID are stored as given, uuid.Nil as NULL. A second
+// "joined" event for one scope fails on migration 008's
+// uq_workflow_event_joined_once and is returned as workflow.ErrConflict too.
 func (r *Repository) AppendEvent(ctx context.Context, db pgxtx.DBTX, e *workflow.Event) error {
 	if e.Seq < 1 {
 		return fmt.Errorf("workflow: append event: seq %d: must be at least 1", e.Seq)
@@ -190,16 +208,17 @@ func (r *Repository) AppendEvent(ctx context.Context, db pgxtx.DBTX, e *workflow
 		actorKind = workflow.ActorUnspecified
 	}
 	err := db.QueryRow(ctx, `
-        INSERT INTO workflow_event (`+eventColumns+`)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+        INSERT INTO workflow_event (`+eventWriteColumns+`)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
         RETURNING prev_digest, digest`,
 		e.ID, e.CaseID, e.Seq, string(e.Kind), e.FromState, e.ToState, e.Action, actorID, e.OccurredAt, e.Comment,
 		schemaVersion, detail, e.Tenant, string(actorKind), e.Actor.ActingAs, e.Actor.OnBehalfOf, e.Actor.Via,
-		e.RequestID, e.TraceID, e.SpanID,
+		e.RequestID, e.TraceID, e.SpanID, nullUUID(e.TokenID), nullUUID(e.ScopeID),
 	).Scan(&e.PrevDigest, &e.Digest)
 	if err != nil {
 		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == uniqueViolationCode && pgErr.ConstraintName == eventSeqConstraint {
+		if errors.As(err, &pgErr) && pgErr.Code == uniqueViolationCode &&
+			(pgErr.ConstraintName == eventSeqConstraint || pgErr.ConstraintName == joinedOnceIndex) {
 			return fmt.Errorf("workflow: append event %s seq %d: %w: %w", e.CaseID, e.Seq, workflow.ErrConflict, err)
 		}
 		return fmt.Errorf("workflow: append event: %w", err)
@@ -230,7 +249,8 @@ func (r *Repository) AdvanceLastSeq(ctx context.Context, db pgxtx.DBTX, id uuid.
 // ListEvents returns every event for caseID, ordered by seq ascending, as
 // stored: SchemaVersion is the row's schema_version (1 for rows written
 // before migration 004, whose Actor.Kind reads as workflow.ActorUnspecified
-// from the column default). Actor.ID and ActorID both hold actor_id.
+// from the column default). Actor.ID and ActorID both hold actor_id. TokenID
+// and ScopeID read as the case id for rows stored before migration 008.
 // Upcasting older versions and rejecting newer ones is the engine's job (see
 // workflow.Engine.History).
 func (r *Repository) ListEvents(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID) ([]workflow.Event, error) {
@@ -284,28 +304,39 @@ func (r *Repository) ListEventDigests(ctx context.Context, db pgxtx.DBTX, caseID
 	return links, nil
 }
 
-// ListByEligibility returns open cases matching f. An empty f.Tenant matches
-// every tenant. States, when non-empty,
-// restricts results to cases whose current node is one of those IDs — the
-// mapping from Position/Unit to that set of node IDs is resolved by the
-// caller (see workflow.Engine.EligibilityFor), not by this query.
-func (r *Repository) ListByEligibility(ctx context.Context, db pgxtx.DBTX, f workflow.InboxFilter) ([]workflow.Case, error) {
+// ListWorkItems returns one workflow.WorkItem per active token of an open
+// case matching f, oldest case first (opened_at, as before tokens existed,
+// then case id), then the case's tokens by entered_seq and id, paged by
+// f.Page.
+// An empty f.Tenant matches every tenant. f.States restricts the token's
+// node, f.Eligibility its stored (position, unit) pair, and f.AssignedTo,
+// f.Unassigned and f.Overdue its assignment and deadline. Turning a person's
+// positions into f.Eligibility is the caller's job (see
+// workflow.Engine.EligibilityForToken), not this query's.
+func (r *Repository) ListWorkItems(ctx context.Context, db pgxtx.DBTX, f workflow.InboxFilter) ([]workflow.WorkItem, error) {
 	limit, offset, err := f.Page()
 	if err != nil {
-		return nil, fmt.Errorf("workflow: list by eligibility: %w", err)
+		return nil, fmt.Errorf("workflow: list work items: %w", err)
+	}
+	var positions, units []string
+	for _, e := range f.Eligibility {
+		positions = append(positions, e.Position)
+		units = append(units, e.Unit)
 	}
 
 	const q = `
-        SELECT ` + caseColumns + `
-        FROM workflow_case
-        WHERE status = 'open'
-          AND ($1::TEXT    IS NULL OR domain = $1)
-          AND ($2::TEXT[]  IS NULL OR state = ANY($2))
-          AND ($3::TEXT    IS NULL OR assigned_to = $3)
-          AND (NOT $4::BOOLEAN OR assigned_to = '')
-          AND (NOT $5::BOOLEAN OR (deadline_at IS NOT NULL AND deadline_at < now()))
-          AND ($8::TEXT    IS NULL OR tenant = $8)
-        ORDER BY opened_at ASC
+        SELECT ` + prefixedCaseColumns + `, ` + prefixedTokenColumns + `
+        FROM workflow_token t
+        JOIN workflow_case c ON c.id = t.case_id
+        WHERE t.status = 'active' AND c.status = 'open'
+          AND ($1::TEXT    IS NULL OR c.domain = $1)
+          AND ($2::TEXT[]  IS NULL OR t.node = ANY($2))
+          AND ($3::TEXT    IS NULL OR t.assigned_to = $3)
+          AND (NOT $4::BOOLEAN OR t.assigned_to = '')
+          AND (NOT $5::BOOLEAN OR (t.deadline_at IS NOT NULL AND t.deadline_at < now()))
+          AND ($8::TEXT    IS NULL OR c.tenant = $8)
+          AND ($9::TEXT[]  IS NULL OR (t.position, t.unit) IN (SELECT * FROM unnest($9::TEXT[], $10::TEXT[])))
+        ORDER BY c.opened_at ASC, c.id, t.entered_seq ASC, t.id
         LIMIT $6 OFFSET $7`
 
 	rows, err := db.Query(ctx, q,
@@ -317,24 +348,165 @@ func (r *Repository) ListByEligibility(ctx context.Context, db pgxtx.DBTX, f wor
 		limit,
 		offset,
 		nullString(f.Tenant),
+		positions,
+		units,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("workflow: list by eligibility: %w", err)
+		return nil, fmt.Errorf("workflow: list work items: %w", err)
 	}
 	defer rows.Close()
 
-	var cases []workflow.Case
+	var items []workflow.WorkItem
 	for rows.Next() {
-		c, err := scanCase(rows)
-		if err != nil {
-			return nil, fmt.Errorf("workflow: list by eligibility: %w", err)
+		var it workflow.WorkItem
+		var status, tokenStatus string
+		if err := rows.Scan(append(caseDest(&it.Case, &status), tokenDest(&it.Token, &tokenStatus)...)...); err != nil {
+			return nil, fmt.Errorf("workflow: list work items: %w", err)
 		}
-		cases = append(cases, *c)
+		it.Case.Status = workflow.Status(status)
+		it.Token.Status = workflow.TokenStatus(tokenStatus)
+		items = append(items, it)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("workflow: list by eligibility: %w", err)
+		return nil, fmt.Errorf("workflow: list work items: %w", err)
 	}
-	return cases, nil
+	return items, nil
+}
+
+// CreateScope inserts s.
+func (r *Repository) CreateScope(ctx context.Context, db pgxtx.DBTX, s *workflow.Scope) error {
+	if _, err := db.Exec(ctx, `INSERT INTO workflow_scope (`+scopeColumns+`) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+		s.ID, s.CaseID, s.ParentID, s.SplitNode, s.JoinNode, s.Expected, string(s.Status), s.OpenedSeq, nullSeq(s.ClosedSeq),
+	); err != nil {
+		return fmt.Errorf("workflow: create scope: %w", err)
+	}
+	return nil
+}
+
+// UpdateScope writes s's status and closed seq, the only fields that change
+// after a scope opens. A missing scope fails with workflow.ErrConflict.
+func (r *Repository) UpdateScope(ctx context.Context, db pgxtx.DBTX, s *workflow.Scope) error {
+	tag, err := db.Exec(ctx, `UPDATE workflow_scope SET status = $2, closed_seq = $3 WHERE id = $1`,
+		s.ID, string(s.Status), nullSeq(s.ClosedSeq))
+	if err != nil {
+		return fmt.Errorf("workflow: update scope: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("workflow: update scope %s: %w", s.ID, workflow.ErrConflict)
+	}
+	return nil
+}
+
+// ListScopes returns every scope of caseID, in the order they opened.
+func (r *Repository) ListScopes(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID) ([]workflow.Scope, error) {
+	rows, err := db.Query(ctx, `SELECT `+scopeColumns+` FROM workflow_scope WHERE case_id = $1 ORDER BY opened_seq, id`, caseID)
+	if err != nil {
+		return nil, fmt.Errorf("workflow: list scopes: %w", err)
+	}
+	defer rows.Close()
+
+	var scopes []workflow.Scope
+	for rows.Next() {
+		var s workflow.Scope
+		var status string
+		var closed *int64
+		if err := rows.Scan(&s.ID, &s.CaseID, &s.ParentID, &s.SplitNode, &s.JoinNode, &s.Expected, &status, &s.OpenedSeq, &closed); err != nil {
+			return nil, fmt.Errorf("workflow: list scopes: %w", err)
+		}
+		s.Status = workflow.ScopeStatus(status)
+		if closed != nil {
+			s.ClosedSeq = *closed
+		}
+		scopes = append(scopes, s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("workflow: list scopes: %w", err)
+	}
+	return scopes, nil
+}
+
+// CreateToken inserts t.
+func (r *Repository) CreateToken(ctx context.Context, db pgxtx.DBTX, t *workflow.Token) error {
+	if _, err := db.Exec(ctx, `
+        INSERT INTO workflow_token (`+tokenColumns+`)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+		t.ID, t.CaseID, t.ScopeID, t.Node, t.Eligible.Position, t.Eligible.Unit, string(t.Status), t.AssignedTo, t.DeadlineAt,
+		t.EnteredSeq, t.EnteredAt, nullSeq(t.EndedSeq), t.EndedAt,
+	); err != nil {
+		return fmt.Errorf("workflow: create token: %w", err)
+	}
+	return nil
+}
+
+// UpdateToken writes every mutable field of t. A missing token fails with
+// workflow.ErrConflict.
+func (r *Repository) UpdateToken(ctx context.Context, db pgxtx.DBTX, t *workflow.Token) error {
+	tag, err := db.Exec(ctx, `
+        UPDATE workflow_token SET
+            node = $2, position = $3, unit = $4, status = $5, assigned_to = $6, deadline_at = $7,
+            entered_seq = $8, entered_at = $9, ended_seq = $10, ended_at = $11
+        WHERE id = $1`,
+		t.ID, t.Node, t.Eligible.Position, t.Eligible.Unit, string(t.Status), t.AssignedTo, t.DeadlineAt,
+		t.EnteredSeq, t.EnteredAt, nullSeq(t.EndedSeq), t.EndedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("workflow: update token: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("workflow: update token %s: %w", t.ID, workflow.ErrConflict)
+	}
+	return nil
+}
+
+// ListTokens returns every token of caseID, ordered by entered_seq, then id.
+func (r *Repository) ListTokens(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID) ([]workflow.Token, error) {
+	rows, err := db.Query(ctx, `SELECT `+tokenColumns+` FROM workflow_token WHERE case_id = $1 ORDER BY entered_seq, id`, caseID)
+	if err != nil {
+		return nil, fmt.Errorf("workflow: list tokens: %w", err)
+	}
+	defer rows.Close()
+
+	var tokens []workflow.Token
+	for rows.Next() {
+		var t workflow.Token
+		var status string
+		if err := rows.Scan(tokenDest(&t, &status)...); err != nil {
+			return nil, fmt.Errorf("workflow: list tokens: %w", err)
+		}
+		t.Status = workflow.TokenStatus(status)
+		tokens = append(tokens, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("workflow: list tokens: %w", err)
+	}
+	return tokens, nil
+}
+
+// prefixedCaseColumns and prefixedTokenColumns are caseColumns and
+// tokenColumns qualified by the aliases ListWorkItems uses.
+const prefixedCaseColumns = `c.id, c.definition, c.version, c.domain, c.external_id, c.unit, c.state, c.status,
+    c.assigned_to, c.opened_at, c.closed_at, c.deadline_at, c.revision, c.last_seq, c.tenant`
+
+//nolint:gosec // G101 false positive: a column list of workflow_token, not a credential
+const prefixedTokenColumns = `t.id, t.case_id, t.scope_id, t.node, t.position, t.unit, t.status, t.assigned_to, t.deadline_at,
+    t.entered_seq, t.entered_at, t.ended_seq, t.ended_at`
+
+// caseDest returns the scan destinations of caseColumns into c, the status
+// into status.
+func caseDest(c *workflow.Case, status *string) []any {
+	return []any{
+		&c.ID, &c.Definition, &c.Version, &c.Domain, &c.ExternalID, &c.Unit, &c.State, status,
+		&c.AssignedTo, &c.OpenedAt, &c.ClosedAt, &c.DeadlineAt, &c.Revision, &c.LastSeq, &c.Tenant,
+	}
+}
+
+// tokenDest returns the scan destinations of tokenColumns into t, the status
+// into status; a NULL ended_seq reads as 0.
+func tokenDest(t *workflow.Token, status *string) []any {
+	return []any{
+		&t.ID, &t.CaseID, &t.ScopeID, &t.Node, &t.Eligible.Position, &t.Eligible.Unit, status, &t.AssignedTo, &t.DeadlineAt,
+		&t.EnteredSeq, &t.EnteredAt, (*nullableSeq)(&t.EndedSeq), &t.EndedAt,
+	}
 }
 
 // ListParticipated returns the distinct cases in which f.ActorID is the
@@ -387,10 +559,7 @@ func (r *Repository) ListParticipated(ctx context.Context, db pgxtx.DBTX, f work
 func scanCase(row rowScanner) (*workflow.Case, error) {
 	var c workflow.Case
 	var status string
-	if err := row.Scan(
-		&c.ID, &c.Definition, &c.Version, &c.Domain, &c.ExternalID, &c.Unit, &c.State, &status,
-		&c.AssignedTo, &c.OpenedAt, &c.ClosedAt, &c.DeadlineAt, &c.Revision, &c.LastSeq, &c.Tenant,
-	); err != nil {
+	if err := row.Scan(caseDest(&c, &status)...); err != nil {
 		return nil, err
 	}
 	c.Status = workflow.Status(status)
@@ -403,7 +572,7 @@ func scanEvent(row rowScanner) (*workflow.Event, error) {
 	if err := row.Scan(
 		&e.ID, &e.CaseID, &e.Seq, &kind, &e.FromState, &e.ToState, &e.Action, &e.Actor.ID, &e.OccurredAt, &e.Comment,
 		&e.SchemaVersion, &e.Detail, &e.Tenant, &actorKind, &e.Actor.ActingAs, &e.Actor.OnBehalfOf, &e.Actor.Via,
-		&e.RequestID, &e.TraceID, &e.SpanID, &e.PrevDigest, &e.Digest,
+		&e.RequestID, &e.TraceID, &e.SpanID, &e.TokenID, &e.ScopeID, &e.PrevDigest, &e.Digest,
 	); err != nil {
 		return nil, err
 	}
@@ -418,4 +587,35 @@ func nullString(s string) *string {
 		return nil
 	}
 	return &s
+}
+
+// nullUUID stores uuid.Nil as NULL.
+func nullUUID(id uuid.UUID) *uuid.UUID {
+	if id == uuid.Nil {
+		return nil
+	}
+	return &id
+}
+
+// nullSeq stores a zero seq (not set yet) as NULL.
+func nullSeq(seq int64) *int64 {
+	if seq == 0 {
+		return nil
+	}
+	return &seq
+}
+
+// nullableSeq scans a nullable BIGINT seq column, NULL as 0.
+type nullableSeq int64
+
+func (n *nullableSeq) Scan(src any) error {
+	switch v := src.(type) {
+	case nil:
+		*n = 0
+	case int64:
+		*n = nullableSeq(v)
+	default:
+		return fmt.Errorf("workflow: scan seq: unexpected %T", src)
+	}
+	return nil
 }

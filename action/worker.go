@@ -128,6 +128,7 @@ func (w *Worker) Work(ctx context.Context, job *river.Job[Args]) error {
 	run := Run{
 		Effect:     a.Effect,
 		CaseID:     a.CaseID,
+		TokenID:    a.TokenID,
 		Seq:        a.Seq,
 		Definition: a.Definition,
 		Version:    a.Version,

@@ -342,28 +342,6 @@ func TestOpen_SameExternalIDInTwoTenantsIsAllowed(t *testing.T) {
 	assert.True(t, errors.Is(err, workflow.ErrCaseNotFound), "got %v", err)
 }
 
-func TestRepository_ListByEligibility_FiltersByTenant(t *testing.T) {
-	pool := startTestPool(t)
-	repo := postgres.NewRepository()
-	ctx := context.Background()
-
-	a := newCase("compras", "tenant-list-1")
-	a.Tenant = "tenant-a"
-	b := newCase("compras", "tenant-list-1")
-	b.Tenant = "tenant-b"
-	require.NoError(t, repo.Create(ctx, pool, a))
-	require.NoError(t, repo.Create(ctx, pool, b))
-
-	got, err := repo.ListByEligibility(ctx, pool, workflow.InboxFilter{Tenant: "tenant-a"})
-	require.NoError(t, err)
-	require.Len(t, got, 1)
-	assert.Equal(t, a.ID, got[0].ID)
-
-	got, err = repo.ListByEligibility(ctx, pool, workflow.InboxFilter{Domain: "compras"})
-	require.NoError(t, err)
-	assert.Len(t, got, 2, "an empty tenant matches every tenant")
-}
-
 func TestEvent_PersistsCorrelationIDs(t *testing.T) {
 	pool := startTestPool(t)
 	repo := postgres.NewRepository()

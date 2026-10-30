@@ -216,45 +216,6 @@ func TestRepository_AppendEvent_And_ListEvents_PersistsComment(t *testing.T) {
 	assert.Equal(t, "", events[1].Comment, "an event appended with no comment must read back empty, not NULL")
 }
 
-func TestRepository_ListByEligibility_FiltersByUnassigned(t *testing.T) {
-	pool := startTestPool(t)
-	repo := postgres.NewRepository()
-	ctx := context.Background()
-
-	claimed := newCase("compras", "solicitud-claimed")
-	claimed.AssignedTo = "u1"
-	require.NoError(t, repo.Create(ctx, pool, claimed))
-
-	unclaimed := newCase("compras", "solicitud-unclaimed")
-	require.NoError(t, repo.Create(ctx, pool, unclaimed))
-
-	got, err := repo.ListByEligibility(ctx, pool, workflow.InboxFilter{Domain: "compras", Unassigned: true})
-	require.NoError(t, err)
-	require.Len(t, got, 1)
-	assert.Equal(t, unclaimed.ID, got[0].ID)
-}
-
-func TestRepository_ListByEligibility_FiltersByOverdue(t *testing.T) {
-	pool := startTestPool(t)
-	repo := postgres.NewRepository()
-	ctx := context.Background()
-
-	overdue := newCase("compras", "solicitud-overdue")
-	past := time.Now().Add(-1 * time.Hour).UTC().Truncate(time.Microsecond)
-	overdue.DeadlineAt = &past
-	require.NoError(t, repo.Create(ctx, pool, overdue))
-
-	notOverdue := newCase("compras", "solicitud-not-overdue")
-	future := time.Now().Add(24 * time.Hour).UTC().Truncate(time.Microsecond)
-	notOverdue.DeadlineAt = &future
-	require.NoError(t, repo.Create(ctx, pool, notOverdue))
-
-	got, err := repo.ListByEligibility(ctx, pool, workflow.InboxFilter{Domain: "compras", Overdue: true})
-	require.NoError(t, err)
-	require.Len(t, got, 1)
-	assert.Equal(t, overdue.ID, got[0].ID)
-}
-
 func TestRepository_Create_StartsAtRevisionZero(t *testing.T) {
 	pool := startTestPool(t)
 	repo := postgres.NewRepository()

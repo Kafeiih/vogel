@@ -40,12 +40,15 @@ type Status string
 const (
 	StatusOpen   Status = "open"
 	StatusClosed Status = "closed"
+	// StatusCancelled is a case ended by Engine.Cancel instead of reaching a
+	// terminal node.
+	StatusCancelled Status = "cancelled"
 )
 
 // Valid reports whether s is one of the known Status values.
 func (s Status) Valid() bool {
 	switch s {
-	case StatusOpen, StatusClosed:
+	case StatusOpen, StatusClosed, StatusCancelled:
 		return true
 	default:
 		return false
@@ -71,13 +74,30 @@ const (
 	// Detail is a FailureDetail.
 	EventNoRoute EventKind = "no_route"
 	EventFailed  EventKind = "failed"
+	// EventSplit records a split consuming the arriving token (TokenID, in
+	// its ScopeID) and opening a scope; the Detail is a SplitDetail. The
+	// emitted tokens' EventMoved hops follow it.
+	EventSplit EventKind = "split"
+	// EventWaiting records a token arriving at its scope's join.
+	EventWaiting EventKind = "waiting"
+	// EventJoined records a join consuming its scope's waiting tokens. Its
+	// ScopeID is the scope that joined and its TokenID the token the join
+	// creates in the parent scope; the Detail is a JoinDetail.
+	EventJoined EventKind = "joined"
+	// EventTokenCancelled records one token cancelled by Engine.Cancel or
+	// Engine.CancelToken; the Detail is a CancelDetail.
+	EventTokenCancelled EventKind = "token_cancelled"
+	// EventCancelled records Engine.Cancel ending the case; the Detail is a
+	// CancelDetail.
+	EventCancelled EventKind = "cancelled"
 )
 
 // Valid reports whether k is one of the known EventKind values.
 func (k EventKind) Valid() bool {
 	switch k {
 	case EventOpened, EventMoved, EventAssigned, EventUnassigned, EventClosed,
-		EventStepSubmitted, EventNoRoute, EventFailed:
+		EventStepSubmitted, EventNoRoute, EventFailed,
+		EventSplit, EventWaiting, EventJoined, EventTokenCancelled, EventCancelled:
 		return true
 	default:
 		return false
@@ -169,6 +189,19 @@ const (
 	NodeTask NodeKind = ""
 	// NodeDecision marks a decision node: see the NodeKind doc comment.
 	NodeDecision NodeKind = "decision"
+	// NodeParallel is an AND split: a token arriving at it is consumed and one
+	// new token leaves through every outgoing transition, none of which may
+	// have a guard. Node.Join names the NodeJoin where the branches meet.
+	NodeParallel NodeKind = "parallel"
+	// NodeInclusive is an OR split: one new token leaves through every
+	// outgoing route whose guard passes. Exactly one unguarded default route,
+	// declared last, is taken only when no guarded route passes. Node.Join
+	// names the NodeJoin where the branches meet.
+	NodeInclusive NodeKind = "inclusive"
+	// NodeJoin is where the branches of the split naming it meet: it waits
+	// until every token that split emitted arrived (or was cancelled), then
+	// one token continues through its single, unguarded outgoing transition.
+	NodeJoin NodeKind = "join"
 )
 
 // nodeTaskAlias is the sole spelling of the NodeTask "task" alias literal,
@@ -183,10 +216,40 @@ const nodeTaskAlias NodeKind = "task"
 // Valid reports whether k is one of the known NodeKind values.
 func (k NodeKind) Valid() bool {
 	switch k {
-	case NodeTask, nodeTaskAlias, NodeDecision:
+	case NodeTask, nodeTaskAlias, NodeDecision, NodeParallel, NodeInclusive, NodeJoin:
 		return true
 	default:
 		return false
+	}
+}
+
+// IsSplit reports whether k is a split gateway (NodeParallel or
+// NodeInclusive).
+func (k NodeKind) IsSplit() bool {
+	return k == NodeParallel || k == NodeInclusive
+}
+
+// IsAutomatic reports whether a case never rests on a node of kind k: a
+// decision node, a split or a join. Engine.Move routes through them within
+// the same call.
+func (k NodeKind) IsAutomatic() bool {
+	return k == NodeDecision || k.IsSplit() || k == NodeJoin
+}
+
+// label names k in Validate's messages: "decision node", "parallel split",
+// "inclusive split", "join node", or "node" for a task node.
+func (k NodeKind) label() string {
+	switch k {
+	case NodeDecision:
+		return "decision node"
+	case NodeParallel:
+		return "parallel split"
+	case NodeInclusive:
+		return "inclusive split"
+	case NodeJoin:
+		return "join node"
+	default:
+		return "node"
 	}
 }
 
@@ -244,8 +307,13 @@ type Node struct {
 	// asynchronously, outside the request that advanced the case. Every name
 	// must be known to that sink (see Engine.Register and ErrUnknownEffect).
 	// Definition.Validate rejects an empty or duplicate name within one
-	// node, and any effect on a decision node: a case never rests there.
+	// node, and any effect on a decision node, split or join: a case never
+	// rests there.
 	Effects []string
+	// Join names the NodeJoin where the branches of this split meet. Only a
+	// NodeParallel or NodeInclusive node may set it, and each join is named by
+	// exactly one split: together they bound a block (see Definition.Validate).
+	Join string
 }
 
 // Transition is a named move from one node to another, optionally gated by
@@ -446,22 +514,26 @@ func (d Definition) Validate() error {
 		}
 		checkEffects(fmt.Sprintf("node %q", n.ID), n.Effects)
 
-		if n.Kind == NodeDecision {
+		if n.Kind.IsAutomatic() {
+			label := n.Kind.label()
 			if n.Start {
-				addf("decision node %q: must not be a start node", n.ID)
+				addf("%s %q: must not be a start node", label, n.ID)
 			}
 			if n.Terminal {
-				addf("decision node %q: must not be a terminal node", n.ID)
+				addf("%s %q: must not be a terminal node", label, n.ID)
 			}
 			if !n.Eligible.IsZero() {
-				addf("decision node %q: must not declare an eligibility", n.ID)
+				addf("%s %q: must not declare an eligibility", label, n.ID)
 			}
 			if n.Deadline != 0 {
-				addf("decision node %q: must not declare a deadline", n.ID)
+				addf("%s %q: must not declare a deadline", label, n.ID)
 			}
 			if len(n.Effects) > 0 {
-				addf("decision node %q: must not declare effects (declare them on its routes)", n.ID)
+				addf("%s %q: must not declare effects (declare them on its routes)", label, n.ID)
 			}
+		}
+		if n.Join != "" && !n.Kind.IsSplit() {
+			addf("node %q: only a split may name a join", n.ID)
 		}
 	}
 
@@ -476,7 +548,9 @@ func (d Definition) Validate() error {
 	outgoing := make(map[string]int, len(d.Nodes))
 	adjacency := make(map[string][]string, len(d.Nodes))
 	outgoingByNode := make(map[string][]Transition, len(d.Nodes))
-	decisionAdjacency := make(map[string][]string, len(d.Nodes))
+	// gatewayAdjacency holds the edges between automatic nodes (decisions,
+	// splits, joins): a cycle made only of them would route forever.
+	gatewayAdjacency := make(map[string][]string, len(d.Nodes))
 
 	for i, tr := range d.Transitions {
 		if tr.Action == "" {
@@ -504,20 +578,23 @@ func (d Definition) Validate() error {
 			outgoingByNode[tr.From] = append(outgoingByNode[tr.From], tr)
 		}
 
-		if fromOK && fromNode.Kind == NodeDecision && tr.Comment.Canonical() != CommentNone {
-			addf("transition[%d]: route from decision node %q must not declare a comment policy", i, tr.From)
+		if fromOK && (fromNode.Kind == NodeDecision || fromNode.Kind.IsSplit()) && tr.Comment.Canonical() != CommentNone {
+			addf("transition[%d]: route from %s %q must not declare a comment policy", i, fromNode.Kind.label(), tr.From)
 		}
-		if fromOK && fromNode.Kind == NodeDecision && tr.Return {
-			addf("transition[%d]: route from decision node %q must not be a return transition", i, tr.From)
+		if fromOK && fromNode.Kind.IsAutomatic() && tr.Return {
+			addf("transition[%d]: route from %s %q must not be a return transition", i, fromNode.Kind.label(), tr.From)
+		}
+		if fromOK && fromNode.Kind == NodeParallel && tr.Guard != "" {
+			addf("transition[%d]: route from parallel split %q must not declare a guard", i, tr.From)
 		}
 		if toOK && toNode.Terminal && tr.Return {
 			addf("transition[%d]: return transition must not target terminal node %q", i, tr.To)
 		}
-		if toOK && toNode.Kind == NodeDecision && tr.Return {
-			addf("transition[%d]: return transition must target a task node, got decision node %q", i, tr.To)
+		if toOK && toNode.Kind.IsAutomatic() && tr.Return {
+			addf("transition[%d]: return transition must target a task node, got %s %q", i, toNode.Kind.label(), tr.To)
 		}
-		if fromOK && toOK && fromNode.Kind == NodeDecision && toNode.Kind == NodeDecision {
-			decisionAdjacency[tr.From] = append(decisionAdjacency[tr.From], tr.To)
+		if fromOK && toOK && fromNode.Kind.IsAutomatic() && toNode.Kind.IsAutomatic() {
+			gatewayAdjacency[tr.From] = append(gatewayAdjacency[tr.From], tr.To)
 		}
 
 		key := tr.From + "\x00" + tr.Action
@@ -528,13 +605,25 @@ func (d Definition) Validate() error {
 	}
 
 	for _, n := range d.Nodes {
-		if n.ID == "" || n.Kind != NodeDecision {
+		if n.ID == "" || !n.Kind.IsAutomatic() {
 			continue
 		}
 		routes := outgoingByNode[n.ID]
-		if len(routes) < 2 {
-			addf("decision node %q: requires at least two outgoing routes, found %d", n.ID, len(routes))
+		label := n.Kind.label()
+		if n.Kind == NodeJoin {
+			if len(routes) != 1 {
+				addf("join node %q: requires exactly one outgoing transition, found %d", n.ID, len(routes))
+			} else if routes[0].Guard != "" {
+				addf("join node %q: its outgoing transition must not declare a guard", n.ID)
+			}
 			continue
+		}
+		if len(routes) < 2 {
+			addf("%s %q: requires at least two outgoing routes, found %d", label, n.ID, len(routes))
+			continue
+		}
+		if n.Kind == NodeParallel {
+			continue // guards are rejected per transition above
 		}
 
 		unguardedCount, unguardedIdx := 0, -1
@@ -546,23 +635,29 @@ func (d Definition) Validate() error {
 		}
 		switch {
 		case unguardedCount == 0:
-			addf("decision node %q: requires exactly one unguarded default route, found none", n.ID)
+			addf("%s %q: requires exactly one unguarded default route, found none", label, n.ID)
 		case unguardedCount > 1:
-			addf("decision node %q: requires exactly one unguarded default route, found %d", n.ID, unguardedCount)
+			addf("%s %q: requires exactly one unguarded default route, found %d", label, n.ID, unguardedCount)
 		case unguardedIdx != len(routes)-1:
-			addf("decision node %q: the unguarded default route (action %q) must be declared last", n.ID, routes[unguardedIdx].Action)
+			addf("%s %q: the unguarded default route (action %q) must be declared last", label, n.ID, routes[unguardedIdx].Action)
 		}
 	}
 
-	if len(decisionAdjacency) > 0 {
-		decisionNodes := make([]string, 0, len(d.Nodes))
+	if len(gatewayAdjacency) > 0 {
+		gatewayNodes := make([]string, 0, len(d.Nodes))
 		for _, n := range d.Nodes {
-			if n.ID != "" && n.Kind == NodeDecision {
-				decisionNodes = append(decisionNodes, n.ID)
+			if n.ID != "" && n.Kind.IsAutomatic() {
+				gatewayNodes = append(gatewayNodes, n.ID)
 			}
 		}
-		if cycle := detectDecisionCycle(decisionNodes, decisionAdjacency); cycle != nil {
-			addf("decision-only cycle detected: %s", strings.Join(cycle, " -> "))
+		if cycle := detectDecisionCycle(gatewayNodes, gatewayAdjacency); cycle != nil {
+			kind := "decision-only"
+			for _, id := range cycle {
+				if nodeByID[id].Kind != NodeDecision {
+					kind = "gateway-only"
+				}
+			}
+			addf("%s cycle detected: %s", kind, strings.Join(cycle, " -> "))
 		}
 	}
 
@@ -599,6 +694,8 @@ func (d Definition) Validate() error {
 		}
 	}
 
+	validateBlocks(d, nodeByID, outgoingByNode, addf)
+
 	if len(errs) == 0 {
 		return nil
 	}
@@ -606,8 +703,8 @@ func (d Definition) Validate() error {
 }
 
 // detectDecisionCycle returns the node IDs forming one cycle within adj — a
-// directed graph already restricted to decision-kind nodes and the edges
-// between them — or nil if adj is acyclic. nodes fixes DFS traversal order,
+// directed graph already restricted to automatic nodes (decisions, splits,
+// joins) and the edges between them — or nil if adj is acyclic. nodes fixes DFS traversal order,
 // so the result (and therefore Validate's error message) is deterministic
 // across calls on the same Definition.
 func detectDecisionCycle(nodes []string, adj map[string][]string) []string {
@@ -721,11 +818,17 @@ type Case struct {
 	Domain     string // e.g. "compras"
 	ExternalID string // e.g. "solicitud-123"
 	Unit       string // organizational unit the case belongs to
-	State      string // current node ID
-	Status     Status
-	AssignedTo string // person id; empty when unclaimed
+	// State is the node of the case's only active token: empty while the
+	// case has several active tokens (inside a parallel block), the terminal
+	// node once closed.
+	State  string
+	Status Status
+	// AssignedTo is the person id holding the only active token; empty when
+	// it is unclaimed or the case has several active tokens.
+	AssignedTo string
 	OpenedAt   time.Time
 	ClosedAt   *time.Time
+	// DeadlineAt is the earliest deadline among the active tokens.
 	DeadlineAt *time.Time
 	// Revision is the row's optimistic-concurrency token. It is unrelated
 	// to Version, which is the Definition version the case runs on. Create
@@ -745,8 +848,9 @@ type Case struct {
 
 // CurrentEventSchema is the Event.SchemaVersion the engine writes. Version 1
 // is every event stored before schema_version existed: no Detail. Version 2
-// adds Detail and LastSeq-assigned Seq.
-const CurrentEventSchema = 2
+// adds Detail and LastSeq-assigned Seq. Version 3 adds TokenID and ScopeID;
+// an older event reads as the case's root token in its root scope.
+const CurrentEventSchema = 3
 
 // AssignmentDetail is the Event.Detail of EventAssigned (written by Claim,
 // From empty) and EventUnassigned (written by Release, To empty). From and To
@@ -804,11 +908,13 @@ type FailureDetail struct {
 	Detail json.RawMessage `json:"detail,omitempty"`
 }
 
-// MoveResult is what OpenDetailed and MoveDetailed return: the case as
-// persisted and exactly the events the call appended, in Seq order.
+// MoveResult is what OpenDetailed, MoveDetailed and CancelToken return: the
+// case as persisted, exactly the events the call appended, in Seq order, and
+// every join the call fired, in the order they fired.
 type MoveResult struct {
 	Case   *Case
 	Events []Event
+	Joined []JoinRecord
 }
 
 // Event is a single append-only history record for a Case.
@@ -824,8 +930,14 @@ type Event struct {
 	// one Move; Seq, assigned in append order from Case.LastSeq, is what
 	// makes that order recoverable. workflow/postgres.ListEvents orders its
 	// query by `seq ASC` for exactly this reason (see repository.go).
-	Seq       int64
-	Kind      EventKind
+	Seq  int64
+	Kind EventKind
+	// TokenID and ScopeID name the token the event concerns and that token's
+	// scope (see EventSplit and EventJoined for the two kinds that differ).
+	// Events stored before tokens existed read as the case ID for both: the
+	// root token in the root scope.
+	TokenID   uuid.UUID
+	ScopeID   uuid.UUID
 	FromState string
 	ToState   string
 	Action    string
@@ -1007,6 +1119,20 @@ type GuardFunc func(ctx context.Context, db pgxtx.DBTX, c Case) (bool, error)
 // gets the event as stored. ListEvents returns both as stored.
 // ListEventDigests returns the case's chain links in Seq order, each with
 // the digest recomputed from the row as it is now.
+//
+// Tokens and scopes are mutable state of a case. The engine writes them only
+// after Update's compare-and-swap succeeded in the same transaction, so the
+// case revision serializes them and they need no revision of their own.
+// CreateScope and CreateToken insert a new row; UpdateScope and UpdateToken
+// write every mutable field of an existing one (ErrConflict when it does not
+// exist). ListScopes and ListTokens return every row of the case, tokens
+// ordered by EnteredSeq, then ID. Event.TokenID and Event.ScopeID are stored
+// as given; a repository that stores no value for them (uuid.Nil) reads them
+// back as uuid.Nil, which the engine reads as the case ID.
+//
+// ListWorkItems returns one WorkItem per active token of an open case that
+// matches f, oldest case first (OpenedAt, then case ID), then the case's
+// tokens by EnteredSeq, then token ID, paged by f.Page.
 type Repository interface {
 	Create(ctx context.Context, db pgxtx.DBTX, c *Case) error
 	GetByID(ctx context.Context, db pgxtx.DBTX, id uuid.UUID) (*Case, error)
@@ -1014,25 +1140,34 @@ type Repository interface {
 	Update(ctx context.Context, db pgxtx.DBTX, c *Case, expectedLastSeq int64) error
 	AppendEvent(ctx context.Context, db pgxtx.DBTX, e *Event) error
 	ListEvents(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID) ([]Event, error)
-	ListByEligibility(ctx context.Context, db pgxtx.DBTX, f InboxFilter) ([]Case, error)
+	ListWorkItems(ctx context.Context, db pgxtx.DBTX, f InboxFilter) ([]WorkItem, error)
 	AdvanceLastSeq(ctx context.Context, db pgxtx.DBTX, id uuid.UUID) (*Case, error)
 	ListParticipated(ctx context.Context, db pgxtx.DBTX, f ParticipationFilter) ([]Case, error)
 	ListEventDigests(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID) ([]EventDigest, error)
+	CreateScope(ctx context.Context, db pgxtx.DBTX, s *Scope) error
+	UpdateScope(ctx context.Context, db pgxtx.DBTX, s *Scope) error
+	ListScopes(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID) ([]Scope, error)
+	CreateToken(ctx context.Context, db pgxtx.DBTX, t *Token) error
+	UpdateToken(ctx context.Context, db pgxtx.DBTX, t *Token) error
+	ListTokens(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID) ([]Token, error)
 }
 
-// InboxFilter selects open cases. States is the set of node IDs a caller
-// considers itself eligible for — that mapping from Position/Unit to a set
-// of eligible node IDs is resolved by the caller (see Engine.EligibilityFor
-// and the package doc comment), not by this filter.
+// InboxFilter selects the active tokens of open cases (see Engine.Inbox).
+// States is the set of node IDs a caller considers itself eligible for, and
+// Eligibility the set of (position, unit) pairs it holds: a token matches when
+// its node is in States (when set) and its resolved Token.Eligible equals one
+// of the pairs (when set). AssignedTo, Unassigned and Overdue apply to the
+// token, not the case.
 type InboxFilter struct {
-	Tenant     string // empty = any
-	Domain     string
-	States     []string
-	AssignedTo string // empty = any
-	Unassigned bool   // true = only unclaimed
-	Overdue    bool   // true = only past DeadlineAt
-	Limit      int    // <= 0 means DefaultListLimit; clamped to MaxListLimit
-	Offset     int    // must be within [0, MaxListOffset]
+	Tenant      string // empty = any
+	Domain      string
+	States      []string
+	Eligibility []Eligibility
+	AssignedTo  string // empty = any
+	Unassigned  bool   // true = only unclaimed
+	Overdue     bool   // true = only past Token.DeadlineAt
+	Limit       int    // <= 0 means DefaultListLimit; clamped to MaxListLimit
+	Offset      int    // must be within [0, MaxListOffset]
 }
 
 // List paging bounds. A repository list query applies them through InboxFilter.Page:

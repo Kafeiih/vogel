@@ -49,7 +49,7 @@ func TestAppendEvent_WritesCurrentSchemaVersion(t *testing.T) {
 	for _, ev := range events {
 		assert.Equal(t, CurrentEventSchema, ev.SchemaVersion, "event seq=%d kind=%s", ev.Seq, ev.Kind)
 	}
-	assert.Equal(t, 2, CurrentEventSchema)
+	assert.Equal(t, 3, CurrentEventSchema)
 }
 
 func TestListEvents_UnknownSchemaVersionFails(t *testing.T) {
@@ -373,6 +373,15 @@ func caseIDs(cases []Case) []uuid.UUID {
 	return ids
 }
 
+// workItemCaseIDs returns the case ID of every work item, in order.
+func workItemCaseIDs(items []WorkItem) []uuid.UUID {
+	ids := make([]uuid.UUID, 0, len(items))
+	for _, it := range items {
+		ids = append(ids, it.Case.ID)
+	}
+	return ids
+}
+
 func TestInbox_FiltersByTenant(t *testing.T) {
 	repo := newFakeRepository()
 	e := New(repo, Config{}, testLogger(), WithDefinitions(testDefinition()))
@@ -383,11 +392,11 @@ func TestInbox_FiltersByTenant(t *testing.T) {
 
 	got, err := e.Inbox(context.Background(), nil, InboxFilter{Tenant: "tenant-a", Domain: "compras"})
 	require.NoError(t, err)
-	assert.Equal(t, []uuid.UUID{a.ID}, caseIDs(got))
+	assert.Equal(t, []uuid.UUID{a.ID}, workItemCaseIDs(got))
 
 	got, err = e.Inbox(context.Background(), nil, InboxFilter{Tenant: "tenant-b"})
 	require.NoError(t, err)
-	assert.Equal(t, []uuid.UUID{b.ID}, caseIDs(got))
+	assert.Equal(t, []uuid.UUID{b.ID}, workItemCaseIDs(got))
 }
 
 func TestInbox_EmptyTenantMatchesAnyTenant(t *testing.T) {
@@ -399,7 +408,7 @@ func TestInbox_EmptyTenantMatchesAnyTenant(t *testing.T) {
 
 	got, err := e.Inbox(context.Background(), nil, InboxFilter{Domain: "compras"})
 	require.NoError(t, err)
-	assert.ElementsMatch(t, []uuid.UUID{a.ID, none.ID}, caseIDs(got))
+	assert.ElementsMatch(t, []uuid.UUID{a.ID, none.ID}, workItemCaseIDs(got))
 }
 
 func TestEvent_CopiesCaseTenant(t *testing.T) {

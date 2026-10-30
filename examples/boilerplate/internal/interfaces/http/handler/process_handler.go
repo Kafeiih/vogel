@@ -28,10 +28,10 @@ type ProcessService interface {
 	Publish(ctx context.Context, spec domain.ProcessSpec) (*domain.Process, error)
 	Latest(name string) (*domain.Process, bool)
 	Start(ctx context.Context, actor, process, action string, values map[string]any) (*workflow.Case, error)
-	Inbox(ctx context.Context, actor string) ([]workflow.Case, error)
+	Inbox(ctx context.Context, actor string) ([]workflow.WorkItem, error)
 	View(ctx context.Context, actor string, caseID uuid.UUID) (*process.CaseView, error)
-	Claim(ctx context.Context, actor string, caseID uuid.UUID) (*workflow.Case, error)
-	Submit(ctx context.Context, actor string, caseID uuid.UUID, action string, values map[string]any) (*workflow.Case, error)
+	Claim(ctx context.Context, actor string, caseID, tokenID uuid.UUID) (*workflow.Case, error)
+	Submit(ctx context.Context, actor string, caseID, tokenID uuid.UUID, action string, values map[string]any) (*workflow.Case, error)
 }
 
 type ProcessHandler struct {
@@ -46,6 +46,12 @@ func NewProcessHandler(svc ProcessService, logger *slog.Logger) *ProcessHandler 
 type submission struct {
 	Action string         `json:"action"`
 	Values map[string]any `json:"values"`
+}
+
+// submitRequest is submission plus the work item to move.
+type submitRequest struct {
+	submission
+	TokenID *uuid.UUID `json:"tokenId"`
 }
 
 // Mount registers the bpms operations of api/openapi.yaml on r, each behind
@@ -74,7 +80,18 @@ func (h *ProcessHandler) Mount(r chi.Router, guard func(kind, action string) fun
 	r.With(guard("bpms:case", "view"), openapi.RequestInContext).
 		Get("/cases/{id}", byID(ops.GetCase))
 	r.With(guard("bpms:case", "claim"), openapi.RequestInContext).
-		Post("/cases/{id}/claim", byID(ops.ClaimCase))
+		Post("/cases/{id}/claim", func(w http.ResponseWriter, r *http.Request) {
+			var params bpmsgen.ClaimCaseParams
+			if raw := r.URL.Query().Get("tokenId"); raw != "" {
+				tokenID, err := uuid.Parse(raw)
+				if err != nil {
+					response.Error(w, r, http.StatusNotFound, response.CodeNotFound, workflow.ErrTokenNotFound.Error())
+					return
+				}
+				params.TokenId = &tokenID
+			}
+			ops.ClaimCase(w, r, chi.URLParam(r, "id"), params)
+		})
 	r.With(guard("bpms:case", "submit"), openapi.Decode(h.checkSubmit), openapi.RequestInContext).
 		Post("/cases/{id}/submit", byID(ops.SubmitCase))
 }
@@ -106,7 +123,7 @@ func (h *ProcessHandler) checkSubmit(w http.ResponseWriter, r *http.Request) boo
 	if _, _, ok := actorAndCase(w, r); !ok {
 		return false
 	}
-	var in submission
+	var in submitRequest
 	return h.decodeStrict(w, r, &in)
 }
 
@@ -162,13 +179,13 @@ func (h *ProcessHandler) ListInbox(ctx context.Context, _ bpmsgen.ListInboxReque
 	if err != nil {
 		return nil, err
 	}
-	cases, err := h.svc.Inbox(ctx, actor)
+	items, err := h.svc.Inbox(ctx, actor)
 	if err != nil {
 		return nil, h.failure(err)
 	}
-	out := make([]bpmsgen.Case, 0, len(cases))
-	for i := range cases {
-		out = append(out, toCase(&cases[i]))
+	out := make([]bpmsgen.Case, 0, len(items))
+	for i := range items {
+		out = append(out, toWorkItem(&items[i]))
 	}
 	return bpmsgen.ListInbox200JSONResponse{Success: true, Message: "OK", Data: out}, nil
 }
@@ -190,7 +207,11 @@ func (h *ProcessHandler) ClaimCase(ctx context.Context, req bpmsgen.ClaimCaseReq
 	if err != nil {
 		return nil, err
 	}
-	c, err := h.svc.Claim(ctx, actor, id)
+	var tokenID uuid.UUID
+	if req.Params.TokenId != nil {
+		tokenID = *req.Params.TokenId
+	}
+	c, err := h.svc.Claim(ctx, actor, id, tokenID)
 	if err != nil {
 		return nil, h.failure(err)
 	}
@@ -202,8 +223,12 @@ func (h *ProcessHandler) SubmitCase(ctx context.Context, req bpmsgen.SubmitCaseR
 	if err != nil {
 		return nil, err
 	}
-	action, values := fromSubmission(req.Body)
-	c, err := h.svc.Submit(ctx, actor, id, action, values)
+	var tokenID uuid.UUID
+	if req.Body.TokenId != nil {
+		tokenID = *req.Body.TokenId
+	}
+	action, values := fromSubmission(&bpmsgen.Submission{Action: req.Body.Action, Values: req.Body.Values})
+	c, err := h.svc.Submit(ctx, actor, id, tokenID, action, values)
 	if err != nil {
 		return nil, h.failure(err)
 	}
@@ -230,6 +255,19 @@ func toCase(c *workflow.Case) bpmsgen.Case {
 	if c.AssignedTo != "" {
 		out.AssignedTo = &c.AssignedTo
 	}
+	return out
+}
+
+// toWorkItem is the inbox entry of one token: its case, with the token's
+// node, assignee and ID.
+func toWorkItem(it *workflow.WorkItem) bpmsgen.Case {
+	out := toCase(&it.Case)
+	out.State = it.Token.Node
+	out.AssignedTo = nil
+	if it.Token.AssignedTo != "" {
+		out.AssignedTo = &it.Token.AssignedTo
+	}
+	out.TokenId = &it.Token.ID
 	return out
 }
 
@@ -311,11 +349,13 @@ func (h *ProcessHandler) fail(w http.ResponseWriter, r *http.Request, err error)
 	case errors.As(err, &formErr):
 		request.LogValidationFailure(h.logger, r, formErr.Fields)
 		response.ValidationError(w, r, formErr.Fields)
-	case errors.Is(err, domain.ErrProcessNotFound), errors.Is(err, workflow.ErrCaseNotFound):
+	case errors.Is(err, domain.ErrProcessNotFound), errors.Is(err, workflow.ErrCaseNotFound),
+		errors.Is(err, workflow.ErrTokenNotFound):
 		response.Error(w, r, http.StatusNotFound, response.CodeNotFound, err.Error())
 	case errors.Is(err, domain.ErrNotHolder), errors.Is(err, domain.ErrNotClaimant), errors.Is(err, domain.ErrNoAccess):
 		response.Error(w, r, http.StatusForbidden, response.CodeForbidden, err.Error())
 	case errors.Is(err, workflow.ErrAlreadyAssigned), errors.Is(err, workflow.ErrConflict),
+		errors.Is(err, workflow.ErrTokenRequired),
 		errors.Is(err, workflow.ErrCaseClosed), errors.Is(err, workflow.ErrInvalidTransition),
 		errors.Is(err, domain.ErrPublishConflict):
 		response.Error(w, r, http.StatusConflict, response.CodeConflict, err.Error())

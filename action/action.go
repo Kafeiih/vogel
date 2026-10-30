@@ -74,8 +74,11 @@ var (
 // which event. It carries only the case reference (Domain, ExternalID), never
 // domain data; a Handler that needs more looks it up in its own store.
 type Run struct {
-	Effect     string
-	CaseID     uuid.UUID
+	Effect string
+	CaseID uuid.UUID
+	// TokenID is the token of the event that caused this effect: the case ID
+	// for a case that never split, a branch's token inside a parallel block.
+	TokenID    uuid.UUID
 	Seq        int64
 	Definition string
 	Version    int
@@ -140,14 +143,17 @@ func IsCancel(err error) bool {
 }
 
 // Args is the River job payload for one effect. CaseID, Seq, Effect and Part
-// are the uniqueness key; the rest is the case reference copied at dispatch
-// time. Part is zero for the effect job and the 1-based item of a fan-out job
+// are the uniqueness key (Seq is unique per case, so TokenID needs no part in
+// it); the rest is the case reference and the event's TokenID, copied at
+// dispatch time. A job enqueued before TokenID existed decodes it as
+// uuid.Nil. Part is zero for the effect job and the 1-based item of a fan-out job
 // (see Run.Part).
 type Args struct {
 	CaseID     uuid.UUID `json:"case_id" river:"unique"`
 	Seq        int64     `json:"seq" river:"unique"`
 	Effect     string    `json:"effect" river:"unique"`
 	Part       int       `json:"part,omitempty" river:"unique"`
+	TokenID    uuid.UUID `json:"token_id"`
 	Definition string    `json:"definition"`
 	Version    int       `json:"version"`
 	Domain     string    `json:"domain"`
@@ -263,6 +269,7 @@ func (r *Registry) plan(d workflow.Definition, c workflow.Case, events []workflo
 			}
 			jobs = append(jobs, Args{
 				CaseID:     c.ID,
+				TokenID:    evt.TokenID,
 				Seq:        evt.Seq,
 				Effect:     name,
 				Definition: c.Definition,

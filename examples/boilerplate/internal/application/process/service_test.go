@@ -33,6 +33,8 @@ type memStore struct {
 	cases  map[uuid.UUID]workflow.Case
 	events map[uuid.UUID][]workflow.Event
 	values map[uuid.UUID]map[string]any
+	tokens map[uuid.UUID]workflow.Token
+	scopes map[uuid.UUID]workflow.Scope
 }
 
 func newMemStore() *memStore {
@@ -40,14 +42,20 @@ func newMemStore() *memStore {
 		cases:  map[uuid.UUID]workflow.Case{},
 		events: map[uuid.UUID][]workflow.Event{},
 		values: map[uuid.UUID]map[string]any{},
+		tokens: map[uuid.UUID]workflow.Token{},
+		scopes: map[uuid.UUID]workflow.Scope{},
 	}
 }
 
+// clone copies the store; the token and scope values are copied by value,
+// and the engine never mutates what it reads through their pointer fields.
 func (s *memStore) clone() memStore {
 	out := memStore{
 		cases:  maps.Clone(s.cases),
 		events: make(map[uuid.UUID][]workflow.Event, len(s.events)),
 		values: make(map[uuid.UUID]map[string]any, len(s.values)),
+		tokens: maps.Clone(s.tokens),
+		scopes: maps.Clone(s.scopes),
 	}
 	for id, evs := range s.events {
 		out.events[id] = slices.Clone(evs)
@@ -165,8 +173,48 @@ func (r *memCases) AdvanceLastSeq(_ context.Context, _ pgxtx.DBTX, id uuid.UUID)
 	return &c, nil
 }
 
-func (r *memCases) ListByEligibility(context.Context, pgxtx.DBTX, workflow.InboxFilter) ([]workflow.Case, error) {
+func (r *memCases) ListWorkItems(context.Context, pgxtx.DBTX, workflow.InboxFilter) ([]workflow.WorkItem, error) {
 	return nil, errNoSQL
+}
+
+func (r *memCases) CreateScope(_ context.Context, _ pgxtx.DBTX, sc *workflow.Scope) error {
+	r.st.scopes[sc.ID] = *sc
+	return nil
+}
+
+func (r *memCases) UpdateScope(_ context.Context, _ pgxtx.DBTX, sc *workflow.Scope) error {
+	r.st.scopes[sc.ID] = *sc
+	return nil
+}
+
+func (r *memCases) ListScopes(_ context.Context, _ pgxtx.DBTX, caseID uuid.UUID) ([]workflow.Scope, error) {
+	var out []workflow.Scope
+	for _, sc := range r.st.scopes {
+		if sc.CaseID == caseID {
+			out = append(out, sc)
+		}
+	}
+	return out, nil
+}
+
+func (r *memCases) CreateToken(_ context.Context, _ pgxtx.DBTX, t *workflow.Token) error {
+	r.st.tokens[t.ID] = *t
+	return nil
+}
+
+func (r *memCases) UpdateToken(_ context.Context, _ pgxtx.DBTX, t *workflow.Token) error {
+	r.st.tokens[t.ID] = *t
+	return nil
+}
+
+func (r *memCases) ListTokens(_ context.Context, _ pgxtx.DBTX, caseID uuid.UUID) ([]workflow.Token, error) {
+	var out []workflow.Token
+	for _, t := range r.st.tokens {
+		if t.CaseID == caseID {
+			out = append(out, t)
+		}
+	}
+	return out, nil
 }
 
 func (r *memCases) ListParticipated(context.Context, pgxtx.DBTX, workflow.ParticipationFilter) ([]workflow.Case, error) {
@@ -272,7 +320,7 @@ func TestSubmitUnit_RejectedMoveIsRecordedAndItsValuesRolledBack(t *testing.T) {
 	before := f.history(id)
 	stateBefore := f.st.cases[id].State
 
-	c, err := f.svc.Submit(f.ctx, "luis", id, "archivar", map[string]any{"respuesta": "De 9 a 14 h."})
+	c, err := f.svc.Submit(f.ctx, "luis", id, uuid.Nil, "archivar", map[string]any{"respuesta": "De 9 a 14 h."})
 	require.ErrorIs(t, err, workflow.ErrInvalidTransition)
 	assert.Nil(t, c)
 
@@ -296,7 +344,7 @@ func TestSubmitUnit_FailingRecordJoinsBothErrors(t *testing.T) {
 	before := f.history(id)
 	f.cases.advanceErr = errNoSQL
 
-	c, err := f.svc.Submit(f.ctx, "luis", id, "archivar", map[string]any{"respuesta": "De 9 a 14 h."})
+	c, err := f.svc.Submit(f.ctx, "luis", id, uuid.Nil, "archivar", map[string]any{"respuesta": "De 9 a 14 h."})
 	assert.Nil(t, c)
 	require.ErrorIs(t, err, workflow.ErrInvalidTransition, "the rejected move stays visible")
 	require.ErrorIs(t, err, errNoSQL, "and so does the failed record")
@@ -321,7 +369,7 @@ func TestSubmitUnit_ErrorsThatAreNotRejectedMovesAreNotRecorded(t *testing.T) {
 		{
 			name: "closed case",
 			arrange: func(f *submitFixture, id uuid.UUID) {
-				_, err := f.svc.Submit(f.ctx, "luis", id, "responder", map[string]any{"respuesta": "De 9 a 14 h."})
+				_, err := f.svc.Submit(f.ctx, "luis", id, uuid.Nil, "responder", map[string]any{"respuesta": "De 9 a 14 h."})
 				require.NoError(f.t, err)
 			},
 			actor:   "luis",
@@ -352,7 +400,7 @@ func TestSubmitUnit_ErrorsThatAreNotRejectedMovesAreNotRecorded(t *testing.T) {
 			}
 			before := f.history(id)
 
-			_, err := f.svc.Submit(f.ctx, tt.actor, id, "responder", tt.values)
+			_, err := f.svc.Submit(f.ctx, tt.actor, id, uuid.Nil, "responder", tt.values)
 			if tt.wantErr != nil {
 				require.ErrorIs(t, err, tt.wantErr)
 			} else {
@@ -371,7 +419,7 @@ func TestSubmitUnit_AcceptedMoveLeavesNoFailureRecord(t *testing.T) {
 	id := f.claimedCase()
 	before := f.history(id)
 
-	c, err := f.svc.Submit(f.ctx, "luis", id, "responder", map[string]any{"respuesta": "De 9 a 14 h."})
+	c, err := f.svc.Submit(f.ctx, "luis", id, uuid.Nil, "responder", map[string]any{"respuesta": "De 9 a 14 h."})
 	require.NoError(t, err)
 	assert.Equal(t, "cerrada", c.State)
 

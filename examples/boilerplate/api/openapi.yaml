@@ -190,7 +190,9 @@ paths:
       operationId: listInbox
       tags: [bpms]
       summary: List the inbox
-      description: Returns the open cases the caller can act on.
+      description: >-
+        Returns the work items the caller can act on: one entry per active
+        token, with tokenId set and state and assignedTo taken from the token.
       responses:
         "200":
           description: The cases of the caller.
@@ -234,9 +236,10 @@ paths:
       operationId: claimCase
       tags: [bpms]
       summary: Claim a case
-      description: Assigns the case to the caller.
+      description: Assigns a work item (token) of the case to the caller.
       parameters:
         - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/TokenID"
       responses:
         "200":
           description: The claimed case.
@@ -260,14 +263,14 @@ paths:
       operationId: submitCase
       tags: [bpms]
       summary: Submit an action
-      description: Submits an action with its form values on a case the caller holds.
+      description: Submits an action with its form values on a work item (token) the caller holds.
       parameters:
         - $ref: "#/components/parameters/ID"
       requestBody:
         required: true
         content:
           application/json:
-            schema: {$ref: "#/components/schemas/Submission"}
+            schema: {$ref: "#/components/schemas/SubmitRequest"}
       responses:
         "200":
           description: The case after the action.
@@ -315,6 +318,13 @@ components:
       required: true
       description: Process name.
       schema: {type: string, x-go-type: string}
+    TokenID:
+      name: tokenId
+      in: query
+      description: >-
+        The work item (token) to act on. Optional while the case has a single
+        active token; required while it runs parallel branches.
+      schema: {type: string, format: uuid}
   # vogel:component bpms end
     ActorID:
       name: actor_id
@@ -570,6 +580,15 @@ components:
       properties:
         action: {type: string}
         values: {type: object, additionalProperties: true}
+    SubmitRequest:
+      type: object
+      properties:
+        action: {type: string}
+        values: {type: object, additionalProperties: true}
+        tokenId:
+          type: string
+          format: uuid
+          description: The work item to move; optional while the case has a single active token.
     Case:
       type: object
       required: [id, process, version, state, status, openedAt]
@@ -582,6 +601,11 @@ components:
         assignedTo: {type: string, x-order: 6}
         openedAt: {type: string, format: date-time, x-order: 7}
         closedAt: {type: string, format: date-time, x-order: 8}
+        tokenId:
+          type: string
+          format: uuid
+          description: Set on inbox entries, the work item's token.
+          x-order: 9
     CaseView:
       type: object
       required: [id, process, version, state, status, openedAt, values, history]
