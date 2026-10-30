@@ -569,6 +569,13 @@ type MoveInput struct {
 	// an EventStepSubmitted with it as detail immediately before the human
 	// EventMoved, in the same seq block. Nil appends no step event.
 	Step *StepRecord
+	// ExpectedRevision, when set, is the Case.Revision the caller's view of
+	// the case was read at. The call fails with ErrConflict when the stored
+	// revision differs, checked right after the case is read and before any
+	// check of its state or any write, so an offline or long-form client
+	// detects a stale view without reading the case again. Nil skips the
+	// check (the compare-and-swap on write still applies).
+	ExpectedRevision *int64
 }
 
 // Move applies the transition matching (token's node, Action) to the token
@@ -670,6 +677,9 @@ func (e *Engine) MoveDetailed(ctx context.Context, db pgxtx.DBTX, in MoveInput) 
 	c, err := e.repo.GetByID(ctx, db, in.CaseID)
 	if err != nil {
 		return nil, fmt.Errorf("workflow: move case: %w", err)
+	}
+	if err := checkRevision(c, in.ExpectedRevision); err != nil {
+		return nil, fmt.Errorf("workflow: move case %s: %w", c.ID, err)
 	}
 	if c.Status != StatusOpen {
 		return nil, fmt.Errorf("workflow: move case %s: %w", c.ID, ErrCaseClosed)
@@ -813,7 +823,8 @@ func (e *Engine) Claim(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID, act
 }
 
 // Release clears the case's assignment on behalf of actorID, a person: it is
-// ReleaseWith with Actor{Kind: ActorHuman, ID: actorID} and no Reason.
+// ReleaseWith with Actor{Kind: ActorHuman, ID: actorID} and no Reason, so it
+// only releases actorID's own claim (ErrReasonRequired otherwise).
 func (e *Engine) Release(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID, actorID string) (*Case, error) {
 	return e.ReleaseWith(ctx, db, ReleaseInput{CaseID: caseID, Actor: Actor{Kind: ActorHuman, ID: actorID}})
 }
@@ -826,6 +837,8 @@ type ClaimInput struct {
 	CaseID  uuid.UUID
 	TokenID uuid.UUID
 	Actor   Actor
+	// ExpectedRevision works like MoveInput.ExpectedRevision.
+	ExpectedRevision *int64
 }
 
 // ReleaseInput describes a release: Actor clears the token's assignment, for
@@ -836,8 +849,12 @@ type ReleaseInput struct {
 	TokenID uuid.UUID
 	Actor   Actor
 	// Reason is the caller's free-text reason, recorded in the event's
-	// AssignmentDetail.
+	// AssignmentDetail. It is required (ErrReasonRequired when empty after
+	// trimming) when Actor.ID is not the token's assignee, and optional for a
+	// self-release.
 	Reason string
+	// ExpectedRevision works like MoveInput.ExpectedRevision.
+	ExpectedRevision *int64
 }
 
 // ClaimWith assigns the token to in.Actor.ID. Re-claiming by the same actor
@@ -861,6 +878,9 @@ func (e *Engine) ClaimWith(ctx context.Context, db pgxtx.DBTX, in ClaimInput) (*
 	c, err := e.repo.GetByID(ctx, db, in.CaseID)
 	if err != nil {
 		return nil, fmt.Errorf("workflow: claim case: %w", err)
+	}
+	if err := checkRevision(c, in.ExpectedRevision); err != nil {
+		return nil, fmt.Errorf("workflow: claim case %s: %w", c.ID, err)
 	}
 	if c.Status != StatusOpen {
 		return nil, fmt.Errorf("workflow: claim case %s: %w", c.ID, ErrCaseClosed)
@@ -895,8 +915,9 @@ func (e *Engine) ClaimWith(ctx context.Context, db pgxtx.DBTX, in ClaimInput) (*
 
 // ReleaseWith clears the token's assignment, recording the previous assignee
 // and in.Reason in the event's AssignmentDetail. An invalid Actor fails with
-// ErrInvalidActor before anything is read, and a token nobody holds (or a
-// case that is no longer open) with ErrNotAssigned. A concurrent change to
+// ErrInvalidActor before anything is read, a token nobody holds (or a case
+// that is no longer open) with ErrNotAssigned, and a release of a token held
+// by someone other than in.Actor.ID without a Reason with ErrReasonRequired. A concurrent change to
 // the case fails with ErrConflict and persists nothing (see ClaimWith). Like
 // ClaimWith, it never calls the EffectSink.
 func (e *Engine) ReleaseWith(ctx context.Context, db pgxtx.DBTX, in ReleaseInput) (*Case, error) {
@@ -908,6 +929,9 @@ func (e *Engine) ReleaseWith(ctx context.Context, db pgxtx.DBTX, in ReleaseInput
 	if err != nil {
 		return nil, fmt.Errorf("workflow: release case: %w", err)
 	}
+	if err := checkRevision(c, in.ExpectedRevision); err != nil {
+		return nil, fmt.Errorf("workflow: release case %s: %w", c.ID, err)
+	}
 	if c.Status != StatusOpen {
 		return nil, fmt.Errorf("workflow: release case %s: %w", c.ID, ErrNotAssigned)
 	}
@@ -917,6 +941,9 @@ func (e *Engine) ReleaseWith(ctx context.Context, db pgxtx.DBTX, in ReleaseInput
 	}
 	if tok.AssignedTo == "" {
 		return nil, fmt.Errorf("workflow: release case %s: %w", c.ID, ErrNotAssigned)
+	}
+	if actor.ID != tok.AssignedTo && strings.TrimSpace(in.Reason) == "" {
+		return nil, fmt.Errorf("workflow: release case %s: %w: releasing someone else's token", c.ID, ErrReasonRequired)
 	}
 
 	detail, err := marshalDetail(AssignmentDetail{From: tok.AssignedTo, Reason: in.Reason})
@@ -932,6 +959,74 @@ func (e *Engine) ReleaseWith(ctx context.Context, db pgxtx.DBTX, in ReleaseInput
 	})
 	if _, err := e.persist(ctx, db, run); err != nil {
 		return nil, fmt.Errorf("workflow: release case %s: %w", c.ID, err)
+	}
+	return c, nil
+}
+
+// ReassignInput describes an administrative reassignment: Actor moves the
+// token to To, a person id, for Reason. TokenID works like ClaimInput.TokenID.
+type ReassignInput struct {
+	CaseID  uuid.UUID
+	TokenID uuid.UUID
+	// To is the new assignee's person id; it is required.
+	To    string
+	Actor Actor
+	// Reason is required: Reassign fails with ErrReasonRequired when it is
+	// empty after trimming. It is recorded trimmed.
+	Reason string
+	// ExpectedRevision works like MoveInput.ExpectedRevision.
+	ExpectedRevision *int64
+}
+
+// Reassign assigns the token to in.To whoever holds it now (nobody
+// included), appending an EventAssigned whose AssignmentDetail records the
+// previous assignee, the new one and the reason. An empty Reason fails with
+// ErrReasonRequired, and an empty To or an invalid Actor with
+// ErrInvalidActor, before anything is read. Whether To holds the node's
+// eligibility is the caller's check, as with ClaimWith: the engine never
+// resolves people. Like ClaimWith it never calls the EffectSink, so a node's
+// entry effects do not run again, and a concurrent change to the case fails
+// with ErrConflict and persists nothing.
+func (e *Engine) Reassign(ctx context.Context, db pgxtx.DBTX, in ReassignInput) (*Case, error) {
+	reason := strings.TrimSpace(in.Reason)
+	if reason == "" {
+		return nil, fmt.Errorf("workflow: reassign case %s: %w", in.CaseID, ErrReasonRequired)
+	}
+	if in.To == "" {
+		return nil, fmt.Errorf("workflow: reassign case %s: %w: the new assignee needs an ID", in.CaseID, ErrInvalidActor)
+	}
+	actor, err := resolveActor(in.Actor, "")
+	if err != nil {
+		return nil, fmt.Errorf("workflow: reassign case %s: %w", in.CaseID, err)
+	}
+	c, err := e.repo.GetByID(ctx, db, in.CaseID)
+	if err != nil {
+		return nil, fmt.Errorf("workflow: reassign case: %w", err)
+	}
+	if err := checkRevision(c, in.ExpectedRevision); err != nil {
+		return nil, fmt.Errorf("workflow: reassign case %s: %w", c.ID, err)
+	}
+	if c.Status != StatusOpen {
+		return nil, fmt.Errorf("workflow: reassign case %s: %w", c.ID, ErrCaseClosed)
+	}
+	run, tok, err := e.loadToken(ctx, db, c, in.TokenID)
+	if err != nil {
+		return nil, fmt.Errorf("workflow: reassign case %s: %w", c.ID, err)
+	}
+
+	detail, err := marshalDetail(AssignmentDetail{From: tok.AssignedTo, To: in.To, Reason: reason})
+	if err != nil {
+		return nil, fmt.Errorf("workflow: reassign case %s: %w", c.ID, err)
+	}
+	run.begin(e.now(), actor)
+	tok.AssignedTo = in.To
+	run.touch(tok.ID)
+	run.emit(&Event{
+		Kind: EventAssigned, TokenID: tok.ID, ScopeID: tok.ScopeID,
+		FromState: tok.Node, ToState: tok.Node, Detail: detail,
+	})
+	if _, err := e.persist(ctx, db, run); err != nil {
+		return nil, fmt.Errorf("workflow: reassign case %s: %w", c.ID, err)
 	}
 	return c, nil
 }
@@ -1104,6 +1199,8 @@ type CancelInput struct {
 	// Reason is required: Cancel fails with ErrReasonRequired when it is
 	// empty after trimming.
 	Reason string
+	// ExpectedRevision works like MoveInput.ExpectedRevision.
+	ExpectedRevision *int64
 }
 
 // Cancel ends an open case without reaching a terminal node: it cancels
@@ -1124,6 +1221,9 @@ func (e *Engine) Cancel(ctx context.Context, db pgxtx.DBTX, in CancelInput) (*Ca
 	c, err := e.repo.GetByID(ctx, db, in.CaseID)
 	if err != nil {
 		return nil, fmt.Errorf("workflow: cancel case: %w", err)
+	}
+	if err := checkRevision(c, in.ExpectedRevision); err != nil {
+		return nil, fmt.Errorf("workflow: cancel case %s: %w", c.ID, err)
 	}
 	if c.Status != StatusOpen {
 		return nil, fmt.Errorf("workflow: cancel case %s: %w", c.ID, ErrCaseClosed)
@@ -1367,6 +1467,15 @@ func resolveActor(actor Actor, actorID string) (Actor, error) {
 		return Actor{}, fmt.Errorf("%w: a system actor needs an ID", ErrInvalidActor)
 	}
 	return actor, nil
+}
+
+// checkRevision fails with ErrConflict when expected is set and differs from
+// c.Revision (see MoveInput.ExpectedRevision).
+func checkRevision(c *Case, expected *int64) error {
+	if expected != nil && *expected != c.Revision {
+		return fmt.Errorf("%w: expected revision %d, stored %d", ErrConflict, *expected, c.Revision)
+	}
+	return nil
 }
 
 // emptyDetail returns a fresh `{}`, the Detail of a kind that carries none.

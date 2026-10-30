@@ -147,7 +147,7 @@ func walkCase(t *testing.T, r *rand.Rand, e *Engine, repo *fakeRepository, d Def
 				require.NoError(t, err)
 			}
 		case roll < 17:
-			_, err = e.ReleaseWith(ctx, nil, ReleaseInput{CaseID: c.ID, TokenID: tok.ID, Actor: actor})
+			_, err = e.ReleaseWith(ctx, nil, ReleaseInput{CaseID: c.ID, TokenID: tok.ID, Actor: actor, Reason: "walk"})
 			if !errors.Is(err, ErrNotAssigned) {
 				require.NoError(t, err)
 			}
