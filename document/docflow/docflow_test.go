@@ -225,3 +225,16 @@ func TestGenerate_TransientRenderErrorIsRetried(t *testing.T) {
 	require.ErrorIs(t, err, boom)
 	assert.False(t, action.IsCancel(err))
 }
+
+func TestDocflowGenerate_SourceKeyUnchanged(t *testing.T) {
+	svc, repo, _ := newService()
+	h := docflow.Generate(svc, nil, func(context.Context, action.Run) (document.GenerateInput, error) {
+		return document.GenerateInput{Template: acta, Data: map[string]any{"N": 1}}, nil
+	})
+	r := run()
+
+	require.NoError(t, h.Handle(context.Background(), r))
+	require.Len(t, repo.docs, 1)
+	assert.Equal(t, fmt.Sprintf("%s/%d/%s", r.CaseID, r.Seq, r.Effect), repo.docs[0].SourceKey)
+	assert.Equal(t, r.IdempotencyKey(), repo.docs[0].SourceKey)
+}

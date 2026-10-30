@@ -36,7 +36,7 @@ type BuildFunc func(ctx context.Context, r action.Run) (document.GenerateInput, 
 
 // Generate returns the handler for a document-generating effect. Each run
 // generates at most one document: the source key defaults to
-// "<case id>/<event seq>/<effect>", so a retried job returns the document a
+// r.IdempotencyKey() ("<case id>/<event seq>/<effect>"), so a retried job returns the document a
 // previous attempt stored. Input the document package rejects as invalid, a
 // template that fails to parse or execute, a document the Renderer rejects
 // (document.ErrRenderRejected) and an empty PDF cancel the job, since a
@@ -60,7 +60,7 @@ func Generate(svc *document.Service, db pgxtx.DBTX, build BuildFunc) action.Hand
 			in.CaseID = &caseID
 		}
 		if in.SourceKey == "" {
-			in.SourceKey = fmt.Sprintf("%s/%d/%s", r.CaseID, r.Seq, r.Effect)
+			in.SourceKey = r.IdempotencyKey()
 		}
 		if _, err := svc.Generate(ctx, db, in); err != nil {
 			if permanent(err) {

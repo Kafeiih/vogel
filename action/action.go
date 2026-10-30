@@ -43,6 +43,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 
 	"github.com/google/uuid"
@@ -89,6 +90,19 @@ type Run struct {
 	// into one job per item (NotifyHandler does, one per message) runs again
 	// with Part set to the 1-based item that job handles.
 	Part int
+}
+
+// IdempotencyKey identifies this effect execution across retries:
+// "<case>/<seq>/<effect>" for the effect itself and
+// "<case>/<seq>/<effect>/<part>" for a fan-out part. It is the same for every
+// attempt of a Run, so a Handler passes it to the systems it calls (an
+// Idempotency-Key header, a source key) to make a retry a no-op there too.
+func (r Run) IdempotencyKey() string {
+	key := fmt.Sprintf("%s/%d/%s", r.CaseID, r.Seq, r.Effect)
+	if r.Part != 0 {
+		key += "/" + strconv.Itoa(r.Part)
+	}
+	return key
 }
 
 // Handler runs one effect. Returning an error makes River retry the job;
