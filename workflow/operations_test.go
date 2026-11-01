@@ -443,6 +443,14 @@ func TestRegister_RejectsRuleWithoutResolver(t *testing.T) {
 	require.NoError(t, New(newFakeRepository(), Config{Deadlines: resolver}, testLogger()).Register(d))
 }
 
+func TestRegister_IgnoresRuleOnTerminalNode(t *testing.T) {
+	d := testDefinition()
+	d.Nodes[2].DeadlineRule = "two-business-days" // approved: terminal, never gets a deadline
+
+	assert.Empty(t, d.DeadlineRules())
+	require.NoError(t, New(newFakeRepository(), Config{}, testLogger()).Register(d))
+}
+
 func TestOpen_AppliesDeadlineRuleToStartToken(t *testing.T) {
 	now := time.Date(2026, 10, 30, 9, 0, 0, 0, time.UTC)
 	due := time.Date(2026, 11, 3, 0, 0, 0, 0, time.UTC)

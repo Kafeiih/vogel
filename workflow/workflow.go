@@ -309,6 +309,7 @@ type Node struct {
 	// cannot express (business days, a holiday calendar). It excludes
 	// Deadline (Definition.Validate rejects both set), and Engine.Register
 	// rejects it when no resolver is configured (ErrUnknownDeadlineRule).
+	// On a terminal node it is ignored, like Deadline.
 	DeadlineRule string
 	// Kind distinguishes an ordinary task node from a decision node. The
 	// zero value is NodeTask. See the NodeKind doc comment.
@@ -442,13 +443,15 @@ func (d Definition) GuardNames() []string {
 }
 
 // DeadlineRules returns the sorted, deduplicated set of deadline rule names
-// referenced by this definition's nodes.
+// the Engine may resolve for this definition: those of its non-terminal
+// nodes. A terminal node closes the case on entry and never gets a deadline,
+// so its rule is ignored and needs no resolver.
 func (d Definition) DeadlineRules() []string {
 	seen := make(map[string]bool)
 	var names []string
 	for i := range d.Nodes {
 		n := &d.Nodes[i]
-		if n.DeadlineRule == "" || seen[n.DeadlineRule] {
+		if n.DeadlineRule == "" || n.Terminal || seen[n.DeadlineRule] {
 			continue
 		}
 		seen[n.DeadlineRule] = true
