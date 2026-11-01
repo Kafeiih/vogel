@@ -299,14 +299,17 @@ func TestCatalog_PublishStoresNothingForAnInvalidSpec(t *testing.T) {
 	assert.Equal(t, 1, n)
 }
 
-// countingProfiles counts the resolver calls the inbox makes.
+// countingProfiles counts the resolver calls the inbox makes, per profile.
 type countingProfiles struct {
 	domain.ProfileResolver
-	calls int
+	calls map[[2]string]int
 }
 
 func (c *countingProfiles) Holders(ctx context.Context, position, unit string) ([]string, error) {
-	c.calls++
+	if c.calls == nil {
+		c.calls = map[[2]string]int{}
+	}
+	c.calls[[2]string{position, unit}]++
 	return c.ProfileResolver.Holders(ctx, position, unit)
 }
 
@@ -348,5 +351,11 @@ func TestInbox_FiltersByProfileInTheDatabase(t *testing.T) {
 	require.Len(t, items, 1, "the page holds only what luis holds")
 	assert.Equal(t, mine, items[0].Case.ID)
 	assert.Equal(t, mine, items[0].Token.ID, "a case that never split has its root token")
-	assert.Equal(t, 2, profiles.calls, "one resolver call per distinct profile, not per case")
+	// The count of distinct profiles depends on the whole catalog, so the
+	// test pins what does not: no profile is resolved twice, and revision's
+	// profile is resolved once although it has DefaultListLimit cases.
+	assert.Equal(t, 1, profiles.calls[[2]string{"revisor", "atencion"}])
+	for profile, n := range profiles.calls {
+		assert.Equal(t, 1, n, "profile %v resolved more than once", profile)
+	}
 }
