@@ -36,8 +36,9 @@ type BuildFunc func(ctx context.Context, r action.Run) (document.GenerateInput, 
 
 // Generate returns the handler for a document-generating effect. Each run
 // generates at most one document: the source key defaults to
-// r.IdempotencyKey() ("<case id>/<event seq>/<effect>"), so a retried job returns the document a
-// previous attempt stored. Input the document package rejects as invalid, a
+// r.IdempotencyKey() ("<case id>/<event seq>/<effect>", plus "/<part>" when
+// r.Part is not zero, so each part of a split effect gets its own document),
+// so a retried job returns the document a previous attempt stored. Input the document package rejects as invalid, a
 // template that fails to parse or execute, a document the Renderer rejects
 // (document.ErrRenderRejected) and an empty PDF cancel the job, since a
 // retry cannot fix them; every other error, including one from build, is

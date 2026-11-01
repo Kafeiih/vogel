@@ -163,7 +163,7 @@ func (w *Worker) Work(ctx context.Context, job *river.Job[Args]) error {
 	panicked := true
 	defer func() {
 		if panicked {
-			w.recordAttempt(ctx, job, run, started, attemptOutcome(errors.New(errorClassPanic), job), errorClassPanic)
+			w.recordAttempt(ctx, job, run, started, failedOutcome(job), errorClassPanic)
 		}
 	}()
 	err := h.Handle(ctx, run)
@@ -203,18 +203,24 @@ func (w *Worker) recordAttempt(ctx context.Context, job *river.Job[Args], run Ru
 		at.TraceID, _ = w.traceIDs(ctx)
 	}
 	id, err := uuid.NewV7()
-	if err == nil {
-		at.ID = id
-		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), attemptLogTimeout)
-		defer cancel()
-		err = insertAttempt(ctx, w.attemptDB, at)
-	}
 	if err != nil {
-		w.logErrors.Inc()
-		w.logger.ErrorContext(ctx, "action: write attempt log",
-			"case_id", at.CaseID, "seq", at.Seq, "effect", at.Effect, "part", at.Part,
-			"attempt", at.Attempt, "job_id", at.JobID, "outcome", string(at.Outcome), "error", err)
+		w.attemptLogFailed(ctx, "action: attempt log id", at, err)
+		return
 	}
+	at.ID = id
+	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), attemptLogTimeout)
+	defer cancel()
+	if err := insertAttempt(writeCtx, w.attemptDB, at); err != nil {
+		w.attemptLogFailed(ctx, "action: write attempt log", at, err)
+	}
+}
+
+// attemptLogFailed counts and logs an attempt row that could not be written.
+func (w *Worker) attemptLogFailed(ctx context.Context, msg string, at *Attempt, err error) {
+	w.logErrors.Inc()
+	w.logger.ErrorContext(ctx, msg,
+		"case_id", at.CaseID, "seq", at.Seq, "effect", at.Effect, "part", at.Part,
+		"attempt", at.Attempt, "job_id", at.JobID, "outcome", string(at.Outcome), "error", err)
 }
 
 type partsKey struct{}

@@ -152,6 +152,13 @@ func attemptOutcome(err error, job *river.Job[Args]) Outcome {
 	if IsCancel(err) {
 		return OutcomeCancelled
 	}
+	return failedOutcome(job)
+}
+
+// failedOutcome is the Outcome of an attempt that failed without asking to
+// snooze or cancel: River discards the job after its last attempt and
+// retries it otherwise.
+func failedOutcome(job *river.Job[Args]) Outcome {
 	if job.JobRow != nil && job.MaxAttempts > 0 && job.Attempt >= job.MaxAttempts {
 		return OutcomeDiscarded
 	}
