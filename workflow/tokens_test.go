@@ -274,6 +274,27 @@ func TestMove_NestedSplitsJoinInnerThenOuter(t *testing.T) {
 	assert.Equal(t, StatusClosed, res.Case.Status)
 }
 
+func TestTryJoin_ConsumedBranchIsNotArrived(t *testing.T) {
+	e, repo := tokenEngine(t, Config{}, nil)
+	c := openCase(t, e, "contract-nested")
+	move(t, e, c.ID, uuid.Nil, "submit")
+	active := activeTokens(t, e, c.ID)
+
+	// The outer scope expects two branches: finance, and the legal branch
+	// whose token the nested split fork2 consumed while its own branches
+	// (contracts, compliance) are still active. finance arriving first must
+	// not fire the outer join: a consumed token has not arrived.
+	res := move(t, e, c.ID, active["finance"].ID, "clear")
+	assertInvariants(t, e, repo, c.ID)
+	assert.Equal(t, []EventKind{EventMoved, EventWaiting}, eventKinds(res.Events))
+	assert.Empty(t, res.Joined)
+	assert.Equal(t, StatusOpen, res.Case.Status)
+	still := activeTokens(t, e, c.ID)
+	assert.Len(t, still, 2)
+	assert.Contains(t, still, "contracts")
+	assert.Contains(t, still, "compliance")
+}
+
 func TestMove_InclusiveJoinWaitsOnlyForEmittedTokens(t *testing.T) {
 	e, repo := tokenEngine(t, Config{}, map[string]bool{"needs-legal": true})
 	c := openCase(t, e, "contract-or")
