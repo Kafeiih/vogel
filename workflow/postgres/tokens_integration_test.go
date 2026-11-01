@@ -413,25 +413,21 @@ func TestMigration008_BackfillsRootScopeAndToken(t *testing.T) {
 	assert.Equal(t, openID, items[0].Token.ID)
 }
 
-func TestEngine_SynthesizesRootTokenForCaseWrittenWithoutTokens(t *testing.T) {
+func TestEngine_OpenCaseWrittenWithoutTokensIsAnError(t *testing.T) {
 	pool := startTestPool(t)
 	ctx := context.Background()
-	// An older binary created the case after migration 008: no token rows.
-	c := newCase("contracts", "old-binary")
+	// Only a bug or a manual insert leaves an open case without token rows.
+	c := newCase("contracts", "no-tokens")
 	c.Definition, c.State, c.LastSeq = "contract", "draft", 1
 	require.NoError(t, postgres.NewRepository().Create(ctx, pool, c))
 	insertLegacyEvent(t, pool, c.ID, 1, workflow.EventOpened)
 
 	e, _ := tokenTestEngine(t, nil)
-	inTx(t, pool, func(tx pgxtx.DBTX) error {
-		_, err := e.Move(ctx, tx, workflow.MoveInput{CaseID: c.ID, Action: "submit", Actor: workflow.Actor{ID: "u1"}})
-		return err
-	})
+	_, err := e.Move(ctx, pool, workflow.MoveInput{CaseID: c.ID, Action: "submit", Actor: workflow.Actor{ID: "u1"}})
+	require.ErrorIs(t, err, workflow.ErrCaseWithoutTokens)
 	tokens, err := postgres.NewRepository().ListTokens(ctx, pool, c.ID)
 	require.NoError(t, err)
-	require.Len(t, tokens, 3, "the synthesized root token was persisted, then split")
-	assert.Equal(t, c.ID, tokens[0].ID)
-	assert.Equal(t, workflow.TokenConsumed, tokens[0].Status)
+	assert.Empty(t, tokens, "the failed move persisted no token")
 }
 
 func TestMigration008_UpDownRoundTrip(t *testing.T) {

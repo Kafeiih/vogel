@@ -37,10 +37,9 @@
 -- Rolling deploys between binaries before and after this version are NOT
 -- safe: an older binary moves a case without touching its token, and the
 -- tokens drift from the case. Stop every older binary, migrate, then start
--- the new ones. (An open case an older binary created after this migration,
--- with no token rows, gets its root token synthesized by the engine on read
--- and persisted on its next write; that compatibility path is deprecated and
--- goes away in v0.21.0.)
+-- the new ones. (Since v0.21.0 the engine no longer synthesizes the root
+-- token of an open case an older binary created after this migration: it
+-- fails with ErrCaseWithoutTokens.)
 --
 -- Retention: the purge recipe in 005's header now has to delete the cases'
 -- tokens and scopes before the cases themselves (their foreign keys to

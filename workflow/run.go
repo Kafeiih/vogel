@@ -43,12 +43,7 @@ type caseRun struct {
 }
 
 // loadRun reads c's tokens and scopes. An open case stored without any token
-// (written by a binary that predates tokens, after migration 008) gets its
-// root scope and root token synthesized here; they are persisted by the next
-// write of the case, under its compare-and-swap.
-//
-// Deprecated behaviour: the synthesis is a compatibility shim, slated for
-// removal in v0.21.0.
+// fails with ErrCaseWithoutTokens.
 func (e *Engine) loadRun(ctx context.Context, db pgxtx.DBTX, c *Case, d Definition) (*caseRun, error) {
 	tokens, err := e.repo.ListTokens(ctx, db, c.ID)
 	if err != nil {
@@ -71,9 +66,7 @@ func (e *Engine) loadRun(ctx context.Context, db pgxtx.DBTX, c *Case, d Definiti
 		run.tokens = append(run.tokens, &tokens[i])
 	}
 	if len(tokens) == 0 && c.Status == StatusOpen {
-		if err := e.synthesizeRoot(ctx, db, run); err != nil {
-			return nil, err
-		}
+		return nil, fmt.Errorf("%w: case %s", ErrCaseWithoutTokens, c.ID)
 	}
 	run.fillEligibility()
 	return run, nil
@@ -93,38 +86,6 @@ func (r *caseRun) fillEligibility() {
 			r.touch(t.ID)
 		}
 	}
-}
-
-// synthesizeRoot adds the root scope (when missing) and the root token of a
-// case stored without tokens, at c.State with its assignment and deadline.
-func (e *Engine) synthesizeRoot(ctx context.Context, db pgxtx.DBTX, run *caseRun) error {
-	c := run.c
-	entered := int64(1)
-	events, err := e.listEvents(ctx, db, c.ID)
-	if err != nil {
-		return err
-	}
-	for i := range events {
-		if (events[i].Kind == EventOpened || events[i].Kind == EventMoved) && events[i].ToState == c.State {
-			entered = events[i].Seq
-		}
-	}
-	if run.scope(c.ID) == nil {
-		root := &Scope{ID: c.ID, CaseID: c.ID, Expected: 1, Status: ScopeOpen, OpenedSeq: 1}
-		run.scopes = append(run.scopes, root)
-		run.created[root.ID] = true
-	}
-	tok := &Token{
-		ID: c.ID, CaseID: c.ID, ScopeID: c.ID, Node: c.State, Status: TokenActive,
-		AssignedTo: c.AssignedTo, DeadlineAt: c.DeadlineAt,
-		EnteredSeq: entered, EnteredAt: c.OpenedAt,
-	}
-	if n, ok := run.d.Node(c.State); ok {
-		tok.Eligible = resolvedEligibility(n, c.Unit)
-	}
-	run.tokens = append(run.tokens, tok)
-	run.created[tok.ID] = true
-	return nil
 }
 
 // resolvedEligibility is n's eligibility with ResolveUnit applied against the
