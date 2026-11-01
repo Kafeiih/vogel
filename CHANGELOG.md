@@ -6,6 +6,19 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ## [Unreleased]
 
+### Cambiado
+
+- **`workflow`: `Expire` exige que el plazo ya haya pasado.** Antes aceptaba
+  un token cuyo plazo era exactamente ahora, mientras `Overdue` y el filtro
+  de vencidos de `Inbox` sólo listan plazos anteriores a ahora. Los tres
+  usan ahora el mismo borde: en el instante exacto del plazo, `Expire`
+  falla con `ErrNotOverdue`.
+- **`workflow`: un `DeadlineRule` en un nodo terminal se ignora**, igual que
+  `Deadline`. `Definition.DeadlineRules` ya no lo lista y `Register` no
+  exige un resolvedor por él.
+- **`workflow/workflowhttp`: `ErrCaseExists` y `ErrNotAssigned` responden
+  409** en vez de quedar sin mapear (500). Los dos los provoca el cliente.
+
 ## [0.20.0] — 2026-10-30
 
 ### Agregado
