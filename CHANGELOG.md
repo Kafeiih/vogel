@@ -19,6 +19,12 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 - **`workflow/workflowhttp`: `ErrCaseExists` y `ErrNotAssigned` responden
   409** en vez de quedar sin mapear (500). Los dos los provoca el cliente.
 
+### Corregido
+
+- **`workflow/calendar`: el error del tope de `BusinessDays` nombra el día
+  donde empieza la racha sin días hábiles** (antes, el último día examinado,
+  casi un año después) y el tope es de 366 días, no 367.
+
 ## [0.20.0] — 2026-10-30
 
 ### Agregado

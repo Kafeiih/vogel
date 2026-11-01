@@ -87,13 +87,56 @@ type everyDay struct{}
 
 func (everyDay) IsHoliday(context.Context, calendar.Date) (bool, error) { return true, nil }
 
+// holidayRanges reports every day inside one of its inclusive ranges as a
+// holiday.
+type holidayRanges [][2]calendar.Date
+
+func (h holidayRanges) IsHoliday(_ context.Context, d calendar.Date) (bool, error) {
+	at := func(d calendar.Date) time.Time { return time.Date(d.Year, d.Month, d.Day, 0, 0, 0, 0, time.UTC) }
+	for _, r := range h {
+		if !at(d).Before(at(r[0])) && !at(d).After(at(r[1])) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func TestCalendar_BusinessDaysIsBounded(t *testing.T) {
 	friday := time.Date(2026, 10, 30, 10, 0, 0, 0, time.UTC)
 	_, err := calendar.BusinessDays(1, time.UTC, everyDay{})(context.Background(), friday)
-	require.ErrorContains(t, err, "no business day", "a calendar without business days fails instead of looping forever")
+	require.EqualError(t, err, "calendar: business days: no business day in the 366 days after 2026-10-30",
+		"a calendar without business days fails instead of looping forever, naming where the gap starts")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	_, err = calendar.BusinessDays(1, time.UTC, holidaySet{})(ctx, friday)
 	require.ErrorIs(t, err, context.Canceled)
+}
+
+func TestCalendar_BusinessDaysGapLimitIs366Days(t *testing.T) {
+	wednesday := time.Date(2026, 10, 28, 10, 0, 0, 0, time.UTC)
+
+	// 365 non-business days, then Friday 2027-10-29: still within the limit.
+	h := holidayRanges{{{Year: 2026, Month: 10, Day: 29}, {Year: 2027, Month: 10, Day: 28}}}
+	due, err := calendar.BusinessDays(1, time.UTC, h)(context.Background(), wednesday)
+	require.NoError(t, err)
+	assert.Equal(t, time.Date(2027, 10, 30, 0, 0, 0, 0, time.UTC), due)
+
+	// 366 non-business days: past the limit.
+	h = holidayRanges{{{Year: 2026, Month: 10, Day: 29}, {Year: 2027, Month: 10, Day: 29}}}
+	_, err = calendar.BusinessDays(1, time.UTC, h)(context.Background(), wednesday)
+	require.EqualError(t, err, "calendar: business days: no business day in the 366 days after 2026-10-28")
+}
+
+func TestCalendar_BusinessDaysGapRestartsAfterEachBusinessDay(t *testing.T) {
+	wednesday := time.Date(2026, 10, 28, 10, 0, 0, 0, time.UTC)
+	// 365 non-business days, Friday 2027-10-29, 11 more, then Tuesday
+	// 2027-11-09: no single gap reaches the limit, though both together do.
+	h := holidayRanges{
+		{{Year: 2026, Month: 10, Day: 29}, {Year: 2027, Month: 10, Day: 28}},
+		{{Year: 2027, Month: 10, Day: 30}, {Year: 2027, Month: 11, Day: 8}},
+	}
+	due, err := calendar.BusinessDays(2, time.UTC, h)(context.Background(), wednesday)
+	require.NoError(t, err)
+	assert.Equal(t, time.Date(2027, 11, 10, 0, 0, 0, 0, time.UTC), due)
 }

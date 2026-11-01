@@ -56,6 +56,13 @@ type DueFunc func(ctx context.Context, from time.Time) (time.Time, error)
 // a Monday to Friday that h does not report as a holiday; a nil h skips
 // weekends only. The day of from itself never counts.
 //
+// In a zone whose clocks change at midnight, the following day may not start
+// at 00:00: where 00:00 is skipped the deadline is 01:00 (the same instant
+// the day starts), and where it repeats Go picks one of the two (see
+// time.Date). America/Santiago is not affected: it changes at the start of a
+// Sunday, and a deadline is never the start of a Sunday (Saturday is not a
+// business day).
+//
 // loc is required, so the day boundaries never depend on the server's time
 // zone or on from's location. The DueFunc fails when n < 1, when loc is nil,
 // when h fails, when ctx is done, or when it finds no business day within a
@@ -69,6 +76,7 @@ func BusinessDays(n int, loc *time.Location, h Holidays) DueFunc {
 			return time.Time{}, errors.New("calendar: business days: location is required")
 		}
 		day := DateOf(from.In(loc))
+		anchor := day // the day the current run of non-business days follows
 		for counted, gap := 0, 0; counted < n; {
 			if err := ctx.Err(); err != nil {
 				return time.Time{}, fmt.Errorf("calendar: business days: %w", err)
@@ -80,12 +88,12 @@ func BusinessDays(n int, loc *time.Location, h Holidays) DueFunc {
 			}
 			if !ok {
 				gap++
-				if gap > maxGapDays {
-					return time.Time{}, fmt.Errorf("calendar: business days: no business day in the %d days after %04d-%02d-%02d", maxGapDays, day.Year, day.Month, day.Day)
+				if gap >= maxGapDays {
+					return time.Time{}, fmt.Errorf("calendar: business days: no business day in the %d days after %04d-%02d-%02d", maxGapDays, anchor.Year, anchor.Month, anchor.Day)
 				}
 				continue
 			}
-			counted, gap = counted+1, 0
+			counted, gap, anchor = counted+1, 0, day
 		}
 		end := day.addDays(1)
 		return time.Date(end.Year, end.Month, end.Day, 0, 0, 0, 0, loc), nil
