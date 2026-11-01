@@ -329,6 +329,12 @@ func TestValidate_RejectsCommentOnSplitRoute(t *testing.T) {
 	requireInvalid(t, d, `transition[1]: route from parallel split "fork" must not declare a comment policy`)
 }
 
+func TestValidate_RejectsCommentOnJoinOutgoing(t *testing.T) {
+	d := parallelDefinition()
+	d.Transitions[5].Comment = CommentRequired // merge -> signoff, taken automatically
+	requireInvalid(t, d, `transition[5]: route from join node "merge" must not declare a comment policy`)
+}
+
 func TestValidate_RejectsReturnIntoOrOutOfGateway(t *testing.T) {
 	d := parallelDefinition()
 	d.Transitions = append(d.Transitions, Transition{From: "signoff", To: "merge", Action: "back", Return: true})

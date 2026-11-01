@@ -6,6 +6,12 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ## [Unreleased]
 
+### Cambiado
+
+- **`workflow`: `Definition.Validate` rechaza una `CommentPolicy` en la
+  transición de salida de un join**, igual que en las rutas de decisiones y
+  splits: el motor la toma solo, así que no hay nada que comentar.
+
 ## [0.20.0] — 2026-10-30
 
 ### Agregado

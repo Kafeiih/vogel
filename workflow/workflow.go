@@ -351,9 +351,10 @@ type Transition struct {
 	// Comment declares this transition's CommentPolicy: whether MoveInput.
 	// Comment is required, optional, or disallowed when this transition is
 	// taken. The zero value is CommentNone. Definition.Validate rejects an
-	// unrecognized value, and rejects any non-CommentNone value on a route
-	// leaving a decision node — a route is domain-data routing, not a human
-	// action, so it has nothing to comment on.
+	// unrecognized value, and rejects any non-CommentNone value on a
+	// transition leaving a decision node, a split or a join — the engine
+	// takes those on its own, not as a human action, so there is nothing to
+	// comment on.
 	Comment CommentPolicy
 	// Return marks this transition as a return to an earlier task node the
 	// case already occupied (a bureaucratic sign-off sending a case back to
@@ -624,7 +625,7 @@ func (d Definition) Validate() error {
 			outgoingByNode[tr.From] = append(outgoingByNode[tr.From], tr)
 		}
 
-		if fromOK && (fromNode.Kind == NodeDecision || fromNode.Kind.IsSplit()) && tr.Comment.Canonical() != CommentNone {
+		if fromOK && fromNode.Kind.IsAutomatic() && tr.Comment.Canonical() != CommentNone {
 			addf("transition[%d]: route from %s %q must not declare a comment policy", i, fromNode.Kind.label(), tr.From)
 		}
 		if fromOK && fromNode.Kind.IsAutomatic() && tr.Return {
