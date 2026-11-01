@@ -289,7 +289,11 @@ func TestExpire_BeforeDeadlineIsNotOverdue(t *testing.T) {
 	_, err = e.Expire(context.Background(), nil, ExpireInput{CaseID: draft.ID, Actor: scheduler})
 	require.ErrorIs(t, err, ErrNotOverdue, "a token without a deadline is never overdue")
 
-	now = now.Add(time.Hour) // exactly the deadline
+	now = now.Add(time.Hour) // exactly the deadline: not overdue yet, as in Overdue
+	_, err = e.Expire(context.Background(), nil, ExpireInput{CaseID: c.ID, Actor: scheduler})
+	require.ErrorIs(t, err, ErrNotOverdue, "a token is overdue only once its deadline has passed")
+
+	now = now.Add(time.Nanosecond)
 	_, err = e.Expire(context.Background(), nil, ExpireInput{CaseID: c.ID, Actor: scheduler})
 	require.NoError(t, err)
 }

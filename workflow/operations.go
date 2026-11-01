@@ -15,7 +15,8 @@ import (
 // Sentinel errors of the deadline operations.
 var (
 	// ErrNotOverdue reports an Expire of a token whose deadline has not
-	// passed, or that has none.
+	// passed (it must be strictly before now, as in Overdue), or that has
+	// none.
 	ErrNotOverdue = errors.New("workflow: token is not overdue")
 	// ErrAlreadyExpired reports an Expire of a token whose current deadline
 	// was already recorded as expired; a scheduler retry gets it instead of
@@ -168,7 +169,7 @@ func (e *Engine) Expire(ctx context.Context, db pgxtx.DBTX, in ExpireInput) (*Mo
 		return nil, fmt.Errorf("workflow: expire case %s: %w", c.ID, err)
 	}
 	now := e.now()
-	if tok.DeadlineAt == nil || tok.DeadlineAt.After(now) {
+	if tok.DeadlineAt == nil || !tok.DeadlineAt.Before(now) {
 		return nil, fmt.Errorf("workflow: expire case %s: token %s: %w", c.ID, tok.ID, ErrNotOverdue)
 	}
 	if tok.ExpiredDeadline != nil && tok.ExpiredDeadline.Equal(*tok.DeadlineAt) {
