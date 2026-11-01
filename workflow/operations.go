@@ -254,7 +254,9 @@ type OverdueFilter struct {
 }
 
 // OverdueCursor marks a position in Overdue's order: a token's deadline and
-// its ID. See WorkItem.OverdueCursor.
+// its ID. Build it with WorkItem.OverdueCursor from an item Overdue listed:
+// a database may store deadlines with less precision than time.Time (Postgres
+// keeps microseconds), so a hand-built cursor can land between stored values.
 type OverdueCursor struct {
 	DeadlineAt time.Time
 	TokenID    uuid.UUID
