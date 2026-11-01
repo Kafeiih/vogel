@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -382,7 +383,8 @@ func scanWorkItems(rows pgx.Rows, op string) ([]workflow.WorkItem, error) {
 // ListOverdue returns one workflow.WorkItem per active token of an open case
 // whose deadline_at is before f.Before and not recorded as expired
 // (expired_deadline_at differs from deadline_at, migration 009), oldest
-// deadline first, then token id, at most f.Page() rows. An empty f.Tenant
+// deadline first, then token id, after f.After when it is set, at most
+// f.Page() rows. An empty f.Tenant
 // matches every tenant. It reads the tokens through
 // idx_workflow_token_deadline (migration 008).
 func (r *Repository) ListOverdue(ctx context.Context, db pgxtx.DBTX, f workflow.OverdueFilter) ([]workflow.WorkItem, error) {
@@ -394,10 +396,16 @@ func (r *Repository) ListOverdue(ctx context.Context, db pgxtx.DBTX, f workflow.
           AND t.expired_deadline_at IS DISTINCT FROM t.deadline_at
           AND c.status = 'open'
           AND ($2::TEXT IS NULL OR c.tenant = $2)
+          AND ($4::TIMESTAMPTZ IS NULL OR (t.deadline_at, t.id) > ($4, $5::UUID))
         ORDER BY t.deadline_at ASC, t.id
         LIMIT $3`
 
-	rows, err := db.Query(ctx, q, f.Before, nullString(f.Tenant), f.Page())
+	var afterDeadline *time.Time
+	var afterToken uuid.UUID
+	if f.After != nil {
+		afterDeadline, afterToken = &f.After.DeadlineAt, f.After.TokenID
+	}
+	rows, err := db.Query(ctx, q, f.Before, nullString(f.Tenant), f.Page(), afterDeadline, afterToken)
 	if err != nil {
 		return nil, fmt.Errorf("workflow: list overdue: %w", err)
 	}

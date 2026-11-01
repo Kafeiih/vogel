@@ -247,11 +247,30 @@ type OverdueFilter struct {
 	// Before lists tokens whose deadline is strictly before it; the zero
 	// value means Config.Now at call time.
 	Before time.Time
+	// After, when set, lists only the tokens that come after it in Overdue's
+	// order (deadline, then token ID): pass the OverdueCursor of the last
+	// item of the previous page. nil starts from the oldest deadline.
+	After *OverdueCursor
+}
+
+// OverdueCursor marks a position in Overdue's order: a token's deadline and
+// its ID. See WorkItem.OverdueCursor.
+type OverdueCursor struct {
+	DeadlineAt time.Time
+	TokenID    uuid.UUID
+}
+
+// OverdueCursor returns the cursor that resumes Overdue right after w, or nil
+// when w is nil or its token has no deadline.
+func (w *WorkItem) OverdueCursor() *OverdueCursor {
+	if w == nil || w.Token.DeadlineAt == nil {
+		return nil
+	}
+	return &OverdueCursor{DeadlineAt: *w.Token.DeadlineAt, TokenID: w.Token.ID}
 }
 
 // Page returns the LIMIT a repository query must use for f (see
-// InboxFilter.Page); Overdue has no offset, since expiring a token removes it
-// from the next call's result.
+// InboxFilter.Page); Overdue pages with After, not with an offset.
 func (f OverdueFilter) Page() int {
 	limit, _, _ := page(f.Limit, 0)
 	return limit
@@ -259,10 +278,13 @@ func (f OverdueFilter) Page() int {
 
 // Overdue returns one WorkItem per active token of an open case whose
 // deadline is before f.Before and not yet recorded as expired (see Expire),
-// oldest deadline first, then token ID, at most f.Page() of them. The
-// periodic job that calls Overdue and then Expire for each item belongs to
-// the consumer: once expired, a token leaves the list, so the job pages by
-// calling Overdue again.
+// oldest deadline first, then token ID, at most f.Page() of them, starting
+// after f.After when it is set. The periodic job that calls Overdue and then
+// Expire for each item belongs to the consumer. A token Expire keeps failing
+// for (an OnExpire guard that rejects, a route that fails) stays in the list,
+// so the job pages with f.After set to the last item's OverdueCursor rather
+// than calling Overdue again from the start, or such tokens would fill every
+// page and starve the newer ones.
 func (e *Engine) Overdue(ctx context.Context, db pgxtx.DBTX, f OverdueFilter) ([]WorkItem, error) {
 	if f.Before.IsZero() {
 		f.Before = e.now()

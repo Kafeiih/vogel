@@ -6,6 +6,15 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ## [Unreleased]
 
+### Agregado
+
+- **`workflow`: cursor para `Overdue`.** `OverdueFilter.After` (un
+  `OverdueCursor{DeadlineAt, TokenID}`, que `WorkItem.OverdueCursor` arma
+  desde el último ítem de una página) lista sólo los tokens que vienen
+  después en el orden de `Overdue`. Un token cuyo `Expire` falla siempre se
+  queda en la lista; el trabajo periódico que pagina con `After` lo salta y
+  sigue con los demás, en vez de recibir la misma página una y otra vez.
+
 ### Cambiado
 
 - **`workflow`: `Expire` exige que el plazo ya haya pasado.** Antes aceptaba
@@ -18,6 +27,9 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   exige un resolvedor por él.
 - **`workflow/workflowhttp`: `ErrCaseExists` y `ErrNotAssigned` responden
   409** en vez de quedar sin mapear (500). Los dos los provoca el cliente.
+- **`workflow.Repository.ListOverdue` respeta `OverdueFilter.After`**:
+  quien implemente el puerto por su cuenta debe filtrar por
+  `(DeadlineAt, ID)` estrictamente mayor que el cursor.
 
 ### Corregido
 

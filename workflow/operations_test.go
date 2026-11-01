@@ -379,6 +379,38 @@ func TestValidate_OnExpireMustNameOutgoingNonReturnTransition(t *testing.T) {
 	require.NoError(t, d.Validate())
 }
 
+func TestOverdue_AfterSkipsTokensThatFailToExpire(t *testing.T) {
+	now := time.Date(2026, 10, 30, 9, 0, 0, 0, time.UTC)
+	repo := newFakeRepository()
+	e := New(repo, Config{Now: func() time.Time { return now }}, testLogger(), WithDefinitions(testDefinition()))
+	ids := make([]uuid.UUID, 0, 3)
+	for i := range 3 {
+		c := openInTenant(t, e, "t1", fmt.Sprintf("case-%d", i))
+		_, err := e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "submit", ActorID: "u1"})
+		require.NoError(t, err)
+		ids = append(ids, c.ID)
+		now = now.Add(time.Hour) // each later case has a later deadline
+	}
+	now = now.Add(100 * time.Hour)
+
+	// The job cannot expire what it lists (say, a guard keeps rejecting it):
+	// without a cursor it would get the same token forever.
+	var seen []uuid.UUID
+	var after *OverdueCursor
+	for range 4 {
+		page, err := e.Overdue(context.Background(), nil, OverdueFilter{Tenant: "t1", Limit: 1, After: after})
+		require.NoError(t, err)
+		if len(page) == 0 {
+			break
+		}
+		seen = append(seen, page[0].Case.ID)
+		after = page[0].OverdueCursor()
+	}
+	assert.Equal(t, ids, seen, "After resumes past the last listed token, oldest deadline first")
+	assert.Nil(t, (&WorkItem{}).OverdueCursor(), "a token without a deadline has no cursor")
+	assert.Nil(t, (*WorkItem)(nil).OverdueCursor())
+}
+
 func TestOverdue_PagesOldestFirst(t *testing.T) {
 	now := time.Date(2026, 10, 30, 9, 0, 0, 0, time.UTC)
 	repo := newFakeRepository()

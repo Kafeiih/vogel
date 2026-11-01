@@ -1204,7 +1204,8 @@ type GuardFunc func(ctx context.Context, db pgxtx.DBTX, c Case) (bool, error)
 // ListOverdue returns one WorkItem per active token of an open case (of
 // f.Tenant when set) whose DeadlineAt is before f.Before and whose
 // ExpiredDeadline is not that same deadline, ordered by DeadlineAt, then
-// token ID, at most f.Page() of them. UpdateToken and CreateToken persist
+// token ID, after f.After when it is set (strictly greater (DeadlineAt, ID)),
+// at most f.Page() of them. UpdateToken and CreateToken persist
 // Token.ExpiredDeadline like every other field.
 type Repository interface {
 	Create(ctx context.Context, db pgxtx.DBTX, c *Case) error
