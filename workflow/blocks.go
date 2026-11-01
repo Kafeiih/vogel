@@ -48,9 +48,9 @@ func (b *block) members() []string {
 
 // buildBlock computes the branches of split s from the outgoing transitions
 // of every node.
-func buildBlock(s Node, outgoing map[string][]Transition) *block {
+func buildBlock(s Node, outgoingByNode map[string][]Transition) *block {
 	b := &block{split: s, join: s.Join, interior: make(map[string]bool)}
-	for _, tr := range outgoing[s.ID] {
+	for _, tr := range outgoingByNode[s.ID] {
 		br := branch{action: tr.Action, nodes: make(map[string]bool)}
 		queue := []string{tr.To}
 		for len(queue) > 0 {
@@ -65,7 +65,7 @@ func buildBlock(s Node, outgoing map[string][]Transition) *block {
 			}
 			br.nodes[id] = true
 			br.order = append(br.order, id)
-			for _, next := range outgoing[id] {
+			for _, next := range outgoingByNode[id] {
 				if !next.Return {
 					queue = append(queue, next.To)
 				}
@@ -87,7 +87,7 @@ func buildBlock(s Node, outgoing map[string][]Transition) *block {
 // either nest inside one branch of another block or are disjoint; and a
 // return transition stays inside one branch of one block, or inside the root
 // scope.
-func validateBlocks(d Definition, nodeByID map[string]Node, outgoing map[string][]Transition, addf func(string, ...any)) {
+func validateBlocks(d Definition, nodeByID map[string]Node, outgoingByNode map[string][]Transition, addf func(string, ...any)) {
 	namedBy := make(map[string][]string)
 	var blocks []*block
 	for i := range d.Nodes {
@@ -106,7 +106,7 @@ func validateBlocks(d Definition, nodeByID map[string]Node, outgoing map[string]
 			addf("%s %q: names %q, which is not a join node", label, n.ID, n.Join)
 		default:
 			namedBy[n.Join] = append(namedBy[n.Join], n.ID)
-			blocks = append(blocks, buildBlock(*n, outgoing))
+			blocks = append(blocks, buildBlock(*n, outgoingByNode))
 		}
 	}
 	for i := range d.Nodes {

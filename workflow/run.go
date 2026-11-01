@@ -215,8 +215,10 @@ func (r *caseRun) touch(id uuid.UUID) {
 	}
 }
 
-// emit plans evt as the call's next event, assigning its Seq, time and
-// actor, and returns the Seq.
+// emit plans evt as the call's next event and returns its Seq. It writes
+// evt.Seq, evt.OccurredAt and evt.Actor into the caller's evt before copying
+// it into the plan, so the caller sees the assigned values; later changes to
+// evt do not reach the planned copy.
 func (r *caseRun) emit(evt *Event) int64 {
 	evt.Seq = r.baseSeq + int64(len(r.events)) + 1
 	evt.OccurredAt = r.now
@@ -292,7 +294,7 @@ func (e *Engine) route(ctx context.Context, db pgxtx.DBTX, run *caseRun, tok *To
 func (r *caseRun) gatewayStep() error {
 	r.gatewaySteps++
 	if r.gatewaySteps > maxGatewaySteps {
-		return ErrTooManyDecisionHops
+		return fmt.Errorf("%w: more than %d splits and joins in one call", ErrTooManyDecisionHops, maxGatewaySteps)
 	}
 	return nil
 }

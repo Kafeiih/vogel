@@ -76,7 +76,7 @@ type Engine struct {
 // case — typically by enqueuing jobs in the same transaction. The engine
 // itself never runs an effect and never enqueues anything: it only asks the
 // sink, at Register time, whether each name is known, and hands it the
-// events each Open or Move appended.
+// events each Open, Move, CancelToken or Expire appended.
 type EffectSink interface {
 	// HasEffect reports whether name is an effect this sink can dispatch.
 	HasEffect(name string) bool
@@ -87,16 +87,17 @@ type EffectSink interface {
 	// persisted, instead of committing a transition whose effects are then
 	// lost.
 	CheckDB(db pgxtx.DBTX) error
-	// Dispatch is called by Open, Move and CancelToken exactly once, after
-	// all their persistence succeeded, with the definition the case runs on,
+	// Dispatch is called by Open, Move, CancelToken and Expire (when it takes
+	// the node's OnExpire transition) exactly once, after all their
+	// persistence succeeded, with the definition the case runs on,
 	// the final case, and exactly the events that call appended, in Seq order
 	// (Open: the EventOpened; Move: the EventStepSubmitted when MoveInput.Step
 	// is set, the human-driven EventMoved, then every automatic event that
 	// followed it: decision-node hops, splits and the branch tokens' hops,
 	// waits, joins, and the EventClosed if the case closed). Each event names
-	// its Event.TokenID. db is the exact value the caller passed to Open or Move, so
-	// whatever Dispatch writes commits or rolls back with the caller's
-	// transaction. A returned error fails Open or Move (wrapped); the caller
+	// its Event.TokenID. db is the exact value the caller passed to that
+	// call, so whatever Dispatch writes commits or rolls back with the
+	// caller's transaction. A returned error fails the call (wrapped); the caller
 	// must then roll back. Like a GuardFunc, Dispatch runs inside that open
 	// transaction and must not call the network.
 	Dispatch(ctx context.Context, db pgxtx.DBTX, d Definition, c Case, events []Event) error
@@ -223,8 +224,8 @@ func (e *Engine) checkEffectDB(d Definition, db pgxtx.DBTX) error {
 	return e.effectSink.CheckDB(db)
 }
 
-// dispatch hands the events one Open or Move appended to the EffectSink, if
-// any. It is the engine's only contact with effects.
+// dispatch hands the events one Open, Move, CancelToken or Expire appended
+// to the EffectSink, if any. It is the engine's only contact with effects.
 func (e *Engine) dispatch(ctx context.Context, db pgxtx.DBTX, d Definition, c Case, events []Event) error {
 	if e.effectSink == nil {
 		return nil

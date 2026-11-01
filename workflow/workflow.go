@@ -712,7 +712,7 @@ func (d Definition) Validate() error {
 				gatewayNodes = append(gatewayNodes, n.ID)
 			}
 		}
-		if cycle := detectDecisionCycle(gatewayNodes, gatewayAdjacency); cycle != nil {
+		if cycle := detectGatewayCycle(gatewayNodes, gatewayAdjacency); cycle != nil {
 			kind := "decision-only"
 			for _, id := range cycle {
 				if nodeByID[id].Kind != NodeDecision {
@@ -766,12 +766,12 @@ func (d Definition) Validate() error {
 	return fmt.Errorf("%w:\n  %s", ErrInvalidDefinition, strings.Join(errs, "\n  "))
 }
 
-// detectDecisionCycle returns the node IDs forming one cycle within adj — a
+// detectGatewayCycle returns the node IDs forming one cycle within adj — a
 // directed graph already restricted to automatic nodes (decisions, splits,
 // joins) and the edges between them — or nil if adj is acyclic. nodes fixes DFS traversal order,
 // so the result (and therefore Validate's error message) is deterministic
 // across calls on the same Definition.
-func detectDecisionCycle(nodes []string, adj map[string][]string) []string {
+func detectGatewayCycle(nodes []string, adj map[string][]string) []string {
 	const (
 		white = iota
 		gray
@@ -1096,8 +1096,12 @@ var (
 	ErrCommentRequired         = errors.New("workflow: comment is required for this transition")
 	ErrCommentNotAllowed       = errors.New("workflow: comment is not allowed for this transition")
 	ErrNoRoute                 = errors.New("workflow: no route matched at decision node")
-	ErrTooManyDecisionHops     = errors.New("workflow: exceeded maximum decision node hops")
-	ErrReturnNotVisited        = errors.New("workflow: case never occupied the return transition's target node")
+	// ErrTooManyDecisionHops reports a call that passed through more
+	// decision nodes, or more splits and joins, than the engine allows. A
+	// validated Definition never gets there (Validate rejects gateway-only
+	// cycles).
+	ErrTooManyDecisionHops = errors.New("workflow: exceeded maximum decision node hops")
+	ErrReturnNotVisited    = errors.New("workflow: case never occupied the return transition's target node")
 	// ErrUnknownEffect reports that a Definition names an effect the Engine's
 	// EffectSink does not know, or names any effect while no sink is set.
 	ErrUnknownEffect = errors.New("workflow: effect not known to the effect sink")

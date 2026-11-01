@@ -811,6 +811,8 @@ func assertInvariants(t *testing.T, e *Engine, repo *fakeRepository, caseID uuid
 		case TokenWaiting:
 			waiting = append(waiting, tok)
 		case TokenConsumed, TokenCancelled:
+			// Ended tokens carry no invariant of their own here; listing
+			// them keeps the switch exhaustive (see the exhaustive linter).
 		}
 	}
 
