@@ -15,6 +15,7 @@ AWS SDK, SendGrid o go-mail.
 | Documento | Para qué |
 |---|---|
 | [`docs/MIGRATION_GUIDE.md`](docs/MIGRATION_GUIDE.md) | Cómo `go-crucible` y `go-licencias` adoptan `vogel`: tabla de correspondencia archivo-local → paquete, orden de migración recomendado, y los cambios de firma que rompen. |
+| [`docs/STABILITY.md`](docs/STABILITY.md) | Qué garantiza cada paquete, qué cuenta como cambio que rompe, cómo se depreca y qué falta para la v1.0. |
 | [`docs/WIRING.md`](docs/WIRING.md) | Cómo se componen los paquetes entre sí: quién escribe en `reqctx`, el orden de los middlewares, transacción y auditoría juntas, y los errores de montaje que el compilador no detecta. |
 | [`SECURITY.md`](SECURITY.md) | Cómo reportar una vulnerabilidad en privado, versiones con soporte, plazos de respuesta y alcance. |
 | [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) | Límites de confianza, flujos y clasificación de datos, superficie de ataque con lo que cubre `vogel` y lo que queda a cargo de cada servicio, casos de abuso y riesgos residuales. |
