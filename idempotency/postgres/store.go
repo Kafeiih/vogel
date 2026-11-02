@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/kafeiih/vogel/idempotency"
@@ -63,7 +64,7 @@ const claimSQL = `
     ON CONFLICT (scope, key) DO UPDATE
        SET fingerprint = EXCLUDED.fingerprint, status = 'in_progress',
            response_status = NULL, response_header = NULL, response_body = NULL,
-           created_at = now(), locked_until = NULL, expires_at = EXCLUDED.expires_at
+           created_at = now(), locked_until = NULL, reservation = NULL, expires_at = EXCLUDED.expires_at
      WHERE idempotency_key.expires_at <= now()
     RETURNING true`
 
@@ -102,10 +103,83 @@ func (s *Store) Do(ctx context.Context, tx pgx.Tx, req idempotency.Request, fn f
 	if err != nil {
 		return idempotency.Response{}, false, err
 	}
-	if err := complete(ctx, tx, req, resp); err != nil {
+	if err := complete(ctx, tx, req, uuid.Nil, resp); err != nil {
 		return idempotency.Response{}, false, err
 	}
 	return resp, false, nil
+}
+
+// reserveSQL is claimSQL for a reservation taken outside a transaction: the
+// row commits as in progress with a lease (locked_until) and a reservation
+// token. Besides an expired row, it also takes over a reservation whose lease
+// passed without a stored response (its request died), provided the
+// fingerprint matches; a different fingerprint stays a reused key.
+const reserveSQL = `
+    INSERT INTO idempotency_key (scope, key, fingerprint, status, expires_at, locked_until, reservation)
+    VALUES ($1, $2, $3, 'in_progress', now() + $4 * interval '1 microsecond', now() + $5 * interval '1 microsecond', $6)
+    ON CONFLICT (scope, key) DO UPDATE
+       SET fingerprint = EXCLUDED.fingerprint, status = 'in_progress',
+           response_status = NULL, response_header = NULL, response_body = NULL,
+           created_at = now(), locked_until = EXCLUDED.locked_until, reservation = EXCLUDED.reservation,
+           expires_at = EXCLUDED.expires_at
+     WHERE idempotency_key.expires_at <= now()
+        OR (idempotency_key.status = 'in_progress'
+            AND idempotency_key.locked_until <= now()
+            AND idempotency_key.fingerprint = EXCLUDED.fingerprint)
+    RETURNING true`
+
+// Reserve claims req's key for lease, outside any transaction of the
+// operation: the HTTP middleware's path. The returned Reservation has Token
+// set when this request now holds the key (new, expired, or a lapsed lease of
+// the same request) and must run its operation, then call Complete or
+// Release with that token; it has Replay set when the operation already
+// finished. A key held by a live lease fails with ErrInProgress, a key
+// claimed with another fingerprint with ErrKeyReused, an invalid req with
+// ErrInvalidRequest. A lease <= 0 is rejected as ErrInvalidRequest: it must
+// outlast the operation, or a retry would run it again concurrently.
+func (s *Store) Reserve(ctx context.Context, db pgxtx.DBTX, req idempotency.Request, lease time.Duration) (idempotency.Reservation, error) {
+	if err := req.Validate(); err != nil {
+		return idempotency.Reservation{}, err
+	}
+	if lease <= 0 {
+		return idempotency.Reservation{}, fmt.Errorf("%w: lease must be positive", idempotency.ErrInvalidRequest)
+	}
+	token := uuid.New()
+	var owned bool
+	err := db.QueryRow(ctx, reserveSQL, req.Scope, req.Key, req.Fingerprint,
+		s.ttl.Microseconds(), lease.Microseconds(), token).Scan(&owned)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		resp, _, err := s.existing(ctx, db, req)
+		if err != nil {
+			return idempotency.Reservation{}, err
+		}
+		return idempotency.Reservation{Replay: &resp}, nil
+	case err != nil:
+		return idempotency.Reservation{}, fmt.Errorf("idempotency: reserve key: %w", err)
+	}
+	return idempotency.Reservation{Token: token}, nil
+}
+
+// Complete stores resp as the response of req's key, held by the
+// reservation token. It fails when the reservation is no longer this
+// request's: its lease lapsed and another request took the key over, or the
+// row expired and was reclaimed.
+func (s *Store) Complete(ctx context.Context, db pgxtx.DBTX, req idempotency.Request, token uuid.UUID, resp idempotency.Response) error {
+	return complete(ctx, db, req, token, resp)
+}
+
+// Release deletes req's in-progress reservation held by token, so a retry
+// runs the operation again. It is a no-op when the reservation is no longer
+// this request's.
+func (s *Store) Release(ctx context.Context, db pgxtx.DBTX, req idempotency.Request, token uuid.UUID) error {
+	if _, err := db.Exec(ctx, `
+        DELETE FROM idempotency_key
+        WHERE scope = $1 AND key = $2 AND status = 'in_progress' AND reservation = $3`,
+		req.Scope, req.Key, token); err != nil {
+		return fmt.Errorf("idempotency: release key: %w", err)
+	}
+	return nil
 }
 
 // existing reads the row another transaction committed for req's key.
@@ -140,7 +214,9 @@ func (s *Store) existing(ctx context.Context, db pgxtx.DBTX, req idempotency.Req
 }
 
 // complete stores resp as the response of req's key and marks it completed.
-func complete(ctx context.Context, db pgxtx.DBTX, req idempotency.Request, resp idempotency.Response) error {
+// token is the reservation the caller holds; uuid.Nil means the key was
+// claimed by Do inside the caller's transaction, which takes no reservation.
+func complete(ctx context.Context, db pgxtx.DBTX, req idempotency.Request, token uuid.UUID, resp idempotency.Response) error {
 	var header []byte
 	if resp.Header != nil {
 		var err error
@@ -150,9 +226,11 @@ func complete(ctx context.Context, db pgxtx.DBTX, req idempotency.Request, resp 
 	}
 	tag, err := db.Exec(ctx, `
         UPDATE idempotency_key
-           SET status = 'completed', response_status = $4, response_header = $5, response_body = $6, locked_until = NULL
-         WHERE scope = $1 AND key = $2 AND fingerprint = $3 AND status = 'in_progress'`,
-		req.Scope, req.Key, req.Fingerprint, resp.Status, header, resp.Body)
+           SET status = 'completed', response_status = $4, response_header = $5, response_body = $6,
+               locked_until = NULL, reservation = NULL
+         WHERE scope = $1 AND key = $2 AND fingerprint = $3 AND status = 'in_progress'
+           AND reservation IS NOT DISTINCT FROM $7`,
+		req.Scope, req.Key, req.Fingerprint, resp.Status, header, resp.Body, nullToken(token))
 	if err != nil {
 		return fmt.Errorf("idempotency: store response: %w", err)
 	}
@@ -181,4 +259,12 @@ func (s *Store) DeleteExpired(ctx context.Context, db pgxtx.DBTX, limit int) (in
 		return 0, fmt.Errorf("idempotency: delete expired keys: %w", err)
 	}
 	return tag.RowsAffected(), nil
+}
+
+// nullToken stores uuid.Nil as NULL: Do's claims carry no reservation.
+func nullToken(token uuid.UUID) *uuid.UUID {
+	if token == uuid.Nil {
+		return nil
+	}
+	return &token
 }
