@@ -1061,7 +1061,9 @@ type Event struct {
 	// and every stored field of the event, and PrevDigest is the Digest of
 	// the event at Seq-1. PrevDigest is nil for the first chained event of
 	// a case; both are nil for events stored before the repository chained
-	// them (migration 007 in workflow/postgres). See Engine.VerifyChain.
+	// them (migration 007 in workflow/postgres; migration 010 makes the
+	// digest v2, which also covers TokenID, ScopeID and DeadlineAt). See
+	// Engine.VerifyChain.
 	PrevDigest []byte
 	Digest     []byte
 }

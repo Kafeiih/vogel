@@ -28,6 +28,9 @@
 --
 -- Down restores the v1 function and drops the column. Rows appended while
 -- 010 was applied keep their v2 digests, which v1 then reports as broken.
+-- The entered deadlines are lost: after Down and Up again, every v2 row that
+-- carried one stays broken for good, since its digest covered a deadline_at
+-- the table no longer holds.
 
 -- +goose Up
 ALTER TABLE workflow_event ADD COLUMN deadline_at TIMESTAMPTZ NULL;

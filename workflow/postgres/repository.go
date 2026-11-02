@@ -31,7 +31,8 @@ const eventWriteColumns = eventColumns + `, token_id, scope_id, deadline_at`
 // eventReadColumns reads a NULL token_id or scope_id (an event stored before
 // migration 008) as the case id — the root token in the root scope — then
 // reads the entered deadline (migration 010, NULL before it) and the hash
-// chain columns, which migration 007's trigger sets on insert.
+// chain columns, which migration 007's trigger sets on insert (digest v2 since
+// migration 010).
 const eventReadColumns = eventColumns + `, COALESCE(token_id, case_id), COALESCE(scope_id, case_id), deadline_at, prev_digest, digest`
 
 const scopeColumns = `id, case_id, parent_id, split_node, join_node, expected, status, opened_seq, closed_seq`
@@ -188,7 +189,7 @@ func (r *Repository) Update(ctx context.Context, db pgxtx.DBTX, c *workflow.Case
 // actor_id stores e.Actor.ID, or the deprecated e.ActorID when Actor.ID is
 // empty; an empty e.Actor.Kind is stored as workflow.ActorUnspecified.
 // e.PrevDigest and e.Digest are not written: migration 007's trigger computes
-// them from the stored row, and AppendEvent sets them on e from the insert.
+// them from the stored row (with migration 010's v2 digest), and AppendEvent sets them on e from the insert.
 // e.TokenID and e.ScopeID are stored as given, uuid.Nil as NULL. A second
 // "joined" event for one scope fails on migration 008's
 // uq_workflow_event_joined_once and is returned as workflow.ErrConflict too.
@@ -277,8 +278,8 @@ func (r *Repository) ListEvents(ctx context.Context, db pgxtx.DBTX, caseID uuid.
 }
 
 // ListEventDigests returns caseID's hash chain links in seq order: each
-// row's stored prev_digest and digest, and the digest migration 007's
-// vogel_workflow_event_digest computes again from the row as it is now and
+// row's stored prev_digest and digest, and the digest
+// vogel_workflow_event_digest (v2 since migration 010) computes again from the row as it is now and
 // its stored prev_digest (nil for an unchained row).
 func (r *Repository) ListEventDigests(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID) ([]workflow.EventDigest, error) {
 	rows, err := db.Query(ctx, `
