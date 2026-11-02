@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -67,6 +68,57 @@ func TestOverdue_ListsOnlyUnexpiredOverdueTokens(t *testing.T) {
 	items, err = current.Overdue(ctx, pool, workflow.OverdueFilter{Tenant: "tenant-a"})
 	require.NoError(t, err)
 	assert.Len(t, items, 2)
+
+	// Paging with After walks the same order one token at a time, without
+	// expiring anything.
+	all, err := current.Overdue(ctx, pool, workflow.OverdueFilter{})
+	require.NoError(t, err)
+	require.Len(t, all, 3)
+	var walked []uuid.UUID
+	var after *workflow.OverdueCursor
+	for range len(all) + 1 {
+		page, err := current.Overdue(ctx, pool, workflow.OverdueFilter{Limit: 1, After: after})
+		require.NoError(t, err)
+		if len(page) == 0 {
+			break
+		}
+		walked = append(walked, page[0].Token.ID)
+		after = page[0].OverdueCursor()
+	}
+	want := make([]uuid.UUID, 0, len(all))
+	for _, it := range all {
+		want = append(want, it.Token.ID)
+	}
+	assert.Equal(t, want, walked)
+
+	// Ties: with every listed deadline equal, the token ID breaks the tie and
+	// the cursor still walks each token exactly once.
+	tie := time.Now().Add(-time.Hour).Truncate(time.Microsecond)
+	for _, it := range all {
+		_, err := current.SetDeadline(ctx, pool, workflow.SetDeadlineInput{
+			CaseID: it.Case.ID, TokenID: it.Token.ID, DeadlineAt: &tie, Actor: workflow.Actor{ID: "op"}, Reason: "tie",
+		})
+		require.NoError(t, err)
+	}
+	all, err = current.Overdue(ctx, pool, workflow.OverdueFilter{})
+	require.NoError(t, err)
+	require.Len(t, all, 3)
+	want = want[:0]
+	for _, it := range all {
+		require.True(t, it.Token.DeadlineAt.Equal(tie))
+		want = append(want, it.Token.ID)
+	}
+	walked, after = nil, nil
+	for range len(all) + 1 {
+		page, err := current.Overdue(ctx, pool, workflow.OverdueFilter{Limit: 1, After: after})
+		require.NoError(t, err)
+		if len(page) == 0 {
+			break
+		}
+		walked = append(walked, page[0].Token.ID)
+		after = page[0].OverdueCursor()
+	}
+	assert.Equal(t, want, walked, "equal deadlines page by token ID")
 }
 
 func TestMigration009_UpDownRoundTrip(t *testing.T) {

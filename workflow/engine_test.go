@@ -409,6 +409,10 @@ func (f *fakeRepository) ListOverdue(_ context.Context, _ pgxtx.DBTX, filter Ove
 		if t.ExpiredDeadline != nil && t.ExpiredDeadline.Equal(*t.DeadlineAt) {
 			continue
 		}
+		if a := filter.After; a != nil && (t.DeadlineAt.Before(a.DeadlineAt) ||
+			(t.DeadlineAt.Equal(a.DeadlineAt) && t.ID.String() <= a.TokenID.String())) {
+			continue
+		}
 		out = append(out, WorkItem{Case: c, Token: cloneToken(t)})
 	}
 	// Same order as workflow/postgres: oldest deadline first, token ID as the

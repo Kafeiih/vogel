@@ -58,11 +58,12 @@ var sentinels = []sentinel{
 
 	{"ErrOffsetOutOfRange", workflow.ErrOffsetOutOfRange, http.StatusBadRequest, response.CodeValidationError},
 
+	{"ErrCaseExists", workflow.ErrCaseExists, http.StatusConflict, response.CodeConflict},
+	{"ErrNotAssigned", workflow.ErrNotAssigned, http.StatusConflict, response.CodeConflict},
+
 	// Not mapped: the caller logs them and answers 500.
 	{"ErrDefinitionNotRegistered", workflow.ErrDefinitionNotRegistered, 0, ""},
 	{"ErrGuardNotRegistered", workflow.ErrGuardNotRegistered, 0, ""},
-	{"ErrCaseExists", workflow.ErrCaseExists, 0, ""},
-	{"ErrNotAssigned", workflow.ErrNotAssigned, 0, ""},
 	{"ErrInvalidDefinition", workflow.ErrInvalidDefinition, 0, ""},
 	{"ErrTooManyDecisionHops", workflow.ErrTooManyDecisionHops, 0, ""},
 	{"ErrUnknownEffect", workflow.ErrUnknownEffect, 0, ""},
@@ -70,6 +71,7 @@ var sentinels = []sentinel{
 	{"ErrUnsupportedEventSchema", workflow.ErrUnsupportedEventSchema, 0, ""},
 	{"ErrInvalidFailure", workflow.ErrInvalidFailure, 0, ""},
 	{"ErrChainBroken", workflow.ErrChainBroken, 0, ""},
+	{"ErrCaseWithoutTokens", workflow.ErrCaseWithoutTokens, 0, ""},
 }
 
 // workflowSentinelNames parses package workflow's non-test sources and

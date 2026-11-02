@@ -140,6 +140,7 @@ func TestProcessHandler_RejectsAMissingPrincipal(t *testing.T) {
 		{http.MethodGet, "/inbox"},
 		{http.MethodGet, "/cases/" + uuid.NewString()},
 		{http.MethodPost, "/cases/" + uuid.NewString() + "/claim"},
+		{http.MethodPost, "/cases/" + uuid.NewString() + "/claim?tokenId=not-a-uuid"},
 		{http.MethodPost, "/cases/" + uuid.NewString() + "/submit"},
 	} {
 		code, _ := serveProcess(t, &stubProcessService{}, tc.method, tc.path, "", `{}`)

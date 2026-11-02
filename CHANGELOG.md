@@ -6,11 +6,48 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ## [Unreleased]
 
+### Agregado
+
+- **`workflow`: cursor para `Overdue`.** `OverdueFilter.After` (un
+  `OverdueCursor{DeadlineAt, TokenID}`, que `WorkItem.OverdueCursor` arma
+  desde el último ítem de una página) lista sólo los tokens que vienen
+  después en el orden de `Overdue`. Un token cuyo `Expire` falla siempre se
+  queda en la lista; el trabajo periódico que pagina con `After` lo salta y
+  sigue con los demás, en vez de recibir la misma página una y otra vez.
+
+### Cambios que rompen
+
+- **`workflow`: el motor ya no sintetiza el token raíz de un caso abierto
+  guardado sin tokens.** Ese camino de compatibilidad, obsoleto desde
+  v0.19.0, cubría casos que un binario anterior creaba después de la
+  migración `008`. Ahora la lectura falla con el nuevo
+  `ErrCaseWithoutTokens` (sin mapear en `workflowhttp`: responde 500), que
+  sólo aparece ante un bug o una inserción manual.
+
 ### Cambiado
 
+- **`workflow`: `Expire` exige que el plazo ya haya pasado.** Antes aceptaba
+  un token cuyo plazo era exactamente ahora, mientras `Overdue` y el filtro
+  de vencidos de `Inbox` sólo listan plazos anteriores a ahora. Los tres
+  usan ahora el mismo borde: en el instante exacto del plazo, `Expire`
+  falla con `ErrNotOverdue`.
+- **`workflow`: un `DeadlineRule` en un nodo terminal se ignora**, igual que
+  `Deadline`. `Definition.DeadlineRules` ya no lo lista y `Register` no
+  exige un resolvedor por él.
+- **`workflow/workflowhttp`: `ErrCaseExists` y `ErrNotAssigned` responden
+  409** en vez de quedar sin mapear (500). Los dos los provoca el cliente.
+- **`workflow.Repository.ListOverdue` respeta `OverdueFilter.After`**:
+  quien implemente el puerto por su cuenta debe filtrar por
+  `(DeadlineAt, ID)` estrictamente mayor que el cursor.
 - **`workflow`: `Definition.Validate` rechaza una `CommentPolicy` en la
   transición de salida de un join**, igual que en las rutas de decisiones y
   splits: el motor la toma solo, así que no hay nada que comentar.
+
+### Corregido
+
+- **`workflow/calendar`: el error del tope de `BusinessDays` nombra el día
+  donde empieza la racha sin días hábiles** (antes, el último día examinado,
+  casi un año después) y el tope es de 366 días, no 367.
 
 ## [0.20.0] — 2026-10-30
 
@@ -490,7 +527,7 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   cambian. El CI del boilerplate y `check-generated.sh` fallan si el código
   generado no es el que produce `go generate`.
 
-### Quitado
+### Cambios que rompen
 
 - **Swagger UI y swaggo del boilerplate.** `SWAGGER_ENABLED` sigue con sus
   reglas (apagado por defecto, rechazado en producción) pero ahora sirve el

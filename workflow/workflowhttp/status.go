@@ -36,6 +36,8 @@ var mappings = []mapping{
 	{workflow.ErrJoinRejected, http.StatusConflict, response.CodeConflict},
 	{workflow.ErrAlreadyExpired, http.StatusConflict, response.CodeConflict},
 	{workflow.ErrNotOverdue, http.StatusConflict, response.CodeConflict},
+	{workflow.ErrCaseExists, http.StatusConflict, response.CodeConflict},
+	{workflow.ErrNotAssigned, http.StatusConflict, response.CodeConflict},
 
 	{workflow.ErrCommentRequired, http.StatusUnprocessableEntity, response.CodeUnprocessableEntity},
 	{workflow.ErrCommentNotAllowed, http.StatusUnprocessableEntity, response.CodeUnprocessableEntity},
@@ -62,7 +64,7 @@ var mappings = []mapping{
 //   - 409 CONFLICT: ErrConflict, ErrAlreadyAssigned, ErrCaseClosed,
 //     ErrInvalidTransition, ErrReturnNotVisited, ErrNoRoute,
 //     ErrGuardRejected, ErrLastBranch, ErrJoinRejected, ErrAlreadyExpired,
-//     ErrNotOverdue.
+//     ErrNotOverdue, ErrCaseExists, ErrNotAssigned.
 //   - 422 UNPROCESSABLE_ENTITY: ErrCommentRequired, ErrCommentNotAllowed,
 //     ErrReasonRequired, ErrTokenRequired, ErrInvalidActor.
 //   - 400 VALIDATION_ERROR: ErrOffsetOutOfRange.

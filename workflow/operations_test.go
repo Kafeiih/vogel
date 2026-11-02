@@ -289,7 +289,11 @@ func TestExpire_BeforeDeadlineIsNotOverdue(t *testing.T) {
 	_, err = e.Expire(context.Background(), nil, ExpireInput{CaseID: draft.ID, Actor: scheduler})
 	require.ErrorIs(t, err, ErrNotOverdue, "a token without a deadline is never overdue")
 
-	now = now.Add(time.Hour) // exactly the deadline
+	now = now.Add(time.Hour) // exactly the deadline: not overdue yet, as in Overdue
+	_, err = e.Expire(context.Background(), nil, ExpireInput{CaseID: c.ID, Actor: scheduler})
+	require.ErrorIs(t, err, ErrNotOverdue, "a token is overdue only once its deadline has passed")
+
+	now = now.Add(time.Nanosecond)
 	_, err = e.Expire(context.Background(), nil, ExpireInput{CaseID: c.ID, Actor: scheduler})
 	require.NoError(t, err)
 }
@@ -375,6 +379,38 @@ func TestValidate_OnExpireMustNameOutgoingNonReturnTransition(t *testing.T) {
 	require.NoError(t, d.Validate())
 }
 
+func TestOverdue_AfterSkipsTokensThatFailToExpire(t *testing.T) {
+	now := time.Date(2026, 10, 30, 9, 0, 0, 0, time.UTC)
+	repo := newFakeRepository()
+	e := New(repo, Config{Now: func() time.Time { return now }}, testLogger(), WithDefinitions(testDefinition()))
+	ids := make([]uuid.UUID, 0, 3)
+	for i := range 3 {
+		c := openInTenant(t, e, "t1", fmt.Sprintf("case-%d", i))
+		_, err := e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "submit", ActorID: "u1"})
+		require.NoError(t, err)
+		ids = append(ids, c.ID)
+		now = now.Add(time.Hour) // each later case has a later deadline
+	}
+	now = now.Add(100 * time.Hour)
+
+	// The job cannot expire what it lists (say, a guard keeps rejecting it):
+	// without a cursor it would get the same token forever.
+	var seen []uuid.UUID
+	var after *OverdueCursor
+	for range 4 {
+		page, err := e.Overdue(context.Background(), nil, OverdueFilter{Tenant: "t1", Limit: 1, After: after})
+		require.NoError(t, err)
+		if len(page) == 0 {
+			break
+		}
+		seen = append(seen, page[0].Case.ID)
+		after = page[0].OverdueCursor()
+	}
+	assert.Equal(t, ids, seen, "After resumes past the last listed token, oldest deadline first")
+	assert.Nil(t, (&WorkItem{}).OverdueCursor(), "a token without a deadline has no cursor")
+	assert.Nil(t, (*WorkItem)(nil).OverdueCursor())
+}
+
 func TestOverdue_PagesOldestFirst(t *testing.T) {
 	now := time.Date(2026, 10, 30, 9, 0, 0, 0, time.UTC)
 	repo := newFakeRepository()
@@ -437,6 +473,14 @@ func TestRegister_RejectsRuleWithoutResolver(t *testing.T) {
 
 	resolver := resolverFunc(func(context.Context, DueInput) (time.Time, error) { return time.Time{}, nil })
 	require.NoError(t, New(newFakeRepository(), Config{Deadlines: resolver}, testLogger()).Register(d))
+}
+
+func TestRegister_IgnoresRuleOnTerminalNode(t *testing.T) {
+	d := testDefinition()
+	d.Nodes[2].DeadlineRule = "two-business-days" // approved: terminal, never gets a deadline
+
+	assert.Empty(t, d.DeadlineRules())
+	require.NoError(t, New(newFakeRepository(), Config{}, testLogger()).Register(d))
 }
 
 func TestOpen_AppliesDeadlineRuleToStartToken(t *testing.T) {

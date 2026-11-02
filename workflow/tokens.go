@@ -148,4 +148,8 @@ var (
 	ErrLastBranch     = errors.New("workflow: cancelling this token would leave its scope without a live branch")
 	ErrJoinRejected   = errors.New("workflow: join rejected by the consumer's join check")
 	ErrReasonRequired = errors.New("workflow: a reason is required")
+	// ErrCaseWithoutTokens reports an open case stored without any token
+	// row. Every binary since v0.19.0 writes a case's root token with the
+	// case, so only a bug or a manual insert leaves one behind.
+	ErrCaseWithoutTokens = errors.New("workflow: open case has no tokens")
 )
