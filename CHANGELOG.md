@@ -8,6 +8,22 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ### Agregado
 
+- **`idempotency`: claves de idempotencia para mutaciones (OWASP 17.13).**
+  Un reintento con la misma `Idempotency-Key` recibe la respuesta del
+  primer pedido en vez de ejecutar la mutación otra vez. Dos capas sobre la
+  tabla `idempotency_key` (`idempotency/migrations`, tabla de versión
+  `idempotency_db_version`):
+  - `idempotency/postgres.Store.Do` corre dentro de la transacción de la
+    mutación: la clave, la mutación y su respuesta confirman o se deshacen
+    juntas, así que la mutación corre exactamente una vez por clave.
+  - `idempotency/httpx.Middleware` envuelve cualquier handler: reserva la
+    clave con un plazo, guarda la respuesta y la reproduce con
+    `Idempotent-Replayed: true`; responde 409 mientras el primer pedido
+    corre y 422 si la clave se usó con otro pedido. Si el proceso cae entre
+    el commit del handler y el guardado de la respuesta, un reintento
+    después del plazo ejecuta de nuevo.
+  Las claves vencen a las 24 h por defecto (`WithTTL`), y
+  `Store.DeleteExpired` las borra desde un trabajo del consumidor.
 - **`action`: `WithAttemptLogTimeout` y la latencia del registro de
   intentos.** La escritura de la fila de `action_attempt` ocurre después del
   `Handler` y retiene el slot del worker; su tope, antes fijo en 5 s, ahora

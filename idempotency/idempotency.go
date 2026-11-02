@@ -25,6 +25,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+
+	"github.com/google/uuid"
 )
 
 // MaxKeyLength bounds Request.Key. Keys are opaque client strings (a UUID is
@@ -84,6 +86,17 @@ type Response struct {
 	Status int
 	Header map[string][]string
 	Body   []byte
+}
+
+// Reservation is the outcome of reserving a key outside a transaction (the
+// HTTP middleware's path; see idempotency/postgres.Store.Reserve). Exactly
+// one field is set: Token when this request now holds the key and must run
+// its operation, then complete or release the reservation with that token;
+// Replay when the key's operation already finished, holding its stored
+// response.
+type Reservation struct {
+	Token  uuid.UUID
+	Replay *Response
 }
 
 // Fingerprint returns the SHA-256 of parts, each length-prefixed so that

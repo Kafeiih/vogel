@@ -10,7 +10,9 @@
 -- response (response_status, response_header, response_body) is stored.
 -- locked_until is the lease of an in-progress reservation taken outside a
 -- transaction (the HTTP middleware): once it passes, another request may take
--- the key over. A reservation taken inside the caller's transaction
+-- the key over. reservation identifies the request holding that lease, so a
+-- slow request whose lease was taken over cannot store or release the new
+-- holder's reservation. A reservation taken inside the caller's transaction
 -- (idempotency/postgres.Store.Do) has no lease: the row lock and the
 -- transaction itself serialize duplicates.
 --
@@ -32,6 +34,7 @@ CREATE TABLE idempotency_key (
     response_body   BYTEA       NULL,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     locked_until    TIMESTAMPTZ NULL,
+    reservation     UUID        NULL,
     expires_at      TIMESTAMPTZ NOT NULL,
     PRIMARY KEY (scope, key),
     CHECK ((status = 'completed') = (response_status IS NOT NULL))
