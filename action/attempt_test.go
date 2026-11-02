@@ -36,6 +36,9 @@ type attemptDB struct {
 	// ctxErrs holds ctx.Err() of every Exec, to prove the insert does not
 	// run on a cancelled job context.
 	ctxErrs []error
+	// block makes Exec wait until its context is done, like a stuck
+	// database, and fail with the context's error.
+	block bool
 }
 
 var insertColumns = regexp.MustCompile(`(?s)INSERT INTO action_attempt \(([^)]*)\)`)
@@ -44,6 +47,10 @@ func (d *attemptDB) Exec(ctx context.Context, sql string, args ...any) (pgconn.C
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.ctxErrs = append(d.ctxErrs, ctx.Err())
+	if d.block {
+		<-ctx.Done()
+		return pgconn.CommandTag{}, ctx.Err()
+	}
 	if d.err != nil {
 		return pgconn.CommandTag{}, d.err
 	}
@@ -218,6 +225,48 @@ func TestWorker_PanicOnTheLastAttemptIsDiscarded(t *testing.T) {
 	row := db.only(t)
 	assert.Equal(t, "discarded", row["outcome"], "River discards a job whose last attempt panics")
 	assert.Equal(t, "panic", row["error_class"])
+}
+
+func TestWorker_AttemptLogTimeoutIsConfigurable(t *testing.T) {
+	r, _ := newRegistry(t)
+	registerReturning(t, r, "notify", nil)
+	db := &attemptDB{block: true}
+	reg := prometheus.NewRegistry()
+	w := action.NewWorker(r, action.WithAttemptLog(db), action.WithMetricsRegisterer(reg),
+		action.WithAttemptLogTimeout(50*time.Millisecond),
+		action.WithLogger(slog.New(slog.DiscardHandler)))
+
+	start := time.Now()
+	require.NoError(t, w.Work(context.Background(), jobAt(action.Args{Effect: "notify"}, 1, 25)), "a stuck attempt log never fails the job")
+	assert.Less(t, time.Since(start), 2*time.Second, "the configured timeout, not the 5s default, bounds the insert")
+
+	assert.Equal(t, 1.0, gatherCounter(t, reg, "vogel_action_attempt_log_errors_total"))
+	assert.Equal(t, uint64(1), gatherHistogramCount(t, reg, "vogel_action_attempt_log_duration_seconds"), "a timed-out insert is observed too")
+}
+
+func TestWorker_AttemptLogLatencyIsObserved(t *testing.T) {
+	r, _ := newRegistry(t)
+	registerReturning(t, r, "notify", nil)
+	db := &attemptDB{}
+	w, reg := loggingWorker(t, r, db)
+
+	require.NoError(t, w.Work(context.Background(), jobAt(action.Args{Effect: "notify"}, 1, 25)))
+	require.NoError(t, w.Work(context.Background(), jobAt(action.Args{Effect: "notify"}, 2, 25)))
+
+	assert.Equal(t, uint64(2), gatherHistogramCount(t, reg, "vogel_action_attempt_log_duration_seconds"))
+}
+
+func gatherHistogramCount(t *testing.T, reg *prometheus.Registry, name string) uint64 {
+	t.Helper()
+	families, err := reg.Gather()
+	require.NoError(t, err)
+	for _, f := range families {
+		if f.GetName() == name {
+			return f.GetMetric()[0].GetHistogram().GetSampleCount()
+		}
+	}
+	t.Fatalf("metric %s not found", name)
+	return 0
 }
 
 func TestWorker_AttemptLogFailureDoesNotFailJob(t *testing.T) {
