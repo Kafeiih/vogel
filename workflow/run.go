@@ -236,7 +236,7 @@ func (e *Engine) route(ctx context.Context, db pgxtx.DBTX, run *caseRun, tok *To
 		case next.Kind.IsSplit():
 			return e.split(ctx, db, run, tok, next)
 		case next.Kind == NodeJoin:
-			return e.arrive(ctx, db, run, tok, next)
+			return e.arrive(ctx, db, run, tok, next, tr.Outcome)
 		case next.Terminal:
 			return run.closeCase(tok, next, tr.Action)
 		default:
@@ -335,16 +335,25 @@ func (e *Engine) split(ctx context.Context, db pgxtx.DBTX, run *caseRun, tok *To
 	return nil
 }
 
-// arrive parks tok at its scope's join and fires the join when it completes.
-func (e *Engine) arrive(ctx context.Context, db pgxtx.DBTX, run *caseRun, tok *Token, node Node) error {
+// arrive parks tok at its scope's join, recording what it answered when the
+// join has a policy, and fires the join when it completes.
+func (e *Engine) arrive(ctx context.Context, db pgxtx.DBTX, run *caseRun, tok *Token, node Node, outcome Outcome) error {
 	scope := run.scope(tok.ScopeID)
 	if scope == nil || scope.JoinNode != node.ID {
 		return fmt.Errorf("token %s arrived at join %q outside its block", tok.ID, node.ID)
 	}
 	tok.Status = TokenWaiting
+	tok.Outcome = outcome
+	var detail json.RawMessage
+	if outcome != "" {
+		var err error
+		if detail, err = marshalDetail(WaitingDetail{Outcome: outcome}); err != nil {
+			return err
+		}
+	}
 	run.emit(&Event{
 		Kind: EventWaiting, TokenID: tok.ID, ScopeID: tok.ScopeID,
-		FromState: node.ID, ToState: node.ID,
+		FromState: node.ID, ToState: node.ID, Detail: detail,
 	})
 	return e.tryJoin(ctx, db, run, scope)
 }

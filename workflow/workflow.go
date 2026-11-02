@@ -944,8 +944,10 @@ type Case struct {
 // is every event stored before schema_version existed: no Detail. Version 2
 // adds Detail and LastSeq-assigned Seq. Version 3 adds TokenID and ScopeID;
 // an older event reads as the case's root token in its root scope. Version 4
-// adds DeadlineAt; an older event reads with none.
-const CurrentEventSchema = 4
+// adds DeadlineAt; an older event reads with none. Version 5 adds the join
+// policy details: the outcome in WaitingDetail, and the policy, verdict and
+// branches in JoinDetail; an older event reads with none.
+const CurrentEventSchema = 5
 
 // AssignmentDetail is the Event.Detail of EventAssigned (written by Claim,
 // From empty) and EventUnassigned (written by Release, To empty). From and To

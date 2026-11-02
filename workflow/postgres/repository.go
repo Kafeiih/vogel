@@ -39,7 +39,7 @@ const scopeColumns = `id, case_id, parent_id, split_node, join_node, expected, s
 
 //nolint:gosec // G101 false positive: a column list of workflow_token, not a credential
 const tokenColumns = `id, case_id, scope_id, node, position, unit, status, assigned_to, deadline_at,
-    entered_seq, entered_at, ended_seq, ended_at, expired_deadline_at`
+    entered_seq, entered_at, ended_seq, ended_at, expired_deadline_at, outcome`
 
 // uniqueViolationCode is the PostgreSQL error code for a unique constraint
 // violation (23505).
@@ -470,9 +470,9 @@ func (r *Repository) ListScopes(ctx context.Context, db pgxtx.DBTX, caseID uuid.
 func (r *Repository) CreateToken(ctx context.Context, db pgxtx.DBTX, t *workflow.Token) error {
 	if _, err := db.Exec(ctx, `
         INSERT INTO workflow_token (`+tokenColumns+`)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
 		t.ID, t.CaseID, t.ScopeID, t.Node, t.Eligible.Position, t.Eligible.Unit, string(t.Status), t.AssignedTo, t.DeadlineAt,
-		t.EnteredSeq, t.EnteredAt, nullSeq(t.EndedSeq), t.EndedAt, t.ExpiredDeadline,
+		t.EnteredSeq, t.EnteredAt, nullSeq(t.EndedSeq), t.EndedAt, t.ExpiredDeadline, nullString(string(t.Outcome)),
 	); err != nil {
 		return fmt.Errorf("workflow: create token: %w", err)
 	}
@@ -485,10 +485,11 @@ func (r *Repository) UpdateToken(ctx context.Context, db pgxtx.DBTX, t *workflow
 	tag, err := db.Exec(ctx, `
         UPDATE workflow_token SET
             node = $2, position = $3, unit = $4, status = $5, assigned_to = $6, deadline_at = $7,
-            entered_seq = $8, entered_at = $9, ended_seq = $10, ended_at = $11, expired_deadline_at = $12
+            entered_seq = $8, entered_at = $9, ended_seq = $10, ended_at = $11, expired_deadline_at = $12,
+            outcome = $13
         WHERE id = $1`,
 		t.ID, t.Node, t.Eligible.Position, t.Eligible.Unit, string(t.Status), t.AssignedTo, t.DeadlineAt,
-		t.EnteredSeq, t.EnteredAt, nullSeq(t.EndedSeq), t.EndedAt, t.ExpiredDeadline,
+		t.EnteredSeq, t.EnteredAt, nullSeq(t.EndedSeq), t.EndedAt, t.ExpiredDeadline, nullString(string(t.Outcome)),
 	)
 	if err != nil {
 		return fmt.Errorf("workflow: update token: %w", err)
@@ -530,7 +531,7 @@ const prefixedCaseColumns = `c.id, c.definition, c.version, c.domain, c.external
 
 //nolint:gosec // G101 false positive: a column list of workflow_token, not a credential
 const prefixedTokenColumns = `t.id, t.case_id, t.scope_id, t.node, t.position, t.unit, t.status, t.assigned_to, t.deadline_at,
-    t.entered_seq, t.entered_at, t.ended_seq, t.ended_at, t.expired_deadline_at`
+    t.entered_seq, t.entered_at, t.ended_seq, t.ended_at, t.expired_deadline_at, t.outcome`
 
 // caseDest returns the scan destinations of caseColumns into c, the status
 // into status.
@@ -542,11 +543,11 @@ func caseDest(c *workflow.Case, status *string) []any {
 }
 
 // tokenDest returns the scan destinations of tokenColumns into t, the status
-// into status; a NULL ended_seq reads as 0.
+// into status; a NULL ended_seq reads as 0 and a NULL outcome as empty.
 func tokenDest(t *workflow.Token, status *string) []any {
 	return []any{
 		&t.ID, &t.CaseID, &t.ScopeID, &t.Node, &t.Eligible.Position, &t.Eligible.Unit, status, &t.AssignedTo, &t.DeadlineAt,
-		&t.EnteredSeq, &t.EnteredAt, (*nullableSeq)(&t.EndedSeq), &t.EndedAt, &t.ExpiredDeadline,
+		&t.EnteredSeq, &t.EnteredAt, (*nullableSeq)(&t.EndedSeq), &t.EndedAt, &t.ExpiredDeadline, (*nullableOutcome)(&t.Outcome),
 	}
 }
 
@@ -657,6 +658,22 @@ func (n *nullableSeq) Scan(src any) error {
 		*n = nullableSeq(v)
 	default:
 		return fmt.Errorf("workflow: scan seq: unexpected %T", src)
+	}
+	return nil
+}
+
+// nullableOutcome scans the nullable outcome column (migration 011), NULL as
+// the empty outcome.
+type nullableOutcome workflow.Outcome
+
+func (n *nullableOutcome) Scan(src any) error {
+	switch v := src.(type) {
+	case nil:
+		*n = ""
+	case string:
+		*n = nullableOutcome(v)
+	default:
+		return fmt.Errorf("workflow: scan outcome: unexpected %T", src)
 	}
 	return nil
 }

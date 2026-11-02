@@ -1,8 +1,11 @@
 package workflow
 
 import (
+	"context"
+	"encoding/json"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -191,4 +194,56 @@ func TestValidate_RejectedRequiresComment(t *testing.T) {
 	t.Run("collect does not", func(t *testing.T) {
 		assert.NoError(t, collectDefinition().Validate())
 	})
+}
+
+// S10
+
+// policyEngine returns an engine over a fresh fake repository with defs
+// registered.
+func policyEngine(t *testing.T, cfg Config, defs ...Definition) (*Engine, *fakeRepository) {
+	t.Helper()
+	repo := newFakeRepository()
+	e := New(repo, cfg, testLogger())
+	for _, d := range defs {
+		require.NoError(t, e.Register(d))
+	}
+	return e, repo
+}
+
+func TestOutcome_RecordedOnTokenAndWaitingEvent(t *testing.T) {
+	d := collectDefinition()
+	e, repo := policyEngine(t, Config{}, d)
+	c := openCase(t, e, d.Name)
+	move(t, e, c.ID, uuid.Nil, "send")
+	active := activeTokens(t, e, c.ID)
+
+	res, err := e.MoveDetailed(context.Background(), nil, MoveInput{
+		CaseID: c.ID, TokenID: active["pedro"].ID, Action: "reject", ActorID: "pedro", Comment: "falta el certificado",
+	})
+	require.NoError(t, err)
+	assertInvariants(t, e, repo, c.ID)
+
+	require.Equal(t, []EventKind{EventMoved, EventWaiting}, eventKinds(res.Events))
+	assert.Equal(t, "falta el certificado", res.Events[0].Comment, "the comment stays in the move event")
+	var detail WaitingDetail
+	require.NoError(t, json.Unmarshal(res.Events[1].Detail, &detail))
+	assert.Equal(t, OutcomeRejected, detail.Outcome)
+
+	tokens, err := e.Tokens(context.Background(), nil, c.ID)
+	require.NoError(t, err)
+	for _, tok := range tokens {
+		if tok.ID == active["pedro"].ID {
+			assert.Equal(t, TokenWaiting, tok.Status)
+			assert.Equal(t, OutcomeRejected, tok.Outcome)
+		} else {
+			assert.Empty(t, tok.Outcome, "token at %s has not answered", tok.Node)
+		}
+	}
+}
+
+func TestWaiting_WithoutPolicyHasNoOutcome(t *testing.T) {
+	e, repo := tokenEngine(t, Config{}, nil)
+	c, active := splitToLegalAndFinance(t, e, repo)
+	res := move(t, e, c.ID, active["legal"].ID, "clear")
+	assert.JSONEq(t, `{}`, string(res.Events[1].Detail))
 }

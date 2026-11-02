@@ -253,7 +253,9 @@ func TestMigration010_UpDownRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	connStr := startTestPostgres(t)
 	opts := silentOptions()
-	require.NoError(t, migrate.UpTo(ctx, connStr, migrations.FS(), 10, opts))
+	// The engine of this version needs 011 (workflow_token.outcome), so the
+	// data is written at 011 and 011 is rolled back before 010's Down.
+	require.NoError(t, migrate.UpTo(ctx, connStr, migrations.FS(), 11, opts))
 	pool, err := pgxpool.New(ctx, connStr)
 	require.NoError(t, err)
 	t.Cleanup(pool.Close)
@@ -283,7 +285,8 @@ func TestMigration010_UpDownRoundTrip(t *testing.T) {
 	c := openCaseWithEvents(t, pool, "v2-round-trip")
 	require.NoError(t, e.VerifyChain(ctx, pool, c.ID))
 
-	require.NoError(t, migrate.Down(ctx, connStr, migrations.FS(), opts))
+	require.NoError(t, migrate.Down(ctx, connStr, migrations.FS(), opts)) // 011
+	require.NoError(t, migrate.Down(ctx, connStr, migrations.FS(), opts)) // 010
 	assert.Zero(t, column(), "Down drops the column")
 	assert.Equal(t, "v1", digestVersion(), "Down restores the v1 digest")
 	// The chain trigger keeps working with the v1 function: an insert by a

@@ -941,7 +941,9 @@ func replay(t *testing.T, d Definition, c *Case, events []Event) ([]Token, []Sco
 			}
 			scopeOrder = append(scopeOrder, detail.Scope)
 		case EventWaiting:
-			tokens[ev.TokenID].Status = TokenWaiting
+			var detail WaitingDetail
+			require.NoError(t, json.Unmarshal(ev.Detail, &detail))
+			tokens[ev.TokenID].Status, tokens[ev.TokenID].Outcome = TokenWaiting, detail.Outcome
 		case EventJoined:
 			var detail JoinDetail
 			require.NoError(t, json.Unmarshal(ev.Detail, &detail))
@@ -1000,8 +1002,8 @@ func comparableTokens(tokens []Token) map[uuid.UUID]string {
 		return p.UTC().Format(time.RFC3339Nano)
 	}
 	for _, tok := range tokens {
-		out[tok.ID] = fmt.Sprintf("scope=%s node=%s status=%s eligible=%v assigned=%q deadline=%s entered=%d@%s ended=%d@%s",
-			tok.ScopeID, tok.Node, tok.Status, tok.Eligible, tok.AssignedTo, ts(tok.DeadlineAt),
+		out[tok.ID] = fmt.Sprintf("scope=%s node=%s status=%s outcome=%q eligible=%v assigned=%q deadline=%s entered=%d@%s ended=%d@%s",
+			tok.ScopeID, tok.Node, tok.Status, tok.Outcome, tok.Eligible, tok.AssignedTo, ts(tok.DeadlineAt),
 			tok.EnteredSeq, tok.EnteredAt.UTC().Format(time.RFC3339Nano), tok.EndedSeq, ts(tok.EndedAt))
 	}
 	return out

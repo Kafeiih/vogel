@@ -64,6 +64,9 @@ type Token struct {
 	// (consumed or cancelled); EndedSeq is 0 and EndedAt nil before.
 	EndedSeq int64
 	EndedAt  *time.Time
+	// Outcome is what the token answered on entering a join with a policy (the
+	// taken Transition.Outcome); empty on any other token.
+	Outcome Outcome
 }
 
 // ScopeStatus is the lifecycle state of a Scope.
@@ -123,6 +126,12 @@ type SplitDetail struct {
 	Scope     uuid.UUID   `json:"scope"`
 	SplitNode string      `json:"split_node"`
 	Tokens    []uuid.UUID `json:"tokens"`
+}
+
+// WaitingDetail is the Event.Detail of the EventWaiting of a token entering a
+// join with a policy: what it answered. Any other EventWaiting carries `{}`.
+type WaitingDetail struct {
+	Outcome Outcome `json:"outcome,omitempty"`
 }
 
 // JoinDetail is the Event.Detail of EventJoined: the scope that joined, its
