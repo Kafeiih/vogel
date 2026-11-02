@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -82,13 +83,7 @@ func TestExtractBoilerplate(t *testing.T) {
 	if err != nil || string(got) != "module x\n" {
 		t.Fatalf("go.mod = %q, %v", got, err)
 	}
-	info, err := os.Stat(filepath.Join(dest, "scripts", "run.sh"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode().Perm()&0o100 == 0 {
-		t.Fatalf("run.sh mode = %v, want executable bit kept", info.Mode())
-	}
+	assertExecutable(t, filepath.Join(dest, "scripts", "run.sh"))
 	if fi, err := os.Stat(filepath.Join(dest, "empty")); err != nil || !fi.IsDir() {
 		t.Fatalf("empty dir not created: %v", err)
 	}
@@ -205,17 +200,20 @@ func TestCopyLocal(t *testing.T) {
 	mustWrite(t, filepath.Join(bp, "go.mod"), "module x\n", 0o644)
 	mustWrite(t, filepath.Join(bp, "scripts", "run.sh"), "#!/bin/sh\n", 0o755)
 	mustWrite(t, filepath.Join(bp, "deploy", ".env"), "SECRET=1\n", 0o600)
+	// Creating a symlink on Windows needs a privilege most accounts lack, so
+	// there the symlink check below only runs when the link could be created.
 	if err := os.Symlink("go.mod", filepath.Join(bp, "alias")); err != nil {
-		t.Fatal(err)
+		if runtime.GOOS != "windows" {
+			t.Fatal(err)
+		}
+		t.Logf("symlink not created, its check is vacuous: %v", err)
 	}
 
 	dest := filepath.Join(t.TempDir(), "out")
 	if err := CopyLocal(context.Background(), root, dest); err != nil {
 		t.Fatalf("CopyLocal() error = %v", err)
 	}
-	if fi, err := os.Stat(filepath.Join(dest, "scripts", "run.sh")); err != nil || fi.Mode().Perm()&0o100 == 0 {
-		t.Fatalf("run.sh not copied with exec bit: %v", err)
-	}
+	assertExecutable(t, filepath.Join(dest, "scripts", "run.sh"))
 	if _, err := os.Lstat(filepath.Join(dest, "alias")); !os.IsNotExist(err) {
 		t.Fatal("symlink was copied")
 	}
