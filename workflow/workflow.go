@@ -18,6 +18,18 @@
 // returns the Eligibility for a case's current node, and the caller resolves
 // it to actual people using whatever authority source it already has. This
 // package never needs to know that resolution happened, or how.
+//
+// # Scope
+//
+// An operation belongs in the engine only when it must stay consistent with a
+// case's tokens and its chained event trace. Authorization, audit_log writes,
+// resolving people, domain data and periodic jobs stay in the consumer: for
+// example, the engine exposes Overdue and Expire, and the consumer schedules
+// the job that calls them.
+//
+// Every new operation that moves tokens must join the random walk in
+// random_walk_test.go, which checks the engine's invariants and its replay from
+// events over generated definitions.
 package workflow
 
 import (
