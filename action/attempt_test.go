@@ -205,6 +205,21 @@ func TestWorker_RecordsPanicAndRepanics(t *testing.T) {
 	assert.Equal(t, "panic", row["error_class"])
 }
 
+func TestWorker_PanicOnTheLastAttemptIsDiscarded(t *testing.T) {
+	r, _ := newRegistry(t)
+	require.NoError(t, r.Register("notify", action.HandlerFunc(func(context.Context, action.Run) error { panic("boom") })))
+	db := &attemptDB{}
+	w, _ := loggingWorker(t, r, db)
+
+	assert.PanicsWithValue(t, "boom", func() {
+		_ = w.Work(context.Background(), jobAt(action.Args{Effect: "notify"}, 25, 25))
+	})
+
+	row := db.only(t)
+	assert.Equal(t, "discarded", row["outcome"], "River discards a job whose last attempt panics")
+	assert.Equal(t, "panic", row["error_class"])
+}
+
 func TestWorker_AttemptLogFailureDoesNotFailJob(t *testing.T) {
 	r, _ := newRegistry(t)
 	registerReturning(t, r, "notify", nil)
