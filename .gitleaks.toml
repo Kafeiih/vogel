@@ -8,3 +8,9 @@ description = "Fake SendGrid key used only in test fixtures"
 targetRules = ["generic-api-key"]
 regexTarget = "match"
 regexes = ['''SG\.test-key-123''']
+
+[[allowlists]]
+description = "Example idempotency key (a UUID) in the idempotency unit tests"
+targetRules = ["generic-api-key"]
+regexTarget = "match"
+regexes = ['''0b6f6c8e-6d1e-4a8b-9c1d-2f0f8a3b9e11''']
