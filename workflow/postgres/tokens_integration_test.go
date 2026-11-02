@@ -430,6 +430,28 @@ func TestEngine_OpenCaseWrittenWithoutTokensIsAnError(t *testing.T) {
 	assert.Empty(t, tokens, "the failed move persisted no token")
 }
 
+func TestHistory_StoresTheEnteredDeadline(t *testing.T) {
+	pool := startTestPool(t)
+	ctx := context.Background()
+	e, _ := tokenTestEngine(t, nil)
+	c, active := splitCase(t, pool, e, "tenant-a", "entered-deadline")
+	require.NotNil(t, active["legal"].DeadlineAt, "the fixture's legal node declares a deadline")
+
+	history, err := e.History(ctx, pool, c.ID)
+	require.NoError(t, err)
+	var entered *workflow.Event
+	for i := range history {
+		if history[i].Kind == workflow.EventMoved && history[i].ToState == "legal" {
+			entered = &history[i]
+		}
+	}
+	require.NotNil(t, entered)
+	require.NotNil(t, entered.DeadlineAt, "the hop into legal records its deadline")
+	assert.True(t, entered.DeadlineAt.Equal(*active["legal"].DeadlineAt))
+	assert.Equal(t, workflow.CurrentEventSchema, entered.SchemaVersion)
+	require.NoError(t, e.VerifyChain(ctx, pool, c.ID))
+}
+
 func TestMigration008_UpDownRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	connStr := startTestPostgres(t)

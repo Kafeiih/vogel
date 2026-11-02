@@ -403,6 +403,7 @@ func (e *Engine) OpenDetailed(ctx context.Context, db pgxtx.DBTX, in OpenInput) 
 		TokenID:    c.ID,
 		ScopeID:    c.ID,
 		ToState:    start.ID,
+		DeadlineAt: copyTime(deadline),
 		Actor:      actor,
 		OccurredAt: now,
 	})

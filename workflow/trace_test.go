@@ -49,7 +49,7 @@ func TestAppendEvent_WritesCurrentSchemaVersion(t *testing.T) {
 	for _, ev := range events {
 		assert.Equal(t, CurrentEventSchema, ev.SchemaVersion, "event seq=%d kind=%s", ev.Seq, ev.Kind)
 	}
-	assert.Equal(t, 3, CurrentEventSchema)
+	assert.Equal(t, 4, CurrentEventSchema)
 }
 
 func TestListEvents_UnknownSchemaVersionFails(t *testing.T) {

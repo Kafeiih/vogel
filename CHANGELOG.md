@@ -8,6 +8,11 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ### Agregado
 
+- **`workflow`: el plazo de entrada queda en la traza.** `Event.DeadlineAt`
+  registra, en el `opened` o `moved` que deja un token en un nodo de tarea,
+  el plazo que recibió ahí (`Node.Deadline` o `Node.DeadlineRule`); los
+  demás eventos lo dejan en `nil`. Reproducir la historia reconstruye así
+  también los plazos resueltos por una regla. `CurrentEventSchema` pasa a 4.
 - **`workflow`: cursor para `Overdue`.** `OverdueFilter.After` (un
   `OverdueCursor{DeadlineAt, TokenID}`, que `WorkItem.OverdueCursor` arma
   desde el último ítem de una página) lista sólo los tokens que vienen
@@ -17,6 +22,11 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ### Cambios que rompen
 
+- **La migración `010` es obligatoria antes de desplegar.** Agrega
+  `workflow_event.deadline_at` y reemplaza el digest de la cadena por la v2
+  (`vogel.workflow_event.v2`), que además cubre `token_id`, `scope_id` y
+  `deadline_at`. No hay convivencia con v1: en una base con eventos ya
+  encadenados con v1, `VerifyChain` los informaría como rotos.
 - **`workflow`: el motor ya no sintetiza el token raíz de un caso abierto
   guardado sin tokens.** Ese camino de compatibilidad, obsoleto desde
   v0.19.0, cubría casos que un binario anterior creaba después de la

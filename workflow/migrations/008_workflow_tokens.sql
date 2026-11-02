@@ -25,7 +25,7 @@
 -- the case id (the root token in the root scope). No row is updated, so the
 -- append-only triggers of 005 stay enabled. The hash chain of 007 does not
 -- cover the two columns: its digest encodes a fixed column list (version tag
--- "vogel.workflow_event.v1").
+-- "vogel.workflow_event.v1"). Migration 010's v2 digest covers them.
 --
 -- uq_workflow_event_joined_once allows at most one "joined" event per scope,
 -- so a join can never fire twice even if the engine's own check regressed.

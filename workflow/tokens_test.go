@@ -909,10 +909,12 @@ func replay(t *testing.T, d Definition, c *Case, events []Event) ([]Token, []Sco
 		n, _ := d.Node(node)
 		if !n.Kind.IsAutomatic() && !n.Terminal {
 			tok.Eligible = resolvedEligibility(n, c.Unit)
-			if n.Deadline > 0 {
-				dl := ev.OccurredAt.Add(n.Deadline)
-				tok.DeadlineAt = &dl
-			}
+		}
+		// The event records the deadline the token entered with, whether a
+		// fixed Node.Deadline or a DeadlineRule resolved it.
+		if ev.DeadlineAt != nil {
+			dl := *ev.DeadlineAt
+			tok.DeadlineAt = &dl
 		}
 	}
 	for _, ev := range events {

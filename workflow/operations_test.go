@@ -483,6 +483,42 @@ func TestRegister_IgnoresRuleOnTerminalNode(t *testing.T) {
 	require.NoError(t, New(newFakeRepository(), Config{}, testLogger()).Register(d))
 }
 
+func TestEvents_RecordTheDeadlineTheTokenEnteredWith(t *testing.T) {
+	now := time.Date(2026, 10, 30, 9, 0, 0, 0, time.UTC)
+	due := time.Date(2026, 11, 3, 0, 0, 0, 0, time.UTC)
+	resolver := resolverFunc(func(context.Context, DueInput) (time.Time, error) { return due, nil })
+	d := testDefinition()
+	d.Nodes[1].Deadline, d.Nodes[1].DeadlineRule = 0, "two-business-days" // review
+	repo := newFakeRepository()
+	e := New(repo, Config{Now: func() time.Time { return now }, Deadlines: resolver}, testLogger(), WithDefinitions(d))
+
+	c := openTestCase(t, e)
+	_, err := e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "submit", ActorID: "buyer-1"})
+	require.NoError(t, err)
+	// A rule-resolved deadline is rebuilt from the history alone.
+	assertInvariants(t, e, repo, c.ID)
+
+	_, err = e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "reject", ActorID: "approver-1"})
+	require.NoError(t, err)
+	assertInvariants(t, e, repo, c.ID)
+
+	events, err := e.History(context.Background(), nil, c.ID)
+	require.NoError(t, err)
+	byTarget := map[string]*time.Time{}
+	for _, ev := range events {
+		switch ev.Kind {
+		case EventOpened, EventMoved:
+			byTarget[ev.ToState] = ev.DeadlineAt
+		default:
+			assert.Nil(t, ev.DeadlineAt, "%s carries no entered deadline", ev.Kind)
+		}
+	}
+	assert.Nil(t, byTarget["draft"], "draft declares no deadline")
+	require.NotNil(t, byTarget["review"])
+	assert.Equal(t, due, *byTarget["review"])
+	assert.Nil(t, byTarget["rejected"], "a terminal node never gets a deadline")
+}
+
 func TestOpen_AppliesDeadlineRuleToStartToken(t *testing.T) {
 	now := time.Date(2026, 10, 30, 9, 0, 0, 0, time.UTC)
 	due := time.Date(2026, 11, 3, 0, 0, 0, 0, time.UTC)

@@ -125,7 +125,9 @@ func TestMigration009_UpDownRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	connStr := startTestPostgres(t)
 	opts := silentOptions()
-	require.NoError(t, migrate.UpTo(ctx, connStr, migrations.FS(), 9, opts))
+	// The engine of this version needs 010 (workflow_event.deadline_at), so
+	// the data is written at 010 and 010 is rolled back before 009's Down.
+	require.NoError(t, migrate.UpTo(ctx, connStr, migrations.FS(), 10, opts))
 	pool, err := pgxpool.New(ctx, connStr)
 	require.NoError(t, err)
 	t.Cleanup(pool.Close)
@@ -156,7 +158,8 @@ func TestMigration009_UpDownRoundTrip(t *testing.T) {
 	before := tokens()
 	assert.Equal(t, 1, column())
 
-	require.NoError(t, migrate.Down(ctx, connStr, migrations.FS(), opts))
+	require.NoError(t, migrate.Down(ctx, connStr, migrations.FS(), opts)) // 010
+	require.NoError(t, migrate.Down(ctx, connStr, migrations.FS(), opts)) // 009
 	assert.Zero(t, column(), "Down drops the column")
 	assert.Equal(t, before, tokens(), "Down keeps every token row")
 

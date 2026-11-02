@@ -920,8 +920,9 @@ type Case struct {
 // CurrentEventSchema is the Event.SchemaVersion the engine writes. Version 1
 // is every event stored before schema_version existed: no Detail. Version 2
 // adds Detail and LastSeq-assigned Seq. Version 3 adds TokenID and ScopeID;
-// an older event reads as the case's root token in its root scope.
-const CurrentEventSchema = 3
+// an older event reads as the case's root token in its root scope. Version 4
+// adds DeadlineAt; an older event reads with none.
+const CurrentEventSchema = 4
 
 // AssignmentDetail is the Event.Detail of EventAssigned (written by Claim,
 // From empty) and EventUnassigned (written by Release, To empty). From and To
@@ -1012,6 +1013,12 @@ type Event struct {
 	FromState string
 	ToState   string
 	Action    string
+	// DeadlineAt is the deadline the token got on coming to rest at ToState
+	// (Node.Deadline or Node.DeadlineRule), so replaying the events rebuilds
+	// it. Only an EventOpened or EventMoved that leaves the token at a task
+	// node carries one, and only when that node declares a deadline; every
+	// other event, and events written before schema 4, have nil.
+	DeadlineAt *time.Time
 	// Actor is who performed the action. Events written before actors had
 	// a kind read as Actor{Kind: ActorUnspecified, ID: ActorID}.
 	Actor Actor
@@ -1054,7 +1061,9 @@ type Event struct {
 	// and every stored field of the event, and PrevDigest is the Digest of
 	// the event at Seq-1. PrevDigest is nil for the first chained event of
 	// a case; both are nil for events stored before the repository chained
-	// them (migration 007 in workflow/postgres). See Engine.VerifyChain.
+	// them (migration 007 in workflow/postgres; migration 010 makes the
+	// digest v2, which also covers TokenID, ScopeID and DeadlineAt). See
+	// Engine.VerifyChain.
 	PrevDigest []byte
 	Digest     []byte
 }
