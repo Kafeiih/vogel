@@ -88,7 +88,10 @@ const (
 	// Engine.CancelToken; the Detail is a CancelDetail.
 	EventTokenCancelled EventKind = "token_cancelled"
 	// EventCancelled records Engine.Cancel ending the case; the Detail is a
-	// CancelDetail.
+	// CancelDetail. It follows one EventTokenCancelled per live token, whose
+	// FromState is the node that branch was at: while the case ran in
+	// parallel its own FromState/ToState are empty (Case.State), so the
+	// branches' positions are read from those events.
 	EventCancelled EventKind = "cancelled"
 	// EventDeadlineChanged records Engine.SetDeadline replacing a token's
 	// deadline; the Detail is a DeadlineDetail.
