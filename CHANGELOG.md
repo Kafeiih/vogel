@@ -10,7 +10,7 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 ### Agregado
 
 - **`docs/STABILITY.md`: política de estabilidad de la API.** Clasifica los
-  paquetes (Estable, Adaptador, Experimental, Sin garantía), define qué cuenta
+  paquetes (Estable, Experimental, Sin garantía), define qué cuenta
   como cambio que rompe y cómo se depreca, y fija los criterios de la v1.0.
 
 ## [0.22.0] — 2026-11-02
