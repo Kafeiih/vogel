@@ -184,6 +184,26 @@ func TestValidate_RejectsImproperlyNestedBlocks(t *testing.T) {
 		d.Transitions = append(d.Transitions, Transition{From: "draft", To: "legal", Action: "shortcut"})
 		requireInvalid(t, d, `parallel split "fork": node "legal" is entered from "draft" outside the block`)
 	})
+	t.Run("join entered from outside the block", func(t *testing.T) {
+		d := parallelDefinition()
+		d.Transitions = append(d.Transitions, Transition{From: "draft", To: "merge", Action: "skip"})
+		requireInvalid(t, d, `parallel split "fork": its join "merge" is entered from "draft" outside the block`)
+	})
+	t.Run("blocks overlap without nesting", func(t *testing.T) {
+		d := parallelDefinition()
+		d.Nodes = append(d.Nodes,
+			Node{ID: "fork2", Kind: NodeParallel, Join: "merge"},
+			Node{ID: "p"}, Node{ID: "q"},
+		)
+		d.Transitions = append(d.Transitions,
+			Transition{From: "draft", To: "fork2", Action: "alt"},
+			Transition{From: "fork2", To: "p", Action: "to-p"},
+			Transition{From: "fork2", To: "q", Action: "to-q"},
+			Transition{From: "p", To: "merge", Action: "clear"},
+			Transition{From: "q", To: "merge", Action: "clear"},
+		)
+		requireInvalid(t, d, `blocks of parallel split "fork" and parallel split "fork2" overlap without nesting`)
+	})
 	t.Run("branch re-enters its split", func(t *testing.T) {
 		d := parallelDefinition()
 		d.Transitions = append(d.Transitions, Transition{From: "legal", To: "fork", Action: "again"})
@@ -307,6 +327,12 @@ func TestValidate_RejectsCommentOnSplitRoute(t *testing.T) {
 	d := parallelDefinition()
 	d.Transitions[1].Comment = CommentOptional
 	requireInvalid(t, d, `transition[1]: route from parallel split "fork" must not declare a comment policy`)
+}
+
+func TestValidate_RejectsCommentOnJoinOutgoing(t *testing.T) {
+	d := parallelDefinition()
+	d.Transitions[5].Comment = CommentRequired // merge -> signoff, taken automatically
+	requireInvalid(t, d, `transition[5]: route from join node "merge" must not declare a comment policy`)
 }
 
 func TestValidate_RejectsReturnIntoOrOutOfGateway(t *testing.T) {

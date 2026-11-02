@@ -39,6 +39,9 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 - **`workflow.Repository.ListOverdue` respeta `OverdueFilter.After`**:
   quien implemente el puerto por su cuenta debe filtrar por
   `(DeadlineAt, ID)` estrictamente mayor que el cursor.
+- **`workflow`: `Definition.Validate` rechaza una `CommentPolicy` en la
+  transición de salida de un join**, igual que en las rutas de decisiones y
+  splits: el motor la toma solo, así que no hay nada que comentar.
 
 ### Corregido
 

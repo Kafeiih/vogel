@@ -134,7 +134,9 @@ type JoinDetail struct {
 }
 
 // CancelDetail is the Event.Detail of EventTokenCancelled and EventCancelled:
-// the caller's reason.
+// the caller's reason. It carries no node: each EventTokenCancelled records
+// its branch's node in FromState, and Engine.Cancel emits one per live token
+// right before its EventCancelled.
 type CancelDetail struct {
 	Reason string `json:"reason"`
 }

@@ -44,17 +44,6 @@ func NewProcessHandler(svc ProcessService, logger *slog.Logger) *ProcessHandler 
 	return &ProcessHandler{svc: svc, logger: logger}
 }
 
-type submission struct {
-	Action string         `json:"action"`
-	Values map[string]any `json:"values"`
-}
-
-// submitRequest is submission plus the work item to move.
-type submitRequest struct {
-	submission
-	TokenID *uuid.UUID `json:"tokenId"`
-}
-
 // Mount registers the bpms operations of api/openapi.yaml on r, each behind
 // guard(kind, action). The body checks run before the generated decoder, in
 // the order the responses depend on: caller, case, then body.
@@ -119,7 +108,7 @@ func (h *ProcessHandler) checkStart(w http.ResponseWriter, r *http.Request) bool
 	if !requireActor(w, r) {
 		return false
 	}
-	var in submission
+	var in bpmsgen.Submission
 	return h.decodeStrict(w, r, &in)
 }
 
@@ -127,7 +116,7 @@ func (h *ProcessHandler) checkSubmit(w http.ResponseWriter, r *http.Request) boo
 	if !checkActorAndCase(w, r) {
 		return false
 	}
-	var in submitRequest
+	var in bpmsgen.SubmitRequest
 	return h.decodeStrict(w, r, &in)
 }
 
@@ -170,7 +159,7 @@ func (h *ProcessHandler) StartCase(ctx context.Context, req bpmsgen.StartCaseReq
 	if err != nil {
 		return nil, err
 	}
-	action, values := fromSubmission(req.Body)
+	action, values := fromSubmission(req.Body.Action, req.Body.Values)
 	c, err := h.svc.Start(ctx, actor, req.Name, action, values)
 	if err != nil {
 		return nil, h.failure(err)
@@ -231,7 +220,7 @@ func (h *ProcessHandler) SubmitCase(ctx context.Context, req bpmsgen.SubmitCaseR
 	if req.Body.TokenId != nil {
 		tokenID = *req.Body.TokenId
 	}
-	action, values := fromSubmission(&bpmsgen.Submission{Action: req.Body.Action, Values: req.Body.Values})
+	action, values := fromSubmission(req.Body.Action, req.Body.Values)
 	c, err := h.svc.Submit(ctx, actor, id, tokenID, action, values)
 	if err != nil {
 		return nil, h.failure(err)
@@ -239,16 +228,18 @@ func (h *ProcessHandler) SubmitCase(ctx context.Context, req bpmsgen.SubmitCaseR
 	return bpmsgen.SubmitCase200JSONResponse{Success: true, Message: "OK", Data: toCase(c)}, nil
 }
 
-func fromSubmission(in *bpmsgen.Submission) (string, map[string]any) {
-	var action string
-	var values map[string]any
-	if in.Action != nil {
-		action = *in.Action
+// fromSubmission dereferences the optional action and values of a start or
+// submit body (bpmsgen.Submission, bpmsgen.SubmitRequest).
+func fromSubmission(action *string, values *map[string]any) (string, map[string]any) {
+	var a string
+	var v map[string]any
+	if action != nil {
+		a = *action
 	}
-	if in.Values != nil {
-		values = *in.Values
+	if values != nil {
+		v = *values
 	}
-	return action, values
+	return a, v
 }
 
 func toCase(c *workflow.Case) bpmsgen.Case {

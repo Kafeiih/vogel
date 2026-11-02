@@ -220,6 +220,7 @@ func TestProcessHandler_RejectsBadInput(t *testing.T) {
 		want                     int
 	}{
 		{"unknown body field", http.MethodPost, "/processes/consulta/cases", `{"action":"enviar","extra":1}`, http.StatusBadRequest},
+		{"unknown submit field", http.MethodPost, "/cases/" + uuid.NewString() + "/submit", `{"action":"enviar","extra":1}`, http.StatusBadRequest},
 		{"malformed body", http.MethodPost, "/cases/" + uuid.NewString() + "/submit", `{`, http.StatusBadRequest},
 		{"bad case id", http.MethodGet, "/cases/not-a-uuid", ``, http.StatusNotFound},
 		{"spec with a version", http.MethodPost, "/processes", `{"name":"x","version":2,"nodes":[],"transitions":[]}`, http.StatusBadRequest},
