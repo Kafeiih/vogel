@@ -24,14 +24,15 @@ const eventColumns = `id, case_id, seq, kind, from_state, to_state, action, acto
     schema_version, detail, tenant, actor_kind, acting_as, on_behalf_of, via_client,
     request_id, trace_id, span_id`
 
-// eventWriteColumns adds the token and scope columns of migration 008 to the
-// columns every event has.
-const eventWriteColumns = eventColumns + `, token_id, scope_id`
+// eventWriteColumns adds the token and scope columns of migration 008 and the
+// entered deadline of migration 010 to the columns every event has.
+const eventWriteColumns = eventColumns + `, token_id, scope_id, deadline_at`
 
 // eventReadColumns reads a NULL token_id or scope_id (an event stored before
-// migration 008) as the case id — the root token in the root scope — and
-// adds the hash chain columns, which migration 007's trigger sets on insert.
-const eventReadColumns = eventColumns + `, COALESCE(token_id, case_id), COALESCE(scope_id, case_id), prev_digest, digest`
+// migration 008) as the case id — the root token in the root scope — then
+// reads the entered deadline (migration 010, NULL before it) and the hash
+// chain columns, which migration 007's trigger sets on insert.
+const eventReadColumns = eventColumns + `, COALESCE(token_id, case_id), COALESCE(scope_id, case_id), deadline_at, prev_digest, digest`
 
 const scopeColumns = `id, case_id, parent_id, split_node, join_node, expected, status, opened_seq, closed_seq`
 
@@ -210,11 +211,11 @@ func (r *Repository) AppendEvent(ctx context.Context, db pgxtx.DBTX, e *workflow
 	}
 	err := db.QueryRow(ctx, `
         INSERT INTO workflow_event (`+eventWriteColumns+`)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
         RETURNING prev_digest, digest`,
 		e.ID, e.CaseID, e.Seq, string(e.Kind), e.FromState, e.ToState, e.Action, actorID, e.OccurredAt, e.Comment,
 		schemaVersion, detail, e.Tenant, string(actorKind), e.Actor.ActingAs, e.Actor.OnBehalfOf, e.Actor.Via,
-		e.RequestID, e.TraceID, e.SpanID, nullUUID(e.TokenID), nullUUID(e.ScopeID),
+		e.RequestID, e.TraceID, e.SpanID, nullUUID(e.TokenID), nullUUID(e.ScopeID), e.DeadlineAt,
 	).Scan(&e.PrevDigest, &e.Digest)
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -611,7 +612,7 @@ func scanEvent(row rowScanner) (*workflow.Event, error) {
 	if err := row.Scan(
 		&e.ID, &e.CaseID, &e.Seq, &kind, &e.FromState, &e.ToState, &e.Action, &e.Actor.ID, &e.OccurredAt, &e.Comment,
 		&e.SchemaVersion, &e.Detail, &e.Tenant, &actorKind, &e.Actor.ActingAs, &e.Actor.OnBehalfOf, &e.Actor.Via,
-		&e.RequestID, &e.TraceID, &e.SpanID, &e.TokenID, &e.ScopeID, &e.PrevDigest, &e.Digest,
+		&e.RequestID, &e.TraceID, &e.SpanID, &e.TokenID, &e.ScopeID, &e.DeadlineAt, &e.PrevDigest, &e.Digest,
 	); err != nil {
 		return nil, err
 	}

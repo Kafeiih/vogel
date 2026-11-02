@@ -5,6 +5,7 @@ package postgres_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -113,6 +114,9 @@ func TestVerifyChain_DetectsAlteredRow(t *testing.T) {
 		{"occurred_at", `UPDATE workflow_event SET occurred_at = occurred_at + interval '1 microsecond' WHERE case_id = $1 AND seq = 1`, 1},
 		{"removed event", `DELETE FROM workflow_event WHERE case_id = $1 AND seq = 1`, 2},
 		{"digest removed", `UPDATE workflow_event SET prev_digest = NULL, digest = NULL WHERE case_id = $1 AND seq = 2`, 2},
+		{"token_id", `UPDATE workflow_event SET token_id = gen_random_uuid() WHERE case_id = $1 AND seq = 1`, 1},
+		{"scope_id", `UPDATE workflow_event SET scope_id = gen_random_uuid() WHERE case_id = $1 AND seq = 2`, 2},
+		{"deadline_at", `UPDATE workflow_event SET deadline_at = now() WHERE case_id = $1 AND seq = 1`, 1},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -243,4 +247,50 @@ func TestMigration007_UpDownRoundTrip(t *testing.T) {
 
 	require.NoError(t, migrate.UpTo(ctx, connStr, migrations.FS(), 7, opts))
 	assert.Equal(t, 2, columns(), "Up must add them again")
+}
+
+func TestMigration010_UpDownRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	connStr := startTestPostgres(t)
+	opts := silentOptions()
+	require.NoError(t, migrate.UpTo(ctx, connStr, migrations.FS(), 10, opts))
+	pool, err := pgxpool.New(ctx, connStr)
+	require.NoError(t, err)
+	t.Cleanup(pool.Close)
+
+	column := func() int {
+		var n int
+		require.NoError(t, pool.QueryRow(ctx, `
+            SELECT count(*) FROM information_schema.columns
+            WHERE table_name = 'workflow_event' AND column_name = 'deadline_at'`).Scan(&n))
+		return n
+	}
+	digestVersion := func() string {
+		var src string
+		require.NoError(t, pool.QueryRow(ctx, `SELECT prosrc FROM pg_proc WHERE proname = 'vogel_workflow_event_digest'`).Scan(&src))
+		switch {
+		case strings.Contains(src, "vogel.workflow_event.v2"):
+			return "v2"
+		case strings.Contains(src, "vogel.workflow_event.v1"):
+			return "v1"
+		}
+		return "unknown"
+	}
+	assert.Equal(t, 1, column())
+	assert.Equal(t, "v2", digestVersion())
+
+	e := tenantTestEngine(t, postgres.NewRepository())
+	c := openCaseWithEvents(t, pool, "v2-round-trip")
+	require.NoError(t, e.VerifyChain(ctx, pool, c.ID))
+
+	require.NoError(t, migrate.Down(ctx, connStr, migrations.FS(), opts))
+	assert.Zero(t, column(), "Down drops the column")
+	assert.Equal(t, "v1", digestVersion(), "Down restores the v1 digest")
+	// The chain trigger keeps working with the v1 function: an insert by a
+	// binary of the previous version still appends.
+	insertLegacyEvent(t, pool, c.ID, 3, workflow.EventFailed)
+
+	require.NoError(t, migrate.UpTo(ctx, connStr, migrations.FS(), 10, opts))
+	assert.Equal(t, 1, column(), "Up adds it again")
+	assert.Equal(t, "v2", digestVersion())
 }
