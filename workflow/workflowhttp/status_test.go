@@ -71,6 +71,7 @@ var sentinels = []sentinel{
 	{"ErrUnsupportedEventSchema", workflow.ErrUnsupportedEventSchema, 0, ""},
 	{"ErrInvalidFailure", workflow.ErrInvalidFailure, 0, ""},
 	{"ErrChainBroken", workflow.ErrChainBroken, 0, ""},
+	{"ErrCaseWithoutTokens", workflow.ErrCaseWithoutTokens, 0, ""},
 }
 
 // workflowSentinelNames parses package workflow's non-test sources and

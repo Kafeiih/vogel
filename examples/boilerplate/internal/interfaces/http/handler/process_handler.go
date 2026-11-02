@@ -82,6 +82,9 @@ func (h *ProcessHandler) Mount(r chi.Router, guard func(kind, action string) fun
 		Get("/cases/{id}", byID(ops.GetCase))
 	r.With(guard("bpms:case", "claim"), openapi.RequestInContext).
 		Post("/cases/{id}/claim", func(w http.ResponseWriter, r *http.Request) {
+			if !checkActorAndCase(w, r) {
+				return
+			}
 			var params bpmsgen.ClaimCaseParams
 			if raw := r.URL.Query().Get("tokenId"); raw != "" {
 				tokenID, err := uuid.Parse(raw)
@@ -113,7 +116,7 @@ func (h *ProcessHandler) checkSpec(w http.ResponseWriter, r *http.Request) bool 
 }
 
 func (h *ProcessHandler) checkStart(w http.ResponseWriter, r *http.Request) bool {
-	if _, ok := actorOf(w, r); !ok {
+	if !requireActor(w, r) {
 		return false
 	}
 	var in submission
@@ -121,7 +124,7 @@ func (h *ProcessHandler) checkStart(w http.ResponseWriter, r *http.Request) bool
 }
 
 func (h *ProcessHandler) checkSubmit(w http.ResponseWriter, r *http.Request) bool {
-	if _, _, ok := actorAndCase(w, r); !ok {
+	if !checkActorAndCase(w, r) {
 		return false
 	}
 	var in submitRequest
@@ -307,26 +310,26 @@ func actorAndCaseFrom(ctx context.Context, rawID string) (string, uuid.UUID, err
 	return actor, id, nil
 }
 
-func actorOf(w http.ResponseWriter, r *http.Request) (string, bool) {
-	p := auth.FromContext(r.Context())
-	if p == nil || p.UserID == "" {
+// requireActor answers 401 when the request carries no caller.
+func requireActor(w http.ResponseWriter, r *http.Request) bool {
+	if p := auth.FromContext(r.Context()); p == nil || p.UserID == "" {
 		response.Error(w, r, http.StatusUnauthorized, response.CodeUnauthorized, "Autenticación requerida")
-		return "", false
+		return false
 	}
-	return p.UserID, true
+	return true
 }
 
-func actorAndCase(w http.ResponseWriter, r *http.Request) (string, uuid.UUID, bool) {
-	actor, ok := actorOf(w, r)
-	if !ok {
-		return "", uuid.Nil, false
+// checkActorAndCase answers 401 without a caller, then 404 for a malformed
+// case ID, and reports whether the request may go on to its body and query.
+func checkActorAndCase(w http.ResponseWriter, r *http.Request) bool {
+	if !requireActor(w, r) {
+		return false
 	}
-	id, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
+	if _, err := uuid.Parse(chi.URLParam(r, "id")); err != nil {
 		response.Error(w, r, http.StatusNotFound, response.CodeNotFound, workflow.ErrCaseNotFound.Error())
-		return "", uuid.Nil, false
+		return false
 	}
-	return actor, id, true
+	return true
 }
 
 func (h *ProcessHandler) decodeStrict(w http.ResponseWriter, r *http.Request, dst any) bool {
