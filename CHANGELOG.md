@@ -12,6 +12,8 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 - **`docs/STABILITY.md`: política de estabilidad de la API.** Clasifica los
   paquetes (Estable, Experimental, Sin garantía), define qué cuenta
   como cambio que rompe y cómo se depreca, y fija los criterios de la v1.0.
+- **`docs/workflow.md`: guía navegable de `workflow`.** Reemplaza los párrafos
+  del mapa de paquetes del README, que quedan como un resumen con enlace.
 
 ### Cambiado
 
