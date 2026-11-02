@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -427,4 +428,36 @@ func TestMiddleware_EndToEndWithPostgres(t *testing.T) {
 	assert.Equal(t, http.StatusCreated, (<-done).Code)
 	assert.Equal(t, http.StatusCreated, send("k-2", false).Code)
 	assert.Equal(t, int32(2), calls.Load(), "k-2 ran once")
+}
+
+func TestMiddleware_DuplicatesRacingAReleaseNeverGet503(t *testing.T) {
+	pool := startTestPool(t)
+	store := idempg.NewStore()
+	h := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	})
+	srv := idemhttp.Middleware(idemhttp.Config{Store: store, DB: pool, Logger: slog.New(slog.DiscardHandler)})(h)
+
+	codes := make(chan int, 100)
+	var wg sync.WaitGroup
+	for range 100 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r := httptest.NewRequest(http.MethodPost, "/payments", strings.NewReader(`{}`))
+			r.Header.Set(idemhttp.HeaderKey, "k-1")
+			r = r.WithContext(auth.WithPrincipal(r.Context(), &auth.Principal{UserID: "user-1"}))
+			rec := httptest.NewRecorder()
+			srv.ServeHTTP(rec, r)
+			codes <- rec.Code
+		}()
+	}
+	wg.Wait()
+	close(codes)
+	seen := map[int]int{}
+	for c := range codes {
+		seen[c]++
+	}
+	assert.Zero(t, seen[http.StatusServiceUnavailable], "a key released under a duplicate is not a store failure: %v", seen)
+	assert.Equal(t, 100, seen[http.StatusInternalServerError]+seen[http.StatusConflict], "every request either ran or saw the key in progress: %v", seen)
 }

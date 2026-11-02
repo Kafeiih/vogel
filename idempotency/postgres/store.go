@@ -145,21 +145,35 @@ func (s *Store) Reserve(ctx context.Context, db pgxtx.DBTX, req idempotency.Requ
 		return idempotency.Reservation{}, fmt.Errorf("%w: lease must be positive", idempotency.ErrInvalidRequest)
 	}
 	token := uuid.New()
-	var owned bool
-	err := db.QueryRow(ctx, reserveSQL, req.Scope, req.Key, req.Fingerprint,
-		s.ttl.Microseconds(), lease.Microseconds(), token).Scan(&owned)
-	switch {
-	case errors.Is(err, pgx.ErrNoRows):
-		resp, _, err := s.existing(ctx, db, req)
-		if err != nil {
-			return idempotency.Reservation{}, err
+	// The claim and the read of a conflicting row are separate autocommit
+	// statements: the row can be released (or deleted as expired) in
+	// between, so a vanished row means "claim again", not a store failure.
+	for range reserveAttempts {
+		var owned bool
+		err := db.QueryRow(ctx, reserveSQL, req.Scope, req.Key, req.Fingerprint,
+			s.ttl.Microseconds(), lease.Microseconds(), token).Scan(&owned)
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			resp, _, err := s.existing(ctx, db, req)
+			if errors.Is(err, pgx.ErrNoRows) {
+				continue
+			}
+			if err != nil {
+				return idempotency.Reservation{}, err
+			}
+			return idempotency.Reservation{Replay: &resp}, nil
+		case err != nil:
+			return idempotency.Reservation{}, fmt.Errorf("idempotency: reserve key: %w", err)
 		}
-		return idempotency.Reservation{Replay: &resp}, nil
-	case err != nil:
-		return idempotency.Reservation{}, fmt.Errorf("idempotency: reserve key: %w", err)
+		return idempotency.Reservation{Token: token}, nil
 	}
-	return idempotency.Reservation{Token: token}, nil
+	// The key kept changing hands under this request: another one holds it.
+	return idempotency.Reservation{}, idempotency.ErrInProgress
 }
+
+// reserveAttempts bounds how often Reserve claims again after the
+// conflicting row vanished before it could be read.
+const reserveAttempts = 3
 
 // Complete stores resp as the response of req's key, held by the
 // reservation token. It fails when the reservation is no longer this

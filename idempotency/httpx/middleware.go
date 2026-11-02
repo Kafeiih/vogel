@@ -14,10 +14,13 @@ package httpx
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"errors"
 	"io"
 	"log/slog"
 	"net/http"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -86,15 +89,16 @@ type Config struct {
 // requests it wraps; mount it on mutating routes, after authentication.
 //
 // The key is scoped to the authenticated principal, the method and the
-// request path, and fingerprinted with the method, the path, the query and
+// request path (see Scope), and fingerprinted with the method, the path, the query and
 // the body, which the middleware reads (bounded) and restores for the
 // handler. Then:
 //
 //   - no principal: the request passes through untouched;
 //   - no header: 400 VALIDATION_ERROR when Config.Required, else pass
 //     through; an invalid key (empty, too long, not printable ASCII) is 400;
-//   - first request: the handler runs; a response below 500 is stored (its
-//     Set-Cookie header never is), a 5xx or a panic releases the key;
+//   - first request: the handler runs; a response below 500 is stored with
+//     the headers the handler set (not those of outer middleware, such as
+//     X-Request-ID, and never Set-Cookie), a 5xx or a panic releases the key;
 //   - the key's response is stored: it is replayed with
 //     Idempotent-Replayed: true, without running the handler;
 //   - the key's first request is still running: 409 CONFLICT;
@@ -150,7 +154,7 @@ func serve(cfg Config, next http.Handler, w http.ResponseWriter, r *http.Request
 	r.Body = io.NopCloser(bytes.NewReader(body))
 
 	req := idempotency.Request{
-		Scope:       p.UserID + " " + r.Method + " " + r.URL.Path,
+		Scope:       Scope(p.UserID, r.Method, r.URL.Path),
 		Key:         key,
 		Fingerprint: idempotency.Fingerprint([]byte(r.Method), []byte(r.URL.Path), []byte(r.URL.RawQuery), body),
 	}
@@ -177,6 +181,7 @@ func serve(cfg Config, next http.Handler, w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	before := w.Header().Clone()
 	rec := &recorder{ResponseWriter: w, max: cfg.MaxResponseBytes}
 	defer func() {
 		if v := recover(); v != nil {
@@ -191,8 +196,7 @@ func serve(cfg Config, next http.Handler, w http.ResponseWriter, r *http.Request
 		release(cfg, r, req, res.Token)
 		return
 	}
-	header.Del("Set-Cookie")
-	header.Del(HeaderReplayed)
+	header = handlerHeaders(before, header)
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), storeTimeout)
 	defer cancel()
 	if err := cfg.Store.Complete(ctx, cfg.DB, req, res.Token, idempotency.Response{
@@ -255,6 +259,15 @@ func (rec *recorder) Write(b []byte) (int, error) {
 	return rec.ResponseWriter.Write(b)
 }
 
+// Flush sends what was written so far, keeping the recorder an
+// http.Flusher for handlers that type-assert it.
+func (rec *recorder) Flush() {
+	if rec.status == 0 {
+		rec.WriteHeader(http.StatusOK)
+	}
+	_ = http.NewResponseController(rec.ResponseWriter).Flush()
+}
+
 // Unwrap lets http.ResponseController reach the underlying writer.
 func (rec *recorder) Unwrap() http.ResponseWriter { return rec.ResponseWriter }
 
@@ -265,4 +278,32 @@ func (rec *recorder) result() (int, http.Header) {
 		return http.StatusOK, rec.ResponseWriter.Header().Clone()
 	}
 	return rec.status, rec.header
+}
+
+// Scope is the idempotency.Request.Scope the middleware uses for a request:
+// "http:" and a hash of the principal, the method and the path, each
+// length-prefixed. Hashing keeps two different (user, method, path) tuples
+// from ever sharing a scope (a space in a user ID or a path cannot shift the
+// boundaries), bounds the scope whatever the path length, and the prefix
+// keeps middleware scopes apart from those a service passes to Store.Do.
+func Scope(user, method, path string) string {
+	return "http:" + hex.EncodeToString(idempotency.Fingerprint([]byte(user), []byte(method), []byte(path)))
+}
+
+// handlerHeaders returns the headers of final the handler set or changed,
+// compared with before (the headers outer middleware had already set, such
+// as X-Request-ID): only those belong to the stored response. Set-Cookie, in
+// any spelling, and HeaderReplayed are never stored.
+func handlerHeaders(before, final http.Header) http.Header {
+	out := http.Header{}
+	for name, values := range final {
+		if strings.EqualFold(name, "Set-Cookie") || strings.EqualFold(name, HeaderReplayed) {
+			continue
+		}
+		if prev, ok := before[name]; ok && slices.Equal(prev, values) {
+			continue
+		}
+		out[name] = append([]string(nil), values...)
+	}
+	return out
 }

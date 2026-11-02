@@ -159,7 +159,7 @@ func TestMiddleware_FirstRequestRunsAndStoresTheResponse(t *testing.T) {
 	assert.Equal(t, 1, calls)
 
 	require.Len(t, store.reserved, 1)
-	assert.Equal(t, "user-1 POST /payments", store.reserved[0].Scope)
+	assert.Equal(t, idemhttp.Scope("user-1", http.MethodPost, "/payments"), store.reserved[0].Scope)
 	assert.Equal(t, "k-1", store.reserved[0].Key)
 	assert.Equal(t, idemhttp.DefaultLease, store.lease)
 	require.Len(t, store.completed, 1)
@@ -183,7 +183,8 @@ func TestMiddleware_FingerprintCoversMethodPathAndBody(t *testing.T) {
 	require.Len(t, store.reserved, 3)
 	assert.NotEqual(t, store.reserved[0].Fingerprint, store.reserved[1].Fingerprint)
 	assert.NotEqual(t, store.reserved[0].Fingerprint, store.reserved[2].Fingerprint)
-	assert.Equal(t, "user-1 POST /refunds", store.reserved[2].Scope)
+	assert.Equal(t, idemhttp.Scope("user-1", http.MethodPost, "/refunds"), store.reserved[2].Scope)
+	assert.NotEqual(t, store.reserved[0].Scope, store.reserved[2].Scope)
 }
 
 func TestMiddleware_ReplaysAStoredResponse(t *testing.T) {
@@ -282,4 +283,68 @@ func TestMiddleware_CustomLease(t *testing.T) {
 	calls := 0
 	serve(t, idemhttp.Config{Store: store, Lease: 5 * time.Minute}, created(&calls), newRequest(`{}`, "k-1", "user-1"))
 	assert.Equal(t, 5*time.Minute, store.lease)
+}
+
+func TestScope_KeepsComponentsApartAndStaysBounded(t *testing.T) {
+	a := idemhttp.Scope("alice", http.MethodPost, "/a POST /b")
+	b := idemhttp.Scope("alice POST /a", http.MethodPost, "/b")
+	assert.NotEqual(t, a, b, "a space in a user ID or path cannot make two scopes collide")
+	long := idemhttp.Scope("user-1", http.MethodPost, "/"+strings.Repeat("x", 10000))
+	assert.LessOrEqual(t, len(long), 80, "the scope is bounded whatever the path length")
+	assert.True(t, strings.HasPrefix(a, "http:"), "middleware scopes have their own namespace")
+}
+
+func TestMiddleware_StoresOnlyTheHandlersHeaders(t *testing.T) {
+	store := &fakeStore{}
+	calls := 0
+	// An outer middleware (like httpx/middleware.RequestID) sets its header
+	// before the idempotency middleware runs.
+	outer := func(id string, next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("X-Request-Id", id)
+			next.ServeHTTP(w, r)
+		})
+	}
+	mw := idemhttp.Middleware(idemhttp.Config{Store: store, Logger: slog.New(slog.DiscardHandler)})
+	rec := httptest.NewRecorder()
+	outer("req-1", mw(created(&calls))).ServeHTTP(rec, newRequest(`{}`, "k-1", "user-1"))
+	require.Len(t, store.completed, 1)
+	assert.NotContains(t, store.completed[0].Header, "X-Request-Id", "headers set outside the handler are not stored")
+	assert.Equal(t, []string{"/payments/1"}, store.completed[0].Header["Location"])
+
+	stored := store.completed[0]
+	store.reserve = func(idempotency.Request) (idempotency.Reservation, error) {
+		return idempotency.Reservation{Replay: &stored}, nil
+	}
+	rec = httptest.NewRecorder()
+	outer("req-2", mw(created(&calls))).ServeHTTP(rec, newRequest(`{}`, "k-1", "user-1"))
+	assert.Equal(t, "req-2", rec.Header().Get("X-Request-Id"), "the replay keeps the retry's own request ID")
+	assert.Equal(t, "true", rec.Header().Get(idemhttp.HeaderReplayed))
+}
+
+func TestMiddleware_NeverStoresARawSetCookie(t *testing.T) {
+	store := &fakeStore{}
+	h := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header()["set-cookie"] = []string{"session=secret"}
+		w.WriteHeader(http.StatusOK)
+	})
+	serve(t, idemhttp.Config{Store: store}, h, newRequest(`{}`, "k-1", "user-1"))
+	require.Len(t, store.completed, 1)
+	for name := range store.completed[0].Header {
+		assert.NotEqual(t, "set-cookie", strings.ToLower(name))
+	}
+}
+
+func TestMiddleware_HandlerCanFlush(t *testing.T) {
+	store := &fakeStore{}
+	h := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		f, ok := w.(http.Flusher)
+		require.True(t, ok, "the wrapped writer is still an http.Flusher")
+		_, _ = w.Write([]byte("part"))
+		f.Flush()
+	})
+	rec := serve(t, idemhttp.Config{Store: store}, h, newRequest(`{}`, "k-1", "user-1"))
+	assert.True(t, rec.Flushed)
+	require.Len(t, store.completed, 1)
+	assert.Equal(t, []byte("part"), store.completed[0].Body)
 }
