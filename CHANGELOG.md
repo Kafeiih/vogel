@@ -14,6 +14,10 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   como cambio que rompe y cómo se depreca, y fija los criterios de la v1.0.
 - **`docs/workflow.md`: guía navegable de `workflow`.** Reemplaza los párrafos
   del mapa de paquetes del README, que quedan como un resumen con enlace.
+- **`CONTRIBUTING.md` y `docs/adr/`: guía de contribución y decisiones de
+  arquitectura.** Documentan el entorno, las suites, el flujo de PR, cómo se
+  publica una versión y doce decisiones que hasta ahora estaban repartidas en
+  los documentos ODD y en el historial.
 
 ### Cambiado
 
