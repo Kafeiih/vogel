@@ -1345,6 +1345,24 @@ falla; el error se registra y suma en `vogel_action_attempt_log_errors_total`).
 Con roles separados, el rol del worker necesita `SELECT, INSERT` sobre
 `action_attempt` y `SELECT` sobre `action_db_version`.
 
+### `idempotency/migrations` (conjunto nuevo, opcional)
+
+`idempotency/migrations` es otro conjunto nuevo, con su propia tabla de
+versión `idempotency_db_version` (`migrations.DefaultTableName`): se pasa a
+`migrate.Up` con `migrate.Options{TableName: migrations.DefaultTableName}`,
+igual que los demás. `001_create_idempotency_key.sql` crea
+`idempotency_key`. A diferencia de `audit_log` y `action_attempt`, no es de
+sólo agregado: el almacenamiento actualiza el estado de cada clave y borra
+las vencidas.
+
+Sólo hace falta si la aplicación usa `idempotency/postgres.Store.Do` o el
+middleware de `idempotency/httpx`. Aplicarla antes de desplegar el binario
+que los usa. Con roles separados, el rol de la aplicación necesita
+`SELECT, INSERT, UPDATE, DELETE` sobre `idempotency_key` y `SELECT` sobre
+`idempotency_db_version`. Programar `Store.DeleteExpired` en un trabajo
+periódico (por ejemplo, uno de River cada hora) para que la tabla no crezca
+sin límite.
+
 ## Verificación posterior
 
 Después de migrar cada paquete (o cada tanda, según el orden recomendado):

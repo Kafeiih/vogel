@@ -18,8 +18,8 @@ cargo del servicio consumidor.
 
 | Estado | Ítems |
 |---|---|
-| PASS | 86 |
-| PARTIAL | 1 |
+| PASS | 87 |
+| PARTIAL | 0 |
 | FAIL | 0 |
 | CONSUMER | 26 |
 | N/A | 80 |
@@ -303,7 +303,7 @@ SAML, y no tiene webhooks, pagos ni scripts de terceros.
 | 17.10 | M | Documento de arquitectura de seguridad | PASS | `docs/THREAT_MODEL.md` §1 y §2 |
 | 17.11 | M | gRPC con TLS, tamaños acotados y deadlines | PASS | Cliente de Cerbos con TLS (`authz/cerbos/cerbos.go:27`) y `CallTimeout` (`authz/cerbos/timeout_test.go`, `TestChecker_SilentPDP_CallsAreBoundedByCallTimeout`); sin servidor gRPC propio |
 | 17.12 | M | Mensajería asíncrona | CONSUMER | Jobs de River con argumentos tipados; sin secretos en argumentos y autorizar quién encola: `docs/THREAT_MODEL.md` §4 |
-| 17.13 | H | Flujos de varios pasos con estado en servidor; claves de idempotencia | PARTIAL | `workflow` guarda estado y transiciones en Postgres con revisión optimista (`workflow/postgres/repository.go:139`, `ErrConflict`); no ofrece claves de idempotencia genéricas para mutaciones |
+| 17.13 | H | Flujos de varios pasos con estado en servidor; claves de idempotencia | PASS | `workflow` guarda estado y transiciones en Postgres con revisión optimista (`workflow/postgres/repository.go:139`, `ErrConflict`); claves de idempotencia genéricas: `idempotency/postgres.Store.Do` dentro de la transacción de la mutación (exactamente una vez) y el middleware `idempotency/httpx` para cualquier handler (`idempotency/postgres/store_integration_test.go`: reintento, concurrencia, clave reusada, vencimiento) |
 | 17.14 | H | Rangos numéricos | PASS | `decimalx.ValidateAmount` y límites (`decimalx/bounds.go:316`); `Validator.MaxInt` (`request/validate.go:105`) |
 | 17.15 | M | Casos de abuso documentados | PASS | `docs/THREAT_MODEL.md` §5 |
 | 17.16 | M | Condiciones de carrera | PASS | Actualización condicionada por revisión (`workflow/postgres/repository.go:139`); `audit_log` append-only (`audit/postgres/append_only_integration_test.go`) |
@@ -355,6 +355,6 @@ SAML, y no tiene webhooks, pagos ni scripts de terceros.
 | 5 | gitleaks y Trivy todavía no son checks requeridos de la protección de `master` | 10.1, 10.4 | Cerrada (2026-10-16): la protección de `master` los exige |
 | 6 | Sin normalización Unicode antes de validar | 4.9 | Cerrada (2026-10-25): `MaxLen` y `Enum` normalizan a NFC (`request/validate.go`) |
 | 7 | Fallos de validación de input sin evento de log | 11.2 | Cerrada (2026-10-26): `request` y `validation` registran cada rechazo de input como evento `WARN` (`request/log.go`) |
-| 8 | Sin claves de idempotencia genéricas | 17.13 | Abierta |
+| 8 | Sin claves de idempotencia genéricas | 17.13 | Cerrada (2026-11-01): `idempotency`, `idempotency/postgres`, `idempotency/httpx` |
 | 9 | Sin criterios escritos para adoptar o mantener dependencias | 10.8, 18.5 | Cerrada (2026-10-22): `docs/security/DEPENDENCIES.md` |
 | 10 | Sin atestaciones de procedencia ni firma de SBOM e imágenes | 18.6, 18.9 | Cerrada (2026-10-22): atestación de procedencia sobre los SBOM y firma cosign de las imágenes del boilerplate |
