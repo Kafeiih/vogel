@@ -11,9 +11,24 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
+
+// assertExecutable checks that path exists and, where the filesystem records it,
+// that it kept its executable bit. Windows has no such bit: every regular file
+// reports the same mode, so only the file's presence can be checked there.
+func assertExecutable(t *testing.T, path string) {
+	t.Helper()
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" && fi.Mode().Perm()&0o100 == 0 {
+		t.Fatalf("%s mode = %v, want executable bit kept", path, fi.Mode())
+	}
+}
 
 const fixtureBinary = "\x00\x01// vogel:component bogus begin\n"
 
@@ -158,9 +173,7 @@ func main() {
 	if got := readFile(t, filepath.Join(dir, "Makefile")); !strings.HasPrefix(got, "DB ?= billing_api\n") || !strings.Contains(got, "go run ./cmd/worker") {
 		t.Fatalf("Makefile = %q", got)
 	}
-	if fi, err := os.Stat(filepath.Join(dir, "scripts", "run.sh")); err != nil || fi.Mode().Perm()&0o100 == 0 {
-		t.Fatalf("run.sh lost its executable bit: %v", err)
-	}
+	assertExecutable(t, filepath.Join(dir, "scripts", "run.sh"))
 	if got := readFile(t, filepath.Join(dir, "assets", "logo.bin")); got != fixtureBinary {
 		t.Fatalf("binary file was modified: %q", got)
 	}
@@ -275,9 +288,7 @@ func TestGenerateFromTag(t *testing.T) {
 	if res.LocalReplace != "" {
 		t.Fatalf("LocalReplace = %q in tag mode", res.LocalReplace)
 	}
-	if fi, err := os.Stat(filepath.Join(opts.Dir, "scripts", "run.sh")); err != nil || fi.Mode().Perm()&0o100 == 0 {
-		t.Fatalf("run.sh lost its executable bit: %v", err)
-	}
+	assertExecutable(t, filepath.Join(opts.Dir, "scripts", "run.sh"))
 	assertNoMarkers(t, opts.Dir)
 }
 
