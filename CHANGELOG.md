@@ -6,6 +6,8 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ## [Unreleased]
 
+## [0.22.0] — 2026-11-02
+
 ### Agregado
 
 - **`idempotency`: claves de idempotencia para mutaciones (OWASP 17.13).**
