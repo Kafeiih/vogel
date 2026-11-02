@@ -13,6 +13,13 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   paquetes (Estable, Experimental, Sin garantía), define qué cuenta
   como cambio que rompe y cómo se depreca, y fija los criterios de la v1.0.
 
+### Cambiado
+
+- **`workflow`: `engine.go` se parte por operación, sin cambios en la API.** La
+  documentación del paquete fija qué entra al motor y qué queda en el
+  consumidor, y exige que toda operación nueva que mueva tokens se sume al
+  random walk.
+
 ## [0.22.0] — 2026-11-02
 
 ### Agregado
