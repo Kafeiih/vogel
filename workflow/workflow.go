@@ -1012,6 +1012,12 @@ type Event struct {
 	FromState string
 	ToState   string
 	Action    string
+	// DeadlineAt is the deadline the token got on coming to rest at ToState
+	// (Node.Deadline or Node.DeadlineRule), so replaying the events rebuilds
+	// it. Only an EventOpened or EventMoved that leaves the token at a task
+	// node carries one, and only when that node declares a deadline; every
+	// other event, and events written before schema 4, have nil.
+	DeadlineAt *time.Time
 	// Actor is who performed the action. Events written before actors had
 	// a kind read as Actor{Kind: ActorUnspecified, ID: ActorID}.
 	Actor Actor

@@ -211,6 +211,7 @@ func (e *Engine) route(ctx context.Context, db pgxtx.DBTX, run *caseRun, tok *To
 		if !ok {
 			return fmt.Errorf("transition %q: destination node %q not found in definition %q", tr.Action, tr.To, run.d.Key())
 		}
+		hop := len(run.events)
 		seq := run.emit(&Event{
 			Kind: EventMoved, TokenID: tok.ID, ScopeID: tok.ScopeID,
 			FromState: tok.Node, ToState: next.ID, Action: tr.Action, Comment: comment,
@@ -246,6 +247,9 @@ func (e *Engine) route(ctx context.Context, db pgxtx.DBTX, run *caseRun, tok *To
 				return err
 			}
 			tok.DeadlineAt = deadline
+			// The hop that leaves tok here records the deadline it entered
+			// with, so replaying the history rebuilds it (Event.DeadlineAt).
+			run.events[hop].DeadlineAt = copyTime(deadline)
 			return nil
 		}
 	}
@@ -521,4 +525,14 @@ func (e *Engine) writeState(ctx context.Context, db pgxtx.DBTX, run *caseRun) er
 // cancelDetail encodes reason as a CancelDetail.
 func cancelDetail(reason string) (json.RawMessage, error) {
 	return marshalDetail(CancelDetail{Reason: reason})
+}
+
+// copyTime returns a copy of t, or nil, so a planned event never shares a
+// deadline with the token it was taken from.
+func copyTime(t *time.Time) *time.Time {
+	if t == nil {
+		return nil
+	}
+	v := *t
+	return &v
 }
