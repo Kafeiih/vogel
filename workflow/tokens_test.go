@@ -692,12 +692,10 @@ func TestEvents_LegacyRowWithoutTokenReadsAsRoot(t *testing.T) {
 	assert.Equal(t, caseID, events[0].ScopeID)
 }
 
-func TestEngine_SynthesizesRootTokenForCaseWithoutTokens(t *testing.T) {
+func TestEngine_OpenCaseWithoutTokensIsAnError(t *testing.T) {
 	e, repo := tokenEngine(t, Config{}, nil)
 	c := openCase(t, e, "contract")
-	_, err := e.ClaimWith(context.Background(), nil, ClaimInput{CaseID: c.ID, Actor: Actor{ID: "buyer-1"}})
-	require.NoError(t, err)
-	// An old binary wrote the case after migration 008: no token rows.
+	// Only a bug or a manual insert leaves an open case without token rows.
 	repo.mu.Lock()
 	for id, tok := range repo.tokens {
 		if tok.CaseID == c.ID {
@@ -711,18 +709,13 @@ func TestEngine_SynthesizesRootTokenForCaseWithoutTokens(t *testing.T) {
 	}
 	repo.mu.Unlock()
 
-	tokens, err := e.Tokens(context.Background(), nil, c.ID)
-	require.NoError(t, err)
-	require.Len(t, tokens, 1)
-	assert.Equal(t, c.ID, tokens[0].ID)
-	assert.Equal(t, "draft", tokens[0].Node)
-	assert.Equal(t, "buyer-1", tokens[0].AssignedTo)
-	assert.Equal(t, int64(1), tokens[0].EnteredSeq)
-	assert.Empty(t, repo.tokens, "a read does not persist the synthesized token")
+	_, err := e.Tokens(context.Background(), nil, c.ID)
+	require.ErrorIs(t, err, ErrCaseWithoutTokens)
 
-	move(t, e, c.ID, uuid.Nil, "submit")
-	assert.Len(t, activeTokens(t, e, c.ID), 2)
-	assertInvariants(t, e, repo, c.ID)
+	_, err = e.Move(context.Background(), nil, MoveInput{CaseID: c.ID, Action: "submit", Actor: Actor{ID: "u1"}})
+	require.ErrorIs(t, err, ErrCaseWithoutTokens)
+	assert.Empty(t, repo.tokens, "the failed move persisted no token")
+	assert.Empty(t, repo.scopes, "the failed move persisted no scope")
 }
 
 func TestJoinCheck_RejectionAbortsMoveAndPersistsNothing(t *testing.T) {

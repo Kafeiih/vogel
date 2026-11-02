@@ -6,6 +6,15 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ## [Unreleased]
 
+### Cambios que rompen
+
+- **`workflow`: el motor ya no sintetiza el token raíz de un caso abierto
+  guardado sin tokens.** Ese camino de compatibilidad, obsoleto desde
+  v0.19.0, cubría casos que un binario anterior creaba después de la
+  migración `008`. Ahora la lectura falla con el nuevo
+  `ErrCaseWithoutTokens` (sin mapear en `workflowhttp`: responde 500), que
+  sólo aparece ante un bug o una inserción manual.
+
 ## [0.20.0] — 2026-10-30
 
 ### Agregado
@@ -484,7 +493,7 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   cambian. El CI del boilerplate y `check-generated.sh` fallan si el código
   generado no es el que produce `go generate`.
 
-### Quitado
+### Cambios que rompen
 
 - **Swagger UI y swaggo del boilerplate.** `SWAGGER_ENABLED` sigue con sus
   reglas (apagado por defecto, rechazado en producción) pero ahora sirve el
