@@ -19,10 +19,13 @@ import (
 // attemptLogErrorsMetricName counts attempt rows the Worker failed to write.
 const attemptLogErrorsMetricName = "vogel_action_attempt_log_errors_total"
 
-// attemptLogTimeout bounds the attempt-log insert. It runs on a context
+const attemptLogDurationMetricName = "vogel_action_attempt_log_duration_seconds"
+
+// defaultAttemptLogTimeout bounds the attempt-log insert unless
+// WithAttemptLogTimeout sets another bound. The insert runs on a context
 // detached from the job's, so a job cancelled by its timeout still gets its
 // row, but a stuck database cannot hold the worker slot forever.
-const attemptLogTimeout = 5 * time.Second
+const defaultAttemptLogTimeout = 5 * time.Second
 
 // Worker is the River worker for Args jobs: it runs the Registry's Handler
 // for the job's effect.
@@ -34,7 +37,9 @@ type Worker struct {
 	logger     *slog.Logger
 	registerer prometheus.Registerer
 	traceIDs   func(ctx context.Context) (traceID, spanID string)
+	logTimeout time.Duration
 	logErrors  prometheus.Counter
+	logLatency prometheus.Observer
 	now        func() time.Time
 }
 
@@ -51,6 +56,20 @@ func WithAttemptLog(db pgxtx.DBTX) WorkerOption {
 	return func(w *Worker) { w.attemptDB = db }
 }
 
+// WithAttemptLogTimeout bounds each attempt-log insert by d instead of the
+// default 5s. The insert runs after the Handler returns, so a slow database
+// holds the job's worker slot for up to d before the job reports its result;
+// a shorter bound frees the slot sooner at the price of more lost rows (each
+// counted by vogel_action_attempt_log_errors_total). A d <= 0 keeps the
+// default.
+func WithAttemptLogTimeout(d time.Duration) WorkerOption {
+	return func(w *Worker) {
+		if d > 0 {
+			w.logTimeout = d
+		}
+	}
+}
+
 // WithLogger sets the logger attempt-log failures are reported on. The
 // default is slog.Default().
 func WithLogger(l *slog.Logger) WorkerOption {
@@ -61,8 +80,9 @@ func WithLogger(l *slog.Logger) WorkerOption {
 	}
 }
 
-// WithMetricsRegisterer sets where vogel_action_attempt_log_errors_total is
-// registered when the attempt log is on. The default is
+// WithMetricsRegisterer sets where vogel_action_attempt_log_errors_total and
+// vogel_action_attempt_log_duration_seconds are registered when the attempt
+// log is on. The default is
 // prometheus.DefaultRegisterer.
 func WithMetricsRegisterer(reg prometheus.Registerer) WorkerOption {
 	return func(w *Worker) {
@@ -85,34 +105,39 @@ func NewWorker(r *Registry, opts ...WorkerOption) *Worker {
 		registry:   r,
 		logger:     slog.Default(),
 		registerer: prometheus.DefaultRegisterer,
+		logTimeout: defaultAttemptLogTimeout,
 		now:        time.Now,
 	}
 	for _, opt := range opts {
 		opt(w)
 	}
 	if w.attemptDB != nil {
-		w.logErrors = w.attemptLogErrorsCounter()
+		w.logErrors = registerMetric(w, attemptLogErrorsMetricName, prometheus.NewCounter(prometheus.CounterOpts{
+			Name: attemptLogErrorsMetricName,
+			Help: "Attempt-log rows (action_attempt) the action worker failed to write.",
+		}))
+		w.logLatency = registerMetric(w, attemptLogDurationMetricName, prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    attemptLogDurationMetricName,
+			Help:    "Duration of each attempt-log insert (action_attempt), successful or not, which holds the job's worker slot.",
+			Buckets: prometheus.DefBuckets,
+		}))
 	}
 	return w
 }
 
-// attemptLogErrorsCounter registers the attempt-log error counter, reusing an
-// already registered one as worker's metrics middleware does, so two Workers
-// on one Registerer share it. A registration that fails otherwise leaves the
-// counter unregistered: the attempt log must not stop the worker binary.
-func (w *Worker) attemptLogErrorsCounter() prometheus.Counter {
-	c := prometheus.NewCounter(prometheus.CounterOpts{
-		Name: attemptLogErrorsMetricName,
-		Help: "Attempt-log rows (action_attempt) the action worker failed to write.",
-	})
+// registerMetric registers c, reusing an already registered collector of the
+// same type as worker's metrics middleware does, so two Workers on one
+// Registerer share it. A registration that fails otherwise leaves c
+// unregistered: the attempt log must not stop the worker binary.
+func registerMetric[C prometheus.Collector](w *Worker, name string, c C) C {
 	if err := w.registerer.Register(c); err != nil {
 		var are prometheus.AlreadyRegisteredError
 		if errors.As(err, &are) {
-			if existing, ok := are.ExistingCollector.(prometheus.Counter); ok {
+			if existing, ok := are.ExistingCollector.(C); ok {
 				return existing
 			}
 		}
-		w.logger.Warn("action: attempt-log error counter not registered", "metric", attemptLogErrorsMetricName, "error", err)
+		w.logger.Warn("action: attempt-log metric not registered", "metric", name, "error", err)
 	}
 	return c
 }
@@ -208,9 +233,12 @@ func (w *Worker) recordAttempt(ctx context.Context, job *river.Job[Args], run Ru
 		return
 	}
 	at.ID = id
-	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), attemptLogTimeout)
+	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), w.logTimeout)
 	defer cancel()
-	if err := insertAttempt(writeCtx, w.attemptDB, at); err != nil {
+	began := time.Now()
+	err = insertAttempt(writeCtx, w.attemptDB, at)
+	w.logLatency.Observe(time.Since(began).Seconds())
+	if err != nil {
 		w.attemptLogFailed(ctx, "action: write attempt log", at, err)
 	}
 }

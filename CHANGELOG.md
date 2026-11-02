@@ -6,6 +6,15 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ## [Unreleased]
 
+### Agregado
+
+- **`action`: `WithAttemptLogTimeout` y la latencia del registro de
+  intentos.** La escritura de la fila de `action_attempt` ocurre después del
+  `Handler` y retiene el slot del worker; su tope, antes fijo en 5 s, ahora
+  es configurable (un valor `<= 0` deja el de 5 s). El histograma
+  `vogel_action_attempt_log_duration_seconds` mide cada escritura, exitosa o
+  no, para ver si el registro está frenando a los workers.
+
 ## [0.21.0] — 2026-11-01
 
 ### Agregado
