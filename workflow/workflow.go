@@ -349,6 +349,10 @@ type Node struct {
 	// a name that is not an outgoing transition, a return transition, and
 	// OnExpire on a decision node, split or join.
 	OnExpire string
+	// JoinPolicy declares how the branches of this join decide. Only a NodeJoin
+	// named by a NodeParallel may set it. Empty keeps the plain join: it waits
+	// for every branch and records no outcome.
+	JoinPolicy JoinPolicy
 }
 
 // Transition is a named move from one node to another, optionally gated by
@@ -398,6 +402,12 @@ type Transition struct {
 	// appended to the Engine's EffectSink. Definition.Validate rejects an
 	// empty or duplicate name within one transition.
 	Effects []string
+	// Outcome is the decision this transition records when it enters a join
+	// with a policy: OutcomeApproved or OutcomeRejected. Definition.Validate
+	// requires it on every transition entering such a join, which must leave a
+	// task node, and rejects it on any other transition. Under JoinAllApprove
+	// and JoinAnyApprove a rejected transition must have Comment: CommentRequired.
+	Outcome Outcome
 }
 
 // Definition describes one version of a workflow: its nodes, and the
@@ -778,6 +788,7 @@ func (d Definition) Validate() error {
 	}
 
 	validateBlocks(d, nodeByID, outgoingByNode, addf)
+	validateJoinPolicies(d, nodeByID, addf)
 
 	if len(errs) == 0 {
 		return nil
