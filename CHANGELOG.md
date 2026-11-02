@@ -6,6 +6,8 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ## [Unreleased]
 
+## [0.21.0] — 2026-11-01
+
 ### Agregado
 
 - **`workflow`: el plazo de entrada queda en la traza.** `Event.DeadlineAt`
