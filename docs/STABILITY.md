@@ -16,14 +16,18 @@ garantía sólo se vuelve obligatoria desde la v1.0.
 
 | Categoría | Garantía desde la v1.0 | Paquetes |
 |---|---|---|
-| **Estable** | Sin cambios que rompan hasta una v2. | `access`, `audit`, `audit/httpx`, `audit/postgres`, `auth`, `authz`, `config`, `decimalx`, `decimalx/decimalxtest`, `document`, `document/docflow`, `document/postgres`, `httpx/middleware`, `httpx/openapi`, `httpx/openapi/openapitest`, `httpx/response`, `logger`, `migrate`, `notification`, `pgxtx`, `postgres`, `reqctx`, `request`, `storage`, `stringutil`, `validation` |
-| **Adaptador** | La misma que Estable, pero su ruta de import puede cambiar antes de la v1.0 si se separa en un submódulo ([#199](https://github.com/Kafeiih/vogel/issues/199)). | `auth/zitadel`, `authz/cerbos`, `document/gotenberg`, `notification/sendgrid`, `notification/smtp`, `otel`, `otel/otelpgx`, `otel/otelriver`, `storage/s3`, `worker` |
+| **Estable** | Sin cambios que rompan hasta una v2. | `access`, `audit`, `audit/httpx`, `audit/postgres`, `auth`, `auth/zitadel`, `authz`, `authz/cerbos`, `config`, `decimalx`, `decimalx/decimalxtest`, `document`, `document/docflow`, `document/gotenberg`, `document/postgres`, `httpx/middleware`, `httpx/openapi`, `httpx/openapi/openapitest`, `httpx/response`, `logger`, `migrate`, `notification`, `notification/sendgrid`, `notification/smtp`, `otel`, `otel/otelpgx`, `otel/otelriver`, `pgxtx`, `postgres`, `reqctx`, `request`, `storage`, `storage/s3`, `stringutil`, `validation`, `worker` |
 | **Experimental** | Puede romper en una versión menor, también después de la v1.0, siempre anunciado en el `CHANGELOG.md`. En producción, sus datos siguen la regla de abajo. | `action`, `action/postgres`, `idempotency`, `idempotency/httpx`, `idempotency/postgres`, `workflow`, `workflow/calendar`, `workflow/postgres`, `workflow/workflowhttp` |
 | **Sin garantía** | Ninguna: pueden cambiar en cualquier versión. | `internal/...`, `examples/...`, `cmd/create-vogel-app` y el código que genera |
 
 Un paquete experimental pasa a Estable cuando cumple dos condiciones: una app en
 producción lo usa y no tuvo cambios que rompan en las últimas tres versiones
 menores. El cambio de categoría se anuncia en el `CHANGELOG.md`.
+
+Los adaptadores de servicios externos (como `auth/zitadel` o `storage/s3`) son
+paquetes estables del mismo módulo. Un consumidor que no los importa no los
+compila: `vogel` no los separa en submódulos
+([#199](https://github.com/Kafeiih/vogel/issues/199)).
 
 ### Datos de un paquete experimental en producción
 
@@ -63,8 +67,8 @@ mensaje de error, salvo los valores que se comparan con `errors.Is` o
    - **Antes de la v1.0**, en una versión menor siguiente. Por ejemplo, el
      camino de compatibilidad de tokens, obsoleto desde v0.19.0, se retiró en
      v0.21.0.
-   - **Después de la v1.0**, sólo en una v2 para los paquetes Estable y
-     Adaptador. En Go, una versión mayor cambia la ruta de import
+   - **Después de la v1.0**, sólo en una v2 para los paquetes Estable. En
+     Go, una versión mayor cambia la ruta de import
      (`github.com/kafeiih/vogel/v2`), así que obliga a cada consumidor a
      actualizar sus imports.
    - **En paquetes experimentales**, en una versión menor siguiente, también
@@ -72,8 +76,6 @@ mensaje de error, salvo los valores que se comparan con `errors.Is` o
 
 ## Criterios para publicar la v1.0
 
-- [ ] [#199](https://github.com/Kafeiih/vogel/issues/199) está decidido, porque
-      separar adaptadores cambia las rutas de import.
 - [ ] Al menos una app consume `vogel` en producción.
-- [ ] Los paquetes Estable y Adaptador no tuvieron cambios que rompan en las
+- [ ] Los paquetes Estable no tuvieron cambios que rompan en las
       últimas tres versiones menores.
