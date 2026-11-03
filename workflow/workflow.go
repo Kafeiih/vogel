@@ -446,9 +446,9 @@ func (d Definition) StartNode() (Node, bool) {
 // TransitionsFrom returns every transition originating at nodeID.
 func (d Definition) TransitionsFrom(nodeID string) []Transition {
 	out := make([]Transition, 0, len(d.Transitions))
-	for _, tr := range d.Transitions {
-		if tr.From == nodeID {
-			out = append(out, tr)
+	for i := range d.Transitions {
+		if d.Transitions[i].From == nodeID {
+			out = append(out, d.Transitions[i])
 		}
 	}
 	return out
@@ -459,7 +459,8 @@ func (d Definition) TransitionsFrom(nodeID string) []Transition {
 func (d Definition) GuardNames() []string {
 	seen := make(map[string]bool, len(d.Transitions))
 	names := make([]string, 0, len(d.Transitions))
-	for _, tr := range d.Transitions {
+	for i := range d.Transitions {
+		tr := &d.Transitions[i]
 		if tr.Guard == "" || seen[tr.Guard] {
 			continue
 		}
@@ -507,8 +508,8 @@ func (d Definition) EffectNames() []string {
 		n := &d.Nodes[i]
 		add(n.Effects)
 	}
-	for _, tr := range d.Transitions {
-		add(tr.Effects)
+	for i := range d.Transitions {
+		add(d.Transitions[i].Effects)
 	}
 	sort.Strings(names)
 	return names
@@ -629,7 +630,8 @@ func (d Definition) Validate() error {
 	// splits, joins): a cycle made only of them would route forever.
 	gatewayAdjacency := make(map[string][]string, len(d.Nodes))
 
-	for i, tr := range d.Transitions {
+	for i := range d.Transitions {
+		tr := &d.Transitions[i]
 		if tr.Action == "" {
 			addf("transition[%d]: empty action", i)
 		}
@@ -652,7 +654,7 @@ func (d Definition) Validate() error {
 		if fromOK {
 			outgoing[tr.From]++
 			adjacency[tr.From] = append(adjacency[tr.From], tr.To)
-			outgoingByNode[tr.From] = append(outgoingByNode[tr.From], tr)
+			outgoingByNode[tr.From] = append(outgoingByNode[tr.From], *tr)
 		}
 
 		if fromOK && fromNode.Kind.IsAutomatic() && tr.Comment.Canonical() != CommentNone {
@@ -719,8 +721,8 @@ func (d Definition) Validate() error {
 		}
 
 		unguardedCount, unguardedIdx := 0, -1
-		for i, r := range routes {
-			if r.Guard == "" {
+		for i := range routes {
+			if routes[i].Guard == "" {
 				unguardedCount++
 				unguardedIdx = i
 			}

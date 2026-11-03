@@ -282,9 +282,10 @@ func (e *Engine) split(ctx context.Context, db pgxtx.DBTX, run *caseRun, tok *To
 	} else {
 		snapshot := run.snapshot(tok, node.ID)
 		var fallback []Transition
-		for _, r := range routes {
+		for i := range routes {
+			r := &routes[i]
 			if r.Guard == "" {
-				fallback = append(fallback, r)
+				fallback = append(fallback, *r)
 				continue
 			}
 			fn, err := e.lookupGuard(r.Guard)
@@ -296,7 +297,7 @@ func (e *Engine) split(ctx context.Context, db pgxtx.DBTX, run *caseRun, tok *To
 				return fmt.Errorf("inclusive split %q: route %q: guard %q: %w", node.ID, r.Action, r.Guard, err)
 			}
 			if ok {
-				taken = append(taken, r)
+				taken = append(taken, *r)
 			}
 		}
 		if len(taken) == 0 {

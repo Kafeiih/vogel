@@ -66,7 +66,7 @@ func collectDefinition() Definition {
 		nodes = append(nodes, n)
 	}
 	d.Nodes = nodes
-	var trs []Transition
+	trs := make([]Transition, 0, len(d.Transitions)+1)
 	for _, tr := range d.Transitions {
 		switch {
 		case tr.From == "route":
@@ -554,7 +554,7 @@ func TestEarlyClose_CancelsNestedScopes(t *testing.T) {
 	require.Len(t, res.Joined, 1)
 	branches := res.Joined[0].Branches
 	require.Len(t, branches, 2, "the nested block stands for one branch")
-	var tally []Outcome
+	tally := make([]Outcome, 0, len(branches))
 	for _, b := range branches {
 		tally = append(tally, b.Outcome)
 	}
@@ -1042,10 +1042,10 @@ func TestJoin_EmptyPolicyKeepsCurrentBehavior(t *testing.T) {
 	assert.Empty(t, res.Joined[0].Verdict)
 	assert.Nil(t, res.Joined[0].Branches)
 	for _, ev := range res.Events {
-		switch ev.Kind {
-		case EventWaiting:
+		if ev.Kind == EventWaiting {
 			assert.JSONEq(t, `{}`, string(ev.Detail))
-		case EventJoined:
+		}
+		if ev.Kind == EventJoined {
 			var raw map[string]any
 			require.NoError(t, json.Unmarshal(ev.Detail, &raw))
 			assert.ElementsMatch(t, []string{"scope", "join_node", "tokens"}, keysOf(raw), "no policy, verdict or branches")

@@ -319,8 +319,9 @@ func validateJoinPolicies(d Definition, nodeByID map[string]Node, addf func(stri
 		if !n.JoinPolicy.Valid() {
 			addf("join node %q: invalid join policy %q", n.ID, n.JoinPolicy)
 		}
-		for _, tr := range d.TransitionsFrom(n.ID) {
-			to, ok := nodeByID[tr.To]
+		out := d.TransitionsFrom(n.ID)
+		for k := range out {
+			to, ok := nodeByID[out[k].To]
 			if !ok {
 				continue
 			}
@@ -346,7 +347,8 @@ func validateJoinPolicies(d Definition, nodeByID map[string]Node, addf func(stri
 		}
 	}
 
-	for i, tr := range d.Transitions {
+	for i := range d.Transitions {
+		tr := &d.Transitions[i]
 		to, toOK := nodeByID[tr.To]
 		if !toOK {
 			continue
