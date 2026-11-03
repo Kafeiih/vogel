@@ -62,12 +62,13 @@ func (e *Engine) AvailableFor(ctx context.Context, db pgxtx.DBTX, caseID, tokenI
 
 	snapshot := run.snapshot(tok, tok.Node)
 	out := make([]Transition, 0, len(candidates))
-	for _, tr := range candidates {
+	for i := range candidates {
+		tr := &candidates[i]
 		if tr.Return && !occupied[tr.To] {
 			continue
 		}
 		if tr.Guard == "" {
-			out = append(out, tr)
+			out = append(out, *tr)
 			continue
 		}
 
@@ -80,7 +81,7 @@ func (e *Engine) AvailableFor(ctx context.Context, db pgxtx.DBTX, caseID, tokenI
 			return nil, fmt.Errorf("workflow: available transitions: guard %q: %w", tr.Guard, err)
 		}
 		if ok {
-			out = append(out, tr)
+			out = append(out, *tr)
 		}
 	}
 	return out, nil
@@ -91,8 +92,8 @@ func (e *Engine) AvailableFor(ctx context.Context, db pgxtx.DBTX, caseID, tokenI
 // case's event history, so that read only ever happens when it can actually
 // affect the result.
 func hasReturnTransition(candidates []Transition) bool {
-	for _, tr := range candidates {
-		if tr.Return {
+	for i := range candidates {
+		if candidates[i].Return {
 			return true
 		}
 	}
@@ -387,9 +388,10 @@ func (e *Engine) MoveDetailed(ctx context.Context, db pgxtx.DBTX, in MoveInput) 
 // guards against one that reached the engine without going through
 // Validate.
 func (e *Engine) resolveRoute(ctx context.Context, db pgxtx.DBTX, routes []Transition, c Case) (Transition, error) {
-	for _, route := range routes {
+	for i := range routes {
+		route := &routes[i]
 		if route.Guard == "" {
-			return route, nil
+			return *route, nil
 		}
 
 		fn, err := e.lookupGuard(route.Guard)
@@ -401,7 +403,7 @@ func (e *Engine) resolveRoute(ctx context.Context, db pgxtx.DBTX, routes []Trans
 			return Transition{}, fmt.Errorf("decision node %q: route %q: guard %q: %w", c.State, route.Action, route.Guard, err)
 		}
 		if ok {
-			return route, nil
+			return *route, nil
 		}
 	}
 	return Transition{}, ErrNoRoute
@@ -409,9 +411,9 @@ func (e *Engine) resolveRoute(ctx context.Context, db pgxtx.DBTX, routes []Trans
 
 // findTransition returns the transition in candidates matching action.
 func findTransition(candidates []Transition, action string) (Transition, bool) {
-	for _, tr := range candidates {
-		if tr.Action == action {
-			return tr, true
+	for i := range candidates {
+		if candidates[i].Action == action {
+			return candidates[i], true
 		}
 	}
 	return Transition{}, false
