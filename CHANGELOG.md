@@ -7,6 +7,12 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ## [Unreleased]
 
+### Seguridad
+
+- **`examples/boilerplate`: `kin-openapi` sube a v0.152.0.** Cierra nueve avisos de
+  seguridad. Solo la usa `oapi-codegen` para generar código, así que ningún binario del
+  boilerplate la incluía. El código generado no cambia.
+
 ## [0.23.0] — 2026-11-03
 
 ### Agregado
