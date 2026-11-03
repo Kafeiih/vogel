@@ -821,6 +821,107 @@ func TestJoinDetail_RecordsPolicyVerdictAndBranches(t *testing.T) {
 	assert.NotContains(t, string(joined.Detail), "falta", "comments are not copied into the detail")
 }
 
+func TestJoinResults_KeepsRoundsApart(t *testing.T) {
+	r := openRound(t, Config{}, approvalDefinition(JoinAllApprove))
+	r.decide("juan", "approve", "")
+	r.decide("pedro", "reject", "falta el certificado")
+
+	move(t, r.e, r.c.ID, uuid.Nil, "send")
+	r.active = activeTokens(t, r.e, r.c.ID)
+	r.decide("juan", "approve", "")
+	r.decide("pedro", "approve", "")
+	r.decide("maria", "approve", "")
+
+	results, err := r.e.JoinResults(context.Background(), nil, r.c.ID)
+	require.NoError(t, err)
+	require.Len(t, results, 2)
+
+	first, second := results[0], results[1]
+	assert.Less(t, first.Seq, second.Seq, "oldest first")
+	assert.NotEqual(t, first.Scope, second.Scope)
+	assert.Equal(t, JoinAllApprove, first.Policy)
+	assert.Equal(t, "vote", first.JoinNode)
+	assert.Equal(t, OutcomeRejected, first.Verdict)
+	assert.Equal(t, []int{1, 1, 1}, []int{first.Count(OutcomeApproved), first.Count(OutcomeRejected), first.Count(OutcomeUnanswered)})
+	assert.Equal(t, OutcomeApproved, second.Verdict)
+	assert.Equal(t, []int{3, 0, 0}, []int{second.Count(OutcomeApproved), second.Count(OutcomeRejected), second.Count(OutcomeUnanswered)},
+		"the first round's votes never count in the second")
+}
+
+func TestJoinResults_ReadsActorAndCommentFromEvents(t *testing.T) {
+	r := openRound(t, Config{}, approvalDefinition(JoinAnyApprove))
+	r.decide("juan", "reject", "falta el certificado")
+	r.decide("pedro", "reject", "fuera de plazo")
+	r.decide("maria", "approve", "")
+
+	results, err := r.e.JoinResults(context.Background(), nil, r.c.ID)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	require.Len(t, results[0].Branches, 3)
+	assert.Equal(t, 2, results[0].Count(OutcomeRejected), "rejected 2")
+	assert.Equal(t, 1, results[0].Count(OutcomeApproved), "approved 1")
+
+	juan, pedro, maria := results[0].Branches[0], results[0].Branches[1], results[0].Branches[2]
+	assert.Equal(t, "juan", juan.Actor.ID)
+	assert.Equal(t, "falta el certificado", juan.Comment)
+	assert.Equal(t, "pedro", pedro.Actor.ID)
+	assert.Equal(t, "fuera de plazo", pedro.Comment)
+	assert.Equal(t, "maria", maria.Actor.ID)
+	assert.Empty(t, maria.Comment)
+	assert.Empty(t, juan.Cause, "an ordinary answer has no cause")
+}
+
+func TestJoinResults_UnansweredBranch(t *testing.T) {
+	r := openRound(t, Config{}, approvalDefinition(JoinAnyApprove))
+	r.decide("juan", "approve", "")
+
+	results, err := r.e.JoinResults(context.Background(), nil, r.c.ID)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, 1, results[0].Count(OutcomeApproved), "approved 1")
+	assert.Equal(t, 2, results[0].Count(OutcomeUnanswered), "unanswered 2")
+	for _, b := range results[0].Branches {
+		if b.Outcome == OutcomeUnanswered {
+			assert.Equal(t, "join_policy:any_approve", b.Cause)
+			assert.Equal(t, "juan", b.Actor.ID, "whoever's call closed the round cancelled it")
+			assert.Empty(t, b.Comment)
+		}
+	}
+}
+
+func TestJoinResults_ShowsExpiredCause(t *testing.T) {
+	now := time.Date(2026, 11, 2, 9, 0, 0, 0, time.UTC)
+	r := openRound(t, Config{Now: func() time.Time { return now }}, overdueDefinition(JoinAllApprove, "reject"))
+	now = now.Add(2 * time.Hour)
+	_, err := r.e.Expire(context.Background(), nil, ExpireInput{CaseID: r.c.ID, TokenID: r.active["maria"].ID, Actor: Actor{Kind: ActorSystem, ID: "scheduler"}})
+	require.NoError(t, err)
+
+	results, err := r.e.JoinResults(context.Background(), nil, r.c.ID)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	for _, b := range results[0].Branches {
+		if b.Token == r.active["maria"].ID {
+			assert.Equal(t, OutcomeRejected, b.Outcome)
+			assert.Equal(t, "expired", b.Cause)
+			assert.Empty(t, b.Comment, "an expired rejection has no reason text")
+		}
+	}
+}
+
+func TestJoinResults_OnlyJoinsWithAPolicy(t *testing.T) {
+	e, repo := tokenEngine(t, Config{}, nil)
+	c, active := splitToLegalAndFinance(t, e, repo)
+	move(t, e, c.ID, active["legal"].ID, "clear")
+	move(t, e, c.ID, active["finance"].ID, "clear")
+
+	results, err := e.JoinResults(context.Background(), nil, c.ID)
+	require.NoError(t, err)
+	assert.Empty(t, results)
+
+	_, err = e.JoinResults(context.Background(), nil, uuid.New())
+	require.ErrorIs(t, err, ErrCaseNotFound)
+}
+
 // S7
 
 func TestJoinRejectedGuard_RoutesByVerdict(t *testing.T) {

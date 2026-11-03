@@ -211,7 +211,11 @@ comunes, y el rechazo no exige comentario:
 {From: "decide", To: "submit", Action: "redo"},
 ```
 
-**Leer el resultado.** El comentario sólo se guarda en su evento `moved`, para no duplicar en una tabla de sólo agregado un texto que puede ser personal.
+**Leer el resultado.** `Engine.JoinResults(ctx, db, caseID)` devuelve una `JoinResult` por
+join disparado con política, la más antigua primero, con el actor, el comentario y la
+causa de cada rama. `JoinResult.Count(outcome)` da el tally, por ejemplo "rechazado 2,
+aprobado 1" o "aprobado 1, sin respuesta 2". El comentario sólo se guarda en su evento
+`moved`, para no duplicar en una tabla de sólo agregado un texto que puede ser personal.
 
 - `JoinDetail` del evento `joined` guarda `Policy`, `Verdict` y `Branches`.
   `BranchResult.Seq` apunta al evento `moved` de la rama, o a su `token_cancelled` si no
@@ -246,7 +250,7 @@ su rama quedó cancelada.
   varias ramas: separar a los aprobadores le corresponde a la elegibilidad de cada nodo y a
   la autorización del consumidor.
 - Una transición `OnExpire` que entra al join lleva su `Outcome` como cualquier otra, sin
-  comentario, y ese evento `moved` guarda la causa `expired`. Sin `OnExpire`, el token queda
+  comentario, y `JoinResults` muestra la causa `expired`. Sin `OnExpire`, el token queda
   pendiente, así que `JoinAllApprove` y `JoinCollect` pueden esperar indefinidamente.
 - Un token que espera en un join con política sin un outcome válido hace fallar la llamada
   con `ErrInvalidOutcome`, en vez de contar como aprobación. Ocurre al revertir y volver a

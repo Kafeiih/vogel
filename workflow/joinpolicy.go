@@ -2,7 +2,9 @@ package workflow
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"sort"
 
 	"github.com/google/uuid"
@@ -104,14 +106,26 @@ type BranchResult struct {
 	Seq     int64     `json:"seq"`
 }
 
-// JoinBranch is one branch of a JoinResult.
+// JoinBranch is one branch of a JoinResult: its BranchResult plus who acted,
+// read from the event at Seq. On an unanswered branch the actor is whoever's
+// call cancelled it. Cause says why the event happened on its own: "expired"
+// for a move Engine.Expire took, the CancelDetail reason for an unanswered
+// branch, and empty for an ordinary answer.
 type JoinBranch struct {
 	BranchResult
+	Actor   Actor
+	Comment string
+	Cause   string
 }
 
 // JoinResult is one closed round of a join with a policy: which join, under
 // what policy, its verdict (empty under JoinCollect), the Seq of its
 // EventJoined and every branch, oldest answer first.
+//
+// Engine.JoinResults returns it with each branch's actor, comment and cause.
+// The Case.JoinResult a guard receives while routing carries only the
+// BranchResult of each branch, because the votes of earlier calls live in
+// events that call has not read.
 type JoinResult struct {
 	Scope    uuid.UUID
 	JoinNode string
@@ -139,6 +153,77 @@ func (r JoinResult) Count(outcome Outcome) int {
 // round closed in the current call it reports false.
 func JoinRejected(_ context.Context, _ pgxtx.DBTX, c Case) (bool, error) {
 	return c.JoinResult != nil && c.JoinResult.Verdict == OutcomeRejected, nil
+}
+
+// JoinResults returns one JoinResult per fired join with a policy of caseID,
+// oldest first, with each branch's actor, comment and cause read from its
+// event. Each round opens its own scope, so rounds stay apart: an earlier
+// round's approvals never count in a later one. A case with no such join
+// returns none, and an unknown case fails with ErrCaseNotFound.
+func (e *Engine) JoinResults(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID) ([]JoinResult, error) {
+	if _, err := e.repo.GetByID(ctx, db, caseID); err != nil {
+		return nil, fmt.Errorf("workflow: join results: %w", err)
+	}
+	events, err := e.listEvents(ctx, db, caseID)
+	if err != nil {
+		return nil, fmt.Errorf("workflow: join results: %w", err)
+	}
+	bySeq := make(map[int64]*Event, len(events))
+	for i := range events {
+		bySeq[events[i].Seq] = &events[i]
+	}
+
+	var results []JoinResult
+	for i := range events {
+		if events[i].Kind != EventJoined {
+			continue
+		}
+		var detail JoinDetail
+		if err := json.Unmarshal(events[i].Detail, &detail); err != nil {
+			return nil, fmt.Errorf("workflow: join results: case %s event seq %d: %w", caseID, events[i].Seq, err)
+		}
+		if detail.Policy == "" {
+			continue
+		}
+		result := JoinResult{
+			Scope: detail.Scope, JoinNode: detail.JoinNode, Policy: detail.Policy, Verdict: detail.Verdict,
+			Seq: events[i].Seq, Branches: make([]JoinBranch, len(detail.Branches)),
+		}
+		for b, branch := range detail.Branches {
+			evt, ok := bySeq[branch.Seq]
+			if !ok {
+				return nil, fmt.Errorf("workflow: join results: case %s: joined event seq %d names missing event seq %d", caseID, events[i].Seq, branch.Seq)
+			}
+			cause, err := branchCause(evt)
+			if err != nil {
+				return nil, fmt.Errorf("workflow: join results: case %s event seq %d: %w", caseID, evt.Seq, err)
+			}
+			result.Branches[b] = JoinBranch{BranchResult: branch, Actor: evt.Actor, Comment: evt.Comment, Cause: cause}
+		}
+		results = append(results, result)
+	}
+	sort.Slice(results, func(i, j int) bool { return results[i].Seq < results[j].Seq })
+	return results, nil
+}
+
+// branchCause reads JoinBranch.Cause from the event a branch names.
+func branchCause(evt *Event) (string, error) {
+	switch evt.Kind {
+	case EventMoved:
+		var cause expiredCause
+		if err := json.Unmarshal(evt.Detail, &cause); err != nil {
+			return "", err
+		}
+		return cause.Cause, nil
+	case EventTokenCancelled:
+		var cancel CancelDetail
+		if err := json.Unmarshal(evt.Detail, &cancel); err != nil {
+			return "", err
+		}
+		return cancel.Reason, nil
+	default:
+		return "", nil
+	}
 }
 
 // closeBranches finishes a round under policy: it cancels what is still pending

@@ -945,7 +945,7 @@ type Case struct {
 	// JoinResult is the round a join with a policy just closed. It is set only
 	// on the snapshot guards receive while routing the call that fired that
 	// join (see workflow.JoinRejected), and nil everywhere else: a repository
-	// never reads or writes it.
+	// never reads or writes it. Engine.JoinResults reads rounds afterwards.
 	JoinResult *JoinResult
 }
 
