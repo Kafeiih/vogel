@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"testing"
 	"time"
 
@@ -720,7 +721,59 @@ func TestEarlyClose_InvalidStoredOutcomeFailsClosed(t *testing.T) {
 // runs a block inside a block: every level is cancelled and the branch still
 // reports one unanswered result.
 func TestEarlyClose_CancelsEveryNestedLevel(t *testing.T) {
-	d := Definition{
+	r := openRound(t, Config{}, deepApprovalDefinition())
+	assertDeepRoundCloses(t, r)
+}
+
+// reversedScopesRepo lists scopes children first: the Repository contract does
+// not fix the order of ListScopes.
+type reversedScopesRepo struct {
+	*fakeRepository
+}
+
+func (r reversedScopesRepo) ListScopes(ctx context.Context, db pgxtx.DBTX, caseID uuid.UUID) ([]Scope, error) {
+	scopes, err := r.fakeRepository.ListScopes(ctx, db, caseID)
+	slices.Reverse(scopes)
+	return scopes, err
+}
+
+func TestEarlyClose_DoesNotDependOnScopeOrder(t *testing.T) {
+	d := deepApprovalDefinition()
+	repo := reversedScopesRepo{newFakeRepository()}
+	e := New(repo, Config{}, testLogger())
+	require.NoError(t, e.Register(d))
+	require.NoError(t, e.RegisterGuard("rejected", JoinRejected))
+	c := openCase(t, e, d.Name)
+	move(t, e, c.ID, uuid.Nil, "send")
+
+	assertDeepRoundCloses(t, &round{t: t, e: e, repo: repo.fakeRepository, c: c, active: activeTokens(t, e, c.ID)})
+}
+
+// assertDeepRoundCloses rejects at "finance" a round of deepApprovalDefinition
+// and checks that every nested level was cancelled.
+func assertDeepRoundCloses(t *testing.T, r *round) {
+	t.Helper()
+	res := r.decide("finance", "reject", "sin fondos")
+
+	require.Equal(t, "submit", res.Case.State)
+	assert.Equal(t, 3, countEventKind(res.Events, EventTokenCancelled), "deep-a, deep-b and mid")
+	for _, node := range []string{"deep-a", "deep-b", "mid"} {
+		assert.Equal(t, TokenCancelled, r.tokenStatus(node), node)
+	}
+	scopes, err := r.repo.ListScopes(context.Background(), nil, r.c.ID)
+	require.NoError(t, err)
+	for _, s := range scopes {
+		if s.SplitNode == "fork2" || s.SplitNode == "fork3" {
+			assert.Equal(t, ScopeCancelled, s.Status, s.SplitNode)
+		}
+	}
+	require.Len(t, res.Joined[0].Branches, 2, "the nested blocks stand for one branch")
+}
+
+// deepApprovalDefinition is an all_approve block whose "legal" branch runs a
+// block inside a block before its approver.
+func deepApprovalDefinition() Definition {
+	return Definition{
 		Name: "approval-deep", Version: 1,
 		Nodes: []Node{
 			{ID: "submit", Start: true},
@@ -759,22 +812,6 @@ func TestEarlyClose_CancelsEveryNestedLevel(t *testing.T) {
 			{From: "route", To: "done", Action: "onward"},
 		},
 	}
-	r := openRound(t, Config{}, d)
-	res := r.decide("finance", "reject", "sin fondos")
-
-	require.Equal(t, "submit", res.Case.State)
-	assert.Equal(t, 3, countEventKind(res.Events, EventTokenCancelled), "deep-a, deep-b and mid")
-	for _, node := range []string{"deep-a", "deep-b", "mid"} {
-		assert.Equal(t, TokenCancelled, r.tokenStatus(node), node)
-	}
-	scopes, err := r.repo.ListScopes(context.Background(), nil, r.c.ID)
-	require.NoError(t, err)
-	for _, s := range scopes {
-		if s.SplitNode == "fork2" || s.SplitNode == "fork3" {
-			assert.Equal(t, ScopeCancelled, s.Status, s.SplitNode)
-		}
-	}
-	require.Len(t, res.Joined[0].Branches, 2, "the nested blocks stand for one branch")
 }
 
 // S6
