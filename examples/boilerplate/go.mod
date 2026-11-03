@@ -5,21 +5,21 @@ go 1.26.7
 toolchain go1.26.10
 
 require (
-	cel.dev/cel-go v0.32.0
+	cel.dev/cel-go v0.33.2
 	github.com/go-chi/chi/v5 v5.5.0
 	github.com/go-chi/httprate v0.16.1
 	github.com/google/uuid v1.6.0
-	github.com/jackc/pgx/v5 v5.11.0
+	github.com/jackc/pgx/v5 v5.12.0
 	github.com/joho/godotenv v1.5.1
 	github.com/kafeiih/vogel v0.23.0
 	github.com/oapi-codegen/runtime v1.8.0
 	github.com/prometheus/client_golang v1.25.0
-	github.com/riverqueue/river v0.49.0
+	github.com/riverqueue/river v0.50.0
 	github.com/rs/cors v1.11.1
 	github.com/stretchr/testify v1.12.1
 	github.com/testcontainers/testcontainers-go v0.44.0
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.44.0
-	go.yaml.in/yaml/v3 v3.0.5
+	go.yaml.in/yaml/v3 v3.0.6
 )
 
 require (
@@ -124,10 +124,10 @@ require (
 	github.com/prometheus/client_model v0.6.3 // indirect
 	github.com/prometheus/common v0.72.0 // indirect
 	github.com/prometheus/procfs v0.22.0 // indirect
-	github.com/riverqueue/river/riverdriver v0.49.0 // indirect
-	github.com/riverqueue/river/riverdriver/riverpgxv5 v0.49.0 // indirect
-	github.com/riverqueue/river/rivershared v0.49.0 // indirect
-	github.com/riverqueue/river/rivertype v0.49.0 // indirect
+	github.com/riverqueue/river/riverdriver v0.50.0 // indirect
+	github.com/riverqueue/river/riverdriver/riverpgxv5 v0.50.0 // indirect
+	github.com/riverqueue/river/rivershared v0.50.0 // indirect
+	github.com/riverqueue/river/rivertype v0.50.0 // indirect
 	github.com/rogpeppe/go-internal v1.16.0 // indirect
 	github.com/rs/xid v1.6.0 // indirect
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3 // indirect
@@ -140,7 +140,7 @@ require (
 	github.com/sourcegraph/conc v0.3.1-0.20240121214520-5f936abd7ae8 // indirect
 	github.com/speakeasy-api/jsonpath v0.6.3 // indirect
 	github.com/speakeasy-api/openapi v1.24.0 // indirect
-	github.com/tidwall/gjson v1.19.0 // indirect
+	github.com/tidwall/gjson v1.20.0 // indirect
 	github.com/tidwall/match v1.2.0 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/tidwall/sjson v1.2.5 // indirect
