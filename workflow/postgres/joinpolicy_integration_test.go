@@ -105,6 +105,25 @@ func TestMigration011_RoundTrip(t *testing.T) {
 	assert.Zero(t, columns(), "Down drops the column")
 	require.NoError(t, migrate.UpTo(ctx, connStr, migrations.FS(), 11, opts))
 	assert.Equal(t, 1, columns())
+
+	// The rollback lost the waiting answer: the round fails closed.
+	vote := func(tx pgxtx.DBTX) error {
+		_, err := e.Move(ctx, tx, workflow.MoveInput{CaseID: c.ID, TokenID: active["maria"].ID, Action: "approve", Actor: workflow.Actor{ID: "maria"}})
+		return err
+	}
+	require.ErrorIs(t, tryTx(pool, vote), workflow.ErrInvalidOutcome)
+
+	// The statement docs/MIGRATION_GUIDE.md gives restores it from the event.
+	_, err = pool.Exec(ctx, `
+        UPDATE workflow_token t SET outcome = e.detail->>'outcome'
+        FROM workflow_event e
+        WHERE e.token_id = t.id AND e.kind = 'waiting' AND t.status = 'waiting'
+          AND t.outcome IS NULL AND e.detail ? 'outcome'`)
+	require.NoError(t, err)
+	inTx(t, pool, vote)
+	got, err := postgres.NewRepository().GetByID(ctx, pool, c.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "decide", got.State, "the restored answer lets the round close")
 }
 
 // allApproveTestDefinition sends "draft" to "juan" and "maria" under

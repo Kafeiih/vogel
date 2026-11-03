@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"errors"
 	"sort"
 
 	"github.com/google/uuid"
@@ -51,6 +52,14 @@ const (
 	// reports it (BranchResult): a Transition cannot declare it.
 	OutcomeUnanswered Outcome = "unanswered"
 )
+
+// ErrInvalidOutcome reports a token waiting at a join with a policy whose stored
+// outcome is neither approved nor rejected: migration 011 was rolled back and
+// applied again while it waited, it arrived before a registered definition gained
+// the policy without a new version, or a custom Repository does not persist
+// Token.Outcome. The call fails and persists nothing, rather than counting a vote
+// it cannot read. The answer is still in the token's EventWaiting.
+var ErrInvalidOutcome = errors.New("workflow: token waits at a policy join without a valid outcome")
 
 // roundTally counts a round's branches so far: the waiting ones by answer, the
 // cancelled ones, and how many branches the scope expects.

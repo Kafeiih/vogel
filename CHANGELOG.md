@@ -18,6 +18,31 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   arquitectura.** Documentan el entorno, las suites, el flujo de PR, cómo se
   publica una versión y doce decisiones que hasta ahora estaban repartidas en
   los documentos ODD y en el historial.
+- **`workflow`: políticas de join.** `Node.JoinPolicy` declara cómo deciden las
+  ramas de un bloque `NodeParallel`: `JoinAllApprove`, `JoinAnyApprove` o
+  `JoinCollect`. `Transition.Outcome` registra lo que responde cada rama.
+  `all_approve` cierra la ronda con el primer rechazo y `any_approve` con la primera
+  aprobación, cancelando en la misma transacción las ramas pendientes y los scopes
+  abiertos dentro del bloque. `collect` espera a todas y no tiene veredicto. El evento
+  `joined` guarda la política, el veredicto y cada rama, y `Engine.JoinResults` devuelve
+  las rondas con el actor y el comentario de cada una. `workflow.JoinRejected` es la
+  guarda que enruta por veredicto, y volver atrás abre una ronda nueva en la que todos
+  votan de nuevo. Una definición sin política no cambia.
+- **`workflow`: reglas de asignación.** `Node.AssignRule` y el puerto
+  `Config.Assignees` asignan un token al entrar a un nodo por cualquier camino salvo
+  `Engine.Open`, y una respuesta agrega un evento `assigned`. `workflow.LastActorOf`
+  devuelve la última persona que salió de un nodo. El motor no interpreta la regla, así
+  que ningún id de persona entra a la `Definition`.
+
+### Migración
+
+- **`workflow/migrations`: `011_workflow_token_outcome.sql`.** Agrega la columna nula
+  `workflow_token.outcome`, sin relleno. Debe correr antes de desplegar, porque el
+  repositorio la escribe. `CurrentEventSchema` pasa a 5 en todo evento nuevo: un binario
+  anterior falla con `ErrUnsupportedEventSchema` al leer esos casos, así que los binarios
+  se reemplazan juntos y una falla se corrige hacia adelante. El digest no cambia: el
+  `detail` ya está cubierto por la v2. Ver
+  [`docs/MIGRATION_GUIDE.md`](docs/MIGRATION_GUIDE.md).
 
 ### Cambiado
 

@@ -9,6 +9,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/kafeiih/vogel/pgxtx"
 )
 
 // approvalDefinition returns the process the join policies exist for: "submit"
@@ -693,6 +695,237 @@ func TestAllApprove_WithoutOnExpireStaysPending(t *testing.T) {
 	assert.Empty(t, res.Joined)
 	assert.Equal(t, TokenActive, r.tokenStatus("maria"), "without OnExpire the token stays pending")
 	assert.Equal(t, TokenWaiting, r.tokenStatus("juan"))
+}
+
+// TestEarlyClose_InvalidStoredOutcomeFailsClosed covers a stored vote the engine
+// cannot read, as a rollback of migration 011 would leave it: under any_approve
+// a lost rejection plus another rejection must not close the round as approved.
+func TestEarlyClose_InvalidStoredOutcomeFailsClosed(t *testing.T) {
+	r := openRound(t, Config{}, approvalDefinition(JoinAnyApprove))
+	r.decide("juan", "reject", "no")
+	r.repo.mu.Lock()
+	tok := r.repo.tokens[r.active["juan"].ID]
+	tok.Outcome = ""
+	r.repo.tokens[tok.ID] = tok
+	r.repo.mu.Unlock()
+	before := r.stored().LastSeq
+
+	_, err := r.e.Move(context.Background(), nil, MoveInput{CaseID: r.c.ID, TokenID: r.active["pedro"].ID, Action: "reject", ActorID: "pedro", Comment: "no"})
+	require.ErrorIs(t, err, ErrInvalidOutcome)
+	assert.Equal(t, before, r.stored().LastSeq, "nothing is persisted")
+	assert.Equal(t, TokenActive, r.tokenStatus("maria"))
+}
+
+// TestEarlyClose_CancelsEveryNestedLevel closes a round while its "legal" branch
+// runs a block inside a block: every level is cancelled and the branch still
+// reports one unanswered result.
+func TestEarlyClose_CancelsEveryNestedLevel(t *testing.T) {
+	d := Definition{
+		Name: "approval-deep", Version: 1,
+		Nodes: []Node{
+			{ID: "submit", Start: true},
+			{ID: "fork", Kind: NodeParallel, Join: "vote"},
+			{ID: "fork2", Kind: NodeParallel, Join: "merge2"},
+			{ID: "fork3", Kind: NodeParallel, Join: "merge3"},
+			{ID: "deep-a"},
+			{ID: "deep-b"},
+			{ID: "merge3", Kind: NodeJoin},
+			{ID: "mid"},
+			{ID: "merge2", Kind: NodeJoin},
+			{ID: "legal"},
+			{ID: "finance"},
+			{ID: "vote", Kind: NodeJoin, JoinPolicy: JoinAllApprove},
+			{ID: "route", Kind: NodeDecision},
+			{ID: "done", Terminal: true},
+		},
+		Transitions: []Transition{
+			{From: "submit", To: "fork", Action: "send"},
+			{From: "fork", To: "fork2", Action: "to-legal"},
+			{From: "fork", To: "finance", Action: "to-finance"},
+			{From: "fork2", To: "fork3", Action: "to-deep"},
+			{From: "fork2", To: "mid", Action: "to-mid"},
+			{From: "fork3", To: "deep-a", Action: "to-a"},
+			{From: "fork3", To: "deep-b", Action: "to-b"},
+			{From: "deep-a", To: "merge3", Action: "clear"},
+			{From: "deep-b", To: "merge3", Action: "clear"},
+			{From: "merge3", To: "merge2", Action: "deep-done"},
+			{From: "mid", To: "merge2", Action: "clear"},
+			{From: "merge2", To: "legal", Action: "cleared"},
+			{From: "legal", To: "vote", Action: "approve", Outcome: OutcomeApproved},
+			{From: "finance", To: "vote", Action: "approve", Outcome: OutcomeApproved},
+			{From: "finance", To: "vote", Action: "reject", Outcome: OutcomeRejected, Comment: CommentRequired},
+			{From: "vote", To: "route", Action: "tallied"},
+			{From: "route", To: "submit", Action: "back", Guard: "rejected"},
+			{From: "route", To: "done", Action: "onward"},
+		},
+	}
+	r := openRound(t, Config{}, d)
+	res := r.decide("finance", "reject", "sin fondos")
+
+	require.Equal(t, "submit", res.Case.State)
+	assert.Equal(t, 3, countEventKind(res.Events, EventTokenCancelled), "deep-a, deep-b and mid")
+	for _, node := range []string{"deep-a", "deep-b", "mid"} {
+		assert.Equal(t, TokenCancelled, r.tokenStatus(node), node)
+	}
+	scopes, err := r.repo.ListScopes(context.Background(), nil, r.c.ID)
+	require.NoError(t, err)
+	for _, s := range scopes {
+		if s.SplitNode == "fork2" || s.SplitNode == "fork3" {
+			assert.Equal(t, ScopeCancelled, s.Status, s.SplitNode)
+		}
+	}
+	require.Len(t, res.Joined[0].Branches, 2, "the nested blocks stand for one branch")
+}
+
+// S6
+
+func TestJoinDetail_RecordsPolicyVerdictAndBranches(t *testing.T) {
+	r := openRound(t, Config{}, approvalDefinition(JoinAnyApprove))
+	r.decide("juan", "reject", "falta el certificado")
+	res := r.decide("pedro", "approve", "")
+
+	var joined Event
+	for _, ev := range res.Events {
+		if ev.Kind == EventJoined {
+			joined = ev
+		}
+	}
+	var detail JoinDetail
+	require.NoError(t, json.Unmarshal(joined.Detail, &detail))
+	assert.Equal(t, JoinAnyApprove, detail.Policy)
+	assert.Equal(t, OutcomeApproved, detail.Verdict)
+	require.Len(t, detail.Branches, 3)
+	assert.Equal(t, res.Joined[0].Branches, detail.Branches, "the record and the event agree")
+
+	bySeq := func(seq int64) Event {
+		history, err := r.e.History(context.Background(), nil, r.c.ID)
+		require.NoError(t, err)
+		for _, ev := range history {
+			if ev.Seq == seq {
+				return ev
+			}
+		}
+		t.Fatalf("no event at seq %d", seq)
+		return Event{}
+	}
+	for _, b := range detail.Branches {
+		ev := bySeq(b.Seq)
+		assert.Equal(t, b.Token, ev.TokenID)
+		if b.Outcome == OutcomeUnanswered {
+			assert.Equal(t, EventTokenCancelled, ev.Kind)
+		} else {
+			assert.Equal(t, EventMoved, ev.Kind, "an answer points at the move that holds its actor and comment")
+			assert.Equal(t, "vote", ev.ToState)
+		}
+	}
+	assert.NotContains(t, string(joined.Detail), "falta", "comments are not copied into the detail")
+}
+
+// S7
+
+func TestJoinRejectedGuard_RoutesByVerdict(t *testing.T) {
+	for name, tc := range map[string]struct {
+		verdict Outcome
+		want    bool
+	}{
+		"rejected": {OutcomeRejected, true},
+		"approved": {OutcomeApproved, false},
+		"collect":  {"", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := JoinRejected(context.Background(), nil, Case{JoinResult: &JoinResult{Verdict: tc.verdict}})
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+	t.Run("no round closing in this call", func(t *testing.T) {
+		got, err := JoinRejected(context.Background(), nil, Case{})
+		require.NoError(t, err)
+		assert.False(t, got)
+	})
+}
+
+func TestCase_JoinResultIsNotPersisted(t *testing.T) {
+	d := approvalDefinition(JoinAllApprove)
+	e, repo := policyEngine(t, Config{}, d)
+	var seen []*JoinResult
+	require.NoError(t, e.RegisterGuard("rejected", func(_ context.Context, _ pgxtx.DBTX, c Case) (bool, error) {
+		seen = append(seen, c.JoinResult)
+		return c.JoinResult.Verdict == OutcomeRejected, nil
+	}))
+	c := openCase(t, e, d.Name)
+	move(t, e, c.ID, uuid.Nil, "send")
+	active := activeTokens(t, e, c.ID)
+
+	res, err := e.MoveDetailed(context.Background(), nil, MoveInput{CaseID: c.ID, TokenID: active["pedro"].ID, Action: "reject", ActorID: "pedro", Comment: "no"})
+	require.NoError(t, err)
+
+	require.Len(t, seen, 1)
+	require.NotNil(t, seen[0], "the guard routing the call that fired the join sees the round")
+	assert.Equal(t, OutcomeRejected, seen[0].Verdict)
+	assert.Equal(t, JoinAllApprove, seen[0].Policy)
+	assert.Len(t, seen[0].Branches, 3)
+	assert.Nil(t, res.Case.JoinResult, "the returned case does not carry it")
+	stored, err := repo.GetByID(context.Background(), nil, c.ID)
+	require.NoError(t, err)
+	assert.Nil(t, stored.JoinResult, "the repository never stores it")
+}
+
+func TestJoinCheck_SeesVerdict(t *testing.T) {
+	var records []JoinRecord
+	check := func(_ context.Context, _ pgxtx.DBTX, j JoinRecord) error {
+		records = append(records, j)
+		return nil
+	}
+	r := openRound(t, Config{JoinCheck: check}, approvalDefinition(JoinAllApprove))
+	r.decide("pedro", "reject", "no")
+
+	require.Len(t, records, 1, "JoinCheck still runs on a rejected round")
+	assert.Equal(t, OutcomeRejected, records[0].Verdict)
+	assert.Len(t, records[0].Branches, 3)
+	require.Len(t, records[0].Tokens, 1, "it sees only the tokens the join consumed")
+	assert.Equal(t, r.active["pedro"].ID, records[0].Tokens[0].ID)
+}
+
+func TestJoinCheck_RejectionPersistsNoCancellation(t *testing.T) {
+	check := func(context.Context, pgxtx.DBTX, JoinRecord) error { return assert.AnError }
+	r := openRound(t, Config{JoinCheck: check}, approvalDefinition(JoinAllApprove))
+	before := r.stored().LastSeq
+
+	_, err := r.e.Move(context.Background(), nil, MoveInput{CaseID: r.c.ID, TokenID: r.active["pedro"].ID, Action: "reject", ActorID: "pedro", Comment: "no"})
+	require.ErrorIs(t, err, ErrJoinRejected)
+	assert.Equal(t, before, r.stored().LastSeq, "nothing is persisted")
+	assert.Equal(t, TokenActive, r.tokenStatus("maria"), "the pending branch survives the failed call")
+	assert.Equal(t, TokenActive, r.tokenStatus("pedro"))
+}
+
+// S8
+
+func TestResubmit_OpensNewRoundAndAllVoteAgain(t *testing.T) {
+	r := openRound(t, Config{}, approvalDefinition(JoinAllApprove))
+	firstRound := r.active
+	r.decide("juan", "approve", "")
+	res := r.decide("pedro", "reject", "falta el certificado")
+	require.Equal(t, "submit", res.Case.State, "Ana gets the case back")
+
+	res = move(t, r.e, r.c.ID, uuid.Nil, "send")
+	assertInvariants(t, r.e, r.repo, r.c.ID)
+	assert.Empty(t, res.Case.State, "the case is back in parallel")
+	r.active = activeTokens(t, r.e, r.c.ID)
+	require.Len(t, r.active, 3, "all three vote again, including Juan who approved")
+	for node, tok := range r.active {
+		assert.NotEqual(t, firstRound[node].ID, tok.ID, "%s gets a new token", node)
+		assert.NotEqual(t, firstRound[node].ScopeID, tok.ScopeID, "the round opens a new scope")
+		assert.Empty(t, tok.Outcome)
+	}
+
+	r.decide("juan", "approve", "")
+	r.decide("pedro", "approve", "")
+	res = r.decide("maria", "approve", "")
+	assert.Equal(t, "publish", res.Case.State)
+	move(t, r.e, r.c.ID, uuid.Nil, "finish")
+	assert.Equal(t, StatusClosed, r.stored().Status)
+	require.NoError(t, r.e.VerifyChain(context.Background(), nil, r.c.ID))
 }
 
 // S1

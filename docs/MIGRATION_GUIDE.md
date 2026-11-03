@@ -1205,7 +1205,7 @@ guardas), `Case`, `Event`, y el puerto `Repository`
 `Update`, `AppendEvent`, `ListEvents`, `ListWorkItems`,
 `AdvanceLastSeq`, `ListParticipated`, `ListEventDigests` y los métodos de
 tokens y scopes). Su migración de
-esquema propia (`001_create_workflow.sql` a `008_workflow_tokens.sql`, tabla de versión
+esquema propia (`001_create_workflow.sql` a `011_workflow_token_outcome.sql`, tabla de versión
 `workflow_db_version`) se aplica solo si la app decide usarlo — no es parte
 de la migración del código duplicado existente.
 
@@ -1325,6 +1325,36 @@ el CHANGELOG (`[0.19.0]`); estos son los pasos.
    (`CurrentEventSchema` pasa a 3; los eventos anteriores se leen como el
    token raíz), y `action.Args`/`action.Run` llevan el `TokenID` del evento
    que causó el efecto. La cadena de la `007` no cubre esas dos columnas.
+
+#### Políticas de join y reglas de asignación
+
+Una `Definition` sin `JoinPolicy` ni `AssignRule` se comporta igual que antes, y adoptarlas
+es opcional. Lo único obligatorio al actualizar es la migración.
+
+1. **Aplicar la `011_workflow_token_outcome.sql` antes de arrancar los binarios nuevos**,
+   porque el repositorio escribe la columna `workflow_token.outcome`. Es nula, sin
+   relleno, así que agregarla no reescribe la tabla.
+2. **Reemplazar todos los binarios juntos.** `CurrentEventSchema` pasa a 5 en todo evento
+   nuevo, también en casos sin política, y un binario anterior falla con
+   `workflow.ErrUnsupportedEventSchema` al leer un caso que el nuevo ya tocó. Por lo mismo,
+   volver a la versión anterior deja esos casos sin leer: si algo falla, corregir hacia
+   adelante.
+3. **Correr el `Down` de la `011` sólo sin rondas abiertas.** Quita una columna que los
+   binarios actuales necesitan, así que fallan al escribir tokens hasta que vuelva, y
+   borra las respuestas de los tokens que esperan en un join con política. Al aplicar la
+   `011` de nuevo, esas rondas fallan con `workflow.ErrInvalidOutcome` en cada voto. Las
+   respuestas siguen en los eventos `waiting`, y se restauran así:
+
+   ```sql
+   UPDATE workflow_token t SET outcome = e.detail->>'outcome'
+   FROM workflow_event e
+   WHERE e.token_id = t.id AND e.kind = 'waiting' AND t.status = 'waiting'
+     AND t.outcome IS NULL AND e.detail ? 'outcome';
+   ```
+
+Un `Repository` propio no cambia de interfaz, pero debe persistir `Token.Outcome`. Un
+consumidor con `workflow/postgres.Repository` no tiene que hacer nada. Cómo se declaran las
+políticas y las reglas está en la [guía de `workflow`](workflow.md#políticas-de-join).
 
 ### `action/migrations` (conjunto nuevo, opcional)
 

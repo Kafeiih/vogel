@@ -372,6 +372,8 @@ func (e *Engine) tryJoin(ctx context.Context, db pgxtx.DBTX, run *caseRun, scope
 	if scope.Status != ScopeOpen {
 		return nil
 	}
+	join, ok := run.d.Node(scope.JoinNode)
+	policy := join.JoinPolicy
 	var waiting []*Token
 	tally := roundTally{expected: scope.Expected}
 	for _, t := range run.tokens {
@@ -381,10 +383,14 @@ func (e *Engine) tryJoin(ctx context.Context, db pgxtx.DBTX, run *caseRun, scope
 		switch t.Status {
 		case TokenWaiting:
 			waiting = append(waiting, t)
-			if t.Outcome == OutcomeRejected {
-				tally.rejected++
-			} else {
+			switch {
+			case t.Outcome == OutcomeApproved:
 				tally.approved++
+			case t.Outcome == OutcomeRejected:
+				tally.rejected++
+			case policy != "":
+				// A vote this call cannot read must never pass as an approval.
+				return fmt.Errorf("%w: token %s waits at join %q with outcome %q", ErrInvalidOutcome, t.ID, join.ID, t.Outcome)
 			}
 		case TokenCancelled:
 			tally.cancelled++
@@ -392,8 +398,6 @@ func (e *Engine) tryJoin(ctx context.Context, db pgxtx.DBTX, run *caseRun, scope
 			// Still on its way, or a nested split consumed it: not arrived.
 		}
 	}
-	join, ok := run.d.Node(scope.JoinNode)
-	policy := join.JoinPolicy
 	var verdict Outcome
 	if policy == "" {
 		if len(waiting) == 0 || len(waiting)+tally.cancelled != scope.Expected {

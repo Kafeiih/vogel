@@ -10,11 +10,16 @@
 -- never answered, has no outcome.
 --
 -- Deploy: run this migration before the binaries that use it, because their
--- repository reads and writes the column.
+-- repository reads and writes the column. Those binaries write event schema 5
+-- for every case, which older binaries refuse to read, so replace them all
+-- together and fix forward rather than rolling the binaries back.
 --
--- Down drops the column. Tokens waiting at a policy join then lose their
--- answer, while the waiting events keep theirs. Run it only with no case inside
--- a block whose join declares a policy.
+-- Down drops the column, which the current binaries need, so they fail on every
+-- token write until it is back. Tokens waiting at a policy join lose their
+-- answer, while the waiting events keep theirs: after applying this migration
+-- again, such a round fails with workflow.ErrInvalidOutcome instead of counting
+-- the vote, until the answers are restored (docs/MIGRATION_GUIDE.md has the
+-- statement). Run Down only with no case inside a block whose join has a policy.
 
 -- +goose Up
 ALTER TABLE workflow_token ADD COLUMN outcome TEXT NULL;
