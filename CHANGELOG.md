@@ -27,7 +27,9 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   `joined` guarda la política, el veredicto y cada rama, y `Engine.JoinResults` devuelve
   las rondas con el actor y el comentario de cada una. `workflow.JoinRejected` es la
   guarda que enruta por veredicto, y volver atrás abre una ronda nueva en la que todos
-  votan de nuevo. Una definición sin política no cambia.
+  votan de nuevo. `Definition.Validate` exige que cada rama pueda aprobar y rechazar, y que
+  un veredicto tenga una ruta guardada de vuelta al split. Una definición sin política no
+  cambia.
 - **`workflow`: reglas de asignación.** `Node.AssignRule` y el puerto
   `Config.Assignees` asignan un token al entrar a un nodo por cualquier camino salvo
   `Engine.Open`, y una respuesta agrega un evento `assigned`. `workflow.LastActorOf`

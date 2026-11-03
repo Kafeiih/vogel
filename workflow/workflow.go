@@ -807,7 +807,7 @@ func (d Definition) Validate() error {
 	}
 
 	validateBlocks(d, nodeByID, outgoingByNode, addf)
-	validateJoinPolicies(d, nodeByID, addf)
+	validateJoinPolicies(d, nodeByID, outgoingByNode, addf)
 
 	if len(errs) == 0 {
 		return nil
