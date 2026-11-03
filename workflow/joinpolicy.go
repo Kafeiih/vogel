@@ -307,15 +307,93 @@ func (r *caseRun) closeBranches(scope *Scope, policy JoinPolicy) ([]BranchResult
 	return branches, nested, nil
 }
 
+// checkBranchOutcomes reports each branch of b that can't both approve and
+// reject: a round where a branch has one answer can't decide on it.
+func checkBranchOutcomes(b *block, outgoingByNode map[string][]Transition, addf func(string, ...any)) {
+	for i := range b.branches {
+		br := &b.branches[i]
+		approves, rejects := false, false
+		for _, id := range br.order {
+			out := outgoingByNode[id]
+			for k := range out {
+				if out[k].To != b.join {
+					continue
+				}
+				approves = approves || out[k].Outcome == OutcomeApproved
+				rejects = rejects || out[k].Outcome == OutcomeRejected
+			}
+		}
+		if !approves || !rejects {
+			addf("%s %q: branch %q must declare both an approved and a rejected outcome entering join %q", b.split.Kind.label(), b.split.ID, br.action, b.join)
+		}
+	}
+}
+
+// checkRejectedRoute reports a verdict join whose decision has no guarded route
+// able to reach the split again. The unguarded default is the way forward, so
+// it can't be the way back. A join leaving to anything but a decision is reported
+// by validateJoinPolicies itself.
+func checkRejectedRoute(split, join Node, nodeByID map[string]Node, outgoingByNode map[string][]Transition, addf func(string, ...any)) {
+	out := outgoingByNode[join.ID]
+	if len(out) != 1 || nodeByID[out[0].To].Kind != NodeDecision {
+		return
+	}
+	routes := outgoingByNode[out[0].To]
+	for i := range routes {
+		if routes[i].Guard != "" && reaches(routes[i].To, split.ID, outgoingByNode) {
+			return
+		}
+	}
+	addf("join node %q: under %s no guarded route of decision %q can go back to split %q", join.ID, join.JoinPolicy, out[0].To, split.ID)
+}
+
+// reaches reports whether a path of transitions leads from one node to another.
+func reaches(from, to string, outgoingByNode map[string][]Transition) bool {
+	seen := map[string]bool{from: true}
+	queue := []string{from}
+	for len(queue) > 0 {
+		id := queue[0]
+		queue = queue[1:]
+		if id == to {
+			return true
+		}
+		out := outgoingByNode[id]
+		for i := range out {
+			if !seen[out[i].To] {
+				seen[out[i].To] = true
+				queue = append(queue, out[i].To)
+			}
+		}
+	}
+	return false
+}
+
 // validateJoinPolicies reports the violations of the policy rules through
 // addf: a policy only on a join, and never on one an inclusive split names (it
 // may route straight to its join, so that branch would have no decision); an
 // outcome on exactly the transitions that enter a join with a policy, each
 // leaving a task node; a required comment on a rejection under JoinAllApprove
 // and JoinAnyApprove, so the reason is always recorded; a JoinCollect join
-// reaching a task node, where a person decides; and a verdict join reaching a
-// decision node, so a rejection can never advance by accident.
-func validateJoinPolicies(d Definition, nodeByID map[string]Node, addf func(string, ...any)) {
+// reaching a task node, where a person decides; a verdict join reaching a
+// decision node with a guarded route that can go back to the split; and every
+// branch able to answer both ways. This proves a way back exists, not that every
+// rejection takes it: guards stay opaque, so a guard that doesn't test the verdict
+// goes undetected, and routing relies on JoinRejected for that.
+func validateJoinPolicies(d Definition, nodeByID map[string]Node, outgoingByNode map[string][]Transition, addf func(string, ...any)) {
+	for i := range d.Nodes {
+		n := &d.Nodes[i]
+		if n.Kind != NodeParallel {
+			continue
+		}
+		join, ok := nodeByID[n.Join]
+		if !ok || join.Kind != NodeJoin || join.JoinPolicy == "" {
+			continue
+		}
+		checkBranchOutcomes(buildBlock(*n, outgoingByNode), outgoingByNode, addf)
+		if join.JoinPolicy == JoinAllApprove || join.JoinPolicy == JoinAnyApprove {
+			checkRejectedRoute(*n, join, nodeByID, outgoingByNode, addf)
+		}
+	}
 	for i := range d.Nodes {
 		n := &d.Nodes[i]
 		if n.JoinPolicy == "" {

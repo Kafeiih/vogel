@@ -176,17 +176,20 @@ Sin política, el join se comporta como siempre: no hay outcomes, tally ni vered
 - Toda transición que entra a un join con política sale de un nodo de tarea y declara
   `Transition.Outcome` (`OutcomeApproved` u `OutcomeRejected`). Ninguna otra transición
   puede declararlo.
+- Cada rama declara tanto una aprobación como un rechazo hacia el join, en una misma tarea
+  o en tareas distintas de la rama.
 - Bajo `JoinAllApprove` y `JoinAnyApprove`, una transición rechazada tiene
-  `Comment: CommentRequired`, y la salida del join llega a un nodo de decisión. Un join
-  con veredicto no puede avanzar sin pasar por esa decisión.
+  `Comment: CommentRequired`, y la salida del join llega a un nodo de decisión con una ruta
+  guardada que puede volver al split. Eso prueba que el camino de vuelta existe, no que todo
+  rechazo lo tome. Para que un rechazo termine el caso, usar `JoinCollect` y que una persona
+  lo decida.
 - Bajo `JoinCollect`, la salida del join llega a un nodo de tarea.
 - Un join nombrado por un `NodeInclusive` no puede tener política, porque ese split
   puede ir directo al join y esa rama no tendría decisión.
 
-`Validate` no interpreta guardas, así que no puede comprobar que la ruta rechazada vuelva
-atrás. Esa ruta depende de la definición: registrar `workflow.JoinRejected` y usarla en la
-decisión que sigue al join, con una ruta guardada que retroceda. Fuera de la llamada que
-disparó el join, esa guarda responde `false`.
+`Validate` no interpreta guardas, así que no detecta una guarda propia que no mire el
+veredicto. Usar `workflow.JoinRejected` en la ruta que retrocede evita ese error. Fuera de la
+llamada que disparó el join, esa guarda responde `false`.
 
 **`JoinAllApprove`.** Ana envía; Juan aprueba; Pedro rechaza con "falta el certificado";
 la tarea pendiente de María se cancela; el caso vuelve a Ana:
@@ -275,8 +278,8 @@ su rama quedó cancelada.
   política decide con las que quedan. Cancelar dos de tres ramas deja que un solo voto
   apruebe bajo `JoinAllApprove`.
 - Se cuenta por rama, no por persona. El motor no impide que una misma persona responda
-  varias ramas: separar a los aprobadores le corresponde a la elegibilidad de cada nodo y a
-  la autorización del consumidor.
+  varias ramas: separar a los aprobadores le corresponde al consumidor, con la elegibilidad
+  de cada nodo y su autorización. Ver [cómo hacerlo](#separar-a-los-aprobadores).
 - Una transición `OnExpire` que entra al join lleva su `Outcome` como cualquier otra, sin
   comentario, y `JoinResults` muestra la causa `expired`. Sin `OnExpire`, el token queda
   pendiente, así que `JoinAllApprove` y `JoinCollect` pueden esperar indefinidamente.
@@ -285,6 +288,30 @@ su rama quedó cancelada.
   aplicar la migración `011` con rondas abiertas, al agregar la política a una definición ya
   registrada sin subir su versión, o con un `Repository` propio que no guarde
   `Token.Outcome`. La respuesta sigue en su evento `waiting`.
+
+### Separar a los aprobadores
+
+Si las ramas de un bloque comparten perfil, una sola persona podría responderlas todas y
+cumplir `JoinAllApprove` por su cuenta. Para impedirlo, el consumidor revisa la ronda antes
+de llamar a `Move`, dentro de la misma transacción:
+
+```go
+history, err := engine.History(ctx, tx, caseID)
+if err != nil {
+    return err
+}
+for i := range history {
+    ev := &history[i]
+    if ev.Kind == workflow.EventMoved && ev.ScopeID == token.ScopeID &&
+        ev.ToState == joinNode && ev.Actor.ID == actor.ID {
+        return ErrAlreadyAnswered // Error del consumidor.
+    }
+}
+```
+
+Cada ronda abre su propio scope, así que quien aprobó en una ronda anterior puede votar en la
+siguiente. El motor no decide esto porque no sabe resolver personas: el consumidor define qué
+hacer con un subrogante o con quien actúa en nombre de otro.
 
 ### Concurrencia
 

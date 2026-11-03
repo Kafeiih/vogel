@@ -200,6 +200,135 @@ func TestValidate_RejectedRequiresComment(t *testing.T) {
 	})
 }
 
+// without removes d's transitions from a node with an action.
+func without(d Definition, from, action string) Definition {
+	kept := make([]Transition, 0, len(d.Transitions))
+	for i := range d.Transitions {
+		if d.Transitions[i].From != from || d.Transitions[i].Action != action {
+			kept = append(kept, d.Transitions[i])
+		}
+	}
+	d.Transitions = kept
+	return d
+}
+
+func TestValidate_BranchMustDeclareBothOutcomes(t *testing.T) {
+	const want = `parallel split "fork": branch "to-juan" must declare both an approved and a rejected outcome entering join "vote"`
+	defs := map[string]Definition{
+		"all_approve": approvalDefinition(JoinAllApprove),
+		"any_approve": approvalDefinition(JoinAnyApprove),
+		"collect":     collectDefinition(),
+	}
+	for name, d := range defs {
+		t.Run(name+" without reject", func(t *testing.T) {
+			err := without(d, "juan", "reject").Validate()
+			require.ErrorIs(t, err, ErrInvalidDefinition)
+			assert.Contains(t, err.Error(), want)
+		})
+		t.Run(name+" without approve", func(t *testing.T) {
+			err := without(d, "juan", "approve").Validate()
+			require.ErrorIs(t, err, ErrInvalidDefinition)
+			assert.Contains(t, err.Error(), want)
+		})
+	}
+	t.Run("two tasks of one branch may declare one each", func(t *testing.T) {
+		d := without(approvalDefinition(JoinAllApprove), "juan", "reject")
+		d.Nodes = append(d.Nodes, Node{ID: "juan-review"})
+		d.Transitions = append(d.Transitions,
+			Transition{From: "juan", To: "juan-review", Action: "escalate"},
+			Transition{From: "juan-review", To: "vote", Action: "reject", Outcome: OutcomeRejected, Comment: CommentRequired})
+		assert.NoError(t, d.Validate())
+	})
+}
+
+func TestValidate_RejectedRouteMustGoBack(t *testing.T) {
+	retarget := func(policy JoinPolicy, backTo, onwardTo string) Definition {
+		d := approvalDefinition(policy)
+		for i := range d.Transitions {
+			switch {
+			case d.Transitions[i].From == "route" && d.Transitions[i].Guard != "":
+				d.Transitions[i].To = backTo
+			case d.Transitions[i].From == "route":
+				d.Transitions[i].To = onwardTo
+			}
+		}
+		return d
+	}
+	for _, policy := range []JoinPolicy{JoinAllApprove, JoinAnyApprove} {
+		want := `join node "vote": under ` + string(policy) + ` no guarded route of decision "route" can go back to split "fork"`
+		t.Run(string(policy)+" with both routes forward", func(t *testing.T) {
+			err := retarget(policy, "publish", "publish").Validate()
+			require.ErrorIs(t, err, ErrInvalidDefinition)
+			assert.Contains(t, err.Error(), want)
+		})
+		t.Run(string(policy)+" ending the case on a rejection", func(t *testing.T) {
+			err := retarget(policy, "done", "publish").Validate()
+			require.ErrorIs(t, err, ErrInvalidDefinition)
+			assert.Contains(t, err.Error(), want)
+		})
+		t.Run(string(policy)+" with only the default going back", func(t *testing.T) {
+			err := retarget(policy, "publish", "submit").Validate()
+			require.ErrorIs(t, err, ErrInvalidDefinition)
+			assert.Contains(t, err.Error(), want)
+		})
+	}
+	t.Run("through a later task", func(t *testing.T) {
+		d := approvalDefinition(JoinAllApprove)
+		d.Nodes = append(d.Nodes, Node{ID: "fix"})
+		for i := range d.Transitions {
+			if d.Transitions[i].Action == "back" {
+				d.Transitions[i].To = "fix"
+			}
+		}
+		d.Transitions = append(d.Transitions, Transition{From: "fix", To: "submit", Action: "resubmit"})
+		assert.NoError(t, d.Validate())
+	})
+	t.Run("through a second decision", func(t *testing.T) {
+		d := approvalDefinition(JoinAllApprove)
+		d.Nodes = append(d.Nodes, Node{ID: "route2", Kind: NodeDecision})
+		for i := range d.Transitions {
+			if d.Transitions[i].Action == "back" {
+				d.Transitions[i].To = "route2"
+			}
+		}
+		d.Transitions = append(d.Transitions,
+			Transition{From: "route2", To: "publish", Action: "skip", Guard: "other"},
+			Transition{From: "route2", To: "submit", Action: "again"})
+		assert.NoError(t, d.Validate())
+	})
+	t.Run("collect has no verdict to route", func(t *testing.T) {
+		assert.NoError(t, collectDefinition().Validate())
+	})
+}
+
+// TestConsumer_CanDetectAPersonAnsweringTwice runs the pattern the guide gives
+// consumers for keeping approvers apart: the engine counts branches, so the
+// consumer reads the round's moves into the join before calling Move.
+func TestConsumer_CanDetectAPersonAnsweringTwice(t *testing.T) {
+	r := openRound(t, Config{}, approvalDefinition(JoinAllApprove))
+	answered := func(scope uuid.UUID, join, actor string) bool {
+		history, err := r.e.History(context.Background(), nil, r.c.ID)
+		require.NoError(t, err)
+		for i := range history {
+			ev := &history[i]
+			if ev.Kind == EventMoved && ev.ScopeID == scope && ev.ToState == join && ev.Actor.ID == actor {
+				return true
+			}
+		}
+		return false
+	}
+	scope := r.active["juan"].ScopeID
+	assert.False(t, answered(scope, "vote", "juan"))
+	r.decide("juan", "approve", "")
+	assert.True(t, answered(scope, "vote", "juan"), "juan already answered this round")
+	assert.False(t, answered(scope, "vote", "pedro"))
+
+	r.decide("pedro", "reject", "no")
+	move(t, r.e, r.c.ID, uuid.Nil, "send")
+	next := activeTokens(t, r.e, r.c.ID)["juan"].ScopeID
+	assert.False(t, answered(next, "vote", "juan"), "a new round starts clean")
+}
+
 // S10
 
 // policyEngine returns an engine over a fresh fake repository with defs
@@ -517,6 +646,7 @@ func nestedApprovalDefinition() Definition {
 			{From: "compliance", To: "merge2", Action: "clear"},
 			{From: "merge2", To: "legal", Action: "cleared"},
 			{From: "legal", To: "vote", Action: "approve", Outcome: OutcomeApproved},
+			{From: "legal", To: "vote", Action: "reject", Outcome: OutcomeRejected, Comment: CommentRequired},
 			{From: "finance", To: "vote", Action: "approve", Outcome: OutcomeApproved},
 			{From: "finance", To: "vote", Action: "reject", Outcome: OutcomeRejected, Comment: CommentRequired},
 			{From: "vote", To: "route", Action: "tallied"},
@@ -805,6 +935,7 @@ func deepApprovalDefinition() Definition {
 			{From: "mid", To: "merge2", Action: "clear"},
 			{From: "merge2", To: "legal", Action: "cleared"},
 			{From: "legal", To: "vote", Action: "approve", Outcome: OutcomeApproved},
+			{From: "legal", To: "vote", Action: "reject", Outcome: OutcomeRejected, Comment: CommentRequired},
 			{From: "finance", To: "vote", Action: "approve", Outcome: OutcomeApproved},
 			{From: "finance", To: "vote", Action: "reject", Outcome: OutcomeRejected, Comment: CommentRequired},
 			{From: "vote", To: "route", Action: "tallied"},
