@@ -198,7 +198,8 @@ type MoveInput struct {
 // written after the case's revision compare-and-swap, so two moves of one
 // case never commit concurrently: the slower fails with ErrConflict and its
 // retry sees the other's tokens. Assignment is always cleared on a move,
-// since a new node means a new claim.
+// since a new node means a new claim, unless the node a token comes to rest on
+// declares a Node.AssignRule and Config.Assignees names a person.
 //
 // The human-driven transition is checked in a fixed order before anything
 // is mutated: first its CommentPolicy (see checkComment), then — only if it

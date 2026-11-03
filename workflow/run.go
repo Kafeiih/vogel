@@ -43,6 +43,10 @@ type caseRun struct {
 	// joinResults holds, by the token a policy join created in this call, the
 	// round guards read through Case.JoinResult while that token routes.
 	joinResults map[uuid.UUID]*JoinResult
+	// history is the case's stored history, read at most once per call and only
+	// for a node that declares a Node.AssignRule (see fullHistory).
+	history     []Event
+	historyRead bool
 }
 
 // loadRun reads c's tokens and scopes. An open case stored without any token
@@ -255,7 +259,7 @@ func (e *Engine) route(ctx context.Context, db pgxtx.DBTX, run *caseRun, tok *To
 			// The hop that leaves tok here records the deadline it entered
 			// with, so replaying the history rebuilds it (Event.DeadlineAt).
 			run.events[hop].DeadlineAt = copyTime(deadline)
-			return nil
+			return e.applyAssignRule(ctx, db, run, tok, next)
 		}
 	}
 }

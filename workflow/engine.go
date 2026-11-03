@@ -40,6 +40,10 @@ type Config struct {
 	// declares one. Nil means no definition may declare a deadline rule
 	// (Engine.Register fails with ErrUnknownDeadlineRule).
 	Deadlines DeadlineResolver
+	// Assignees resolves Node.AssignRule when a token comes to rest on a node
+	// that declares one. Nil means no definition may declare an assign rule
+	// (Engine.Register fails with ErrUnknownAssignRule).
+	Assignees AssigneeResolver
 }
 
 // Engine runs a set of registered Definitions against a Repository: it
@@ -55,6 +59,8 @@ type Engine struct {
 	joinCheck func(ctx context.Context, db pgxtx.DBTX, j JoinRecord) error
 	// deadlines is Config.Deadlines.
 	deadlines DeadlineResolver
+	// assignees is Config.Assignees.
+	assignees AssigneeResolver
 
 	mu          sync.RWMutex
 	definitions map[string]Definition // by Key(): "Name@Version"
@@ -133,6 +139,7 @@ func New(repo Repository, cfg Config, logger *slog.Logger, opts ...Option) *Engi
 		traceIDs:    cfg.TraceIDs,
 		joinCheck:   cfg.JoinCheck,
 		deadlines:   cfg.Deadlines,
+		assignees:   cfg.Assignees,
 		definitions: make(map[string]Definition),
 		latest:      make(map[string]Definition),
 		guards:      make(map[string]GuardFunc),
@@ -172,7 +179,8 @@ func WithDefinitions(defs ...Definition) Option {
 // effect fails with ErrUnknownEffect when no EffectSink is set, or when the
 // sink's HasEffect reports false for that name. A definition declaring a
 // Node.DeadlineRule fails with ErrUnknownDeadlineRule when Config.Deadlines
-// is nil.
+// is nil, and one declaring a Node.AssignRule with ErrUnknownAssignRule when
+// Config.Assignees is nil.
 func (e *Engine) Register(d Definition) error {
 	if err := d.Validate(); err != nil {
 		return fmt.Errorf("workflow: register definition %q: %w", d.Key(), err)
@@ -183,6 +191,10 @@ func (e *Engine) Register(d Definition) error {
 	if rules := d.DeadlineRules(); len(rules) > 0 && e.deadlines == nil {
 		return fmt.Errorf("workflow: register definition %q: %w: no deadline resolver set for %s",
 			d.Key(), ErrUnknownDeadlineRule, strings.Join(rules, ", "))
+	}
+	if rules := d.AssignRules(); len(rules) > 0 && e.assignees == nil {
+		return fmt.Errorf("workflow: register definition %q: %w: no assignee resolver set for %s",
+			d.Key(), ErrUnknownAssignRule, strings.Join(rules, ", "))
 	}
 
 	e.mu.Lock()

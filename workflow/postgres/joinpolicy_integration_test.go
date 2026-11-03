@@ -4,8 +4,11 @@ package postgres_test
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -218,4 +221,176 @@ func TestVerifyChain_CoversOutcomeDetail(t *testing.T) {
 
 	err := alterInTx(t, pool, e, c, `UPDATE workflow_event SET detail = '{"outcome":"approved"}' WHERE case_id = $1 AND kind = 'waiting'`)
 	requireChainBrokenAt(t, err, c.ID, waitingSeq)
+}
+
+type keepActorRule struct{ boom bool }
+
+func (p *keepActorRule) Assignee(ctx context.Context, db pgxtx.DBTX, in workflow.AssignInput) (string, error) {
+	if p.boom {
+		return "", errors.New("rule boom")
+	}
+	return workflow.LastActorOf(in.History, in.Node.ID), nil
+}
+
+func nestedApprovalTestDefinition() workflow.Definition {
+	return workflow.Definition{
+		Name: "nested-approval", Version: 1,
+		Nodes: []workflow.Node{
+			{ID: "submit", Start: true, AssignRule: "keep"},
+			{ID: "fork", Kind: workflow.NodeParallel, Join: "vote"},
+			{ID: "a"},
+			{ID: "b0"},
+			{ID: "ifork", Kind: workflow.NodeParallel, Join: "ivote"},
+			{ID: "b1"}, {ID: "b2"},
+			{ID: "ivote", Kind: workflow.NodeJoin, JoinPolicy: workflow.JoinCollect},
+			{ID: "b3"},
+			{ID: "vote", Kind: workflow.NodeJoin, JoinPolicy: workflow.JoinAllApprove},
+			{ID: "route", Kind: workflow.NodeDecision},
+			{ID: "publish"},
+			{ID: "done", Terminal: true},
+		},
+		Transitions: []workflow.Transition{
+			{From: "submit", To: "fork", Action: "send"},
+			{From: "fork", To: "a", Action: "to-a"},
+			{From: "fork", To: "b0", Action: "to-b"},
+			{From: "a", To: "vote", Action: "approve", Outcome: workflow.OutcomeApproved},
+			{From: "a", To: "vote", Action: "reject", Outcome: workflow.OutcomeRejected, Comment: workflow.CommentRequired},
+			{From: "b0", To: "ifork", Action: "go"},
+			{From: "ifork", To: "b1", Action: "to-b1"},
+			{From: "ifork", To: "b2", Action: "to-b2"},
+			{From: "b1", To: "ivote", Action: "approve", Outcome: workflow.OutcomeApproved},
+			{From: "b1", To: "ivote", Action: "reject", Outcome: workflow.OutcomeRejected},
+			{From: "b2", To: "ivote", Action: "approve", Outcome: workflow.OutcomeApproved},
+			{From: "b2", To: "ivote", Action: "reject", Outcome: workflow.OutcomeRejected},
+			{From: "ivote", To: "b3", Action: "tallied"},
+			{From: "b3", To: "vote", Action: "approve", Outcome: workflow.OutcomeApproved},
+			{From: "b3", To: "vote", Action: "reject", Outcome: workflow.OutcomeRejected, Comment: workflow.CommentRequired},
+			{From: "vote", To: "route", Action: "tallied"},
+			{From: "route", To: "submit", Action: "back", Guard: "rejected"},
+			{From: "route", To: "publish", Action: "onward"},
+			{From: "publish", To: "done", Action: "finish"},
+		},
+	}
+}
+
+// Nested early close, rule, rule failure rollback, resubmit, full close, chain.
+func TestJoinPolicy_NestedEarlyCloseRoundTrip(t *testing.T) {
+	pool := startTestPool(t)
+	ctx := context.Background()
+	rule := &keepActorRule{}
+	repo := postgres.NewRepository()
+	e := workflow.New(repo, workflow.Config{Assignees: rule}, nil, workflow.WithDefinitions(nestedApprovalTestDefinition()))
+	require.NoError(t, e.RegisterGuard("rejected", workflow.JoinRejected))
+	c, err := e.Open(ctx, pool, workflow.OpenInput{Definition: "nested-approval", Domain: "p", ExternalID: uuid.NewString(), Unit: "hq", Actor: workflow.Actor{ID: "ana"}})
+	require.NoError(t, err)
+
+	active := func() map[string]workflow.Token {
+		toks, err := e.Tokens(ctx, pool, c.ID)
+		require.NoError(t, err)
+		m := map[string]workflow.Token{}
+		for _, tk := range toks {
+			if tk.Status == workflow.TokenActive {
+				m[tk.Node] = tk
+			}
+		}
+		return m
+	}
+	mv := func(node, action, comment string) error {
+		return tryTx(pool, func(tx pgxtx.DBTX) error {
+			_, err := e.Move(ctx, tx, workflow.MoveInput{CaseID: c.ID, TokenID: active()[node].ID, Action: action, Comment: comment, Actor: workflow.Actor{ID: node + "-person"}})
+			return err
+		})
+	}
+	require.NoError(t, tryTx(pool, func(tx pgxtx.DBTX) error {
+		_, err := e.Move(ctx, tx, workflow.MoveInput{CaseID: c.ID, Action: "send", Actor: workflow.Actor{ID: "ana"}})
+		return err
+	}))
+	require.NoError(t, mv("b0", "go", ""))
+	require.NoError(t, mv("b1", "approve", "")) // inner waiting with outcome
+
+	// Stored outcome reads back on a waiting token.
+	toks, err := repo.ListTokens(ctx, pool, c.ID)
+	require.NoError(t, err)
+	found := false
+	for _, tk := range toks {
+		if tk.Status == workflow.TokenWaiting {
+			assert.Equal(t, workflow.OutcomeApproved, tk.Outcome)
+			found = true
+		}
+	}
+	assert.True(t, found)
+
+	// Rule failing in the call that closes the round rolls back everything.
+	before, err := e.History(ctx, pool, c.ID)
+	require.NoError(t, err)
+	rule.boom = true
+	err = mv("a", "reject", "no")
+	require.Error(t, err)
+	rule.boom = false
+	after, err := e.History(ctx, pool, c.ID)
+	require.NoError(t, err)
+	assert.Equal(t, len(before), len(after))
+
+	require.NoError(t, mv("a", "reject", "falta"))
+	got, err := repo.GetByID(ctx, pool, c.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "submit", got.State)
+	assert.Equal(t, "ana", got.AssignedTo, "rule kept the person")
+	scopes, err := repo.ListScopes(ctx, pool, c.ID)
+	require.NoError(t, err)
+	st := map[workflow.ScopeStatus]int{}
+	for _, s := range scopes {
+		st[s.Status]++
+	}
+	assert.Equal(t, 1, st[workflow.ScopeCancelled], "%+v", scopes)
+	assert.Equal(t, 1, st[workflow.ScopeJoined])
+	toks, err = repo.ListTokens(ctx, pool, c.ID)
+	require.NoError(t, err)
+	for _, tk := range toks {
+		if tk.Node == "ivote" {
+			assert.Equal(t, workflow.TokenCancelled, tk.Status)
+			assert.Equal(t, workflow.OutcomeApproved, tk.Outcome)
+		}
+	}
+
+	// Inbox after early close lists only submit.
+	items, err := e.Inbox(ctx, pool, workflow.InboxFilter{})
+	require.NoError(t, err)
+	for _, it := range items {
+		if it.Case.ID == c.ID {
+			assert.Equal(t, "submit", it.Token.Node)
+		}
+	}
+
+	// Next round closes approved.
+	require.NoError(t, mv("submit", "send", ""))
+	require.NoError(t, mv("a", "approve", ""))
+	require.NoError(t, mv("b0", "go", ""))
+	require.NoError(t, mv("b1", "reject", ""))
+	require.NoError(t, mv("b2", "approve", ""))
+	require.NoError(t, mv("b3", "approve", ""))
+	got, err = repo.GetByID(ctx, pool, c.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "publish", got.State)
+
+	results, err := e.JoinResults(ctx, pool, c.ID)
+	require.NoError(t, err)
+	require.Len(t, results, 3)
+	assert.Equal(t, workflow.OutcomeRejected, results[0].Verdict)
+	assert.Equal(t, 1, results[0].Count(workflow.OutcomeUnanswered))
+	assert.Equal(t, "falta", results[0].Branches[0].Comment)
+	assert.Equal(t, "ivote", results[1].JoinNode)
+	assert.Equal(t, workflow.OutcomeApproved, results[2].Verdict)
+
+	evs, err := e.History(ctx, pool, c.ID)
+	require.NoError(t, err)
+	for _, ev := range evs {
+		assert.Equal(t, workflow.CurrentEventSchema, ev.SchemaVersion)
+		if ev.Kind == workflow.EventJoined {
+			var d workflow.JoinDetail
+			require.NoError(t, json.Unmarshal(ev.Detail, &d))
+			assert.Equal(t, 2, len(d.Branches))
+		}
+	}
+	require.NoError(t, e.VerifyChain(ctx, pool, c.ID))
 }
