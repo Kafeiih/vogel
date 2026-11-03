@@ -238,7 +238,7 @@ func nestedApprovalTestDefinition() workflow.Definition {
 		Nodes: []workflow.Node{
 			{ID: "submit", Start: true, AssignRule: "keep"},
 			{ID: "fork", Kind: workflow.NodeParallel, Join: "vote"},
-			{ID: "a"},
+			{ID: "a", AssignRule: "keep"},
 			{ID: "b0"},
 			{ID: "ifork", Kind: workflow.NodeParallel, Join: "ivote"},
 			{ID: "b1"}, {ID: "b2"},
@@ -336,6 +336,9 @@ func TestJoinPolicy_NestedEarlyCloseRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "submit", got.State)
 	assert.Equal(t, "ana", got.AssignedTo, "rule kept the person")
+	// The stored token holds the assignee, not only the case projection: this
+	// token is the one the join created on the way back.
+	assert.Equal(t, "ana", active()["submit"].AssignedTo, "a rule after a join reaches the token row")
 	scopes, err := repo.ListScopes(ctx, pool, c.ID)
 	require.NoError(t, err)
 	st := map[workflow.ScopeStatus]int{}
@@ -364,6 +367,12 @@ func TestJoinPolicy_NestedEarlyCloseRoundTrip(t *testing.T) {
 
 	// Next round closes approved.
 	require.NoError(t, mv("submit", "send", ""))
+	// A rule on a split's branch: the person who left "a" in the earlier round.
+	assert.Equal(t, "a-person", active()["a"].AssignedTo, "a rule on a split branch reaches the token row")
+	assigned, err := e.Inbox(ctx, pool, workflow.InboxFilter{AssignedTo: "a-person"})
+	require.NoError(t, err)
+	require.Len(t, assigned, 1, "the inbox filters on the stored assignee")
+	assert.Equal(t, "a", assigned[0].Token.Node)
 	require.NoError(t, mv("a", "approve", ""))
 	require.NoError(t, mv("b0", "go", ""))
 	require.NoError(t, mv("b1", "reject", ""))

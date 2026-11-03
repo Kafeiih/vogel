@@ -226,6 +226,19 @@ func branchCause(evt *Event) (string, error) {
 	}
 }
 
+// childOnPath walks up from s and returns the scope on that path whose parent is
+// ancestor, or nil when s is not open inside ancestor. It reads parents by ID, so
+// it needs no particular order from Repository.ListScopes.
+func (r *caseRun) childOnPath(s *Scope, ancestor uuid.UUID) *Scope {
+	for s != nil && s.Status == ScopeOpen && s.ParentID != nil {
+		if *s.ParentID == ancestor {
+			return s
+		}
+		s = r.scope(*s.ParentID)
+	}
+	return nil
+}
+
 // closeBranches finishes a round under policy: it cancels what is still pending
 // inside scope (its active tokens, and the live tokens of every scope still
 // open inside it, in token order), and returns one BranchResult per branch,
@@ -233,21 +246,17 @@ func branchCause(evt *Event) (string, error) {
 // EventJoined's Seq. A round that closes complete has nothing pending.
 func (r *caseRun) closeBranches(scope *Scope, policy JoinPolicy) ([]BranchResult, []*Scope, error) {
 	// branchOf maps each scope open inside scope to the direct child standing
-	// for its branch. r.scopes lists a parent before its children.
+	// for its branch.
 	branchOf := make(map[uuid.UUID]uuid.UUID)
 	var nested []*Scope
 	for _, s := range r.scopes {
-		if s.Status != ScopeOpen || s.ParentID == nil {
+		if s.Status != ScopeOpen {
 			continue
 		}
-		if *s.ParentID == scope.ID {
-			branchOf[s.ID] = s.ID
-		} else if child, ok := branchOf[*s.ParentID]; ok {
-			branchOf[s.ID] = child
-		} else {
-			continue
+		if child := r.childOnPath(s, scope.ID); child != nil {
+			branchOf[s.ID] = child.ID
+			nested = append(nested, s)
 		}
-		nested = append(nested, s)
 	}
 
 	var pending []Token
