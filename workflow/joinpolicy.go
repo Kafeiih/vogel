@@ -376,8 +376,9 @@ func reaches(from, to string, outgoingByNode map[string][]Transition) bool {
 // and JoinAnyApprove, so the reason is always recorded; a JoinCollect join
 // reaching a task node, where a person decides; a verdict join reaching a
 // decision node with a guarded route that can go back to the split; and every
-// branch able to answer both ways. Guards stay opaque, so a guard that doesn't
-// test the verdict goes undetected: routing relies on JoinRejected for that.
+// branch able to answer both ways. This proves a way back exists, not that every
+// rejection takes it: guards stay opaque, so a guard that doesn't test the verdict
+// goes undetected, and routing relies on JoinRejected for that.
 func validateJoinPolicies(d Definition, nodeByID map[string]Node, outgoingByNode map[string][]Transition, addf func(string, ...any)) {
 	for i := range d.Nodes {
 		n := &d.Nodes[i]

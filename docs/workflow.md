@@ -180,8 +180,9 @@ Sin política, el join se comporta como siempre: no hay outcomes, tally ni vered
   o en tareas distintas de la rama.
 - Bajo `JoinAllApprove` y `JoinAnyApprove`, una transición rechazada tiene
   `Comment: CommentRequired`, y la salida del join llega a un nodo de decisión con una ruta
-  guardada que puede volver al split. Un rechazo tampoco puede terminar el caso: para eso,
-  usar `JoinCollect` y que una persona lo decida.
+  guardada que puede volver al split. Eso prueba que el camino de vuelta existe, no que todo
+  rechazo lo tome. Para que un rechazo termine el caso, usar `JoinCollect` y que una persona
+  lo decida.
 - Bajo `JoinCollect`, la salida del join llega a un nodo de tarea.
 - Un join nombrado por un `NodeInclusive` no puede tener política, porque ese split
   puede ir directo al join y esa rama no tendría decisión.
