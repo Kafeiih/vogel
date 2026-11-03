@@ -7,6 +7,8 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ## [Unreleased]
 
+## [0.23.0] — 2026-11-03
+
 ### Agregado
 
 - **`docs/STABILITY.md`: política de estabilidad de la API.** Clasifica los
