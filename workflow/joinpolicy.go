@@ -1,5 +1,14 @@
 package workflow
 
+import (
+	"context"
+	"sort"
+
+	"github.com/google/uuid"
+
+	"github.com/kafeiih/vogel/pgxtx"
+)
+
 // JoinPolicy declares how the branches of a parallel block decide at its join
 // (Node.JoinPolicy). The zero value is no policy: the join waits for every
 // branch and records no outcome, tally or verdict.
@@ -43,12 +52,166 @@ const (
 	OutcomeUnanswered Outcome = "unanswered"
 )
 
+// roundTally counts a round's branches so far: the waiting ones by answer, the
+// cancelled ones, and how many branches the scope expects.
+type roundTally struct {
+	approved, rejected, cancelled, expected int
+}
+
+// closes reports whether a round under policy p closes at tally t, and with
+// what verdict. A cancelled branch is no vote: it only stops being awaited.
+func (p JoinPolicy) closes(t roundTally) (bool, Outcome) {
+	waiting := t.approved + t.rejected
+	complete := waiting > 0 && waiting+t.cancelled == t.expected
+	switch p {
+	case JoinAllApprove:
+		switch {
+		case t.rejected > 0:
+			return true, OutcomeRejected
+		case complete:
+			return true, OutcomeApproved
+		}
+	case JoinAnyApprove:
+		switch {
+		case t.approved > 0:
+			return true, OutcomeApproved
+		case complete:
+			return true, OutcomeRejected
+		}
+	case JoinCollect:
+		return complete, ""
+	}
+	return false, ""
+}
+
+// BranchResult is one branch of a round in JoinDetail: its token, what it
+// answered (OutcomeUnanswered when it was cancelled first) and the Seq of the
+// event to read about it: the move into the join, holding the actor and the
+// comment, or the EventTokenCancelled. A branch that was running a nested block
+// when the round closed reports the first token cancelled inside that block.
+type BranchResult struct {
+	Token   uuid.UUID `json:"token"`
+	Outcome Outcome   `json:"outcome"`
+	Seq     int64     `json:"seq"`
+}
+
+// JoinBranch is one branch of a JoinResult.
+type JoinBranch struct {
+	BranchResult
+}
+
+// JoinResult is one closed round of a join with a policy: which join, under
+// what policy, its verdict (empty under JoinCollect), the Seq of its
+// EventJoined and every branch, oldest answer first.
+type JoinResult struct {
+	Scope    uuid.UUID
+	JoinNode string
+	Policy   JoinPolicy
+	Verdict  Outcome
+	Seq      int64
+	Branches []JoinBranch
+}
+
+// Count returns how many branches of the round reported outcome.
+func (r JoinResult) Count(outcome Outcome) int {
+	n := 0
+	for i := range r.Branches {
+		if r.Branches[i].Outcome == outcome {
+			n++
+		}
+	}
+	return n
+}
+
+// JoinRejected is a GuardFunc for the decision node after a join with a verdict
+// policy: it passes when the round that just closed was rejected, so the
+// decision's guarded route is the way back and its unguarded default the way
+// forward. Register it under any name. It reads Case.JoinResult, so where no
+// round closed in the current call it reports false.
+func JoinRejected(_ context.Context, _ pgxtx.DBTX, c Case) (bool, error) {
+	return c.JoinResult != nil && c.JoinResult.Verdict == OutcomeRejected, nil
+}
+
+// closeBranches finishes a round under policy: it cancels what is still pending
+// inside scope (its active tokens, and the live tokens of every scope still
+// open inside it, in token order), and returns one BranchResult per branch,
+// ordered by Seq, and the nested scopes the caller must cancel at the
+// EventJoined's Seq. A round that closes complete has nothing pending.
+func (r *caseRun) closeBranches(scope *Scope, policy JoinPolicy) ([]BranchResult, []*Scope, error) {
+	// branchOf maps each scope open inside scope to the direct child standing
+	// for its branch. r.scopes lists a parent before its children.
+	branchOf := make(map[uuid.UUID]uuid.UUID)
+	var nested []*Scope
+	for _, s := range r.scopes {
+		if s.Status != ScopeOpen || s.ParentID == nil {
+			continue
+		}
+		if *s.ParentID == scope.ID {
+			branchOf[s.ID] = s.ID
+		} else if child, ok := branchOf[*s.ParentID]; ok {
+			branchOf[s.ID] = child
+		} else {
+			continue
+		}
+		nested = append(nested, s)
+	}
+
+	var pending []Token
+	for _, t := range r.tokens {
+		_, inNested := branchOf[t.ScopeID]
+		if (t.ScopeID == scope.ID && t.Status == TokenActive) || (inNested && t.Status.Live()) {
+			pending = append(pending, *t)
+		}
+	}
+	sortTokens(pending)
+
+	var branches []BranchResult
+	if len(pending) > 0 {
+		detail, err := cancelDetail("join_policy:" + string(policy))
+		if err != nil {
+			return nil, nil, err
+		}
+		reported := make(map[uuid.UUID]bool)
+		for i := range pending {
+			t := r.token(pending[i].ID)
+			child, inNested := branchOf[t.ScopeID]
+			seq := r.emit(&Event{
+				Kind: EventTokenCancelled, TokenID: t.ID, ScopeID: t.ScopeID,
+				FromState: t.Node, ToState: t.Node, Detail: detail,
+			})
+			r.end(t, TokenCancelled, seq)
+			if inNested && !reported[child] {
+				reported[child] = true
+				branches = append(branches, BranchResult{Token: t.ID, Outcome: OutcomeUnanswered, Seq: seq})
+			}
+		}
+	}
+	for _, t := range r.tokens {
+		if t.ScopeID != scope.ID {
+			continue
+		}
+		switch t.Status {
+		case TokenWaiting:
+			branches = append(branches, BranchResult{Token: t.ID, Outcome: t.Outcome, Seq: t.EnteredSeq})
+		case TokenCancelled:
+			branches = append(branches, BranchResult{Token: t.ID, Outcome: OutcomeUnanswered, Seq: t.EndedSeq})
+		case TokenActive, TokenConsumed:
+			// Nothing is active after the cancellations above, and a token a
+			// nested split consumed is continued by another token or scope.
+		}
+	}
+	sort.Slice(branches, func(i, j int) bool { return branches[i].Seq < branches[j].Seq })
+	return branches, nested, nil
+}
+
 // validateJoinPolicies reports the violations of the policy rules through
 // addf: a policy only on a join, and never on one an inclusive split names (it
 // may route straight to its join, so that branch would have no decision); an
 // outcome on exactly the transitions that enter a join with a policy, each
-// leaving a task node; and a required comment on a rejection under
-// JoinAllApprove and JoinAnyApprove, so the reason is always recorded.
+// leaving a task node; a required comment on a rejection under JoinAllApprove
+// and JoinAnyApprove, so the reason is always recorded; a JoinCollect join
+// reaching a task node, where a person decides; and a verdict join reaching a
+// decision node, so a rejection can never advance by accident.
 func validateJoinPolicies(d Definition, nodeByID map[string]Node, addf func(string, ...any)) {
 	for i := range d.Nodes {
 		n := &d.Nodes[i]
@@ -61,6 +224,22 @@ func validateJoinPolicies(d Definition, nodeByID map[string]Node, addf func(stri
 		}
 		if !n.JoinPolicy.Valid() {
 			addf("join node %q: invalid join policy %q", n.ID, n.JoinPolicy)
+		}
+		for _, tr := range d.TransitionsFrom(n.ID) {
+			to, ok := nodeByID[tr.To]
+			if !ok {
+				continue
+			}
+			switch n.JoinPolicy {
+			case JoinCollect:
+				if to.Kind.IsAutomatic() || to.Terminal {
+					addf("join node %q: under %s its outgoing transition must reach a task node, got %q", n.ID, n.JoinPolicy, to.ID)
+				}
+			case JoinAllApprove, JoinAnyApprove:
+				if to.Kind != NodeDecision {
+					addf("join node %q: under %s its outgoing transition must reach a decision node, got %q", n.ID, n.JoinPolicy, to.ID)
+				}
+			}
 		}
 	}
 	for i := range d.Nodes {

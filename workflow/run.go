@@ -40,6 +40,9 @@ type caseRun struct {
 	events       []Event
 	joined       []JoinRecord
 	gatewaySteps int
+	// joinResults holds, by the token a policy join created in this call, the
+	// round guards read through Case.JoinResult while that token routes.
+	joinResults map[uuid.UUID]*JoinResult
 }
 
 // loadRun reads c's tokens and scopes. An open case stored without any token
@@ -156,12 +159,14 @@ func (r *caseRun) pick(id uuid.UUID) (*Token, error) {
 }
 
 // snapshot is the Case a guard sees while tok is evaluated: the case with
-// State, AssignedTo and DeadlineAt taken from tok and State set to node.
+// State, AssignedTo and DeadlineAt taken from tok and State set to node, and
+// JoinResult set when tok is the token a policy join created in this call.
 func (r *caseRun) snapshot(tok *Token, node string) Case {
 	c := *r.c
 	c.State = node
 	c.AssignedTo = tok.AssignedTo
 	c.DeadlineAt = tok.DeadlineAt
+	c.JoinResult = r.joinResults[tok.ID]
 	return c
 }
 
@@ -359,15 +364,16 @@ func (e *Engine) arrive(ctx context.Context, db pgxtx.DBTX, run *caseRun, tok *T
 }
 
 // tryJoin fires scope's join once every token it expects is waiting or
-// cancelled and at least one is waiting: it consumes the waiting tokens,
-// marks the scope joined, asks Config.JoinCheck, and routes one new token in
-// the parent scope along the join's outgoing transition.
+// cancelled and at least one is waiting, or as soon as the join's policy closes
+// the round (see JoinPolicy): it cancels what a policy left pending, consumes
+// the waiting tokens, marks the scope joined, asks Config.JoinCheck, and routes
+// one new token in the parent scope along the join's outgoing transition.
 func (e *Engine) tryJoin(ctx context.Context, db pgxtx.DBTX, run *caseRun, scope *Scope) error {
 	if scope.Status != ScopeOpen {
 		return nil
 	}
 	var waiting []*Token
-	cancelled := 0
+	tally := roundTally{expected: scope.Expected}
 	for _, t := range run.tokens {
 		if t.ScopeID != scope.ID {
 			continue
@@ -375,19 +381,33 @@ func (e *Engine) tryJoin(ctx context.Context, db pgxtx.DBTX, run *caseRun, scope
 		switch t.Status {
 		case TokenWaiting:
 			waiting = append(waiting, t)
+			if t.Outcome == OutcomeRejected {
+				tally.rejected++
+			} else {
+				tally.approved++
+			}
 		case TokenCancelled:
-			cancelled++
+			tally.cancelled++
 		case TokenActive, TokenConsumed:
 			// Still on its way, or a nested split consumed it: not arrived.
 		}
 	}
-	if len(waiting) == 0 || len(waiting)+cancelled != scope.Expected {
-		return nil
+	join, ok := run.d.Node(scope.JoinNode)
+	policy := join.JoinPolicy
+	var verdict Outcome
+	if policy == "" {
+		if len(waiting) == 0 || len(waiting)+tally.cancelled != scope.Expected {
+			return nil
+		}
+	} else {
+		var closes bool
+		if closes, verdict = policy.closes(tally); !closes {
+			return nil
+		}
 	}
 	if err := run.gatewayStep(); err != nil {
 		return err
 	}
-	join, ok := run.d.Node(scope.JoinNode)
 	if !ok {
 		return fmt.Errorf("join node %q not found in definition %q", scope.JoinNode, run.d.Key())
 	}
@@ -396,12 +416,20 @@ func (e *Engine) tryJoin(ctx context.Context, db pgxtx.DBTX, run *caseRun, scope
 		return fmt.Errorf("join node %q: has %d outgoing transitions, want 1", join.ID, len(out))
 	}
 
+	var branches []BranchResult
+	var nested []*Scope
+	if policy != "" {
+		var err error
+		if branches, nested, err = run.closeBranches(scope, policy); err != nil {
+			return err
+		}
+	}
 	next := &Token{ID: uuid.New(), CaseID: run.c.ID, ScopeID: *scope.ParentID, Node: join.ID, Status: TokenActive}
 	ids := make([]uuid.UUID, len(waiting))
 	for i, t := range waiting {
 		ids[i] = t.ID
 	}
-	detail, err := marshalDetail(JoinDetail{Scope: scope.ID, JoinNode: join.ID, Tokens: ids})
+	detail, err := marshalDetail(JoinDetail{Scope: scope.ID, JoinNode: join.ID, Tokens: ids, Policy: policy, Verdict: verdict, Branches: branches})
 	if err != nil {
 		return err
 	}
@@ -409,10 +437,15 @@ func (e *Engine) tryJoin(ctx context.Context, db pgxtx.DBTX, run *caseRun, scope
 		Kind: EventJoined, TokenID: next.ID, ScopeID: scope.ID,
 		FromState: join.ID, ToState: join.ID, Detail: detail,
 	})
-	rec := JoinRecord{Tokens: make([]Token, len(waiting))}
+	rec := JoinRecord{Tokens: make([]Token, len(waiting)), Verdict: verdict, Branches: branches}
 	for i, t := range waiting {
 		run.end(t, TokenConsumed, seq)
 		rec.Tokens[i] = *t
+	}
+	for _, s := range nested {
+		s.Status = ScopeCancelled
+		s.ClosedSeq = seq
+		run.touch(s.ID)
 	}
 	scope.Status = ScopeJoined
 	scope.ClosedSeq = seq
@@ -426,7 +459,22 @@ func (e *Engine) tryJoin(ctx context.Context, db pgxtx.DBTX, run *caseRun, scope
 	}
 	run.joined = append(run.joined, rec)
 	run.addToken(next)
+	if policy != "" {
+		run.noteJoinResult(next.ID, scope, policy, verdict, seq, branches)
+	}
 	return e.route(ctx, db, run, next, out[0], "")
+}
+
+// noteJoinResult keeps the closed round for the guards that route token next.
+func (r *caseRun) noteJoinResult(next uuid.UUID, scope *Scope, policy JoinPolicy, verdict Outcome, seq int64, branches []BranchResult) {
+	result := &JoinResult{Scope: scope.ID, JoinNode: scope.JoinNode, Policy: policy, Verdict: verdict, Seq: seq, Branches: make([]JoinBranch, len(branches))}
+	for i, b := range branches {
+		result.Branches[i].BranchResult = b
+	}
+	if r.joinResults == nil {
+		r.joinResults = make(map[uuid.UUID]*JoinResult)
+	}
+	r.joinResults[next] = result
 }
 
 // closeCase consumes tok on the terminal node, closes the root scope and the

@@ -192,7 +192,9 @@ type MoveInput struct {
 // in turn. A token arriving at its scope's join waits; once waiting plus
 // cancelled tokens reach Scope.Expected, the join consumes the waiting ones,
 // asks Config.JoinCheck, and one new token continues in the parent scope
-// (which may cascade into an outer join). Every token and scope change is
+// (which may cascade into an outer join). A Node.JoinPolicy can close the round
+// earlier, cancelling the branches still pending in this same call; a later
+// Move on one of them fails with ErrTokenNotFound. Every token and scope change is
 // written after the case's revision compare-and-swap, so two moves of one
 // case never commit concurrently: the slower fails with ErrConflict and its
 // retry sees the other's tokens. Assignment is always cleared on a move,

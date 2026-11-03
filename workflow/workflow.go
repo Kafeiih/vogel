@@ -96,8 +96,9 @@ const (
 	// ScopeID is the scope that joined and its TokenID the token the join
 	// creates in the parent scope; the Detail is a JoinDetail.
 	EventJoined EventKind = "joined"
-	// EventTokenCancelled records one token cancelled by Engine.Cancel or
-	// Engine.CancelToken; the Detail is a CancelDetail.
+	// EventTokenCancelled records one token cancelled by Engine.Cancel,
+	// Engine.CancelToken or a join policy closing its round early; the Detail
+	// is a CancelDetail.
 	EventTokenCancelled EventKind = "token_cancelled"
 	// EventCancelled records Engine.Cancel ending the case; the Detail is a
 	// CancelDetail. It follows one EventTokenCancelled per live token, whose
@@ -221,8 +222,9 @@ const (
 	// names the NodeJoin where the branches meet.
 	NodeInclusive NodeKind = "inclusive"
 	// NodeJoin is where the branches of the split naming it meet: it waits
-	// until every token that split emitted arrived (or was cancelled), then
-	// one token continues through its single, unguarded outgoing transition.
+	// until every token that split emitted arrived (or was cancelled), or until
+	// its Node.JoinPolicy closes the round, then one token continues through
+	// its single, unguarded outgoing transition.
 	NodeJoin NodeKind = "join"
 )
 
@@ -938,6 +940,11 @@ type Case struct {
 	// consumer can stamp it on its own rows to record which point of the
 	// case history they saw.
 	LastSeq int64
+	// JoinResult is the round a join with a policy just closed. It is set only
+	// on the snapshot guards receive while routing the call that fired that
+	// join (see workflow.JoinRejected), and nil everywhere else: a repository
+	// never reads or writes it.
+	JoinResult *JoinResult
 }
 
 // CurrentEventSchema is the Event.SchemaVersion the engine writes. Version 1

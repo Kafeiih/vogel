@@ -107,6 +107,76 @@ func TestMigration011_RoundTrip(t *testing.T) {
 	assert.Equal(t, 1, columns())
 }
 
+// allApproveTestDefinition sends "draft" to "juan" and "maria" under
+// JoinAllApprove; both decisions run the "pause" guard, so a test can hold one
+// call between its read and its write.
+func allApproveTestDefinition() workflow.Definition {
+	return workflow.Definition{
+		Name: "all-approve", Version: 1,
+		Nodes: []workflow.Node{
+			{ID: "draft", Start: true},
+			{ID: "fork", Kind: workflow.NodeParallel, Join: "vote"},
+			{ID: "juan"},
+			{ID: "maria"},
+			{ID: "vote", Kind: workflow.NodeJoin, JoinPolicy: workflow.JoinAllApprove},
+			{ID: "route", Kind: workflow.NodeDecision},
+			{ID: "done", Terminal: true},
+		},
+		Transitions: []workflow.Transition{
+			{From: "draft", To: "fork", Action: "send"},
+			{From: "fork", To: "juan", Action: "to-juan"},
+			{From: "fork", To: "maria", Action: "to-maria"},
+			{From: "juan", To: "vote", Action: "approve", Guard: "pause", Outcome: workflow.OutcomeApproved},
+			{From: "juan", To: "vote", Action: "reject", Guard: "pause", Comment: workflow.CommentRequired, Outcome: workflow.OutcomeRejected},
+			{From: "maria", To: "vote", Action: "approve", Guard: "pause", Outcome: workflow.OutcomeApproved},
+			{From: "maria", To: "vote", Action: "reject", Guard: "pause", Comment: workflow.CommentRequired, Outcome: workflow.OutcomeRejected},
+			{From: "vote", To: "route", Action: "tallied"},
+			{From: "route", To: "draft", Action: "back", Guard: "rejected"},
+			{From: "route", To: "done", Action: "onward"},
+		},
+	}
+}
+
+// TestConcurrentDecisions_FireJoinOnce races a rejection that closes the round
+// against the other approver's decision: the case revision lets one win, the
+// loser persists nothing, and its retry finds its branch cancelled.
+func TestConcurrentDecisions_FireJoinOnce(t *testing.T) {
+	pool := startTestPool(t)
+	ctx := context.Background()
+	p := &pauser{}
+	e := workflow.New(postgres.NewRepository(), workflow.Config{}, nil, workflow.WithDefinitions(allApproveTestDefinition()))
+	require.NoError(t, e.RegisterGuard("pause", p.guard))
+	require.NoError(t, e.RegisterGuard("rejected", workflow.JoinRejected))
+	c, active := openToVote(t, pool, e, "all-approve", "race-decisions")
+
+	decide := func(tx pgxtx.DBTX, node, action, comment string) error {
+		_, err := e.Move(ctx, tx, workflow.MoveInput{CaseID: c.ID, TokenID: active[node].ID, Action: action, Comment: comment, Actor: workflow.Actor{ID: node}})
+		return err
+	}
+
+	// Juan's call reads the case, then waits in its guard while María's
+	// rejection commits and closes the round.
+	p.arm()
+	slow := make(chan error, 1)
+	go func() { slow <- tryTx(pool, func(tx pgxtx.DBTX) error { return decide(tx, "juan", "approve", "") }) }()
+	<-p.entered
+	inTx(t, pool, func(tx pgxtx.DBTX) error { return decide(tx, "maria", "reject", "falta el certificado") })
+	close(p.release)
+
+	require.ErrorIs(t, <-slow, workflow.ErrConflict, "the slower decision loses the compare-and-swap")
+	assert.Equal(t, 1, countKind(t, pool, c.ID, workflow.EventJoined), "the join fired once")
+	assert.Equal(t, 1, countKind(t, pool, c.ID, workflow.EventTokenCancelled), "only the winner's cancellation is stored")
+
+	err := tryTx(pool, func(tx pgxtx.DBTX) error { return decide(tx, "juan", "approve", "") })
+	require.ErrorIs(t, err, workflow.ErrTokenNotFound, "the retry finds its branch cancelled")
+
+	got, err := postgres.NewRepository().GetByID(ctx, pool, c.ID)
+	require.NoError(t, err)
+	assert.Equal(t, workflow.StatusOpen, got.Status)
+	assert.Equal(t, "draft", got.State, "the rejection sent the case back")
+	require.NoError(t, e.VerifyChain(ctx, pool, c.ID))
+}
+
 // TestVerifyChain_CoversOutcomeDetail proves a branch's stored decision cannot
 // change undetected: it lives in the waiting event's detail, which digest v2
 // covers, so no digest v3 is needed.

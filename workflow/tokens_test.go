@@ -952,6 +952,16 @@ func replay(t *testing.T, d Definition, c *Case, events []Event) ([]Token, []Sco
 			}
 			s := scopes[detail.Scope]
 			s.Status, s.ClosedSeq = ScopeJoined, ev.Seq
+			// A policy closing the round early cancels the scopes still open
+			// inside its block: only they can be open below a scope that joins.
+			inside := map[uuid.UUID]bool{detail.Scope: true}
+			for _, id := range scopeOrder {
+				nested := scopes[id]
+				if nested.ParentID != nil && inside[*nested.ParentID] && nested.Status == ScopeOpen {
+					inside[id] = true
+					nested.Status, nested.ClosedSeq = ScopeCancelled, ev.Seq
+				}
+			}
 			newToken(ev.TokenID, *s.ParentID, detail.JoinNode)
 		case EventClosed:
 			end(tokens[ev.TokenID], TokenConsumed, ev)
