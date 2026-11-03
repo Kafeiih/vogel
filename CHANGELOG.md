@@ -24,7 +24,8 @@ Todos los cambios relevantes de `vogel`. El formato sigue
   `all_approve` cierra la ronda con el primer rechazo y `any_approve` con la primera
   aprobación, cancelando en la misma transacción las ramas pendientes y los scopes
   abiertos dentro del bloque. `collect` espera a todas y no tiene veredicto. El evento
-  `joined` guarda la política, el veredicto y cada rama. `workflow.JoinRejected` es la
+  `joined` guarda la política, el veredicto y cada rama, y `Engine.JoinResults` devuelve
+  las rondas con el actor y el comentario de cada una. `workflow.JoinRejected` es la
   guarda que enruta por veredicto, y volver atrás abre una ronda nueva en la que todos
   votan de nuevo. Una definición sin política no cambia.
 

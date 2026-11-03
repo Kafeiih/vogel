@@ -121,9 +121,11 @@ func TestMigration011_RoundTrip(t *testing.T) {
           AND t.outcome IS NULL AND e.detail ? 'outcome'`)
 	require.NoError(t, err)
 	inTx(t, pool, vote)
-	got, err := postgres.NewRepository().GetByID(ctx, pool, c.ID)
+	results, err := e.JoinResults(ctx, pool, c.ID)
 	require.NoError(t, err)
-	assert.Equal(t, "decide", got.State, "the restored answer lets the round close")
+	require.Len(t, results, 1)
+	assert.Equal(t, 1, results[0].Count(workflow.OutcomeRejected), "the restored answer counts")
+	assert.Equal(t, 1, results[0].Count(workflow.OutcomeApproved))
 }
 
 // allApproveTestDefinition sends "draft" to "juan" and "maria" under
