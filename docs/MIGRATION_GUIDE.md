@@ -1326,9 +1326,9 @@ el CHANGELOG (`[0.19.0]`); estos son los pasos.
    token raíz), y `action.Args`/`action.Run` llevan el `TokenID` del evento
    que causó el efecto. La cadena de la `007` no cubre esas dos columnas.
 
-#### Políticas de join y reglas de asignación
+#### Políticas de join
 
-Una `Definition` sin `JoinPolicy` ni `AssignRule` se comporta igual que antes, y adoptarlas
+Una `Definition` sin `JoinPolicy` se comporta igual que antes, y adoptarlas
 es opcional. Lo único obligatorio al actualizar es la migración.
 
 1. **Aplicar la `011_workflow_token_outcome.sql` antes de arrancar los binarios nuevos**,
@@ -1354,7 +1354,7 @@ es opcional. Lo único obligatorio al actualizar es la migración.
 
 Un `Repository` propio no cambia de interfaz, pero debe persistir `Token.Outcome`. Un
 consumidor con `workflow/postgres.Repository` no tiene que hacer nada. Cómo se declaran las
-políticas y las reglas está en la [guía de `workflow`](workflow.md#políticas-de-join).
+políticas está en la [guía de `workflow`](workflow.md#políticas-de-join).
 
 ### `action/migrations` (conjunto nuevo, opcional)
 
