@@ -73,6 +73,7 @@ var sentinels = []sentinel{
 	{"ErrChainBroken", workflow.ErrChainBroken, 0, ""},
 	{"ErrCaseWithoutTokens", workflow.ErrCaseWithoutTokens, 0, ""},
 	{"ErrInvalidOutcome", workflow.ErrInvalidOutcome, 0, ""},
+	{"ErrUnknownAssignRule", workflow.ErrUnknownAssignRule, 0, ""},
 }
 
 // workflowSentinelNames parses package workflow's non-test sources and

@@ -88,6 +88,34 @@ de persona incrustado en la `Definition`. Resolver quién ocupa hoy esa posició
 incluida la subrogación, queda para un servicio de contexto organizacional del
 consumidor.
 
+Entrar a un nodo limpia el asignado y deja el token en el pool del nodo. Para que un
+nodo lo asigne al entrar, se declara una regla:
+
+```go
+workflow.Node{ID: "review", Eligible: workflow.ByPosition("approver"), AssignRule: "assign_from:draft"}
+
+engine := workflow.New(repo, workflow.Config{Assignees: resolver}, logger)
+```
+
+- `Node.AssignRule` nombra la regla. Sólo un nodo de tarea no terminal puede declararla, y
+  `Engine.Register` falla con `ErrUnknownAssignRule` si no hay `Config.Assignees`.
+- `AssigneeResolver.Assignee` responde con el id de una persona, o vacío para dejar el
+  token en el pool. Una respuesta agrega un evento `assigned` con
+  `AssignmentDetail{To, Reason: "assign_rule:<regla>"}`. Un error hace fallar toda la
+  llamada y no persiste nada.
+- Corre donde un token descansa en un nodo de tarea: `Move`, splits, joins, retornos y
+  `Expire`. `Engine.Open` no aplica reglas.
+- Corre dentro de la transacción y no debe llamar a la red, igual que una guarda. El
+  historial se lee sólo para los nodos con regla, e incluye lo que la llamada lleva
+  planificado.
+- `workflow.LastActorOf(history, node)` devuelve la última persona que salió de un nodo
+  en todo el caso, ignorando actores de sistema. Una regla como `assign_from:<nodo>` se
+  arma con ella.
+
+El motor no interpreta la regla, así que ningún id de persona entra a la `Definition`.
+Las reglas pertenecen al consumidor, que decide por ejemplo si esa persona todavía
+ocupa el perfil del nodo o a quién le toca el siguiente turno.
+
 ### Tenant
 
 Un caso pertenece a un `Tenant` (vacío para un consumidor de un solo tenant), que

@@ -355,6 +355,15 @@ type Node struct {
 	// named by a NodeParallel may set it. Empty keeps the plain join: it waits
 	// for every branch and records no outcome.
 	JoinPolicy JoinPolicy
+	// AssignRule names a rule the Engine's Config.Assignees resolves to the
+	// person a token coming to rest on this node goes to, on every path into it
+	// (Move, splits, joins, return transitions, Expire) except Engine.Open.
+	// vogel never interprets the name, so no person ID enters the Definition.
+	// Empty keeps the default: the token goes to the node's pool. Definition.
+	// Validate rejects it on a decision node, split, join or terminal node, where
+	// no token ever rests, and Engine.Register rejects it when no resolver is
+	// configured (ErrUnknownAssignRule).
+	AssignRule string
 }
 
 // Transition is a named move from one node to another, optionally gated by
@@ -587,6 +596,9 @@ func (d Definition) Validate() error {
 		if n.Deadline != 0 && n.DeadlineRule != "" {
 			addf("node %q: must not declare both a deadline and a deadline rule", n.ID)
 		}
+		if n.Terminal && n.AssignRule != "" {
+			addf("node %q: must not declare an assign rule: a terminal node closes the case on entry", n.ID)
+		}
 		checkEffects(fmt.Sprintf("node %q", n.ID), n.Effects)
 
 		if n.Kind.IsAutomatic() {
@@ -605,6 +617,9 @@ func (d Definition) Validate() error {
 			}
 			if n.OnExpire != "" {
 				addf("%s %q: must not declare on_expire", label, n.ID)
+			}
+			if n.AssignRule != "" {
+				addf("%s %q: must not declare an assign rule", label, n.ID)
 			}
 			if len(n.Effects) > 0 {
 				addf("%s %q: must not declare effects (declare them on its routes)", label, n.ID)
