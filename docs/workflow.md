@@ -129,7 +129,130 @@ Cada `Token` es una unidad de trabajo que descansa en un nodo de tarea dentro de
 
 Un split consume el token que llega y emite uno por rama. El join, cuando los tokens
 que esperan más los cancelados suman `Scope.Expected`, los consume y sigue con un
-token en el ámbito padre. Puede encadenar un join externo.
+token en el ámbito padre. Puede encadenar un join externo. Con una
+[política](#políticas-de-join), el join puede disparar antes.
+
+### Políticas de join
+
+Un bloque `NodeParallel` puede declarar cómo deciden sus ramas con `Node.JoinPolicy`.
+Sin política, el join se comporta como siempre: no hay outcomes, tally ni veredicto.
+
+| Política | Cierra cuando | Veredicto | Al cerrar |
+|---|---|---|---|
+| `JoinAllApprove` | El primer rechazo, o todas las ramas aprobaron | `rejected` o `approved` | Rechazado: cancela las ramas pendientes y el caso vuelve atrás. Aprobado: el caso avanza |
+| `JoinAnyApprove` | La primera aprobación, o todas las ramas rechazaron | `approved` o `rejected` | Aprobado: cancela las pendientes y el paso siguiente recibe el tally. Rechazado: el caso vuelve atrás |
+| `JoinCollect` | Todas las ramas respondieron | ninguno | Una persona ve los rechazos y aprobaciones y decide |
+
+**Reglas de `Definition.Validate`:**
+
+- Toda transición que entra a un join con política sale de un nodo de tarea y declara
+  `Transition.Outcome` (`OutcomeApproved` u `OutcomeRejected`). Ninguna otra transición
+  puede declararlo.
+- Bajo `JoinAllApprove` y `JoinAnyApprove`, una transición rechazada tiene
+  `Comment: CommentRequired`, y la salida del join llega a un nodo de decisión. Un join
+  con veredicto no puede avanzar sin pasar por esa decisión.
+- Bajo `JoinCollect`, la salida del join llega a un nodo de tarea.
+- Un join nombrado por un `NodeInclusive` no puede tener política, porque ese split
+  puede ir directo al join y esa rama no tendría decisión.
+
+`Validate` no interpreta guardas, así que no puede comprobar que la ruta rechazada vuelva
+atrás. Esa ruta depende de la definición: registrar `workflow.JoinRejected` y usarla en la
+decisión que sigue al join, con una ruta guardada que retroceda. Fuera de la llamada que
+disparó el join, esa guarda responde `false`.
+
+**`JoinAllApprove`.** Ana envía; Juan aprueba; Pedro rechaza con "falta el certificado";
+la tarea pendiente de María se cancela; el caso vuelve a Ana:
+
+```go
+workflow.Definition{
+    Name: "approval", Version: 1,
+    Nodes: []workflow.Node{
+        {ID: "submit", Start: true},
+        {ID: "fork", Kind: workflow.NodeParallel, Join: "vote"},
+        {ID: "juan"}, {ID: "pedro"}, {ID: "maria"},
+        {ID: "vote", Kind: workflow.NodeJoin, JoinPolicy: workflow.JoinAllApprove},
+        {ID: "route", Kind: workflow.NodeDecision},
+        {ID: "publish"},
+        {ID: "done", Terminal: true},
+    },
+    Transitions: []workflow.Transition{
+        {From: "submit", To: "fork", Action: "send"},
+        {From: "fork", To: "juan", Action: "to-juan"},
+        {From: "fork", To: "pedro", Action: "to-pedro"},
+        {From: "fork", To: "maria", Action: "to-maria"},
+        // Lo mismo para pedro y maria.
+        {From: "juan", To: "vote", Action: "approve", Outcome: workflow.OutcomeApproved},
+        {From: "juan", To: "vote", Action: "reject", Outcome: workflow.OutcomeRejected, Comment: workflow.CommentRequired},
+        {From: "vote", To: "route", Action: "tallied"},
+        {From: "route", To: "submit", Action: "back", Guard: "rejected"},
+        {From: "route", To: "publish", Action: "onward"},
+        {From: "publish", To: "done", Action: "finish"},
+    },
+}
+
+engine.RegisterGuard("rejected", workflow.JoinRejected)
+```
+
+**`JoinAnyApprove`.** Es la misma definición con
+`JoinPolicy: workflow.JoinAnyApprove`. La primera aprobación cierra la ronda; si todas
+rechazan, el caso vuelve atrás.
+
+**`JoinCollect`.** El join llega a la tarea donde una persona decide con transiciones
+comunes, y el rechazo no exige comentario:
+
+```go
+{ID: "vote", Kind: workflow.NodeJoin, JoinPolicy: workflow.JoinCollect},
+{ID: "decide"},
+
+{From: "juan", To: "vote", Action: "approve", Outcome: workflow.OutcomeApproved},
+{From: "juan", To: "vote", Action: "reject", Outcome: workflow.OutcomeRejected, Comment: workflow.CommentOptional},
+{From: "vote", To: "decide", Action: "tallied"},
+{From: "decide", To: "publish", Action: "accept"},
+{From: "decide", To: "submit", Action: "redo"},
+```
+
+**Leer el resultado.** El comentario sólo se guarda en su evento `moved`, para no duplicar en una tabla de sólo agregado un texto que puede ser personal.
+
+- `JoinDetail` del evento `joined` guarda `Policy`, `Verdict` y `Branches`.
+  `BranchResult.Seq` apunta al evento `moved` de la rama, o a su `token_cancelled` si no
+  respondió.
+- Las guardas que enrutan la llamada que disparó el join ven `Case.JoinResult`, sin actor
+  ni comentario. En cualquier otro lugar es `nil`, y el repositorio nunca lo guarda.
+- `Config.JoinCheck` corre en todo join disparado. `JoinRecord.Verdict` le permite no
+  combinar los datos de una ronda rechazada.
+
+**Volver atrás abre otra ronda.** La vuelta es una ruta común: join, decisión y tarea
+anterior. No puede ser un `Return`, porque `Validate` lo rechaza desde un nodo automático
+y a través de un bloque. Al reenviar se pasa de nuevo por el split, con scope y tokens
+nuevos, así que todos vuelven a votar, también quienes ya aprobaron. Los votos de una
+ronda nunca cuentan en otra.
+
+**Cerrar antes de tiempo.** En la misma transacción, cada token activo pendiente del bloque
+recibe un `token_cancelled` con `CancelDetail.Reason` igual a `join_policy:<política>`, igual
+que los tokens activos o en espera de los scopes todavía abiertos dentro de él, que pasan a
+`ScopeCancelled`. Una rama que corría un bloque anidado aparece como una sola fila
+`unanswered`, y los votos internos quedan en sus propios eventos. Los eventos van en este orden:
+el `waiting` que decide, los `token_cancelled` y el `joined`. Un envío tardío sobre una rama
+cancelada falla con `ErrTokenNotFound` (404), y esa rama sale del `Inbox`. De dos decisiones
+simultáneas, la que pierde recibe `ErrConflict`, y su reintento recibe `ErrTokenNotFound` si
+su rama quedó cancelada.
+
+**Casos límite:**
+
+- Una rama cancelada con `CancelToken` no es un voto: aparece como `unanswered`, y la
+  política decide con las que quedan. Cancelar dos de tres ramas deja que un solo voto
+  apruebe bajo `JoinAllApprove`.
+- Se cuenta por rama, no por persona. El motor no impide que una misma persona responda
+  varias ramas: separar a los aprobadores le corresponde a la elegibilidad de cada nodo y a
+  la autorización del consumidor.
+- Una transición `OnExpire` que entra al join lleva su `Outcome` como cualquier otra, sin
+  comentario, y ese evento `moved` guarda la causa `expired`. Sin `OnExpire`, el token queda
+  pendiente, así que `JoinAllApprove` y `JoinCollect` pueden esperar indefinidamente.
+- Un token que espera en un join con política sin un outcome válido hace fallar la llamada
+  con `ErrInvalidOutcome`, en vez de contar como aprobación. Ocurre al revertir y volver a
+  aplicar la migración `011` con rondas abiertas, al agregar la política a una definición ya
+  registrada sin subir su versión, o con un `Repository` propio que no guarde
+  `Token.Outcome`. La respuesta sigue en su evento `waiting`.
 
 ### Concurrencia
 
@@ -203,7 +326,8 @@ feriados son del consumidor.
   completa los valores por defecto de versiones viejas y falla con
   `ErrUnsupportedEventSchema` ante una más nueva.
 - **Detalle:** `Detail`, un objeto JSON por tipo de evento (`AssignmentDetail` en
-  `Claim` y `Release`) que sólo lleva referencias, nunca dato de dominio.
+  `Claim` y `Release`, `WaitingDetail` y `JoinDetail` en un join con política) que sólo
+  lleva referencias, nunca dato de dominio.
 - **Actor:** un `Actor` estructurado (`Kind`, `ID`, `ActingAs`, `OnBehalfOf`, `Via`).
   `ActingAs` es la autoridad usada, que el llamador resuelve en el momento. Se pasa
   con `OpenInput.Actor` y `MoveInput.Actor`, con `ActorID` como alias obsoleto de un
@@ -284,6 +408,7 @@ tabla de versión (`workflow_db_version`), independiente de la de `audit`.
 | `008_workflow_tokens.sql` | Crea `workflow_scope` y `workflow_token`, agrega `workflow_event.token_id` y `scope_id` (nulos en los eventos previos, que se leen como el token raíz) y el índice único `uq_workflow_event_joined_once`, y materializa un scope raíz y un token raíz por caso existente. |
 | `009_workflow_token_expired.sql` | Agrega `workflow_token.expired_deadline_at`, el plazo que `Engine.Expire` marcó como vencido. |
 | `010_workflow_event_digest_v2.sql` | Agrega `workflow_event.deadline_at` (el plazo con el que el token entró al nodo) y reemplaza el digest de la cadena por la v2, que además cubre `token_id`, `scope_id` y `deadline_at`. |
+| `011_workflow_token_outcome.sql` | Agrega `workflow_token.outcome`, nula y sin relleno: lo que respondió una rama en un join con política. El evento `waiting` guarda lo mismo en su `detail`, que el digest v2 ya cubre, así que no hay digest v3. |
 
 ### Cuidados al desplegar
 
@@ -301,6 +426,11 @@ tabla de versión (`workflow_db_version`), independiente de la de `audit`.
   (ver [`MIGRATION_GUIDE.md`](MIGRATION_GUIDE.md)).
 - **010:** es obligatoria antes de desplegar. Una base con eventos encadenados con v1
   los vería como rotos.
+- **011:** es obligatoria antes de desplegar, porque el repositorio escribe la columna. No
+  hay vuelta atrás simple: `CurrentEventSchema` pasa a 5 en todo evento nuevo, también en
+  casos sin política, y un binario anterior falla con `ErrUnsupportedEventSchema` al leer
+  esos casos. Reemplazar todos los binarios juntos y corregir hacia adelante. Su `Down` borra
+  las respuestas de los tokens en espera, así que correrlo sólo sin rondas abiertas.
 
 ## Errores y `workflowhttp`
 

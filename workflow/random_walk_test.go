@@ -37,6 +37,12 @@ func (g *walkGen) seq(from, to string, depth int, guard string) {
 	cur, action := from, g.id("go")
 	var tasks []string
 	for i, n := 0, 1+g.r.Intn(3); i < n; i++ {
+		if depth < 2 && g.r.Intn(4) == 0 {
+			after := g.policyBlock(cur, action, guard, tasks, depth)
+			tasks = []string{after}
+			cur, action, guard = after, g.id("go"), ""
+			continue
+		}
 		if depth < 2 && g.r.Intn(3) == 0 {
 			split, join := g.id("split"), g.id("join")
 			kind := NodeParallel
@@ -77,6 +83,47 @@ func (g *walkGen) seq(from, to string, depth int, guard string) {
 	g.trs = append(g.trs, Transition{From: cur, To: to, Action: action, Guard: guard})
 }
 
+// policyBlock adds a parallel block whose join has a policy, entered from cur.
+// Each branch runs a sequence, possibly with nested blocks, up to a voter task
+// that approves or rejects. A verdict policy needs a decision after the join,
+// with a task of this sequence to go back to, so with none in earlier the block
+// uses JoinCollect. It returns the task the case continues from.
+func (g *walkGen) policyBlock(cur, action, guard string, earlier []string, depth int) string {
+	split, join, after := g.id("split"), g.id("join"), g.id("task")
+	policy := JoinCollect
+	if len(earlier) > 0 {
+		policy = []JoinPolicy{JoinAllApprove, JoinAnyApprove, JoinCollect}[g.r.Intn(3)]
+	}
+	g.nodes = append(g.nodes,
+		Node{ID: split, Kind: NodeParallel, Join: join},
+		Node{ID: join, Kind: NodeJoin, JoinPolicy: policy},
+		Node{ID: after, Eligible: ByPosition(fmt.Sprintf("pos%d", g.r.Intn(3)))})
+	g.trs = append(g.trs, Transition{From: cur, To: split, Action: action, Guard: guard})
+	for b, branches := 0, 2+g.r.Intn(2); b < branches; b++ {
+		voter := g.id("voter")
+		g.nodes = append(g.nodes, Node{ID: voter, Eligible: ByPosition(fmt.Sprintf("pos%d", g.r.Intn(3)))})
+		if g.r.Intn(2) == 0 {
+			g.seq(split, voter, depth+1, "")
+		} else {
+			g.trs = append(g.trs, Transition{From: split, To: voter, Action: g.id("go")})
+		}
+		g.trs = append(g.trs,
+			Transition{From: voter, To: join, Action: "approve", Outcome: OutcomeApproved},
+			Transition{From: voter, To: join, Action: "reject", Outcome: OutcomeRejected, Comment: CommentRequired})
+	}
+	if policy == JoinCollect {
+		g.trs = append(g.trs, Transition{From: join, To: after, Action: g.id("go")})
+		return after
+	}
+	route := g.id("route")
+	g.nodes = append(g.nodes, Node{ID: route, Kind: NodeDecision})
+	g.trs = append(g.trs,
+		Transition{From: join, To: route, Action: g.id("go")},
+		Transition{From: route, To: earlier[g.r.Intn(len(earlier))], Action: g.id("back"), Guard: "join-rejected"},
+		Transition{From: route, To: after, Action: g.id("go")})
+	return after
+}
+
 func randomDefinition(r *rand.Rand, version int) Definition {
 	g := &walkGen{r: r}
 	g.nodes = []Node{{ID: "start", Start: true}, {ID: "end", Terminal: true}}
@@ -101,6 +148,7 @@ func TestEngine_RandomWalk_InvariantsHold(t *testing.T) {
 			require.NoError(t, e.RegisterGuard("coin", func(context.Context, pgxtx.DBTX, Case) (bool, error) {
 				return r.Intn(2) == 0, nil
 			}))
+			require.NoError(t, e.RegisterGuard("join-rejected", JoinRejected))
 
 			for n := 0; n < casesPerDefinition; n++ {
 				walkCase(t, r, e, repo, d, maxSteps)
@@ -139,7 +187,11 @@ func walkCase(t *testing.T, r *rand.Rand, e *Engine, repo *fakeRepository, d Def
 			require.NoError(t, err)
 			require.NotEmpty(t, trs, "a task node always offers a transition")
 			tr := trs[r.Intn(len(trs))]
-			_, err = e.Move(ctx, nil, MoveInput{CaseID: c.ID, TokenID: tok.ID, Action: tr.Action, Actor: actor})
+			comment := ""
+			if tr.Comment == CommentRequired {
+				comment = "walk"
+			}
+			_, err = e.Move(ctx, nil, MoveInput{CaseID: c.ID, TokenID: tok.ID, Action: tr.Action, Actor: actor, Comment: comment})
 			require.NoError(t, err, "move %s from %s", tr.Action, tok.Node)
 		case roll < 15:
 			_, err = e.ClaimWith(ctx, nil, ClaimInput{CaseID: c.ID, TokenID: tok.ID, Actor: actor})

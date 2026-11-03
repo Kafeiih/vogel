@@ -96,8 +96,9 @@ const (
 	// ScopeID is the scope that joined and its TokenID the token the join
 	// creates in the parent scope; the Detail is a JoinDetail.
 	EventJoined EventKind = "joined"
-	// EventTokenCancelled records one token cancelled by Engine.Cancel or
-	// Engine.CancelToken; the Detail is a CancelDetail.
+	// EventTokenCancelled records one token cancelled by Engine.Cancel,
+	// Engine.CancelToken or a join policy closing its round early; the Detail
+	// is a CancelDetail.
 	EventTokenCancelled EventKind = "token_cancelled"
 	// EventCancelled records Engine.Cancel ending the case; the Detail is a
 	// CancelDetail. It follows one EventTokenCancelled per live token, whose
@@ -221,8 +222,9 @@ const (
 	// names the NodeJoin where the branches meet.
 	NodeInclusive NodeKind = "inclusive"
 	// NodeJoin is where the branches of the split naming it meet: it waits
-	// until every token that split emitted arrived (or was cancelled), then
-	// one token continues through its single, unguarded outgoing transition.
+	// until every token that split emitted arrived (or was cancelled), or until
+	// its Node.JoinPolicy closes the round, then one token continues through
+	// its single, unguarded outgoing transition.
 	NodeJoin NodeKind = "join"
 )
 
@@ -349,6 +351,10 @@ type Node struct {
 	// a name that is not an outgoing transition, a return transition, and
 	// OnExpire on a decision node, split or join.
 	OnExpire string
+	// JoinPolicy declares how the branches of this join decide. Only a NodeJoin
+	// named by a NodeParallel may set it. Empty keeps the plain join: it waits
+	// for every branch and records no outcome.
+	JoinPolicy JoinPolicy
 }
 
 // Transition is a named move from one node to another, optionally gated by
@@ -398,6 +404,12 @@ type Transition struct {
 	// appended to the Engine's EffectSink. Definition.Validate rejects an
 	// empty or duplicate name within one transition.
 	Effects []string
+	// Outcome is the decision this transition records when it enters a join
+	// with a policy: OutcomeApproved or OutcomeRejected. Definition.Validate
+	// requires it on every transition entering such a join, which must leave a
+	// task node, and rejects it on any other transition. Under JoinAllApprove
+	// and JoinAnyApprove a rejected transition must have Comment: CommentRequired.
+	Outcome Outcome
 }
 
 // Definition describes one version of a workflow: its nodes, and the
@@ -434,9 +446,9 @@ func (d Definition) StartNode() (Node, bool) {
 // TransitionsFrom returns every transition originating at nodeID.
 func (d Definition) TransitionsFrom(nodeID string) []Transition {
 	out := make([]Transition, 0, len(d.Transitions))
-	for _, tr := range d.Transitions {
-		if tr.From == nodeID {
-			out = append(out, tr)
+	for i := range d.Transitions {
+		if d.Transitions[i].From == nodeID {
+			out = append(out, d.Transitions[i])
 		}
 	}
 	return out
@@ -447,7 +459,8 @@ func (d Definition) TransitionsFrom(nodeID string) []Transition {
 func (d Definition) GuardNames() []string {
 	seen := make(map[string]bool, len(d.Transitions))
 	names := make([]string, 0, len(d.Transitions))
-	for _, tr := range d.Transitions {
+	for i := range d.Transitions {
+		tr := &d.Transitions[i]
 		if tr.Guard == "" || seen[tr.Guard] {
 			continue
 		}
@@ -495,8 +508,8 @@ func (d Definition) EffectNames() []string {
 		n := &d.Nodes[i]
 		add(n.Effects)
 	}
-	for _, tr := range d.Transitions {
-		add(tr.Effects)
+	for i := range d.Transitions {
+		add(d.Transitions[i].Effects)
 	}
 	sort.Strings(names)
 	return names
@@ -617,7 +630,8 @@ func (d Definition) Validate() error {
 	// splits, joins): a cycle made only of them would route forever.
 	gatewayAdjacency := make(map[string][]string, len(d.Nodes))
 
-	for i, tr := range d.Transitions {
+	for i := range d.Transitions {
+		tr := &d.Transitions[i]
 		if tr.Action == "" {
 			addf("transition[%d]: empty action", i)
 		}
@@ -640,7 +654,7 @@ func (d Definition) Validate() error {
 		if fromOK {
 			outgoing[tr.From]++
 			adjacency[tr.From] = append(adjacency[tr.From], tr.To)
-			outgoingByNode[tr.From] = append(outgoingByNode[tr.From], tr)
+			outgoingByNode[tr.From] = append(outgoingByNode[tr.From], *tr)
 		}
 
 		if fromOK && fromNode.Kind.IsAutomatic() && tr.Comment.Canonical() != CommentNone {
@@ -707,8 +721,8 @@ func (d Definition) Validate() error {
 		}
 
 		unguardedCount, unguardedIdx := 0, -1
-		for i, r := range routes {
-			if r.Guard == "" {
+		for i := range routes {
+			if routes[i].Guard == "" {
 				unguardedCount++
 				unguardedIdx = i
 			}
@@ -778,6 +792,7 @@ func (d Definition) Validate() error {
 	}
 
 	validateBlocks(d, nodeByID, outgoingByNode, addf)
+	validateJoinPolicies(d, nodeByID, addf)
 
 	if len(errs) == 0 {
 		return nil
@@ -927,14 +942,21 @@ type Case struct {
 	// consumer can stamp it on its own rows to record which point of the
 	// case history they saw.
 	LastSeq int64
+	// JoinResult is the round a join with a policy just closed. It is set only
+	// on the snapshot guards receive while routing the call that fired that
+	// join (see workflow.JoinRejected), and nil everywhere else: a repository
+	// never reads or writes it.
+	JoinResult *JoinResult
 }
 
 // CurrentEventSchema is the Event.SchemaVersion the engine writes. Version 1
 // is every event stored before schema_version existed: no Detail. Version 2
 // adds Detail and LastSeq-assigned Seq. Version 3 adds TokenID and ScopeID;
 // an older event reads as the case's root token in its root scope. Version 4
-// adds DeadlineAt; an older event reads with none.
-const CurrentEventSchema = 4
+// adds DeadlineAt; an older event reads with none. Version 5 adds the join
+// policy details: the outcome in WaitingDetail, and the policy, verdict and
+// branches in JoinDetail; an older event reads with none.
+const CurrentEventSchema = 5
 
 // AssignmentDetail is the Event.Detail of EventAssigned (written by Claim,
 // From empty) and EventUnassigned (written by Release, To empty). From and To

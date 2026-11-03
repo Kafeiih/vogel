@@ -306,7 +306,9 @@ func effectsFor(d workflow.Definition, evt *workflow.Event) []string {
 		return nil
 	}
 	if evt.Kind == workflow.EventMoved {
-		for _, tr := range d.TransitionsFrom(evt.FromState) {
+		transitions := d.TransitionsFrom(evt.FromState)
+		for i := range transitions {
+			tr := &transitions[i]
 			if tr.Action == evt.Action {
 				names = append(names, tr.Effects...)
 				break

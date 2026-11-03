@@ -18,7 +18,8 @@ const (
 	// TokenConsumed left the case: a split or a join consumed it, or it
 	// reached a terminal node.
 	TokenConsumed TokenStatus = "consumed"
-	// TokenCancelled was cancelled (Engine.Cancel, Engine.CancelToken).
+	// TokenCancelled was cancelled (Engine.Cancel, Engine.CancelToken, or a
+	// join policy closing its round early).
 	TokenCancelled TokenStatus = "cancelled"
 )
 
@@ -64,6 +65,9 @@ type Token struct {
 	// (consumed or cancelled); EndedSeq is 0 and EndedAt nil before.
 	EndedSeq int64
 	EndedAt  *time.Time
+	// Outcome is what the token answered on entering a join with a policy (the
+	// taken Transition.Outcome); empty on any other token.
+	Outcome Outcome
 }
 
 // ScopeStatus is the lifecycle state of a Scope.
@@ -90,7 +94,8 @@ type Scope struct {
 	SplitNode string
 	JoinNode  string
 	// Expected is how many tokens the split emitted: the join fires when
-	// waiting plus cancelled tokens reach it.
+	// waiting plus cancelled tokens reach it, or earlier when its join policy
+	// closes the round.
 	Expected  int
 	Status    ScopeStatus
 	OpenedSeq int64
@@ -111,10 +116,14 @@ type WorkItem struct {
 }
 
 // JoinRecord describes one join a call fired: the scope as joined and the
-// tokens it consumed (see Config.JoinCheck and MoveResult.Joined).
+// tokens it consumed (see Config.JoinCheck and MoveResult.Joined). Under a
+// policy it also carries the round's verdict (empty under JoinCollect) and every
+// branch, so a JoinCheck can skip merging the data of a rejected round.
 type JoinRecord struct {
-	Scope  Scope
-	Tokens []Token
+	Scope    Scope
+	Tokens   []Token
+	Verdict  Outcome
+	Branches []BranchResult
 }
 
 // SplitDetail is the Event.Detail of EventSplit: the scope the split opened,
@@ -125,18 +134,30 @@ type SplitDetail struct {
 	Tokens    []uuid.UUID `json:"tokens"`
 }
 
+// WaitingDetail is the Event.Detail of the EventWaiting of a token entering a
+// join with a policy: what it answered. Any other EventWaiting carries `{}`.
+type WaitingDetail struct {
+	Outcome Outcome `json:"outcome,omitempty"`
+}
+
 // JoinDetail is the Event.Detail of EventJoined: the scope that joined, its
-// join node and the tokens the join consumed.
+// join node and the tokens the join consumed. A join with a policy adds the
+// policy, the round's verdict (empty under JoinCollect) and every branch. No
+// comment is copied here: it stays in its move event (see BranchResult.Seq).
 type JoinDetail struct {
-	Scope    uuid.UUID   `json:"scope"`
-	JoinNode string      `json:"join_node"`
-	Tokens   []uuid.UUID `json:"tokens"`
+	Scope    uuid.UUID      `json:"scope"`
+	JoinNode string         `json:"join_node"`
+	Tokens   []uuid.UUID    `json:"tokens"`
+	Policy   JoinPolicy     `json:"policy,omitempty"`
+	Verdict  Outcome        `json:"verdict,omitempty"`
+	Branches []BranchResult `json:"branches,omitempty"`
 }
 
 // CancelDetail is the Event.Detail of EventTokenCancelled and EventCancelled:
-// the caller's reason. It carries no node: each EventTokenCancelled records
-// its branch's node in FromState, and Engine.Cancel emits one per live token
-// right before its EventCancelled.
+// the caller's reason, or join_policy:<policy> for a branch a join policy
+// cancelled when it closed the round. It carries no node: each
+// EventTokenCancelled records its branch's node in FromState, and Engine.Cancel
+// emits one per live token right before its EventCancelled.
 type CancelDetail struct {
 	Reason string `json:"reason"`
 }
