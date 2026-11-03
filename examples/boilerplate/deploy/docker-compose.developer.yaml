@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: postgres:17.11-alpine3.24@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+    image: postgres:17.11-alpine3.24@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
@@ -34,7 +34,7 @@ services:
   # HTML-to-PDF for the BPMS base's documents (GOTENBERG_URL in .env). Port 3001
   # on loopback, so it never takes the frontend's 3000; Chromium may fetch nothing.
   gotenberg:
-    image: gotenberg/gotenberg:8.38.1-chromium@sha256:5da4ab7b8fe7326537369e17b661be765d9a2887f77722faacdbe6d55812fb96
+    image: gotenberg/gotenberg:8.39.0-chromium@sha256:558943677cf9092df83ff654c2645856dcb9ddf777f359243789688e74f3bcdd
     ports:
       - "127.0.0.1:3001:3000"
     environment:
