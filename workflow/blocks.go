@@ -50,7 +50,9 @@ func (b *block) members() []string {
 // of every node.
 func buildBlock(s Node, outgoingByNode map[string][]Transition) *block {
 	b := &block{split: s, join: s.Join, interior: make(map[string]bool)}
-	for _, tr := range outgoingByNode[s.ID] {
+	outgoing := outgoingByNode[s.ID]
+	for i := range outgoing {
+		tr := &outgoing[i]
 		br := branch{action: tr.Action, nodes: make(map[string]bool)}
 		queue := []string{tr.To}
 		for len(queue) > 0 {
@@ -65,9 +67,10 @@ func buildBlock(s Node, outgoingByNode map[string][]Transition) *block {
 			}
 			br.nodes[id] = true
 			br.order = append(br.order, id)
-			for _, next := range outgoingByNode[id] {
-				if !next.Return {
-					queue = append(queue, next.To)
+			nexts := outgoingByNode[id]
+			for k := range nexts {
+				if !nexts[k].Return {
+					queue = append(queue, nexts[k].To)
 				}
 			}
 		}
@@ -128,7 +131,8 @@ func validateBlocks(d Definition, nodeByID map[string]Node, outgoingByNode map[s
 	}
 
 	incoming := make(map[string][]string, len(d.Nodes))
-	for _, tr := range d.Transitions {
+	for i := range d.Transitions {
+		tr := &d.Transitions[i]
 		if !tr.Return {
 			incoming[tr.To] = append(incoming[tr.To], tr.From)
 		}
@@ -138,7 +142,8 @@ func validateBlocks(d Definition, nodeByID map[string]Node, outgoingByNode map[s
 	}
 	checkNesting(blocks, addf)
 
-	for i, tr := range d.Transitions {
+	for i := range d.Transitions {
+		tr := &d.Transitions[i]
 		if !tr.Return {
 			continue
 		}
