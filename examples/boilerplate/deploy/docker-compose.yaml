@@ -38,7 +38,7 @@ x-scrub-db-admin-secrets: &scrub-db-admin-secrets
 services:
   # No ports and no TLS: non-production hosts only, enabled by COMPOSE_PROFILES=bundled-db in deploy/.env.
   postgres:
-    image: postgres:17.11-alpine3.24@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
+    image: postgres:17.11-alpine3.24@sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac
     profiles: ["bundled-db"]
     logging: *logging
     # Checked here, not with ${VAR:?}: compose interpolates every service, even those in inactive profiles.
@@ -68,7 +68,7 @@ services:
 
   # One-off, on RDS: creates app_migrator and app_runtime with the master user (see RUNBOOK.md section 0).
   db-roles:
-    image: postgres:17.11-alpine3.24@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
+    image: postgres:17.11-alpine3.24@sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac
     <<: *hardened
     profiles: ["tools"]
     logging: *logging
@@ -115,7 +115,7 @@ services:
     restart: "no"
 
   grants:
-    image: postgres:17.11-alpine3.24@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
+    image: postgres:17.11-alpine3.24@sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac
     <<: *hardened
     logging: *logging
     command:
@@ -222,7 +222,7 @@ services:
   # vogel:component bpms begin
   # Not *hardened: Chromium needs a writable home. Denying every IP and JavaScript keeps templates from fetching anything (no SSRF).
   gotenberg:
-    image: gotenberg/gotenberg:8.39.0-chromium@sha256:558943677cf9092df83ff654c2645856dcb9ddf777f359243789688e74f3bcdd
+    image: gotenberg/gotenberg:9.1.0-chromium@sha256:06ce00e2efdb9bf749bdf42c4d793a163a059ee14609b8994bcf38d7fdef5f41
     logging: *logging
     environment:
       CHROMIUM_DENY_PRIVATE_IPS: "true"
