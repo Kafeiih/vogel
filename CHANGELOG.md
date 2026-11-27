@@ -24,6 +24,12 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ### Seguridad
 
+- **Toolchain de Go a `go1.26.11` y `golang.org/x/net` a v0.62.0, en el módulo raíz y
+  en `examples/boilerplate`.** Cierra `GO-2026-6859` en `net/http`, de la biblioteca
+  estándar, y `CVE-2026-78661` en `golang.org/x/net/html`. La API no cambia.
+- **`examples/boilerplate`: Cerbos sube a 0.58.0.** Su binario trae `golang.org/x/net`
+  0.63.0 y `go-jose` 4.1.6, así que cierra `CVE-2026-78661` en la imagen del PDP y vacía
+  la lista de hallazgos aceptados (`cerbos/.trivyignore`).
 - **`examples/boilerplate`: `kin-openapi` sube a v0.152.0.** Cierra nueve avisos de
   seguridad. Solo la usa `oapi-codegen` para generar código, así que ningún binario del
   boilerplate la incluía. El código generado no cambia.
