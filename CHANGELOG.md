@@ -7,6 +7,8 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ## [Unreleased]
 
+## [0.24.0] — 2026-11-27
+
 ### Agregado
 
 - **`action`: handlers por prefijo.** `Registry.RegisterPrefix(prefijo, Handler)` atiende
