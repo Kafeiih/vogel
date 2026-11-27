@@ -2,17 +2,12 @@
 # with --ignorefile when it scans boilerplate:cerbos, so the api and worker
 # images are still held to every finding).
 #
-# Cerbos 0.57.0, the latest release (2026-10-23), ships a cerbos binary built
-# with Go 1.27.3 and golang.org/x/net 0.61.0, which clears every stdlib and
-# x/net entry this file held for 0.56.0. It still depends on
-# github.com/go-jose/go-jose/v4 4.1.5. The deploy compose keeps the PDP on an
-# internal network with no published ports, so only the api and worker can
-# reach it.
+# Cerbos 0.58.0, the latest release (2026-11-23), ships a cerbos binary built
+# with Go 1.27.4, golang.org/x/net 0.63.0 and github.com/go-jose/go-jose/v4
+# 4.1.6, which clears every entry this file held for 0.57.0. No finding is
+# accepted today.
 #
 # Each entry expires: when it does, CI fails again. Bump the Cerbos version in
 # cerbos/Dockerfile and deploy/docker-compose.developer.yaml if a fixed
-# release is out (check its go-jose version with `go version -m` on the
+# release is out (check its dependency versions with `go version -m` on the
 # binary), or renew the date with a reason.
-
-# github.com/go-jose/go-jose/v4: DoS parsing JWKs with RSA keys (fixed in 4.1.6)
-CVE-2026-116587 exp:2026-12-15
