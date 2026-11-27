@@ -77,6 +77,11 @@ ejecuta. `Open` y `Move` se los entregan, una vez y después de persistir, al
 misma transacción).
 
 - `Register` rechaza con `ErrUnknownEffect` un efecto que el sink no conoce.
+- Con `action.Registry`, un efecto puede nombrarse por clave: `RegisterPrefix("document:", h)`
+  sirve `document:comprobante` y `document:acta`, y el handler lee el nombre completo en
+  `Run.Effect`. Un nombre exacto gana sobre un prefijo, el prefijo más largo gana sobre uno
+  más corto, y el prefijo solo no es un efecto. La validación de `Register` cubre entonces
+  el prefijo, no la clave: quien arma la definición valida sus claves.
 - Cuando la definición declara efectos, `Open` y `Move` llaman a
   `EffectSink.CheckDB(db)` antes de escribir, así que un `db` en el que el sink no
   puede despachar falla sin persistir nada.

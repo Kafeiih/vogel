@@ -28,10 +28,17 @@
 // Built-in handlers: NotifyHandler adapts a notification.Notifier. A webhook
 // handler is planned but not part of this package yet.
 //
+// Register binds one exact effect name. RegisterPrefix binds every name that
+// extends a prefix, for effects a Definition names by key (a Definition
+// published at runtime naming "document:comprobante" and "document:acta"
+// needs one "document:" registration, not one per document); an exact name
+// wins over a prefix, and the longest prefix wins over a shorter one.
+//
 // Wiring:
 //
 //	reg := action.NewRegistry(queue)
 //	_ = reg.Register("notify", action.NotifyHandler(notifier, buildMessages))
+//	_ = reg.RegisterPrefix("document:", docflow.Generate(docs, pool, buildByKey))
 //	engine := workflow.New(repo, workflow.Config{}, logger, workflow.WithEffectSink(reg))
 //
 //	// worker binary
@@ -44,6 +51,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/google/uuid"
@@ -184,6 +192,7 @@ type Registry struct {
 
 	mu       sync.RWMutex
 	handlers map[string]Handler
+	prefixes map[string]Handler
 }
 
 var _ workflow.EffectSink = (*Registry)(nil)
@@ -191,7 +200,7 @@ var _ workflow.EffectSink = (*Registry)(nil)
 // NewRegistry creates an empty Registry that enqueues effect jobs on q. The
 // API process passes an insert-only queue; the worker binary may share it.
 func NewRegistry(q worker.Queue) *Registry {
-	return &Registry{queue: q, handlers: make(map[string]Handler)}
+	return &Registry{queue: q, handlers: make(map[string]Handler), prefixes: make(map[string]Handler)}
 }
 
 // Register makes h the Handler for the effect name. It fails with
@@ -211,17 +220,60 @@ func (r *Registry) Register(name string, h Handler) error {
 	return nil
 }
 
-// HasEffect reports whether name is registered.
+// RegisterPrefix makes h the Handler for every effect name that starts with
+// prefix and has at least one more character, so one registration serves a
+// family of effects a Definition names by key ("document:comprobante",
+// "document:acta" for prefix "document:"). The Handler reads the full name
+// from Run.Effect; job uniqueness, Run.IdempotencyKey and attempt rows use
+// that full name, so each effect of the family stays distinct.
+//
+// A name resolves to its exact registration (Register) first, then to the
+// longest matching prefix. The prefix alone is never an effect name. An
+// exact name and a prefix with the same text are independent registrations.
+// RegisterPrefix fails with ErrInvalidRegistration for an empty prefix or nil
+// h, and ErrDuplicateEffect when prefix is already registered as a prefix.
+//
+// The fail-fast check of Engine.Register then validates only the prefix: a
+// misspelled key after it ("document:actaa") passes, so the caller that
+// builds the Definition validates its keys.
+func (r *Registry) RegisterPrefix(prefix string, h Handler) error {
+	if prefix == "" || h == nil {
+		return ErrInvalidRegistration
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.prefixes[prefix]; ok {
+		return fmt.Errorf("%w: prefix %q", ErrDuplicateEffect, prefix)
+	}
+	r.prefixes[prefix] = h
+	return nil
+}
+
+// HasEffect reports whether name is registered, exactly or by a prefix
+// (see RegisterPrefix).
 func (r *Registry) HasEffect(name string) bool {
 	_, ok := r.handler(name)
 	return ok
 }
 
+// handler resolves name to its exact Handler, else to the Handler of the
+// longest registered prefix name extends.
 func (r *Registry) handler(name string) (Handler, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	h, ok := r.handlers[name]
-	return h, ok
+	if h, ok := r.handlers[name]; ok {
+		return h, true
+	}
+	var (
+		best    Handler
+		bestLen int
+	)
+	for prefix, h := range r.prefixes {
+		if len(prefix) > bestLen && len(name) > len(prefix) && strings.HasPrefix(name, prefix) {
+			best, bestLen = h, len(prefix)
+		}
+	}
+	return best, best != nil
 }
 
 // Dispatch enqueues one job per effect the events trigger, in event order
