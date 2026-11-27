@@ -7,6 +7,21 @@ Todos los cambios relevantes de `vogel`. El formato sigue
 
 ## [Unreleased]
 
+### Agregado
+
+- **`action`: handlers por prefijo.** `Registry.RegisterPrefix(prefijo, Handler)` atiende
+  todo efecto cuyo nombre empieza con el prefijo y tiene al menos un carácter más, así
+  una definición publicada en tiempo de ejecución puede nombrar `document:comprobante` y
+  `document:acta` con una sola registración. Un nombre exacto (`Register`) gana sobre un
+  prefijo y el prefijo más largo gana sobre uno más corto. Un prefijo vacío o repetido se
+  rechaza, y un nombre exacto y un prefijo con el mismo texto no chocan. `HasEffect`
+  resuelve igual que el worker, así que `Engine.Register` sigue fallando con
+  `ErrUnknownEffect` ante un nombre fuera de todo prefijo, pero ya no valida la clave
+  después del prefijo. Los trabajos, la unicidad, `Run.IdempotencyKey()` y las filas de
+  `action_attempt` usan el nombre completo. `Args` no cambia, así que los trabajos ya
+  encolados y los handlers exactos siguen igual. `Run.SystemActor().ID` queda como
+  `vogel_action:document:acta`, con más de un `:`.
+
 ### Seguridad
 
 - **Toolchain de Go a `go1.26.11` y `golang.org/x/net` a v0.62.0, en el módulo raíz y
