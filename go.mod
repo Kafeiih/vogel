@@ -2,7 +2,7 @@ module github.com/kafeiih/vogel
 
 go 1.26.7
 
-toolchain go1.26.10
+toolchain go1.26.11
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.47.5
@@ -162,7 +162,7 @@ require (
 	go.uber.org/multierr v1.11.0 // indirect
 	golang.org/x/crypto v0.58.0 // indirect
 	golang.org/x/exp v0.0.0-20261011100332-faecfb24eb49 // indirect
-	golang.org/x/net v0.61.0 // indirect
+	golang.org/x/net v0.62.0 // indirect
 	golang.org/x/oauth2 v0.37.0 // indirect
 	golang.org/x/sys v0.49.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20261005182115-fad411399dd8 // indirect
